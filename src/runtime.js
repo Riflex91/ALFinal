@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.8.0-h8';
+      this.version = options.version || '0.9.0-h9';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -69,6 +69,15 @@
       });
       this.combat.party = this.party;
       this.combat.farming = this.farming;
+      this.farmIntelligence = new ns.FarmIntelligenceController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        combat: this.combat,
+        farming: this.farming,
+        movement: this.movement,
+        party: this.party
+      });
       this.liveTests = new ns.LiveTestRunner({
         runtime: this,
         logger: this.logger,
@@ -155,6 +164,15 @@
         stop: reason => this.farming.stop(reason),
         status: () => this.farming.status()
       });
+
+      this.modules.register({
+        id: 'farm-intelligence',
+        title: 'Farm Intelligence',
+        version: '0.9.0',
+        start: context => this.farmIntelligence.start(context),
+        stop: reason => this.farmIntelligence.stop(reason),
+        status: () => this.farmIntelligence.status()
+      });
     }
 
     _registerLiveTests() {
@@ -166,6 +184,8 @@
       let h7Plan = null;
       let h8Baseline = null;
       let h8Plan = null;
+      let h9Baseline = null;
+      let h9Plan = null;
       this.liveTests.register({
         id: 'h5-combat',
         title: 'H5 – Einfacher Kampf',
@@ -1034,6 +1054,248 @@
           }
         ]
       });
+
+      this.liveTests.register({
+        id: 'h9-farm-intelligence',
+        title: 'H9 – Farm Intelligence',
+        description: 'Ein-Klick-Live-Test für autonome Farmzielwahl, Effizienz-Scoring, stabilen Hold, natürlichen Spotwechsel und Anti-Pingpong.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.farmIntelligence.stopAutonomy('H9_LIVE_TEST_RESET'); } catch (_) {}
+          try { runtime.farming.stopSession('H9_LIVE_TEST_RESET'); } catch (_) {}
+          try {
+            const movement = runtime.movement.status();
+            if (movement.activeOrder && String(movement.activeOrder.owner || '') === 'farm-intelligence-h9') {
+              runtime.movement.cancel('H9_LIVE_TEST_RESET');
+            }
+          } catch (_) {}
+          h9Plan = null;
+          const intelligence = runtime.farmIntelligence.status();
+          const farming = runtime.farming.status();
+          const combat = runtime.combat.status();
+          const party = runtime.party.status();
+          h9Baseline = {
+            decisions: intelligence.metrics.decisions,
+            holds: intelligence.metrics.holds,
+            switches: intelligence.metrics.switches,
+            farmingStarts: intelligence.metrics.farmingStarts,
+            travelOrders: intelligence.metrics.travelOrders,
+            pingPongBlocks: intelligence.metrics.pingPongBlocks,
+            ownershipBlocks: intelligence.metrics.ownershipBlocks,
+            aoeConfirmed: farming.metrics.aoeConfirmed,
+            aoeUnknown: farming.metrics.aoeUnknown,
+            attacksConfirmed: combat.metrics.attacksConfirmed,
+            attackUnknown: combat.metrics.attackUnknown,
+            focusPingPongs: party.metrics.focusPingPongs
+          };
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.farmIntelligence.stopAutonomy('H9_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try { runtime.farming.stopSession('H9_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try {
+            const movement = runtime.movement.status();
+            if (movement.activeOrder && String(movement.activeOrder.owner || '') === 'farm-intelligence-h9') {
+              runtime.movement.cancel('H9_LIVE_TEST_CLEANUP');
+            }
+          } catch (_) {}
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Live-Farmkandidaten und erklärbares Scoring prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const module = runtime.modules.describe('farm-intelligence');
+              assert(module && module.state === 'ACTIVE', 'H9_MODULE_NOT_ACTIVE');
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character && !game.character.rip, 'CHARACTER_UNAVAILABLE');
+              const ctype = String(game.character.ctype || '').toLowerCase();
+              assert(ctype !== 'merchant', 'H9_NEEDS_COMBAT_CLASS_NOT_MERCHANT');
+
+              const party = runtime.party.status();
+              const foreign = party.party && party.party.foreignMemberNames || [];
+              assert(foreign.length === 0, 'H9_FOREIGN_PARTY_MEMBER_BLOCK:' + foreign.join(','));
+
+              const plan = runtime.farmIntelligence.plan();
+              assert(plan && plan.selected, plan && plan.reason || 'H9_NO_FARM_CANDIDATE');
+              const candidates = Array.isArray(plan.candidates) ? plan.candidates : [];
+              const visibleSafe = candidates.filter(row => row && row.source === 'LIVE_SAFE_CLUSTER' && Number(row.visibleSafeCount) > 0);
+              assert(visibleSafe.length > 0, 'H9_LIVE_TEST_NEEDS_VISIBLE_SAFE_CLUSTER');
+              assert(candidates.length >= 2, 'H9_LIVE_TEST_NEEDS_AT_LEAST_2_FARM_CANDIDATES');
+              assert(Number.isFinite(Number(plan.selected.score)), 'H9_SCORE_UNAVAILABLE');
+              assert(plan.selected.components && Number.isFinite(Number(plan.selected.components.safety)),
+                'H9_SCORE_COMPONENTS_UNAVAILABLE');
+
+              h9Plan = {
+                initialKey: plan.selected.key,
+                monsterType: plan.selected.mtype,
+                source: plan.selected.source,
+                score: plan.selected.score,
+                travelSeconds: plan.selected.raw && Number(plan.selected.raw.travelSeconds),
+                candidateCount: candidates.length,
+                visibleSafeCount: visibleSafe.reduce((sum, row) => sum + Number(row.visibleSafeCount || 0), 0)
+              };
+              return {
+                character: game.character.name,
+                ctype,
+                initialKey: h9Plan.initialKey,
+                monsterType: h9Plan.monsterType,
+                source: h9Plan.source,
+                score: h9Plan.score,
+                travelSeconds: h9Plan.travelSeconds,
+                candidateCount: h9Plan.candidateCount,
+                visibleSafeCount: h9Plan.visibleSafeCount,
+                components: plan.selected.components
+              };
+            }
+          },
+          {
+            id: 'autonomous-start',
+            title: 'H9-Autonomie starten und gewähltes Farmziel an H8 übergeben',
+            timeoutMs: 90000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(h9Plan, 'H9_LIVE_TEST_PLAN_MISSING');
+              const started = runtime.farmIntelligence.startAutonomy({
+                owner: 'live-test-h9',
+                allowTravel: true
+              });
+              assert(started && started.accepted === true, started && started.reason || 'H9_SESSION_START_FAILED');
+
+              const state = await waitFor(() => {
+                const intelligence = runtime.farmIntelligence.status();
+                if (intelligence.suspended) throw new Error(intelligence.suspendedReason || 'H9_SUSPENDED');
+                if (!intelligence.currentSelection) return null;
+                const farming = runtime.farming.status();
+                return farming.active ? { intelligence, farming } : null;
+              }, { timeoutMs: 85000, pollMs: 200, label: 'h9-farming-start' });
+
+              assert(state.farming.session && String(state.farming.session.owner || '') === 'farm-intelligence-h9',
+                'H9_DID_NOT_OWN_H8_SESSION');
+              return {
+                selectedKey: state.intelligence.currentSelection.key,
+                monsterType: state.intelligence.currentSelection.mtype,
+                score: state.intelligence.currentSelection.score,
+                farmingStarts: state.intelligence.metrics.farmingStarts - h9Baseline.farmingStarts
+              };
+            }
+          },
+          {
+            id: 'confirmed-farming',
+            title: 'Mindestens eine H8-AoE- oder H5-Basisaktion live bestätigen',
+            timeoutMs: 35000,
+            run: async ({ runtime, waitFor }) => {
+              const observed = await waitFor(() => {
+                const intelligence = runtime.farmIntelligence.status();
+                if (intelligence.suspended) throw new Error(intelligence.suspendedReason || 'H9_SUSPENDED');
+                const farming = runtime.farming.status();
+                const combat = runtime.combat.status();
+                if (farming.metrics.aoeUnknown > h9Baseline.aoeUnknown) throw new Error('H9_H8_AOE_UNKNOWN');
+                if (combat.metrics.attackUnknown > h9Baseline.attackUnknown) throw new Error('H9_H5_ATTACK_UNKNOWN');
+                const aoe = farming.metrics.aoeConfirmed - h9Baseline.aoeConfirmed;
+                const attacks = combat.metrics.attacksConfirmed - h9Baseline.attacksConfirmed;
+                return aoe > 0 || attacks > 0 ? { intelligence, farming, combat, aoe, attacks } : null;
+              }, { timeoutMs: 32000, pollMs: 200, label: 'h9-confirmed-farming' });
+
+              return {
+                aoeConfirmed: observed.aoe,
+                attacksConfirmed: observed.attacks,
+                selection: observed.intelligence.currentSelection
+              };
+            }
+          },
+          {
+            id: 'adaptive-switch',
+            title: 'Adaptive Farmentscheidung und Anti-Pingpong unter Live-Bedingungen prüfen',
+            timeoutMs: 18000,
+            run: async ({ runtime, assert, waitFor }) => {
+              const observed = await waitFor(() => {
+                const intelligence = runtime.farmIntelligence.status();
+                if (intelligence.suspended) throw new Error(intelligence.suspendedReason || 'H9_SUSPENDED');
+                const decisionDelta = intelligence.metrics.decisions - h9Baseline.decisions;
+                return decisionDelta >= 5 && intelligence.currentSelection ? intelligence : null;
+              }, { timeoutMs: 15000, pollMs: 500, label: 'h9-adaptive-decisions' });
+
+              const history = Array.isArray(observed.history) ? observed.history : [];
+              for (let index = 2; index < history.length; index += 1) {
+                const a = history[index - 2];
+                const b = history[index - 1];
+                const c = history[index];
+                const within = Number(c.atMs || 0) - Number(a.atMs || 0) <= observed.config.pingPongWindowMs;
+                assert(!(within && a.key === c.key && a.key !== b.key), 'H9_FARM_TARGET_PINGPONG');
+              }
+
+              const candidates = observed.lastPlan && Array.isArray(observed.lastPlan.candidates)
+                ? observed.lastPlan.candidates
+                : [];
+              assert(candidates.length >= 2, 'H9_ADAPTIVE_CANDIDATES_LOST');
+              return {
+                decisions: observed.metrics.decisions - h9Baseline.decisions,
+                holds: observed.metrics.holds - h9Baseline.holds,
+                switches: observed.metrics.switches - h9Baseline.switches,
+                switchObserved: observed.metrics.switches > h9Baseline.switches,
+                travelOrders: observed.metrics.travelOrders - h9Baseline.travelOrders,
+                currentSelection: observed.currentSelection,
+                lastPlanReason: observed.lastPlan && observed.lastPlan.reason || null,
+                candidateCount: candidates.length,
+                history
+              };
+            }
+          },
+          {
+            id: 'stability-window',
+            title: 'Fünf Sekunden ohne UNKNOWN, Ownership-Verlust oder Focus-Pingpong beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              await sleep(5000);
+              const intelligence = runtime.farmIntelligence.status();
+              const farming = runtime.farming.status();
+              const combat = runtime.combat.status();
+              const party = runtime.party.status();
+              assert(intelligence.suspended === false, intelligence.suspendedReason || 'H9_SUSPENDED_DURING_STABILITY');
+              assert(farming.metrics.aoeUnknown === h9Baseline.aoeUnknown, 'H9_AOE_UNKNOWN_DURING_STABILITY');
+              assert(combat.metrics.attackUnknown === h9Baseline.attackUnknown, 'H9_ATTACK_UNKNOWN_DURING_STABILITY');
+              assert(party.metrics.focusPingPongs === h9Baseline.focusPingPongs, 'H9_PARTY_FOCUS_PINGPONG');
+              assert(intelligence.metrics.ownershipBlocks === h9Baseline.ownershipBlocks,
+                'H9_OWNERSHIP_BLOCK_DURING_TEST');
+              return {
+                selection: intelligence.currentSelection,
+                switches: intelligence.metrics.switches - h9Baseline.switches,
+                pingPongBlocks: intelligence.metrics.pingPongBlocks - h9Baseline.pingPongBlocks,
+                aoeUnknown: farming.metrics.aoeUnknown - h9Baseline.aoeUnknown,
+                attackUnknown: combat.metrics.attackUnknown - h9Baseline.attackUnknown,
+                focusPingPongs: party.metrics.focusPingPongs - h9Baseline.focusPingPongs
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'Farm Intelligence und alle eigene H8/H4-Ownership sauber freigeben',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.farmIntelligence.stopAutonomy('H9_LIVE_TEST_COMPLETE');
+              const intelligence = runtime.farmIntelligence.status();
+              const farming = runtime.farming.status();
+              const combat = runtime.combat.status();
+              const movement = runtime.movement.status();
+              assert(intelligence.active === false, 'H9_SESSION_STILL_ACTIVE');
+              assert(!(farming.active && farming.session && String(farming.session.owner || '') === 'farm-intelligence-h9'),
+                'H9_OWNED_FARMING_STILL_ACTIVE');
+              assert(!(movement.activeOrder && String(movement.activeOrder.owner || '') === 'farm-intelligence-h9'),
+                'H9_OWNED_MOVEMENT_STILL_ACTIVE');
+              assert(combat.active === false, 'H9_COMBAT_STILL_ACTIVE');
+              return {
+                intelligenceActive: intelligence.active,
+                farmingActive: farming.active,
+                combatActive: combat.active,
+                movementActive: movement.active
+              };
+            }
+          }
+        ]
+      });
     }
 
     _installErrorCapture() {
@@ -1181,6 +1443,7 @@
         party: this.party.status(),
         combat: this.combat.status(),
         farming: this.farming.status(),
+        farmIntelligence: this.farmIntelligence.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
         roster,
@@ -1204,6 +1467,7 @@
         party: this.party.status(),
         combat: this.combat.status(),
         farming: this.farming.status(),
+        farmIntelligence: this.farmIntelligence.status(),
         liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
         logs: this.logger.list(160),
@@ -1226,6 +1490,7 @@
       push('party-coordinator', !!this.party.status() && typeof this.party.preferredTargetId === 'function', this.party.status());
       push('combat-controller', !!this.combat.status() && typeof this.combat.startSession === 'function' && typeof this.combat.stopSession === 'function', this.combat.status());
       push('adaptive-farming-controller', !!this.farming.status() && typeof this.farming.plan === 'function' && typeof this.farming.startSession === 'function', this.farming.status());
+      push('farm-intelligence-controller', !!this.farmIntelligence.status() && typeof this.farmIntelligence.plan === 'function' && typeof this.farmIntelligence.startAutonomy === 'function', this.farmIntelligence.status());
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
       push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);

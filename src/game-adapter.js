@@ -321,6 +321,182 @@
       return clone(rows);
     }
 
+    visiblePlayers(options = {}) {
+      const character = this._character();
+      if (!character || !character.name) return [];
+      const charPos = this._position(character);
+      const radius = finite(options.radius);
+      const rows = [];
+      for (const row of this._entityEntries()) {
+        const entity = row.entity;
+        if (!entity || entity.visible === false || entity.dead === true || entity.rip === true) continue;
+        const isPlayer = entity.type === 'character' || entity.player === true || entity.ctype != null;
+        if (!isPlayer) continue;
+        const entityName = entity.name == null ? null : String(entity.name);
+        const entityId = entity.id == null ? String(row.key) : String(entity.id);
+        if (entityName === String(character.name || '') || entityId === String(character.id || '')) continue;
+        if (entity.map && character.map && String(entity.map) !== String(character.map)) continue;
+        const normalized = this._normalizeEntity({ key: row.key, entity }, character.map || null);
+        if (!normalized || normalized.dead || normalized.visible === false) continue;
+        if (charPos.x != null && charPos.y != null && normalized.x != null && normalized.y != null) {
+          normalized.distance = Math.hypot(charPos.x - normalized.x, charPos.y - normalized.y);
+        } else {
+          normalized.distance = null;
+        }
+        if (radius != null && (normalized.distance == null || normalized.distance > radius)) continue;
+        rows.push(normalized);
+      }
+      rows.sort((a, b) => {
+        const ad = a.distance == null ? Number.POSITIVE_INFINITY : a.distance;
+        const bd = b.distance == null ? Number.POSITIVE_INFINITY : b.distance;
+        return ad - bd;
+      });
+      return clone(rows);
+    }
+
+    monsterDefinition(mtype) {
+      const id = cleanText(mtype || '', 120);
+      if (!id) return null;
+      const G = this._gameData();
+      const raw = G && G.monsters && G.monsters[id];
+      if (!raw || typeof raw !== 'object') return null;
+      const liveDropTable = G && G.drops && G.drops.monsters && G.drops.monsters[id];
+      const dropsRaw = Array.isArray(raw.drops) && raw.drops.length
+        ? raw.drops
+        : (Array.isArray(liveDropTable) ? liveDropTable : []);
+      const drops = [];
+      let dropSignal = 0;
+      for (const row of dropsRaw) {
+        let chance = null;
+        let item = null;
+        let quantity = 1;
+        if (Array.isArray(row)) {
+          chance = finite(row[0]);
+          item = row[1] == null ? null : cleanText(row[1], 160);
+          const rawQuantity = finite(row[2]);
+          if (rawQuantity != null && rawQuantity > 0) quantity = rawQuantity;
+        } else if (row && typeof row === 'object') {
+          chance = finite(row.chance != null ? row.chance : row.probability);
+          item = cleanText(row.item || row.name || row.id || '', 160) || null;
+          const rawQuantity = finite(row.quantity != null ? row.quantity : row.count);
+          if (rawQuantity != null && rawQuantity > 0) quantity = rawQuantity;
+        }
+        if (chance != null && chance > 0) dropSignal += Math.min(1, chance) * quantity;
+        if (item || chance != null) drops.push({ item, chance, quantity });
+      }
+
+      const rawGold = finite(raw.gold);
+      const monsterGold = G && G.monster_gold && finite(G.monster_gold[id]);
+      const goldRules = G && G.drops && G.drops.gold || {};
+      const goldBase = finite(goldRules.base);
+      const goldRandom = finite(goldRules.random);
+      const gold = rawGold != null
+        ? rawGold
+        : (monsterGold != null
+          ? 1 + monsterGold * ((goldBase || 0) + (goldRandom || 0) / 2)
+          : null);
+
+      return {
+        id,
+        name: raw.name == null ? id : cleanText(raw.name, 160),
+        hp: finite(raw.hp),
+        attack: finite(raw.attack),
+        xp: finite(raw.xp),
+        gold,
+        speed: finite(raw.speed),
+        range: finite(raw.range),
+        frequency: finite(raw.frequency),
+        respawn: finite(raw.respawn),
+        damageType: raw.damage_type == null ? null : cleanText(raw.damage_type, 60).toLowerCase(),
+        armor: finite(raw.armor),
+        resistance: finite(raw.resistance),
+        evasion: finite(raw.evasion),
+        avoidance: finite(raw.avoidance),
+        reflection: finite(raw.reflection),
+        drops,
+        dropSignal,
+        boss: safeBoolean(raw.boss),
+        cooperative: safeBoolean(raw.cooperative)
+      };
+    }
+
+    _boundaryCenter(value) {
+      if (Array.isArray(value)) {
+        if (value.length >= 4 && value.slice(0, 4).every(item => finite(item) != null)) {
+          return {
+            x: (Number(value[0]) + Number(value[2])) / 2,
+            y: (Number(value[1]) + Number(value[3])) / 2
+          };
+        }
+        if (value.length === 2 && value.every(item => finite(item) != null)) {
+          return { x: Number(value[0]), y: Number(value[1]) };
+        }
+        const centers = value.map(item => this._boundaryCenter(item)).filter(Boolean);
+        if (!centers.length) return null;
+        return {
+          x: centers.reduce((sum, row) => sum + row.x, 0) / centers.length,
+          y: centers.reduce((sum, row) => sum + row.y, 0) / centers.length
+        };
+      }
+      if (!value || typeof value !== 'object') return null;
+      const x = finite(value.x);
+      const y = finite(value.y);
+      if (x != null && y != null) return { x, y };
+      const x1 = finite(value.x1);
+      const y1 = finite(value.y1);
+      const x2 = finite(value.x2);
+      const y2 = finite(value.y2);
+      if ([x1, y1, x2, y2].every(item => item != null)) {
+        return { x: (x1 + x2) / 2, y: (y1 + y2) / 2 };
+      }
+      if (value.boundary != null) return this._boundaryCenter(value.boundary);
+      if (value.boundaries != null) return this._boundaryCenter(value.boundaries);
+      return null;
+    }
+
+    farmSpotCatalog(options = {}) {
+      const G = this._gameData();
+      const character = this._character();
+      const requestedMap = cleanText(options.map || '', 120) || null;
+      const currentOnly = options.currentOnly !== false;
+      const currentMap = requestedMap || (character && character.map) || null;
+      const maps = G && G.maps && typeof G.maps === 'object' ? G.maps : {};
+      const rows = [];
+      for (const [mapId, mapRaw] of Object.entries(maps)) {
+        if (!mapRaw || typeof mapRaw !== 'object') continue;
+        if (currentOnly && currentMap && String(mapId) !== String(currentMap)) continue;
+        if (requestedMap && String(mapId) !== String(requestedMap)) continue;
+        const spawnsRaw = Array.isArray(mapRaw.monsters)
+          ? mapRaw.monsters
+          : (mapRaw.monsters && typeof mapRaw.monsters === 'object' ? Object.values(mapRaw.monsters) : []);
+        for (let index = 0; index < spawnsRaw.length; index += 1) {
+          const spawn = spawnsRaw[index];
+          if (!spawn || typeof spawn !== 'object') continue;
+          const mtype = cleanText(spawn.type || spawn.mtype || spawn.monster || spawn.id || '', 120);
+          if (!mtype) continue;
+          const center = this._boundaryCenter(
+            spawn.boundary != null ? spawn.boundary
+              : spawn.boundaries != null ? spawn.boundaries
+                : spawn.position != null ? spawn.position
+                  : spawn.positions
+          );
+          if (!center) continue;
+          const definition = this.monsterDefinition(mtype);
+          rows.push({
+            key: String(mapId) + ':' + mtype + ':' + String(index),
+            map: String(mapId),
+            mtype,
+            x: center.x,
+            y: center.y,
+            count: finite(spawn.count),
+            respawn: finite(spawn.respawn != null ? spawn.respawn : definition && definition.respawn),
+            definition
+          });
+        }
+      }
+      return clone(rows);
+    }
+
     skillDefinition(skillId) {
       const id = cleanText(skillId || '', 120);
       if (!id) return null;
@@ -558,6 +734,7 @@
           range: finite(character.range),
           speed: finite(character.speed),
           frequency: finite(character.frequency),
+          damageType: character.damage_type == null ? null : cleanText(character.damage_type, 60).toLowerCase(),
           moving: safeBoolean(character.moving),
           rip: safeBoolean(character.rip),
           targetId

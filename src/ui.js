@@ -26,6 +26,7 @@
       this.navigationResult = null;
       this.combatResult = null;
       this.farmingResult = null;
+      this.farmIntelligenceResult = null;
       this.liveTestClipboard = null;
       this._offLog = null;
       this._dragCleanup = null;
@@ -82,7 +83,7 @@
 </style>
 <div class="albot-head" id="albot-drag-handle"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-minimize" class="albot-window-btn" title="Fenster minimieren" aria-label="Fenster minimieren">—</button><button id="albot-emergency" class="albot-stop">STOP</button></div>
 <div class="albot-tabs">
-<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
+<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
 </div>
 <div class="albot-body">
 <section id="albot-panel-overview" class="albot-panel active"></section>
@@ -91,6 +92,7 @@
 <section id="albot-panel-combat" class="albot-panel"></section>
 <section id="albot-panel-party" class="albot-panel"></section>
 <section id="albot-panel-farming" class="albot-panel"></section>
+<section id="albot-panel-farm-intelligence" class="albot-panel"></section>
 <section id="albot-panel-live-test" class="albot-panel"></section>
 <section id="albot-panel-knowledge" class="albot-panel"></section>
 <section id="albot-panel-logs" class="albot-panel"></section>
@@ -246,6 +248,7 @@
       this.renderCombat(status);
       this.renderParty(status);
       this.renderFarming(status);
+      this.renderFarmIntelligence(status);
       this.renderLiveTest(status);
       this.renderKnowledge(status);
       this.renderLogs();
@@ -551,6 +554,73 @@ ${members.length ? members.map(member => '<div class="albot-small"><b>'+esc(memb
 ${party.foreignMemberNames && party.foreignMemberNames.length ? '<div class="albot-small albot-bad">Fremde Party-Mitglieder blockieren automatische Koordination: '+party.foreignMemberNames.map(esc).join(', ')+'</div>' : ''}
 ${support.suspended ? '<div class="albot-small albot-bad">Support suspendiert: '+esc(support.suspendedReason || '-')+'</div>' : ''}
 </div>`;
+    }
+
+    renderFarmIntelligence(status) {
+      const panel = this.host.querySelector('#albot-panel-farm-intelligence');
+      if (!panel) return;
+      const intelligence = status.farmIntelligence || {};
+      const metrics = intelligence.metrics || {};
+      const selection = intelligence.currentSelection || null;
+      const plan = intelligence.lastPlan || null;
+      const candidates = plan && Array.isArray(plan.candidates) ? plan.candidates : [];
+      const action = intelligence.lastAction || null;
+      const resultText = this.farmIntelligenceResult
+        ? JSON.stringify(this.farmIntelligenceResult, null, 2)
+        : 'Noch keine manuelle H9-Aktion.';
+
+      panel.innerHTML = `<div class="albot-card"><b>H9 Farm Intelligence</b>
+<div class="albot-small">H9 bewertet Farmziele anhand live-sicherer Monster, XP-/Gold-/Drop-Signal, Dichte, Reisezeit, Respawn-Signal und Konkurrenz. Wechsel brauchen einen klaren Vorteil; Hold/Cooldown und A→B→A-Schutz verhindern Score-Pingpong.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${intelligence.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Autonomie</span><div class="albot-v">${intelligence.active ? 'ACTIVE' : 'IDLE'}</div></div>
+<div><span class="albot-k">Suspendiert</span><div class="albot-v">${intelligence.suspended ? 'JA · '+esc(intelligence.suspendedReason || '-') : 'NEIN'}</div></div>
+<div><span class="albot-k">Entscheidungen</span><div class="albot-v">${esc(metrics.decisions || 0)}</div></div>
+<div><span class="albot-k">Wechsel</span><div class="albot-v">${esc(metrics.switches || 0)}</div></div>
+<div><span class="albot-k">Anti-Pingpong Blocks</span><div class="albot-v">${esc(metrics.pingPongBlocks || 0)}</div></div>
+<div><span class="albot-k">H8 Starts</span><div class="albot-v">${esc(metrics.farmingStarts || 0)}</div></div>
+<div><span class="albot-k">H4 Reisen</span><div class="albot-v">${esc(metrics.travelOrders || 0)}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Aktuelle Wahl</b>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Monster</span><div class="albot-v">${esc(selection && selection.mtype || '-')}</div></div>
+<div><span class="albot-k">Score</span><div class="albot-v">${esc(selection && selection.score != null ? selection.score : '-')}</div></div>
+<div><span class="albot-k">Quelle</span><div class="albot-v">${esc(selection && selection.source || '-')}</div></div>
+<div><span class="albot-k">Grund</span><div class="albot-v">${esc(selection && selection.reason || plan && plan.reason || '-')}</div></div>
+<div><span class="albot-k">Spot</span><div class="albot-v">${selection ? esc(selection.map || '-')+' · '+esc(formatPosition(selection.x))+', '+esc(formatPosition(selection.y)) : '-'}</div></div>
+<div><span class="albot-k">Letzte Aktion</span><div class="albot-v">${esc(action && action.type || '-')}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Top-Kandidaten</b>
+${candidates.length ? candidates.slice(0, 8).map((row, index) => {
+  const c = row.components || {};
+  return '<div class="albot-small"><b>#'+esc(index+1)+' '+esc(row.mtype || '?')+'</b> · Score '+esc(row.score)+' · '+esc(row.source || '-')+' · safe '+esc(row.visibleSafeCount || 0)+' · Konkurrenz '+esc(row.competitors || 0)+' · XP '+esc(c.xp == null ? '-' : Number(c.xp).toFixed(2))+' · Gold '+esc(c.gold == null ? '-' : Number(c.gold).toFixed(2))+' · Drop '+esc(c.drops == null ? '-' : Number(c.drops).toFixed(2))+' · Reise '+esc(c.travel == null ? '-' : Number(c.travel).toFixed(2))+'</div>';
+}).join('') : '<div class="albot-small">Noch kein H9-Plan vorhanden.</div>'}
+</div>
+
+<div class="albot-card"><b>Steuerung</b>
+<div class="albot-row"><label class="albot-small"><input id="albot-h9-travel" type="checkbox" checked> H4-Reise zu besserem Spot erlauben</label></div>
+<div class="albot-row"><button id="albot-h9-plan" class="albot-btn">Scoring prüfen</button><button id="albot-h9-start" class="albot-btn" ${intelligence.active ? 'disabled' : ''}>Autonomie starten</button><button id="albot-h9-stop" class="albot-btn warn" ${intelligence.active ? '' : 'disabled'}>Autonomie stoppen</button></div>
+<div class="albot-small">H9 delegiert Bewegung an H4 und Combat/Farming an H8. Globaler STOP bleibt immer vorrangig.</div>
+</div>
+
+<div class="albot-card"><b>Letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.farmIntelligenceResult = fn(); }
+        catch (error) { this.farmIntelligenceResult = { accepted: false, reason: String(error && error.message || error) }; }
+        this.renderFarmIntelligence(this.runtime.status());
+      };
+      const planButton = panel.querySelector('#albot-h9-plan');
+      if (planButton) planButton.onclick = () => run(() => this.runtime.farmIntelligence.plan());
+      const startButton = panel.querySelector('#albot-h9-start');
+      if (startButton) startButton.onclick = () => {
+        const allowTravel = panel.querySelector('#albot-h9-travel').checked;
+        run(() => this.runtime.farmIntelligence.startAutonomy({ owner: 'gui-h9', allowTravel }));
+      };
+      const stopButton = panel.querySelector('#albot-h9-stop');
+      if (stopButton) stopButton.onclick = () => run(() => this.runtime.farmIntelligence.stopAutonomy('GUI_H9_STOP'));
     }
 
     async runRecommendedLiveTest() {

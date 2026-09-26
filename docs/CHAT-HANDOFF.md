@@ -457,7 +457,72 @@ Live-Evidence vom 2026-09-26:
 - Runtime danach STOPPED;
 - Scheduler danach 0 Ressourcen.
 
-H8 ist damit vollständig live bestanden. Es folgen nur noch die finalen GitHub-Sicherheitschecks und bei grüner CI der autorisierte Auto-Merge.
+H8 ist vollständig live bestanden und wurde nach grüner finaler CI automatisch gemerged.
+
+Merge-Commit:
+`ebfd442bc2f5ffdda24a9745114dbd7b39fb60ad`
+
+## H9 – Farm Intelligence – live bestanden, Merge-Gate offen
+
+Aktiver Entwicklungsbranch:
+`chatgpt/h9-farm-intelligence`
+
+PR:
+`#9 – H9: Farm Intelligence`
+
+H9 ist funktional und im echten Adventure-Land-Livebetrieb vollständig bestanden.
+
+Umgesetzt:
+- eigener `FarmIntelligenceController`;
+- H5-sichere sichtbare Monstercluster + live `G.maps`-Spawnkatalog;
+- erklärbares XP/Gold/Drop/Dichte/Reise/Respawn/Konkurrenz/Safety-Scoring;
+- Gold aus `G.monster_gold` + `G.drops.gold`, Drops aus `G.drops.monsters`;
+- `evasion`, `avoidance` und Character-`damage_type` werden live berücksichtigt;
+- physische Farmer filtern Ziele unter 25 % erwarteter Trefferchance vor H5-Targeting und H9-Farmwahl;
+- H4 Smart Move für Reisen;
+- H8 Adaptive Farming für eigentliche Farming-/Combat-Ausführung;
+- delegierte H9→H8→H5→H4-Movement-Ownership wird korrekt erkannt;
+- echte fremde H4-Ownership bleibt Fail-Closed;
+- fremde Party-Mitglieder blockieren/suspendieren H9 fail-closed;
+- H4 UNKNOWN/FAILED_SAFE -> H9-Suspension ohne Blind-Retry;
+- Mindest-Hold, Switch-Cooldown, Score-Margin, Depletion-Grace und A→B→A Anti-Pingpong;
+- eigener Control-Center-Tab;
+- Headless API `ALBot.farmIntelligence.*`;
+- Ein-Klick-Suite `h9-farm-intelligence`;
+- `docs/H9-LIVE-TEST.md`;
+- Regressionen für Live-Adapter, Gold/Drop-Normalisierung, Depletion, Spot-Aliasing, Foreign Party, Foreign Movement, Movement UNKNOWN, High-Evasion und delegierte H5-Movement-Ownership.
+
+Wichtige Live-Funde und Fixes:
+1. erster Live-Test zeigte falschen Preflight-Check bei Remote-`G.maps`-Gewinner -> Test korrigiert;
+2. Live-Gold/Drop-Quellen lagen in `G.monster_gold`/`G.drops.*` -> Adapter korrigiert;
+3. Froggie (`frog`) besitzt `evasion: 99` und wurde vom physischen Warrior fälschlich wegen hoher nomineller XP gewählt -> Trefferwahrscheinlichkeitsfilter eingebaut;
+4. `combat-h5-approach` wurde während einer H9-eigenen H8-Session fälschlich als fremde H4-Ownership behandelt -> transitive/delegierte Ownership korrigiert.
+
+Finale Live-Evidence vom 2026-09-26:
+- AL Bot `0.9.0-h9`;
+- Suite `h9-farm-intelligence`: **PASSED / ALL_STEPS_PASSED**;
+- alle sechs Schritte PASSED;
+- Preflight initial Goo;
+- Autonomous Start später auf Live-Squigtoad;
+- mindestens ein bestätigter H5-Basisangriff;
+- adaptive Beobachtung: 63 Entscheidungen, 22 Holds, 2 Switches, 3 Travel Orders;
+- 6 Anti-Pingpong-Blocks ohne A→B→A-Verstoß;
+- `aoeUnknown=0`;
+- `attackUnknown=0`;
+- `focusPingPongs=0`;
+- `ownershipBlocks=0`;
+- `movementUnknown=0`;
+- Cleanup vollständig: H9/H8/H5/H4 inaktiv;
+- Runtime STOPPED;
+- Scheduler 0 Ressourcen.
+
+Aktuell noch offen:
+- exakten finalen PR-Head gegen `main` prüfen;
+- exakte finale CI muss completed + success/skipped/neutral sein;
+- keine offenen Review-Threads / kein `CHANGES_REQUESTED`;
+- `behind_by=0`, `mergeable=true`;
+- danach PR #9 ausschließlich mit Methode `merge` und exaktem aktuellen `expected_head_sha` mergen;
+- danach H10 – Loot & Inventar auf frischem Branch vom neuen `main` starten.
 
 ## H2 Architekturregel für spätere Module
 

@@ -52,7 +52,8 @@
         kiteTriggerRatio: Math.max(0.05, Math.min(0.8, Number(options.kiteTriggerRatio) || 0.30)),
         kiteStep: Math.max(10, Math.min(120, Number(options.kiteStep) || 35)),
         maxAcquireDistance: Math.max(50, Math.min(1200, Number(options.maxAcquireDistance) || 450)),
-        maxAttackToHpRatio: Math.max(0.01, Math.min(0.5, Number(options.maxAttackToHpRatio) || 0.08))
+        maxAttackToHpRatio: Math.max(0.01, Math.min(0.5, Number(options.maxAttackToHpRatio) || 0.08)),
+        minExpectedHitChance: Math.max(0.05, Math.min(0.95, Number(options.minExpectedHitChance) || 0.25))
       };
 
       this.moduleActive = false;
@@ -109,6 +110,8 @@
         maxAttack: finite(options.maxAttack),
         maxAttackToHpRatio: Math.max(0.01, Math.min(0.5, Number(options.maxAttackToHpRatio) || this.config.maxAttackToHpRatio)),
         maxAcquireDistance: Math.max(50, Math.min(1200, Number(options.maxAcquireDistance) || this.config.maxAcquireDistance)),
+        minExpectedHitChance: Math.max(0.05, Math.min(0.95,
+          options.minExpectedHitChance == null ? this.config.minExpectedHitChance : Number(options.minExpectedHitChance))),
         allowContested: options.allowContested === true,
         allowUnknownAttack: options.allowUnknownAttack === true,
         partyAssist: options.partyAssist !== false,
@@ -287,6 +290,30 @@
       return Math.max(20, maxHp * policy.maxAttackToHpRatio);
     }
 
+    _damageType(character) {
+      const live = cleanText(character && (character.damageType || character.damage_type) || '', 60).toLowerCase();
+      if (live) return live;
+      const ctype = cleanText(character && character.ctype || '', 60).toLowerCase();
+      if (ctype === 'mage' || ctype === 'priest') return 'magical';
+      if (['warrior', 'ranger', 'rogue', 'paladin'].includes(ctype)) return 'physical';
+      return null;
+    }
+
+    _expectedHitChance(character, monster) {
+      const definition = this.game && typeof this.game.monsterDefinition === 'function' && monster && monster.mtype
+        ? this.game.monsterDefinition(monster.mtype)
+        : null;
+      if (!definition) return 1;
+      const damageType = this._damageType(character);
+      const avoidance = Math.max(0, Math.min(100, finite(definition.avoidance) || 0));
+      let chance = 1 - avoidance / 100;
+      if (damageType === 'physical') {
+        const evasion = Math.max(0, Math.min(100, finite(definition.evasion) || 0));
+        chance *= 1 - evasion / 100;
+      }
+      return Math.max(0, Math.min(1, chance));
+    }
+
     safeCandidates(options = {}) {
       const game = this.game && this.game.snapshot ? this.game.snapshot() : null;
       const character = game && game.character;
@@ -298,6 +325,9 @@
         if (monster.distance == null || monster.distance > policy.maxAcquireDistance) return false;
         if (maxAttack != null && monster.attack == null && !policy.allowUnknownAttack) return false;
         if (maxAttack != null && monster.attack != null && monster.attack > maxAttack) return false;
+        const expectedHitChance = this._expectedHitChance(character, monster);
+        if (expectedHitChance < policy.minExpectedHitChance) return false;
+        monster.expectedHitChance = expectedHitChance;
         if (!policy.allowContested && monster.targetId && monster.targetId !== character.name) {
           const ownedPartyTarget = policy.partyAssist
             && this.party
@@ -367,7 +397,8 @@
         targetId: this.session.targetId,
         targetType: this.session.targetType,
         distance: target.distance,
-        attack: target.attack
+        attack: target.attack,
+        expectedHitChance: target.expectedHitChance == null ? null : target.expectedHitChance
       };
       return target;
     }

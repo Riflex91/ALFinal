@@ -1,4 +1,4 @@
-/* AL Bot 0.8.0-h8 | generated file | do not edit dist directly */
+/* AL Bot 0.9.0-h9 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -1271,6 +1271,182 @@
       return clone(rows);
     }
 
+    visiblePlayers(options = {}) {
+      const character = this._character();
+      if (!character || !character.name) return [];
+      const charPos = this._position(character);
+      const radius = finite(options.radius);
+      const rows = [];
+      for (const row of this._entityEntries()) {
+        const entity = row.entity;
+        if (!entity || entity.visible === false || entity.dead === true || entity.rip === true) continue;
+        const isPlayer = entity.type === 'character' || entity.player === true || entity.ctype != null;
+        if (!isPlayer) continue;
+        const entityName = entity.name == null ? null : String(entity.name);
+        const entityId = entity.id == null ? String(row.key) : String(entity.id);
+        if (entityName === String(character.name || '') || entityId === String(character.id || '')) continue;
+        if (entity.map && character.map && String(entity.map) !== String(character.map)) continue;
+        const normalized = this._normalizeEntity({ key: row.key, entity }, character.map || null);
+        if (!normalized || normalized.dead || normalized.visible === false) continue;
+        if (charPos.x != null && charPos.y != null && normalized.x != null && normalized.y != null) {
+          normalized.distance = Math.hypot(charPos.x - normalized.x, charPos.y - normalized.y);
+        } else {
+          normalized.distance = null;
+        }
+        if (radius != null && (normalized.distance == null || normalized.distance > radius)) continue;
+        rows.push(normalized);
+      }
+      rows.sort((a, b) => {
+        const ad = a.distance == null ? Number.POSITIVE_INFINITY : a.distance;
+        const bd = b.distance == null ? Number.POSITIVE_INFINITY : b.distance;
+        return ad - bd;
+      });
+      return clone(rows);
+    }
+
+    monsterDefinition(mtype) {
+      const id = cleanText(mtype || '', 120);
+      if (!id) return null;
+      const G = this._gameData();
+      const raw = G && G.monsters && G.monsters[id];
+      if (!raw || typeof raw !== 'object') return null;
+      const liveDropTable = G && G.drops && G.drops.monsters && G.drops.monsters[id];
+      const dropsRaw = Array.isArray(raw.drops) && raw.drops.length
+        ? raw.drops
+        : (Array.isArray(liveDropTable) ? liveDropTable : []);
+      const drops = [];
+      let dropSignal = 0;
+      for (const row of dropsRaw) {
+        let chance = null;
+        let item = null;
+        let quantity = 1;
+        if (Array.isArray(row)) {
+          chance = finite(row[0]);
+          item = row[1] == null ? null : cleanText(row[1], 160);
+          const rawQuantity = finite(row[2]);
+          if (rawQuantity != null && rawQuantity > 0) quantity = rawQuantity;
+        } else if (row && typeof row === 'object') {
+          chance = finite(row.chance != null ? row.chance : row.probability);
+          item = cleanText(row.item || row.name || row.id || '', 160) || null;
+          const rawQuantity = finite(row.quantity != null ? row.quantity : row.count);
+          if (rawQuantity != null && rawQuantity > 0) quantity = rawQuantity;
+        }
+        if (chance != null && chance > 0) dropSignal += Math.min(1, chance) * quantity;
+        if (item || chance != null) drops.push({ item, chance, quantity });
+      }
+
+      const rawGold = finite(raw.gold);
+      const monsterGold = G && G.monster_gold && finite(G.monster_gold[id]);
+      const goldRules = G && G.drops && G.drops.gold || {};
+      const goldBase = finite(goldRules.base);
+      const goldRandom = finite(goldRules.random);
+      const gold = rawGold != null
+        ? rawGold
+        : (monsterGold != null
+          ? 1 + monsterGold * ((goldBase || 0) + (goldRandom || 0) / 2)
+          : null);
+
+      return {
+        id,
+        name: raw.name == null ? id : cleanText(raw.name, 160),
+        hp: finite(raw.hp),
+        attack: finite(raw.attack),
+        xp: finite(raw.xp),
+        gold,
+        speed: finite(raw.speed),
+        range: finite(raw.range),
+        frequency: finite(raw.frequency),
+        respawn: finite(raw.respawn),
+        damageType: raw.damage_type == null ? null : cleanText(raw.damage_type, 60).toLowerCase(),
+        armor: finite(raw.armor),
+        resistance: finite(raw.resistance),
+        evasion: finite(raw.evasion),
+        avoidance: finite(raw.avoidance),
+        reflection: finite(raw.reflection),
+        drops,
+        dropSignal,
+        boss: safeBoolean(raw.boss),
+        cooperative: safeBoolean(raw.cooperative)
+      };
+    }
+
+    _boundaryCenter(value) {
+      if (Array.isArray(value)) {
+        if (value.length >= 4 && value.slice(0, 4).every(item => finite(item) != null)) {
+          return {
+            x: (Number(value[0]) + Number(value[2])) / 2,
+            y: (Number(value[1]) + Number(value[3])) / 2
+          };
+        }
+        if (value.length === 2 && value.every(item => finite(item) != null)) {
+          return { x: Number(value[0]), y: Number(value[1]) };
+        }
+        const centers = value.map(item => this._boundaryCenter(item)).filter(Boolean);
+        if (!centers.length) return null;
+        return {
+          x: centers.reduce((sum, row) => sum + row.x, 0) / centers.length,
+          y: centers.reduce((sum, row) => sum + row.y, 0) / centers.length
+        };
+      }
+      if (!value || typeof value !== 'object') return null;
+      const x = finite(value.x);
+      const y = finite(value.y);
+      if (x != null && y != null) return { x, y };
+      const x1 = finite(value.x1);
+      const y1 = finite(value.y1);
+      const x2 = finite(value.x2);
+      const y2 = finite(value.y2);
+      if ([x1, y1, x2, y2].every(item => item != null)) {
+        return { x: (x1 + x2) / 2, y: (y1 + y2) / 2 };
+      }
+      if (value.boundary != null) return this._boundaryCenter(value.boundary);
+      if (value.boundaries != null) return this._boundaryCenter(value.boundaries);
+      return null;
+    }
+
+    farmSpotCatalog(options = {}) {
+      const G = this._gameData();
+      const character = this._character();
+      const requestedMap = cleanText(options.map || '', 120) || null;
+      const currentOnly = options.currentOnly !== false;
+      const currentMap = requestedMap || (character && character.map) || null;
+      const maps = G && G.maps && typeof G.maps === 'object' ? G.maps : {};
+      const rows = [];
+      for (const [mapId, mapRaw] of Object.entries(maps)) {
+        if (!mapRaw || typeof mapRaw !== 'object') continue;
+        if (currentOnly && currentMap && String(mapId) !== String(currentMap)) continue;
+        if (requestedMap && String(mapId) !== String(requestedMap)) continue;
+        const spawnsRaw = Array.isArray(mapRaw.monsters)
+          ? mapRaw.monsters
+          : (mapRaw.monsters && typeof mapRaw.monsters === 'object' ? Object.values(mapRaw.monsters) : []);
+        for (let index = 0; index < spawnsRaw.length; index += 1) {
+          const spawn = spawnsRaw[index];
+          if (!spawn || typeof spawn !== 'object') continue;
+          const mtype = cleanText(spawn.type || spawn.mtype || spawn.monster || spawn.id || '', 120);
+          if (!mtype) continue;
+          const center = this._boundaryCenter(
+            spawn.boundary != null ? spawn.boundary
+              : spawn.boundaries != null ? spawn.boundaries
+                : spawn.position != null ? spawn.position
+                  : spawn.positions
+          );
+          if (!center) continue;
+          const definition = this.monsterDefinition(mtype);
+          rows.push({
+            key: String(mapId) + ':' + mtype + ':' + String(index),
+            map: String(mapId),
+            mtype,
+            x: center.x,
+            y: center.y,
+            count: finite(spawn.count),
+            respawn: finite(spawn.respawn != null ? spawn.respawn : definition && definition.respawn),
+            definition
+          });
+        }
+      }
+      return clone(rows);
+    }
+
     skillDefinition(skillId) {
       const id = cleanText(skillId || '', 120);
       if (!id) return null;
@@ -1508,6 +1684,7 @@
           range: finite(character.range),
           speed: finite(character.speed),
           frequency: finite(character.frequency),
+          damageType: character.damage_type == null ? null : cleanText(character.damage_type, 60).toLowerCase(),
           moving: safeBoolean(character.moving),
           rip: safeBoolean(character.rip),
           targetId
@@ -4811,7 +4988,8 @@
         kiteTriggerRatio: Math.max(0.05, Math.min(0.8, Number(options.kiteTriggerRatio) || 0.30)),
         kiteStep: Math.max(10, Math.min(120, Number(options.kiteStep) || 35)),
         maxAcquireDistance: Math.max(50, Math.min(1200, Number(options.maxAcquireDistance) || 450)),
-        maxAttackToHpRatio: Math.max(0.01, Math.min(0.5, Number(options.maxAttackToHpRatio) || 0.08))
+        maxAttackToHpRatio: Math.max(0.01, Math.min(0.5, Number(options.maxAttackToHpRatio) || 0.08)),
+        minExpectedHitChance: Math.max(0.05, Math.min(0.95, Number(options.minExpectedHitChance) || 0.25))
       };
 
       this.moduleActive = false;
@@ -4868,6 +5046,8 @@
         maxAttack: finite(options.maxAttack),
         maxAttackToHpRatio: Math.max(0.01, Math.min(0.5, Number(options.maxAttackToHpRatio) || this.config.maxAttackToHpRatio)),
         maxAcquireDistance: Math.max(50, Math.min(1200, Number(options.maxAcquireDistance) || this.config.maxAcquireDistance)),
+        minExpectedHitChance: Math.max(0.05, Math.min(0.95,
+          options.minExpectedHitChance == null ? this.config.minExpectedHitChance : Number(options.minExpectedHitChance))),
         allowContested: options.allowContested === true,
         allowUnknownAttack: options.allowUnknownAttack === true,
         partyAssist: options.partyAssist !== false,
@@ -5046,6 +5226,30 @@
       return Math.max(20, maxHp * policy.maxAttackToHpRatio);
     }
 
+    _damageType(character) {
+      const live = cleanText(character && (character.damageType || character.damage_type) || '', 60).toLowerCase();
+      if (live) return live;
+      const ctype = cleanText(character && character.ctype || '', 60).toLowerCase();
+      if (ctype === 'mage' || ctype === 'priest') return 'magical';
+      if (['warrior', 'ranger', 'rogue', 'paladin'].includes(ctype)) return 'physical';
+      return null;
+    }
+
+    _expectedHitChance(character, monster) {
+      const definition = this.game && typeof this.game.monsterDefinition === 'function' && monster && monster.mtype
+        ? this.game.monsterDefinition(monster.mtype)
+        : null;
+      if (!definition) return 1;
+      const damageType = this._damageType(character);
+      const avoidance = Math.max(0, Math.min(100, finite(definition.avoidance) || 0));
+      let chance = 1 - avoidance / 100;
+      if (damageType === 'physical') {
+        const evasion = Math.max(0, Math.min(100, finite(definition.evasion) || 0));
+        chance *= 1 - evasion / 100;
+      }
+      return Math.max(0, Math.min(1, chance));
+    }
+
     safeCandidates(options = {}) {
       const game = this.game && this.game.snapshot ? this.game.snapshot() : null;
       const character = game && game.character;
@@ -5057,6 +5261,9 @@
         if (monster.distance == null || monster.distance > policy.maxAcquireDistance) return false;
         if (maxAttack != null && monster.attack == null && !policy.allowUnknownAttack) return false;
         if (maxAttack != null && monster.attack != null && monster.attack > maxAttack) return false;
+        const expectedHitChance = this._expectedHitChance(character, monster);
+        if (expectedHitChance < policy.minExpectedHitChance) return false;
+        monster.expectedHitChance = expectedHitChance;
         if (!policy.allowContested && monster.targetId && monster.targetId !== character.name) {
           const ownedPartyTarget = policy.partyAssist
             && this.party
@@ -5126,7 +5333,8 @@
         targetId: this.session.targetId,
         targetType: this.session.targetType,
         distance: target.distance,
-        attack: target.attack
+        attack: target.attack,
+        expectedHitChance: target.expectedHitChance == null ? null : target.expectedHitChance
       };
       return target;
     }
@@ -5597,6 +5805,771 @@
   const clone = ns.helpers.clone;
   const cleanText = ns.helpers.cleanText;
 
+  function finite(value) {
+    if (value == null || value === '') return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function clamp(value, min = 0, max = 1) {
+    return Math.max(min, Math.min(max, Number(value) || 0));
+  }
+
+  function distance(a, b) {
+    if (!a || !b) return null;
+    const ax = finite(a.x);
+    const ay = finite(a.y);
+    const bx = finite(b.x);
+    const by = finite(b.y);
+    if ([ax, ay, bx, by].some(value => value == null)) return null;
+    return Math.hypot(ax - bx, ay - by);
+  }
+
+  class FarmIntelligenceController {
+    constructor(options = {}) {
+      this.root = options.root || root;
+      this.logger = options.logger || null;
+      this.game = options.game;
+      this.combat = options.combat;
+      this.farming = options.farming;
+      this.movement = options.movement;
+      this.party = options.party || null;
+      this.now = typeof options.now === 'function' ? options.now : () => Date.now();
+
+      this.config = {
+        decisionIntervalMs: Math.max(500, Math.min(5000, Number(options.decisionIntervalMs) || 1000)),
+        minHoldMs: Math.max(5000, Math.min(300000, Number(options.minHoldMs) || 45000)),
+        switchCooldownMs: Math.max(5000, Math.min(300000, Number(options.switchCooldownMs) || 30000)),
+        pingPongWindowMs: Math.max(10000, Math.min(600000, Number(options.pingPongWindowMs) || 120000)),
+        switchImprovementRatio: Math.max(0.05, Math.min(1, Number(options.switchImprovementRatio) || 0.18)),
+        competitionRadius: Math.max(80, Math.min(1000, Number(options.competitionRadius) || 260)),
+        spotBucket: Math.max(80, Math.min(500, Number(options.spotBucket) || 180)),
+        arrivalRadius: Math.max(20, Math.min(200, Number(options.arrivalRadius) || 70)),
+        visibleAcquireDistance: Math.max(150, Math.min(900, Number(options.visibleAcquireDistance) || 500)),
+        densityTarget: Math.max(2, Math.min(20, Number(options.densityTarget) || 6)),
+        depletionGraceMs: Math.max(1000, Math.min(30000, Number(options.depletionGraceMs) || 5000)),
+        minExpectedHitChance: Math.max(0.05, Math.min(0.95, Number(options.minExpectedHitChance) || 0.25))
+      };
+
+      this.moduleActive = false;
+      this.scope = null;
+      this.heartbeat = null;
+      this.session = null;
+      this.sequence = 0;
+      this.currentSelection = null;
+      this.lastPlan = null;
+      this.lastAction = null;
+      this.history = [];
+      this.observations = new Map();
+      this.suspendedReason = null;
+      this.metrics = {
+        sessions: 0,
+        decisions: 0,
+        candidateRows: 0,
+        holds: 0,
+        switches: 0,
+        travelOrders: 0,
+        farmingStarts: 0,
+        farmingStops: 0,
+        depletionEvents: 0,
+        respawnsObserved: 0,
+        pingPongBlocks: 0,
+        ownershipBlocks: 0,
+        foreignPartyBlocks: 0,
+        unsafeBlocks: 0,
+        movementUnknown: 0
+      };
+    }
+
+    start(context) {
+      this.moduleActive = true;
+      this.scope = context && context.scope || null;
+      this.heartbeat = context && typeof context.heartbeat === 'function' ? context.heartbeat : null;
+      if (this.scope && typeof this.scope.interval === 'function') {
+        this.scope.interval('farm-intelligence-loop', () => this.tick(), this.config.decisionIntervalMs, { immediate: true });
+      }
+      return this.status();
+    }
+
+    stop(reason = 'H9_MODULE_STOP') {
+      this.moduleActive = false;
+      this.stopAutonomy(reason);
+      this.scope = null;
+      this.heartbeat = null;
+      return this.status();
+    }
+
+    startAutonomy(options = {}) {
+      if (!this.moduleActive) return { accepted: false, reason: 'H9_MODULE_NOT_ACTIVE', status: this.status() };
+      if (this.session && this.session.enabled) return { accepted: false, reason: 'H9_SESSION_ALREADY_ACTIVE', status: this.status() };
+
+      const game = this.game && typeof this.game.snapshot === 'function' ? this.game.snapshot() : null;
+      const character = game && game.character;
+      if (!game || !game.available || !character) return { accepted: false, reason: 'CHARACTER_UNAVAILABLE', status: this.status() };
+      if (character.rip === true) return { accepted: false, reason: 'CHARACTER_DEAD', status: this.status() };
+      if (String(character.ctype || '').toLowerCase() === 'merchant') {
+        return { accepted: false, reason: 'H9_UNSUPPORTED_CLASS:merchant', status: this.status() };
+      }
+
+      const farm = this.farming && typeof this.farming.status === 'function' ? this.farming.status() : null;
+      if (farm && farm.active && farm.session && String(farm.session.owner || '') !== 'farm-intelligence-h9') {
+        this.metrics.ownershipBlocks += 1;
+        return { accepted: false, reason: 'H9_FARMING_ALREADY_OWNED', farming: farm, status: this.status() };
+      }
+
+      const id = 'farm-intel-' + (++this.sequence);
+      this.session = {
+        id,
+        enabled: true,
+        owner: cleanText(options.owner || 'farm-intelligence-h9', 80) || 'farm-intelligence-h9',
+        preferredTypes: Array.isArray(options.preferredTypes)
+          ? options.preferredTypes.map(value => cleanText(value, 120)).filter(Boolean)
+          : [],
+        excludedTypes: Array.isArray(options.excludedTypes)
+          ? options.excludedTypes.map(value => cleanText(value, 120)).filter(Boolean)
+          : [],
+        allowTravel: options.allowTravel !== false,
+        startedAt: new Date().toISOString(),
+        stoppedAt: null,
+        reason: null
+      };
+      this.currentSelection = null;
+      this.lastPlan = null;
+      this.lastAction = null;
+      this.history = [];
+      this.suspendedReason = null;
+      this.metrics.sessions += 1;
+      const tick = this.tick();
+      return { accepted: true, session: clone(this.session), tick };
+    }
+
+    stopAutonomy(reason = 'H9_SESSION_STOP') {
+      const session = this.session;
+      this._stopOwnedFarming(reason);
+      this._stopOwnedMovement(reason);
+      if (!session) return { stopped: false, reason: 'NO_H9_SESSION' };
+      session.enabled = false;
+      session.reason = cleanText(reason, 240);
+      session.stoppedAt = new Date().toISOString();
+      const ended = clone(session);
+      this.session = null;
+      this.currentSelection = null;
+      this.suspendedReason = null;
+      return { stopped: true, session: ended };
+    }
+
+    _partyOwnedNames(characterName) {
+      const names = new Set();
+      if (characterName) names.add(String(characterName));
+      if (!this.party || typeof this.party.status !== 'function') return names;
+      const party = this.party.status();
+      for (const name of party && party.party && party.party.ownedMemberNames || []) names.add(String(name));
+      return names;
+    }
+
+    _safeVisible(character) {
+      if (!this.combat || typeof this.combat.safeCandidates !== 'function') return [];
+      return this.combat.safeCandidates({
+        maxAcquireDistance: this.config.visibleAcquireDistance,
+        maxAttackToHpRatio: 0.08,
+        allowContested: false,
+        allowUnknownAttack: false,
+        partyAssist: true
+      }).filter(row => row && (!row.map || !character.map || String(row.map) === String(character.map)));
+    }
+
+    _foreignPlayers(character) {
+      if (!this.game || typeof this.game.visiblePlayers !== 'function') return [];
+      const owned = this._partyOwnedNames(character && character.name);
+      return this.game.visiblePlayers({}).filter(player => {
+        const name = player && (player.name || player.id);
+        return name && !owned.has(String(name));
+      });
+    }
+
+    _clusterSafeVisible(character) {
+      const safe = this._safeVisible(character);
+      const groups = new Map();
+      const bucket = this.config.spotBucket;
+      for (const monster of safe) {
+        const mtype = cleanText(monster.mtype || monster.name || '', 120);
+        if (!mtype) continue;
+        const bx = monster.x == null ? 0 : Math.round(Number(monster.x) / bucket);
+        const by = monster.y == null ? 0 : Math.round(Number(monster.y) / bucket);
+        const key = String(character.map || 'unknown') + ':' + mtype + ':visible:' + bx + ':' + by;
+        if (!groups.has(key)) groups.set(key, { key, map: character.map || null, mtype, rows: [] });
+        groups.get(key).rows.push(monster);
+      }
+
+      const players = this._foreignPlayers(character);
+      return [...groups.values()].map(group => {
+        const coords = group.rows.filter(row => finite(row.x) != null && finite(row.y) != null);
+        const x = coords.length ? coords.reduce((sum, row) => sum + Number(row.x), 0) / coords.length : finite(character.x);
+        const y = coords.length ? coords.reduce((sum, row) => sum + Number(row.y), 0) / coords.length : finite(character.y);
+        const competitors = players.filter(player => {
+          const d = distance({ x, y }, player);
+          return d != null && d <= this.config.competitionRadius;
+        }).length;
+        return {
+          key: group.key,
+          source: 'LIVE_SAFE_CLUSTER',
+          map: group.map,
+          mtype: group.mtype,
+          x,
+          y,
+          visibleSafeCount: group.rows.length,
+          spawnCount: null,
+          competitors,
+          averageDistance: group.rows.reduce((sum, row) => sum + (finite(row.distance) || 0), 0) / Math.max(1, group.rows.length),
+          aggregateAttack: group.rows.reduce((sum, row) => sum + (finite(row.attack) || 0), 0),
+          definition: this.game && typeof this.game.monsterDefinition === 'function'
+            ? this.game.monsterDefinition(group.mtype)
+            : null
+        };
+      });
+    }
+
+    _catalogCandidates(character, liveRows) {
+      if (!this.game || typeof this.game.farmSpotCatalog !== 'function') return [];
+      const catalog = this.game.farmSpotCatalog({ map: character.map, currentOnly: true });
+      const players = this._foreignPlayers(character);
+      return catalog.map(spot => {
+        const duplicate = liveRows.some(row => row.mtype === spot.mtype && distance(row, spot) != null && distance(row, spot) <= this.config.spotBucket * 1.25);
+        if (duplicate) return null;
+        const competitors = players.filter(player => {
+          const d = distance(spot, player);
+          return d != null && d <= this.config.competitionRadius;
+        }).length;
+        return {
+          key: 'catalog:' + String(spot.key),
+          source: 'LIVE_G_MAP_SPAWN',
+          map: spot.map,
+          mtype: spot.mtype,
+          x: spot.x,
+          y: spot.y,
+          visibleSafeCount: 0,
+          spawnCount: finite(spot.count),
+          respawn: finite(spot.respawn),
+          competitors,
+          averageDistance: distance(character, spot),
+          aggregateAttack: null,
+          definition: spot.definition || (this.game.monsterDefinition && this.game.monsterDefinition(spot.mtype))
+        };
+      }).filter(Boolean);
+    }
+
+    _observeCandidates(rows) {
+      const now = this.now();
+      const seen = new Set();
+      for (const row of rows) {
+        seen.add(row.key);
+        const prior = this.observations.get(row.key) || {
+          key: row.key,
+          mtype: row.mtype,
+          map: row.map,
+          lastSeenAtMs: null,
+          lastCount: 0,
+          depletedAtMs: null,
+          observedRespawnMs: null
+        };
+        const count = Number(row.visibleSafeCount || 0);
+        if (prior.lastCount > 0 && count === 0 && prior.depletedAtMs == null) {
+          prior.depletedAtMs = now;
+          this.metrics.depletionEvents += 1;
+        }
+        if (prior.lastCount === 0 && count > 0 && prior.depletedAtMs != null) {
+          prior.observedRespawnMs = Math.max(0, now - prior.depletedAtMs);
+          prior.depletedAtMs = null;
+          this.metrics.respawnsObserved += 1;
+        }
+        if (count > 0) prior.lastSeenAtMs = now;
+        prior.lastCount = count;
+        this.observations.set(row.key, prior);
+        row.observation = clone(prior);
+      }
+
+      if (this.currentSelection && !seen.has(this.currentSelection.key)) {
+        const prior = this.observations.get(this.currentSelection.key);
+        if (prior && prior.lastCount > 0) {
+          prior.lastCount = 0;
+          if (prior.depletedAtMs == null) {
+            prior.depletedAtMs = now;
+            this.metrics.depletionEvents += 1;
+          }
+          this.observations.set(prior.key, prior);
+        }
+      }
+    }
+
+    _damageType(character) {
+      const live = cleanText(character && (character.damageType || character.damage_type) || '', 60).toLowerCase();
+      if (live) return live;
+      const ctype = cleanText(character && character.ctype || '', 60).toLowerCase();
+      if (ctype === 'mage' || ctype === 'priest') return 'magical';
+      if (['warrior', 'ranger', 'rogue', 'paladin'].includes(ctype)) return 'physical';
+      return null;
+    }
+
+    _expectedHitChance(character, candidate) {
+      const definition = candidate && candidate.definition || {};
+      const damageType = this._damageType(character);
+      const avoidance = Math.max(0, Math.min(100, finite(definition.avoidance) || 0));
+      let chance = 1 - avoidance / 100;
+      if (damageType === 'physical') {
+        const evasion = Math.max(0, Math.min(100, finite(definition.evasion) || 0));
+        chance *= 1 - evasion / 100;
+      }
+      return clamp(chance);
+    }
+
+    _rawMetrics(character, candidate) {
+      const definition = candidate.definition || {};
+      const attack = Math.max(1, finite(character.attack) || 1);
+      const frequency = Math.max(0.1, finite(character.frequency) || 1);
+      const expectedHitChance = candidate.expectedHitChance == null
+        ? this._expectedHitChance(character, candidate)
+        : clamp(candidate.expectedHitChance);
+      const dps = attack * frequency * expectedHitChance;
+      const hp = finite(definition.hp);
+      const killSeconds = hp != null && hp > 0 ? Math.max(0.25, hp / dps) : null;
+      const xp = Math.max(0, finite(definition.xp) || 0);
+      const gold = Math.max(0, finite(definition.gold) || 0);
+      const dropSignal = Math.max(0, finite(definition.dropSignal) || 0);
+      const visible = Math.max(0, Number(candidate.visibleSafeCount) || 0);
+      const spawn = Math.max(0, finite(candidate.spawnCount) || 0);
+      const density = visible > 0 ? visible : spawn * 0.55;
+      const travelDistance = distance(character, candidate);
+      const speed = Math.max(1, finite(character.speed) || 1);
+      const travelSeconds = travelDistance == null ? null : travelDistance / speed;
+      const observedRespawn = candidate.observation && finite(candidate.observation.observedRespawnMs);
+      const declaredRespawn = finite(candidate.respawn);
+      const respawnSignal = observedRespawn != null
+        ? 1 / (1 + observedRespawn / 30000)
+        : declaredRespawn != null
+          ? 1 / (1 + Math.max(0, declaredRespawn) / 30)
+          : 0.5;
+      return {
+        xpPerSecond: killSeconds == null ? 0 : xp / killSeconds,
+        goldPerSecond: killSeconds == null ? 0 : gold / killSeconds,
+        dropSignal,
+        expectedHitChance,
+        density,
+        travelSeconds: travelSeconds == null ? 999 : travelSeconds,
+        respawnSignal,
+        competitionSignal: 1 / (1 + Math.max(0, Number(candidate.competitors) || 0)),
+        safetyConfidence: visible > 0 ? 1 : 0.55
+      };
+    }
+
+    _scoreCandidates(character, candidates) {
+      const rows = candidates.map(candidate => ({ ...candidate, raw: this._rawMetrics(character, candidate) }));
+      const max = name => Math.max(0.000001, ...rows.map(row => Number(row.raw[name]) || 0));
+      const xpMax = max('xpPerSecond');
+      const goldMax = max('goldPerSecond');
+      const dropMax = max('dropSignal');
+      const densityMax = max('density');
+
+      for (const row of rows) {
+        const components = {
+          xp: clamp(row.raw.xpPerSecond / xpMax),
+          gold: clamp(row.raw.goldPerSecond / goldMax),
+          drops: dropMax <= 0.000001 ? 0.5 : clamp(row.raw.dropSignal / dropMax),
+          density: clamp(row.raw.density / Math.max(1, densityMax)),
+          travel: 1 / (1 + Math.max(0, row.raw.travelSeconds) / 12),
+          respawn: clamp(row.raw.respawnSignal),
+          competition: clamp(row.raw.competitionSignal),
+          safety: clamp(row.raw.safetyConfidence)
+        };
+        row.components = components;
+        row.score = Number((100 * (
+          components.xp * 0.24
+          + components.gold * 0.12
+          + components.drops * 0.10
+          + components.density * 0.20
+          + components.travel * 0.10
+          + components.respawn * 0.08
+          + components.competition * 0.06
+          + components.safety * 0.10
+        )).toFixed(2));
+      }
+      rows.sort((a, b) => b.score - a.score || b.visibleSafeCount - a.visibleSafeCount || String(a.key).localeCompare(String(b.key)));
+      return rows;
+    }
+
+    _filteredCandidates(rows, character) {
+      const preferred = new Set(this.session && this.session.preferredTypes || []);
+      const excluded = new Set(this.session && this.session.excludedTypes || []);
+      return rows.filter(row => {
+        if (excluded.has(row.mtype)) return false;
+        if (preferred.size && !preferred.has(row.mtype)) return false;
+        const expectedHitChance = this._expectedHitChance(character, row);
+        row.expectedHitChance = expectedHitChance;
+        if (expectedHitChance < this.config.minExpectedHitChance) return false;
+        return true;
+      });
+    }
+
+    plan() {
+      this.metrics.decisions += 1;
+      const game = this.game && typeof this.game.snapshot === 'function' ? this.game.snapshot() : null;
+      const character = game && game.character;
+      if (!game || !game.available || !character) return this._rememberPlan({ state: 'BLOCKED', reason: 'CHARACTER_UNAVAILABLE', candidates: [] });
+      if (character.rip === true) return this._rememberPlan({ state: 'BLOCKED', reason: 'CHARACTER_DEAD', candidates: [] });
+      if (String(character.ctype || '').toLowerCase() === 'merchant') {
+        return this._rememberPlan({ state: 'OBSERVER_ONLY', reason: 'LOGISTICS_ROLE_NO_FARMING', candidates: [] });
+      }
+
+      if (this.party && typeof this.party.status === 'function') {
+        const party = this.party.status();
+        const foreign = party && party.party && Array.isArray(party.party.foreignMemberNames)
+          ? party.party.foreignMemberNames.slice()
+          : [];
+        if (foreign.length) {
+          this.metrics.foreignPartyBlocks += 1;
+          return this._rememberPlan({
+            state: 'BLOCKED',
+            reason: 'H9_FOREIGN_PARTY_BLOCK',
+            foreign,
+            candidates: []
+          });
+        }
+      }
+
+      const live = this._clusterSafeVisible(character);
+      const catalog = this._catalogCandidates(character, live);
+      let candidates = this._filteredCandidates([...live, ...catalog], character);
+      this._observeCandidates(candidates);
+      candidates = this._scoreCandidates(character, candidates);
+      this.metrics.candidateRows += candidates.length;
+      if (!candidates.length) {
+        this.metrics.unsafeBlocks += 1;
+        return this._rememberPlan({ state: 'NO_CANDIDATE', reason: 'H9_NO_SAFE_OR_KNOWN_CURRENT_MAP_SPOT', candidates: [] });
+      }
+
+      const now = this.now();
+      let selected = candidates[0];
+      let reason = 'H9_BEST_SCORE';
+      let switchAllowed = true;
+      const current = this.currentSelection
+        ? candidates.find(row => row.key === this.currentSelection.key)
+        : null;
+
+      if (!current && this.currentSelection) {
+        const observation = this.observations.get(this.currentSelection.key);
+        const depletedAtMs = observation && finite(observation.depletedAtMs);
+        const depletionAgeMs = depletedAtMs == null ? null : Math.max(0, now - depletedAtMs);
+        if (depletionAgeMs != null && depletionAgeMs < this.config.depletionGraceMs) {
+          this.metrics.holds += 1;
+          return this._rememberPlan({
+            state: 'WAITING_RESPAWN',
+            reason: 'H9_DEPLETION_GRACE',
+            selected: null,
+            candidates: candidates.slice(0, 12),
+            switchAllowed: false,
+            currentKey: this.currentSelection.key,
+            depletionAgeMs,
+            depletionGraceMs: this.config.depletionGraceMs
+          });
+        }
+
+        const recentPrevious = this.history.length >= 2 ? this.history[this.history.length - 2] : null;
+        const returnPingPong = recentPrevious
+          && recentPrevious.key === selected.key
+          && now - Number(recentPrevious.atMs || 0) <= this.config.pingPongWindowMs;
+        if (returnPingPong) {
+          const baselineScore = Number(this.currentSelection.score || 0);
+          const improvement = (Number(selected.score || 0) - baselineScore) / Math.max(1, baselineScore);
+          if (improvement < this.config.switchImprovementRatio * 2) {
+            const alternative = candidates.find(row => row.key !== recentPrevious.key);
+            this.metrics.pingPongBlocks += 1;
+            this.metrics.holds += 1;
+            if (alternative) {
+              selected = alternative;
+              reason = 'H9_ANTI_PINGPONG_REROUTE';
+            } else {
+              return this._rememberPlan({
+                state: 'WAITING_RESPAWN',
+                reason: 'H9_ANTI_PINGPONG',
+                selected: null,
+                candidates: candidates.slice(0, 12),
+                switchAllowed: false,
+                currentKey: this.currentSelection.key
+              });
+            }
+          }
+        }
+      }
+
+      if (current && selected.key !== current.key) {
+        const heldMs = Math.max(0, now - Number(this.currentSelection.selectedAtMs || 0));
+        const sinceSwitch = Math.max(0, now - Number(this.currentSelection.lastSwitchAtMs || this.currentSelection.selectedAtMs || 0));
+        const improvement = (selected.score - current.score) / Math.max(1, current.score);
+        const recentPrevious = this.history.length >= 2 ? this.history[this.history.length - 2] : null;
+        const pingPong = recentPrevious
+          && recentPrevious.key === selected.key
+          && now - Number(recentPrevious.atMs || 0) <= this.config.pingPongWindowMs;
+
+        if (heldMs < this.config.minHoldMs) {
+          selected = current;
+          reason = 'H9_HOLD_MIN_DURATION';
+          switchAllowed = false;
+          this.metrics.holds += 1;
+        } else if (sinceSwitch < this.config.switchCooldownMs) {
+          selected = current;
+          reason = 'H9_SWITCH_COOLDOWN';
+          switchAllowed = false;
+          this.metrics.holds += 1;
+        } else if (pingPong && improvement < this.config.switchImprovementRatio * 2) {
+          selected = current;
+          reason = 'H9_ANTI_PINGPONG';
+          switchAllowed = false;
+          this.metrics.holds += 1;
+          this.metrics.pingPongBlocks += 1;
+        } else if (improvement < this.config.switchImprovementRatio) {
+          selected = current;
+          reason = 'H9_IMPROVEMENT_TOO_SMALL';
+          switchAllowed = false;
+          this.metrics.holds += 1;
+        }
+      }
+
+      return this._rememberPlan({
+        state: selected.visibleSafeCount > 0 ? 'FARM_READY' : 'TRAVEL_RECOMMENDED',
+        reason,
+        selected,
+        candidates: candidates.slice(0, 12),
+        switchAllowed,
+        currentKey: this.currentSelection && this.currentSelection.key || null
+      });
+    }
+
+    _rememberPlan(plan) {
+      this.lastPlan = { at: new Date().toISOString(), ...clone(plan) };
+      return clone(this.lastPlan);
+    }
+
+    _movementStatus() {
+      return this.movement && typeof this.movement.status === 'function' ? this.movement.status() : null;
+    }
+
+    _farmingStatus() {
+      return this.farming && typeof this.farming.status === 'function' ? this.farming.status() : null;
+    }
+
+    _ownedMovement(status = this._movementStatus()) {
+      const order = status && status.activeOrder;
+      return !!(order && String(order.owner || '') === 'farm-intelligence-h9');
+    }
+
+    _delegatedCombatMovement(status = this._movementStatus(), farmStatus = this._farmingStatus()) {
+      const order = status && status.activeOrder;
+      if (!order || !this._ownedFarming(farmStatus)) return false;
+      return String(order.owner || '').startsWith('combat-h5');
+    }
+
+    _ownedFarming(status = this._farmingStatus()) {
+      const session = status && status.session;
+      return !!(status && status.active && session && String(session.owner || '') === 'farm-intelligence-h9');
+    }
+
+    _stopOwnedMovement(reason) {
+      const movement = this._movementStatus();
+      if (!this._ownedMovement(movement)) return false;
+      try { this.movement.cancel(reason); } catch (_) {}
+      return true;
+    }
+
+    _stopOwnedFarming(reason) {
+      const farm = this._farmingStatus();
+      if (!this._ownedFarming(farm)) return false;
+      try { this.farming.stopSession(reason); } catch (_) {}
+      this.metrics.farmingStops += 1;
+      return true;
+    }
+
+    _suspend(reason) {
+      this.suspendedReason = cleanText(reason, 240) || 'H9_SUSPENDED';
+      this._stopOwnedFarming(this.suspendedReason);
+      this._stopOwnedMovement(this.suspendedReason);
+      this.lastAction = { at: new Date().toISOString(), type: 'SUSPEND', reason: this.suspendedReason };
+      return { state: 'SUSPENDED', reason: this.suspendedReason };
+    }
+
+    _samePhysicalSpot(a, b) {
+      if (!a || !b) return false;
+      if (a.map && b.map && String(a.map) !== String(b.map)) return false;
+      if (a.mtype && b.mtype && String(a.mtype) !== String(b.mtype)) return false;
+      const d = distance(a, b);
+      return d != null && d <= this.config.spotBucket * 1.25;
+    }
+
+    _recordSelection(candidate, reason) {
+      const now = this.now();
+      const previous = this.currentSelection;
+      const changed = !!(previous && !this._samePhysicalSpot(previous, candidate));
+      this.currentSelection = {
+        key: candidate.key,
+        map: candidate.map,
+        mtype: candidate.mtype,
+        x: candidate.x,
+        y: candidate.y,
+        score: candidate.score,
+        source: candidate.source,
+        selectedAt: new Date().toISOString(),
+        selectedAtMs: changed || !previous ? now : previous.selectedAtMs,
+        lastSwitchAtMs: changed ? now : (previous && previous.lastSwitchAtMs || now),
+        reason
+      };
+      if (changed) this.metrics.switches += 1;
+      if (!previous || changed) {
+        this.history.push({ key: candidate.key, mtype: candidate.mtype, score: candidate.score, atMs: now, reason });
+        if (this.history.length > 12) this.history.shift();
+      }
+      return changed;
+    }
+
+    _apply(plan) {
+      if (!this.session || !this.session.enabled) return { state: 'IDLE', reason: 'H9_AUTONOMY_NOT_ACTIVE' };
+      if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason };
+      if (plan && plan.state === 'BLOCKED') {
+        return this._suspend(plan.reason || 'H9_PLAN_BLOCKED');
+      }
+      if (!plan || !plan.selected) return { state: plan && plan.state || 'BLOCKED', reason: plan && plan.reason || 'H9_PLAN_UNAVAILABLE' };
+
+      const game = this.game.snapshot();
+      const character = game && game.character;
+      if (!character) return this._suspend('CHARACTER_UNAVAILABLE');
+
+      const movement = this._movementStatus();
+      if (movement && movement.lastOrder && String(movement.lastOrder.owner || '') === 'farm-intelligence-h9'
+        && ['UNKNOWN', 'FAILED_SAFE'].includes(String(movement.lastOrder.state || ''))) {
+        this.metrics.movementUnknown += 1;
+        return this._suspend('H9_MOVEMENT_' + String(movement.lastOrder.state));
+      }
+      if (this._ownedMovement(movement)) {
+        return { state: 'TRAVELLING', reason: 'H9_TRAVEL_IN_PROGRESS', order: clone(movement.activeOrder) };
+      }
+      const farmDuringMovement = this._farmingStatus();
+      if (this._delegatedCombatMovement(movement, farmDuringMovement)) {
+        return {
+          state: 'FARMING',
+          reason: 'H9_DELEGATED_COMBAT_MOVEMENT',
+          order: clone(movement.activeOrder),
+          monsterType: farmDuringMovement.session && farmDuringMovement.session.monsterType || null
+        };
+      }
+      if (movement && movement.activeOrder) {
+        this.metrics.ownershipBlocks += 1;
+        return this._suspend('H9_FOREIGN_MOVEMENT_OWNERSHIP');
+      }
+
+      const candidate = plan.selected;
+      const changed = this._recordSelection(candidate, plan.reason);
+      const d = distance(character, candidate);
+      const needsTravel = candidate.map && character.map && String(candidate.map) !== String(character.map)
+        || (d != null && d > this.config.arrivalRadius);
+
+      if (needsTravel && this.session.allowTravel) {
+        this._stopOwnedFarming('H9_SPOT_TRAVEL');
+        const activeFarm = this._farmingStatus();
+        if (activeFarm && activeFarm.active && !this._ownedFarming(activeFarm)) {
+          this.metrics.ownershipBlocks += 1;
+          return this._suspend('H9_FOREIGN_FARMING_OWNERSHIP');
+        }
+        const destination = { map: candidate.map || character.map, x: candidate.x, y: candidate.y };
+        const move = this.movement.smartMove(destination, {
+          owner: 'farm-intelligence-h9',
+          arrivalRadius: this.config.arrivalRadius
+        });
+        if (!move || move.accepted !== true) {
+          if (move && String(move.reason || '').includes('UNKNOWN')) {
+            this.metrics.movementUnknown += 1;
+            return this._suspend(move.reason);
+          }
+          this.lastAction = { at: new Date().toISOString(), type: 'TRAVEL_REJECTED', candidate: candidate.key, result: clone(move) };
+          return { state: 'WAITING', reason: move && move.reason || 'H9_TRAVEL_REJECTED', result: clone(move) };
+        }
+        this.metrics.travelOrders += 1;
+        this.lastAction = { at: new Date().toISOString(), type: 'TRAVEL', candidate: candidate.key, destination, changed };
+        return { state: 'TRAVELLING', reason: 'H9_MOVING_TO_SELECTED_SPOT', destination, changed };
+      }
+
+      const farm = this._farmingStatus();
+      if (farm && farm.active && !this._ownedFarming(farm)) {
+        this.metrics.ownershipBlocks += 1;
+        return this._suspend('H9_FOREIGN_FARMING_OWNERSHIP');
+      }
+      if (this._ownedFarming(farm)) {
+        const currentType = farm.session && farm.session.monsterType || null;
+        if (!changed && String(currentType || '') === String(candidate.mtype || '')) {
+          this.lastAction = { at: new Date().toISOString(), type: 'HOLD_FARM', candidate: candidate.key, monsterType: candidate.mtype };
+          return { state: 'FARMING', reason: 'H9_EXISTING_FARM_MATCHES', monsterType: candidate.mtype };
+        }
+        this._stopOwnedFarming('H9_SWITCH_FARM_TARGET');
+      }
+
+      const start = this.farming.startSession({
+        owner: 'farm-intelligence-h9',
+        monsterType: candidate.mtype,
+        partyAssist: true,
+        maxAcquireDistance: this.config.visibleAcquireDistance
+      });
+      if (!start || start.accepted !== true) {
+        this.lastAction = { at: new Date().toISOString(), type: 'FARM_START_REJECTED', candidate: candidate.key, result: clone(start) };
+        return { state: 'WAITING', reason: start && start.reason || 'H9_FARM_START_REJECTED', result: clone(start) };
+      }
+      this.metrics.farmingStarts += 1;
+      this.lastAction = { at: new Date().toISOString(), type: 'FARM_START', candidate: candidate.key, monsterType: candidate.mtype, changed };
+      return { state: 'FARMING', reason: 'H9_SELECTED_FARM_STARTED', monsterType: candidate.mtype, changed };
+    }
+
+    tick() {
+      if (this.heartbeat) {
+        try {
+          this.heartbeat({
+            phase: 'farm-intelligence',
+            active: !!(this.session && this.session.enabled),
+            selection: this.currentSelection && this.currentSelection.key || null
+          });
+        } catch (_) {}
+      }
+      if (!this.moduleActive || !this.session || !this.session.enabled) return { state: 'IDLE' };
+      const plan = this.plan();
+      return this._apply(plan);
+    }
+
+    status() {
+      return {
+        schemaVersion: 1,
+        moduleActive: this.moduleActive,
+        active: !!(this.session && this.session.enabled),
+        session: clone(this.session),
+        suspended: !!this.suspendedReason,
+        suspendedReason: this.suspendedReason,
+        currentSelection: clone(this.currentSelection),
+        lastPlan: clone(this.lastPlan),
+        lastAction: clone(this.lastAction),
+        history: clone(this.history),
+        observations: [...this.observations.values()].slice(-20).map(clone),
+        config: clone(this.config),
+        metrics: clone(this.metrics)
+      };
+    }
+  }
+
+  ns.FarmIntelligenceController = FarmIntelligenceController;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+
+(function (root) {
+  'use strict';
+
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns) throw new Error('ALBOT_INTERNALS_MISSING');
+
+  const clone = ns.helpers.clone;
+  const cleanText = ns.helpers.cleanText;
+
   function errorDetails(error) {
     return {
       name: cleanText(error && error.name || 'Error', 80),
@@ -5928,7 +6901,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.8.0-h8';
+      this.version = options.version || '0.9.0-h9';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -5992,6 +6965,15 @@
       });
       this.combat.party = this.party;
       this.combat.farming = this.farming;
+      this.farmIntelligence = new ns.FarmIntelligenceController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        combat: this.combat,
+        farming: this.farming,
+        movement: this.movement,
+        party: this.party
+      });
       this.liveTests = new ns.LiveTestRunner({
         runtime: this,
         logger: this.logger,
@@ -6078,6 +7060,15 @@
         stop: reason => this.farming.stop(reason),
         status: () => this.farming.status()
       });
+
+      this.modules.register({
+        id: 'farm-intelligence',
+        title: 'Farm Intelligence',
+        version: '0.9.0',
+        start: context => this.farmIntelligence.start(context),
+        stop: reason => this.farmIntelligence.stop(reason),
+        status: () => this.farmIntelligence.status()
+      });
     }
 
     _registerLiveTests() {
@@ -6089,6 +7080,8 @@
       let h7Plan = null;
       let h8Baseline = null;
       let h8Plan = null;
+      let h9Baseline = null;
+      let h9Plan = null;
       this.liveTests.register({
         id: 'h5-combat',
         title: 'H5 – Einfacher Kampf',
@@ -6957,6 +7950,248 @@
           }
         ]
       });
+
+      this.liveTests.register({
+        id: 'h9-farm-intelligence',
+        title: 'H9 – Farm Intelligence',
+        description: 'Ein-Klick-Live-Test für autonome Farmzielwahl, Effizienz-Scoring, stabilen Hold, natürlichen Spotwechsel und Anti-Pingpong.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.farmIntelligence.stopAutonomy('H9_LIVE_TEST_RESET'); } catch (_) {}
+          try { runtime.farming.stopSession('H9_LIVE_TEST_RESET'); } catch (_) {}
+          try {
+            const movement = runtime.movement.status();
+            if (movement.activeOrder && String(movement.activeOrder.owner || '') === 'farm-intelligence-h9') {
+              runtime.movement.cancel('H9_LIVE_TEST_RESET');
+            }
+          } catch (_) {}
+          h9Plan = null;
+          const intelligence = runtime.farmIntelligence.status();
+          const farming = runtime.farming.status();
+          const combat = runtime.combat.status();
+          const party = runtime.party.status();
+          h9Baseline = {
+            decisions: intelligence.metrics.decisions,
+            holds: intelligence.metrics.holds,
+            switches: intelligence.metrics.switches,
+            farmingStarts: intelligence.metrics.farmingStarts,
+            travelOrders: intelligence.metrics.travelOrders,
+            pingPongBlocks: intelligence.metrics.pingPongBlocks,
+            ownershipBlocks: intelligence.metrics.ownershipBlocks,
+            aoeConfirmed: farming.metrics.aoeConfirmed,
+            aoeUnknown: farming.metrics.aoeUnknown,
+            attacksConfirmed: combat.metrics.attacksConfirmed,
+            attackUnknown: combat.metrics.attackUnknown,
+            focusPingPongs: party.metrics.focusPingPongs
+          };
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.farmIntelligence.stopAutonomy('H9_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try { runtime.farming.stopSession('H9_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try {
+            const movement = runtime.movement.status();
+            if (movement.activeOrder && String(movement.activeOrder.owner || '') === 'farm-intelligence-h9') {
+              runtime.movement.cancel('H9_LIVE_TEST_CLEANUP');
+            }
+          } catch (_) {}
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Live-Farmkandidaten und erklärbares Scoring prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const module = runtime.modules.describe('farm-intelligence');
+              assert(module && module.state === 'ACTIVE', 'H9_MODULE_NOT_ACTIVE');
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character && !game.character.rip, 'CHARACTER_UNAVAILABLE');
+              const ctype = String(game.character.ctype || '').toLowerCase();
+              assert(ctype !== 'merchant', 'H9_NEEDS_COMBAT_CLASS_NOT_MERCHANT');
+
+              const party = runtime.party.status();
+              const foreign = party.party && party.party.foreignMemberNames || [];
+              assert(foreign.length === 0, 'H9_FOREIGN_PARTY_MEMBER_BLOCK:' + foreign.join(','));
+
+              const plan = runtime.farmIntelligence.plan();
+              assert(plan && plan.selected, plan && plan.reason || 'H9_NO_FARM_CANDIDATE');
+              const candidates = Array.isArray(plan.candidates) ? plan.candidates : [];
+              const visibleSafe = candidates.filter(row => row && row.source === 'LIVE_SAFE_CLUSTER' && Number(row.visibleSafeCount) > 0);
+              assert(visibleSafe.length > 0, 'H9_LIVE_TEST_NEEDS_VISIBLE_SAFE_CLUSTER');
+              assert(candidates.length >= 2, 'H9_LIVE_TEST_NEEDS_AT_LEAST_2_FARM_CANDIDATES');
+              assert(Number.isFinite(Number(plan.selected.score)), 'H9_SCORE_UNAVAILABLE');
+              assert(plan.selected.components && Number.isFinite(Number(plan.selected.components.safety)),
+                'H9_SCORE_COMPONENTS_UNAVAILABLE');
+
+              h9Plan = {
+                initialKey: plan.selected.key,
+                monsterType: plan.selected.mtype,
+                source: plan.selected.source,
+                score: plan.selected.score,
+                travelSeconds: plan.selected.raw && Number(plan.selected.raw.travelSeconds),
+                candidateCount: candidates.length,
+                visibleSafeCount: visibleSafe.reduce((sum, row) => sum + Number(row.visibleSafeCount || 0), 0)
+              };
+              return {
+                character: game.character.name,
+                ctype,
+                initialKey: h9Plan.initialKey,
+                monsterType: h9Plan.monsterType,
+                source: h9Plan.source,
+                score: h9Plan.score,
+                travelSeconds: h9Plan.travelSeconds,
+                candidateCount: h9Plan.candidateCount,
+                visibleSafeCount: h9Plan.visibleSafeCount,
+                components: plan.selected.components
+              };
+            }
+          },
+          {
+            id: 'autonomous-start',
+            title: 'H9-Autonomie starten und gewähltes Farmziel an H8 übergeben',
+            timeoutMs: 90000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(h9Plan, 'H9_LIVE_TEST_PLAN_MISSING');
+              const started = runtime.farmIntelligence.startAutonomy({
+                owner: 'live-test-h9',
+                allowTravel: true
+              });
+              assert(started && started.accepted === true, started && started.reason || 'H9_SESSION_START_FAILED');
+
+              const state = await waitFor(() => {
+                const intelligence = runtime.farmIntelligence.status();
+                if (intelligence.suspended) throw new Error(intelligence.suspendedReason || 'H9_SUSPENDED');
+                if (!intelligence.currentSelection) return null;
+                const farming = runtime.farming.status();
+                return farming.active ? { intelligence, farming } : null;
+              }, { timeoutMs: 85000, pollMs: 200, label: 'h9-farming-start' });
+
+              assert(state.farming.session && String(state.farming.session.owner || '') === 'farm-intelligence-h9',
+                'H9_DID_NOT_OWN_H8_SESSION');
+              return {
+                selectedKey: state.intelligence.currentSelection.key,
+                monsterType: state.intelligence.currentSelection.mtype,
+                score: state.intelligence.currentSelection.score,
+                farmingStarts: state.intelligence.metrics.farmingStarts - h9Baseline.farmingStarts
+              };
+            }
+          },
+          {
+            id: 'confirmed-farming',
+            title: 'Mindestens eine H8-AoE- oder H5-Basisaktion live bestätigen',
+            timeoutMs: 35000,
+            run: async ({ runtime, waitFor }) => {
+              const observed = await waitFor(() => {
+                const intelligence = runtime.farmIntelligence.status();
+                if (intelligence.suspended) throw new Error(intelligence.suspendedReason || 'H9_SUSPENDED');
+                const farming = runtime.farming.status();
+                const combat = runtime.combat.status();
+                if (farming.metrics.aoeUnknown > h9Baseline.aoeUnknown) throw new Error('H9_H8_AOE_UNKNOWN');
+                if (combat.metrics.attackUnknown > h9Baseline.attackUnknown) throw new Error('H9_H5_ATTACK_UNKNOWN');
+                const aoe = farming.metrics.aoeConfirmed - h9Baseline.aoeConfirmed;
+                const attacks = combat.metrics.attacksConfirmed - h9Baseline.attacksConfirmed;
+                return aoe > 0 || attacks > 0 ? { intelligence, farming, combat, aoe, attacks } : null;
+              }, { timeoutMs: 32000, pollMs: 200, label: 'h9-confirmed-farming' });
+
+              return {
+                aoeConfirmed: observed.aoe,
+                attacksConfirmed: observed.attacks,
+                selection: observed.intelligence.currentSelection
+              };
+            }
+          },
+          {
+            id: 'adaptive-switch',
+            title: 'Adaptive Farmentscheidung und Anti-Pingpong unter Live-Bedingungen prüfen',
+            timeoutMs: 18000,
+            run: async ({ runtime, assert, waitFor }) => {
+              const observed = await waitFor(() => {
+                const intelligence = runtime.farmIntelligence.status();
+                if (intelligence.suspended) throw new Error(intelligence.suspendedReason || 'H9_SUSPENDED');
+                const decisionDelta = intelligence.metrics.decisions - h9Baseline.decisions;
+                return decisionDelta >= 5 && intelligence.currentSelection ? intelligence : null;
+              }, { timeoutMs: 15000, pollMs: 500, label: 'h9-adaptive-decisions' });
+
+              const history = Array.isArray(observed.history) ? observed.history : [];
+              for (let index = 2; index < history.length; index += 1) {
+                const a = history[index - 2];
+                const b = history[index - 1];
+                const c = history[index];
+                const within = Number(c.atMs || 0) - Number(a.atMs || 0) <= observed.config.pingPongWindowMs;
+                assert(!(within && a.key === c.key && a.key !== b.key), 'H9_FARM_TARGET_PINGPONG');
+              }
+
+              const candidates = observed.lastPlan && Array.isArray(observed.lastPlan.candidates)
+                ? observed.lastPlan.candidates
+                : [];
+              assert(candidates.length >= 2, 'H9_ADAPTIVE_CANDIDATES_LOST');
+              return {
+                decisions: observed.metrics.decisions - h9Baseline.decisions,
+                holds: observed.metrics.holds - h9Baseline.holds,
+                switches: observed.metrics.switches - h9Baseline.switches,
+                switchObserved: observed.metrics.switches > h9Baseline.switches,
+                travelOrders: observed.metrics.travelOrders - h9Baseline.travelOrders,
+                currentSelection: observed.currentSelection,
+                lastPlanReason: observed.lastPlan && observed.lastPlan.reason || null,
+                candidateCount: candidates.length,
+                history
+              };
+            }
+          },
+          {
+            id: 'stability-window',
+            title: 'Fünf Sekunden ohne UNKNOWN, Ownership-Verlust oder Focus-Pingpong beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              await sleep(5000);
+              const intelligence = runtime.farmIntelligence.status();
+              const farming = runtime.farming.status();
+              const combat = runtime.combat.status();
+              const party = runtime.party.status();
+              assert(intelligence.suspended === false, intelligence.suspendedReason || 'H9_SUSPENDED_DURING_STABILITY');
+              assert(farming.metrics.aoeUnknown === h9Baseline.aoeUnknown, 'H9_AOE_UNKNOWN_DURING_STABILITY');
+              assert(combat.metrics.attackUnknown === h9Baseline.attackUnknown, 'H9_ATTACK_UNKNOWN_DURING_STABILITY');
+              assert(party.metrics.focusPingPongs === h9Baseline.focusPingPongs, 'H9_PARTY_FOCUS_PINGPONG');
+              assert(intelligence.metrics.ownershipBlocks === h9Baseline.ownershipBlocks,
+                'H9_OWNERSHIP_BLOCK_DURING_TEST');
+              return {
+                selection: intelligence.currentSelection,
+                switches: intelligence.metrics.switches - h9Baseline.switches,
+                pingPongBlocks: intelligence.metrics.pingPongBlocks - h9Baseline.pingPongBlocks,
+                aoeUnknown: farming.metrics.aoeUnknown - h9Baseline.aoeUnknown,
+                attackUnknown: combat.metrics.attackUnknown - h9Baseline.attackUnknown,
+                focusPingPongs: party.metrics.focusPingPongs - h9Baseline.focusPingPongs
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'Farm Intelligence und alle eigene H8/H4-Ownership sauber freigeben',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.farmIntelligence.stopAutonomy('H9_LIVE_TEST_COMPLETE');
+              const intelligence = runtime.farmIntelligence.status();
+              const farming = runtime.farming.status();
+              const combat = runtime.combat.status();
+              const movement = runtime.movement.status();
+              assert(intelligence.active === false, 'H9_SESSION_STILL_ACTIVE');
+              assert(!(farming.active && farming.session && String(farming.session.owner || '') === 'farm-intelligence-h9'),
+                'H9_OWNED_FARMING_STILL_ACTIVE');
+              assert(!(movement.activeOrder && String(movement.activeOrder.owner || '') === 'farm-intelligence-h9'),
+                'H9_OWNED_MOVEMENT_STILL_ACTIVE');
+              assert(combat.active === false, 'H9_COMBAT_STILL_ACTIVE');
+              return {
+                intelligenceActive: intelligence.active,
+                farmingActive: farming.active,
+                combatActive: combat.active,
+                movementActive: movement.active
+              };
+            }
+          }
+        ]
+      });
     }
 
     _installErrorCapture() {
@@ -7104,6 +8339,7 @@
         party: this.party.status(),
         combat: this.combat.status(),
         farming: this.farming.status(),
+        farmIntelligence: this.farmIntelligence.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
         roster,
@@ -7127,6 +8363,7 @@
         party: this.party.status(),
         combat: this.combat.status(),
         farming: this.farming.status(),
+        farmIntelligence: this.farmIntelligence.status(),
         liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
         logs: this.logger.list(160),
@@ -7149,6 +8386,7 @@
       push('party-coordinator', !!this.party.status() && typeof this.party.preferredTargetId === 'function', this.party.status());
       push('combat-controller', !!this.combat.status() && typeof this.combat.startSession === 'function' && typeof this.combat.stopSession === 'function', this.combat.status());
       push('adaptive-farming-controller', !!this.farming.status() && typeof this.farming.plan === 'function' && typeof this.farming.startSession === 'function', this.farming.status());
+      push('farm-intelligence-controller', !!this.farmIntelligence.status() && typeof this.farmIntelligence.plan === 'function' && typeof this.farmIntelligence.startAutonomy === 'function', this.farmIntelligence.status());
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
       push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);
@@ -7274,6 +8512,7 @@
       this.navigationResult = null;
       this.combatResult = null;
       this.farmingResult = null;
+      this.farmIntelligenceResult = null;
       this.liveTestClipboard = null;
       this._offLog = null;
       this._dragCleanup = null;
@@ -7330,7 +8569,7 @@
 </style>
 <div class="albot-head" id="albot-drag-handle"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-minimize" class="albot-window-btn" title="Fenster minimieren" aria-label="Fenster minimieren">—</button><button id="albot-emergency" class="albot-stop">STOP</button></div>
 <div class="albot-tabs">
-<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
+<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
 </div>
 <div class="albot-body">
 <section id="albot-panel-overview" class="albot-panel active"></section>
@@ -7339,6 +8578,7 @@
 <section id="albot-panel-combat" class="albot-panel"></section>
 <section id="albot-panel-party" class="albot-panel"></section>
 <section id="albot-panel-farming" class="albot-panel"></section>
+<section id="albot-panel-farm-intelligence" class="albot-panel"></section>
 <section id="albot-panel-live-test" class="albot-panel"></section>
 <section id="albot-panel-knowledge" class="albot-panel"></section>
 <section id="albot-panel-logs" class="albot-panel"></section>
@@ -7494,6 +8734,7 @@
       this.renderCombat(status);
       this.renderParty(status);
       this.renderFarming(status);
+      this.renderFarmIntelligence(status);
       this.renderLiveTest(status);
       this.renderKnowledge(status);
       this.renderLogs();
@@ -7801,6 +9042,73 @@ ${support.suspended ? '<div class="albot-small albot-bad">Support suspendiert: '
 </div>`;
     }
 
+    renderFarmIntelligence(status) {
+      const panel = this.host.querySelector('#albot-panel-farm-intelligence');
+      if (!panel) return;
+      const intelligence = status.farmIntelligence || {};
+      const metrics = intelligence.metrics || {};
+      const selection = intelligence.currentSelection || null;
+      const plan = intelligence.lastPlan || null;
+      const candidates = plan && Array.isArray(plan.candidates) ? plan.candidates : [];
+      const action = intelligence.lastAction || null;
+      const resultText = this.farmIntelligenceResult
+        ? JSON.stringify(this.farmIntelligenceResult, null, 2)
+        : 'Noch keine manuelle H9-Aktion.';
+
+      panel.innerHTML = `<div class="albot-card"><b>H9 Farm Intelligence</b>
+<div class="albot-small">H9 bewertet Farmziele anhand live-sicherer Monster, XP-/Gold-/Drop-Signal, Dichte, Reisezeit, Respawn-Signal und Konkurrenz. Wechsel brauchen einen klaren Vorteil; Hold/Cooldown und A→B→A-Schutz verhindern Score-Pingpong.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${intelligence.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Autonomie</span><div class="albot-v">${intelligence.active ? 'ACTIVE' : 'IDLE'}</div></div>
+<div><span class="albot-k">Suspendiert</span><div class="albot-v">${intelligence.suspended ? 'JA · '+esc(intelligence.suspendedReason || '-') : 'NEIN'}</div></div>
+<div><span class="albot-k">Entscheidungen</span><div class="albot-v">${esc(metrics.decisions || 0)}</div></div>
+<div><span class="albot-k">Wechsel</span><div class="albot-v">${esc(metrics.switches || 0)}</div></div>
+<div><span class="albot-k">Anti-Pingpong Blocks</span><div class="albot-v">${esc(metrics.pingPongBlocks || 0)}</div></div>
+<div><span class="albot-k">H8 Starts</span><div class="albot-v">${esc(metrics.farmingStarts || 0)}</div></div>
+<div><span class="albot-k">H4 Reisen</span><div class="albot-v">${esc(metrics.travelOrders || 0)}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Aktuelle Wahl</b>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Monster</span><div class="albot-v">${esc(selection && selection.mtype || '-')}</div></div>
+<div><span class="albot-k">Score</span><div class="albot-v">${esc(selection && selection.score != null ? selection.score : '-')}</div></div>
+<div><span class="albot-k">Quelle</span><div class="albot-v">${esc(selection && selection.source || '-')}</div></div>
+<div><span class="albot-k">Grund</span><div class="albot-v">${esc(selection && selection.reason || plan && plan.reason || '-')}</div></div>
+<div><span class="albot-k">Spot</span><div class="albot-v">${selection ? esc(selection.map || '-')+' · '+esc(formatPosition(selection.x))+', '+esc(formatPosition(selection.y)) : '-'}</div></div>
+<div><span class="albot-k">Letzte Aktion</span><div class="albot-v">${esc(action && action.type || '-')}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Top-Kandidaten</b>
+${candidates.length ? candidates.slice(0, 8).map((row, index) => {
+  const c = row.components || {};
+  return '<div class="albot-small"><b>#'+esc(index+1)+' '+esc(row.mtype || '?')+'</b> · Score '+esc(row.score)+' · '+esc(row.source || '-')+' · safe '+esc(row.visibleSafeCount || 0)+' · Konkurrenz '+esc(row.competitors || 0)+' · XP '+esc(c.xp == null ? '-' : Number(c.xp).toFixed(2))+' · Gold '+esc(c.gold == null ? '-' : Number(c.gold).toFixed(2))+' · Drop '+esc(c.drops == null ? '-' : Number(c.drops).toFixed(2))+' · Reise '+esc(c.travel == null ? '-' : Number(c.travel).toFixed(2))+'</div>';
+}).join('') : '<div class="albot-small">Noch kein H9-Plan vorhanden.</div>'}
+</div>
+
+<div class="albot-card"><b>Steuerung</b>
+<div class="albot-row"><label class="albot-small"><input id="albot-h9-travel" type="checkbox" checked> H4-Reise zu besserem Spot erlauben</label></div>
+<div class="albot-row"><button id="albot-h9-plan" class="albot-btn">Scoring prüfen</button><button id="albot-h9-start" class="albot-btn" ${intelligence.active ? 'disabled' : ''}>Autonomie starten</button><button id="albot-h9-stop" class="albot-btn warn" ${intelligence.active ? '' : 'disabled'}>Autonomie stoppen</button></div>
+<div class="albot-small">H9 delegiert Bewegung an H4 und Combat/Farming an H8. Globaler STOP bleibt immer vorrangig.</div>
+</div>
+
+<div class="albot-card"><b>Letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.farmIntelligenceResult = fn(); }
+        catch (error) { this.farmIntelligenceResult = { accepted: false, reason: String(error && error.message || error) }; }
+        this.renderFarmIntelligence(this.runtime.status());
+      };
+      const planButton = panel.querySelector('#albot-h9-plan');
+      if (planButton) planButton.onclick = () => run(() => this.runtime.farmIntelligence.plan());
+      const startButton = panel.querySelector('#albot-h9-start');
+      if (startButton) startButton.onclick = () => {
+        const allowTravel = panel.querySelector('#albot-h9-travel').checked;
+        run(() => this.runtime.farmIntelligence.startAutonomy({ owner: 'gui-h9', allowTravel }));
+      };
+      const stopButton = panel.querySelector('#albot-h9-stop');
+      if (stopButton) stopButton.onclick = () => run(() => this.runtime.farmIntelligence.stopAutonomy('GUI_H9_STOP'));
+    }
+
     async runRecommendedLiveTest() {
       const state = this.runtime.status();
       if (state.emergencyStop && state.emergencyStop.latched) {
@@ -8031,7 +9339,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.8.0-h8',
+    version: '0.9.0-h9',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -8083,7 +9391,11 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
     game: {
       snapshot: () => runtime.game.snapshot(),
-      status: () => runtime.game.status()
+      status: () => runtime.game.status(),
+      visibleMonsters: options => runtime.game.visibleMonsters(options || {}),
+      visiblePlayers: options => runtime.game.visiblePlayers(options || {}),
+      monsterDefinition: mtype => runtime.game.monsterDefinition(mtype),
+      farmSpots: options => runtime.game.farmSpotCatalog(options || {})
     },
 
     movement: {
@@ -8124,6 +9436,14 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
       plan: () => runtime.farming.plan(),
       supportedAoeSkills: ctype => runtime.farming.supportedAoeSkills(ctype),
       liveAoeSkills: ctype => runtime.farming.liveAoeSkills(ctype)
+    },
+
+    farmIntelligence: {
+      status: () => runtime.farmIntelligence.status(),
+      start: options => runtime.farmIntelligence.startAutonomy(options || {}),
+      stop: reason => runtime.farmIntelligence.stopAutonomy(reason || 'API_H9_STOP'),
+      plan: () => runtime.farmIntelligence.plan(),
+      tick: () => runtime.farmIntelligence.tick()
     },
 
     liveTests: {
@@ -8174,6 +9494,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
   Object.freeze(api.classSkills);
   Object.freeze(api.party);
   Object.freeze(api.farming);
+  Object.freeze(api.farmIntelligence);
   Object.freeze(api.liveTests);
   Object.freeze(api.knowledge);
   Object.freeze(api.roster);
@@ -8191,7 +9512,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
     };
   } catch (_) {}
 
-  runtime.logger.info('AL Bot H8 geladen', {
+  runtime.logger.info('AL Bot H9 geladen', {
     version: api.version,
     bootCount,
     hotReload: !!previous,

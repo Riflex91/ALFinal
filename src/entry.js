@@ -50,7 +50,7 @@
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.8.0-h8',
+    version: '0.9.0-h9',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -102,7 +102,11 @@
 
     game: {
       snapshot: () => runtime.game.snapshot(),
-      status: () => runtime.game.status()
+      status: () => runtime.game.status(),
+      visibleMonsters: options => runtime.game.visibleMonsters(options || {}),
+      visiblePlayers: options => runtime.game.visiblePlayers(options || {}),
+      monsterDefinition: mtype => runtime.game.monsterDefinition(mtype),
+      farmSpots: options => runtime.game.farmSpotCatalog(options || {})
     },
 
     movement: {
@@ -143,6 +147,14 @@
       plan: () => runtime.farming.plan(),
       supportedAoeSkills: ctype => runtime.farming.supportedAoeSkills(ctype),
       liveAoeSkills: ctype => runtime.farming.liveAoeSkills(ctype)
+    },
+
+    farmIntelligence: {
+      status: () => runtime.farmIntelligence.status(),
+      start: options => runtime.farmIntelligence.startAutonomy(options || {}),
+      stop: reason => runtime.farmIntelligence.stopAutonomy(reason || 'API_H9_STOP'),
+      plan: () => runtime.farmIntelligence.plan(),
+      tick: () => runtime.farmIntelligence.tick()
     },
 
     liveTests: {
@@ -193,6 +205,7 @@
   Object.freeze(api.classSkills);
   Object.freeze(api.party);
   Object.freeze(api.farming);
+  Object.freeze(api.farmIntelligence);
   Object.freeze(api.liveTests);
   Object.freeze(api.knowledge);
   Object.freeze(api.roster);
@@ -210,7 +223,7 @@
     };
   } catch (_) {}
 
-  runtime.logger.info('AL Bot H8 geladen', {
+  runtime.logger.info('AL Bot H9 geladen', {
     version: api.version,
     bootCount,
     hotReload: !!previous,
