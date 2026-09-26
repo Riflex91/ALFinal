@@ -457,7 +457,62 @@ Live-Evidence vom 2026-09-26:
 - Runtime danach STOPPED;
 - Scheduler danach 0 Ressourcen.
 
-H8 ist damit vollständig live bestanden. Es folgen nur noch die finalen GitHub-Sicherheitschecks und bei grüner CI der autorisierte Auto-Merge.
+H8 ist vollständig live bestanden und wurde nach grüner finaler CI automatisch gemerged.
+
+Merge-Commit:
+`ebfd442bc2f5ffdda24a9745114dbd7b39fb60ad`
+
+## H9 – aktuell in Arbeit
+
+Aktiver Entwicklungsbranch:
+`chatgpt/h9-farm-intelligence`
+
+PR:
+`#9 – H9: Farm Intelligence`
+
+Ziel: **autonome, nachvollziehbare Farmziel-/Farmspot-Entscheidungen** auf dem live bestätigten H8-Core.
+
+Bereits umgesetzt:
+- Game Adapter liefert zusätzlich:
+  - sichtbare Player-Referenzen;
+  - normalisierte Monsterdefinitionen aus live `G.monsters`;
+  - aktuellen Farmspot-Katalog aus live `G.maps`;
+- eigener `FarmIntelligenceController`;
+- aktuelle H5-`safeCandidates` werden räumlich zu Farmclustern gruppiert;
+- Farmspot-Scoring kombiniert XP, Gold, Drops, Dichte, Reise, Respawn, Konkurrenz und Safety;
+- sichtbare H5-sichere Cluster besitzen höhere Sicherheitskonfidenz als reine Spawn-Katalogdaten;
+- H9 delegiert Reisen ausschließlich an H4 `smartMove`;
+- H9 delegiert Farming ausschließlich an H8 `AdaptiveFarmingController`;
+- keine direkte H9-ActionBoundary-Umgehung;
+- H9 stiehlt keine fremde H8-Farming-Ownership;
+- H9 stoppt nur eigene H4/H8-Ownership;
+- H4 Movement `UNKNOWN` / `FAILED_SAFE` -> H9-Suspension ohne Blind-Retry;
+- Mindest-Hold-Zeit;
+- Switch-Cooldown;
+- relative Score-Margin vor Wechsel;
+- A→B→A Anti-Pingpong;
+- Depletion-/Respawn-Beobachtungsbasis;
+- Runtime-Modul `farm-intelligence`;
+- Headless API `ALBot.farmIntelligence.*`;
+- eigener Control-Center-Tab;
+- H9-Ein-Klick-Live-Suite;
+- `docs/H9-LIVE-TEST.md`;
+- Unit-Tests für Scoring, Hold, Switch, Pingpong, H4-Reise, UNKNOWN und Ownership.
+
+H9 Live-Test soll automatisch:
+- ein sichtbares H5-sicheres Farmziel mit erklärbarem Score wählen;
+- H8-Farming übernehmen lassen;
+- echte Farming-Evidence bestätigen;
+- einen natürlichen Farmspot-Wechsel beobachten;
+- H9-History auf Pingpong prüfen;
+- 5-Sekunden-Stabilität ohne UNKNOWN/Ownership-Verlust prüfen;
+- H9/H8/H4 sauber freigeben.
+
+Noch ausstehend:
+- Version auf `0.9.0-h9` konsistent ziehen;
+- finale H1–H9-CI;
+- echter Adventure-Land-H9-Ein-Klick-Live-Test;
+- danach Evidence-Doku und Auto-Merge nach den vereinbarten Gates.
 
 ## H2 Architekturregel für spätere Module
 
