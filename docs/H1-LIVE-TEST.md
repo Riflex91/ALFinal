@@ -22,14 +22,16 @@ Die PR-Version soll direkt als `dist/al-bot.js` geladen werden. Für den Live-Te
 7. **Prioritäten** öffnen.
 8. Test-Goal anlegen, z.B. `COLLECT_ITEM / seashell / 200 / FARMERS / HIGH`.
 9. Goal pausieren, fortsetzen und abbrechen.
-10. Eine Grundpriorität ändern.
-11. **Selftest** ausführen.
-12. **Fehlerbericht kopieren** testen.
-13. **Start** drücken.
-14. Den roten **STOP** drücken.
-15. Prüfen, dass Runtime auf STOPPED und Emergency STOP auf AKTIV steht.
-16. Seite/Code neu laden: STOP muss weiterhin gelatcht bleiben.
-17. **STOP zurücksetzen** drücken und Start erneut testen.
+10. Das kleine rote **×** am Goal testen: Ziel muss vollständig aus der Liste verschwinden.
+11. Prüfen, dass **Leveling** standardmäßig auf **NORMAL** steht.
+12. Eine Grundpriorität ändern.
+13. **Selftest** ausführen.
+14. **Fehlerbericht kopieren** testen.
+15. **Start** drücken.
+16. Den roten **STOP** drücken.
+17. Prüfen, dass Runtime auf STOPPED und Emergency STOP auf AKTIV steht.
+18. Seite/Code neu laden: STOP muss weiterhin gelatcht bleiben.
+19. **STOP zurücksetzen** drücken und Start erneut testen.
 
 ## Bestanden
 
