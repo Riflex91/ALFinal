@@ -186,7 +186,7 @@ Live-Ergebnis:
 
 ## H8 – AoE & adaptives Farming
 
-**🟦 BAU – technisch implementiert, Live-Test ausstehend**
+**🟩 BESTANDEN – 2026-09-26**
 - eigener `AdaptiveFarmingController`
 - Pack-/Pull-Planung ausschließlich aus H5-`safeCandidates`
 - dynamische Pack-Kapazität nach Klasse und HP-Reserve
@@ -215,6 +215,17 @@ Live-Ergebnis:
 - 5-Sekunden-Fenster ohne H8 UNKNOWN, H5 Attack-UNKNOWN oder H7 Focus-Pingpong
 - Cleanup + Diagnosekopie automatisch
 - Runtime danach wieder STOPPED, Scheduler 0 Ressourcen
+
+Live-Ergebnis:
+- Ein-Klick-Suite vollständig `PASSED / ALL_STEPS_PASSED`
+- Ranger Level 60 mit live-bereitem `3shot`
+- 6 sichere sichtbare Goo-Kandidaten im Preflight
+- AoE-Plan: 3 Targets, Kapazität 5, aggregierter Attack-Wert 25
+- 1 AoE dispatched, 1 serverbestätigt, 0 rejected, 0 UNKNOWN
+- `attackUnknown = 0`
+- `focusPingPongs = 0`
+- Cleanup vollständig: Farming/Combat/Movement inaktiv
+- Runtime STOPPED, Scheduler danach 0 Ressourcen
 
 ---
 
