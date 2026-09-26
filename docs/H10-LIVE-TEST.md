@@ -150,3 +150,75 @@ Die H10-Tests decken mindestens ab:
 - Promise-Rejection -> UNKNOWN + Suspend;
 - synchrones ActionBoundary UNKNOWN -> Suspend;
 - keine H10-Dispatches für sell/bank/exchange.
+
+
+## Finale Live-Evidence
+
+Finaler Adventure-Land-Retest der gehärteten H10-Live-Suite:
+
+- Runtime: `AL Bot 0.10.0-h10`
+- Suite: `h10-loot-inventory`
+- Ergebnis: `PASSED / ALL_STEPS_PASSED`
+- Lauf: 2026-09-26T22:59:51.904Z bis 2026-09-26T23:00:01.584Z
+- Runtime wurde für die Suite automatisch gestartet und danach wieder in den vorherigen STOPPED-Zustand zurückgeführt.
+
+Preflight:
+- Character `My_Warrior`, Klasse `warrior`
+- Kapazität 42
+- usedSlots 4
+- freeSlots 38
+- protectedCount 4
+- Dispositionen: KEEP=2, BANK=1, EXCHANGE=1
+- reserveFreeSlots 2
+
+Autonomous Farming:
+- sichere Live-Probe `goo`
+- HP 100
+- 4 sichtbare sichere Kandidaten
+- H9 übernahm die Farming-Ownership.
+
+Confirmed Loot:
+- `lootDispatched=1`
+- `lootConfirmed=1`
+- `knownSkips=0`
+- `attacksConfirmed=1`
+
+Protection Delta:
+- Schritt `protection-delta`: PASSED
+- `checkedProtectedItems=4`
+- currentUsedSlots 4
+- currentFreeSlots 38
+- reserveFreeSlots 2
+- damit wurde die zuvor gefundene Testlücke `checkedProtectedItems=0` tatsächlich geschlossen.
+
+Stability:
+- `lootConfirmed=2`
+- `knownSkips=0`
+- `lootUnknown=0`
+- freeSlots 38
+- reserveFreeSlots 2
+
+Cleanup:
+- `pendingLoot=false`
+- `h9Active=false`
+- `farmingActive=false`
+- `combatActive=false`
+- `movementActive=false`
+- Cleanup `ok=true`
+- Runtime anschließend STOPPED
+- Scheduler anschließend `totalResources=0`
+
+## Post-Live Review-Härtung
+
+Nach dem erfolgreichen Live-Test wurden zwei P2-Review-Funde behoben:
+
+1. Ein `loot()`-Promise, der niemals settled, besitzt jetzt eine bounded Outcome-Deadline. Nach Ablauf wird der Ausgang als `H10_LOOT_OUTCOME_TIMEOUT` behandelt, `lootUnknown` erhöht und H10 suspendiert. Es erfolgt kein Blind-Retry.
+2. Die Item-Klassifizierung respektiert neben `type === 'quest'` auch das normalisierte Live-Flag `definition.quest === true`.
+
+Beide Pfade besitzen Regressionstests. Die Änderungen verändern den bereits live bestätigten normalen Loot-Happy-Path nicht: die Timeout-Härtung greift nur bei einem ausbleibenden Outcome, und der Quest-Flag-Fix erweitert ausschließlich die konservative Schutzklassifizierung.
+
+Exact-Head-CI nach dieser Härtung:
+- Head `a86e83938ca92fa2da0f5b7330433e797510bbbf`
+- GitHub Actions Run #210
+- `completed / success`
+- beide P2-Review-Threads resolved.
