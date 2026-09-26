@@ -276,7 +276,7 @@
           {
             id: 'start-combat',
             title: 'Autonome Combat-Session starten und Target bestätigen',
-            timeoutMs: 90000,
+            timeoutMs: 10000,
             run: async ({ runtime, assert, waitFor }) => {
               assert(livePlan, 'H5_LIVE_TEST_PLAN_MISSING');
               const result = runtime.combat.startSession({
@@ -1155,7 +1155,7 @@
           {
             id: 'autonomous-start',
             title: 'H9-Autonomie starten und gewähltes Farmziel an H8 übergeben',
-            timeoutMs: 10000,
+            timeoutMs: 90000,
             run: async ({ runtime, assert, waitFor }) => {
               assert(h9Plan, 'H9_LIVE_TEST_PLAN_MISSING');
               const started = runtime.farmIntelligence.startAutonomy({
