@@ -166,7 +166,7 @@ Merge-Commit:
 
 User hat ab H4 eine dauerhafte Auto-Merge-Regel festgelegt: Nach vollständig bestandenem Schritt und allen Sicherheitschecks automatisch mergen.
 
-## H5 – live bestanden, Auto-Merge freigegeben
+## H5 – abgeschlossen und gemerged
 
 Aktiver Entwicklungsbranch:
 `chatgpt/h5-combat`
@@ -218,7 +218,75 @@ Bestätigt:
 - autoritative Adventure-Land-`game_response`-Attack-Evidence korrekt verarbeitet;
 - kein Blind-Retry nach UNKNOWN bleibt erhalten.
 
-H5 ist damit vollständig live bestanden. Nach finalen Merge-Sicherheitschecks wird PR #5 automatisch gemerged.
+H5 ist damit vollständig live bestanden.
+
+PR #5 wurde am 2026-09-26 automatisch gemerged.
+
+Merge-Commit:
+`9e35ef678eefe8c476e7d6ac1fd7d90213d33195`
+
+## H6 – live bestanden, Auto-Merge freigegeben
+
+Aktiver Entwicklungsbranch:
+`chatgpt/h6-class-logic`
+
+Ziel: **klassenspezifische Single-Character-Logik** auf dem live bestätigten H5-Combat-Core.
+
+Bereits umgesetzt:
+- Live-`G.skills` als Skilldefinitions-Wahrheit;
+- Skill-Readiness über Klasse, Level, MP, Cooldown, `can_use`, Skill-Range und aktive Conditions;
+- eigener `ClassSkillController`;
+- unterstützte Klassen: Warrior, Ranger, Mage, Priest, Rogue, Paladin;
+- Warrior: Hardshell, Charge, Taunt, Warcry;
+- Ranger: Hunters Mark, Supershot;
+- Mage: Burst;
+- Priest: Curse, Dark Blessing;
+- Rogue: Invis, Mental Burst, Quick Punch;
+- Paladin: Self Heal, Smash;
+- MP-Reserve und Overkill-Vermeidung;
+- ein offener Skill-Command zur Zeit;
+- globaler Skill-Mindestabstand plus Skill/Target-Recast-Sperren;
+- bekannte Ablehnung -> Backoff;
+- unklarer Skill-Ausgang -> `UNKNOWN` und Class-Skill-Suspension für die aktuelle Combat-Session, ohne Blind-Retry;
+- H5-Basiscombat bleibt bei suspendierter H6-Skilllogik funktionsfähig;
+- Class-Skill-Status/Diagnostics im Combat-Tab;
+- Headless API `ALBot.classSkills.*`;
+- H6-Ein-Klick-Live-Suite;
+- `docs/H6-LIVE-TEST.md`.
+
+Bewusste Abgrenzung:
+- Party Heal/Assist/Focus Fire bleibt H7;
+- AoE/3shot/5shot/Cleave/Stomp/CBurst/Fan of Knives bleibt H8;
+- keine komplexe Paladin-Aura-/Ally-Link-Semantik ohne separate Live-Validierung.
+
+H6 Live-Test:
+- ein Klick auf **Test starten**;
+- Preflight;
+- sichere Targetwahl;
+- Combat-Start;
+- mindestens ein serverbestätigter Klassen-Skill;
+- 5-Sekunden-Anti-Spam-/UNKNOWN-Fenster;
+- Cleanup;
+- Diagnose automatisch in die Zwischenablage.
+
+Aktueller technischer Stand:
+- vollständige H1–H6-CI: **GRÜN**;
+- H6-Regressionen für explizite H5-Suite und Warrior `charge → taunt` bereinigt;
+- echter H6-Ein-Klick-Live-Test: **BESTANDEN**.
+
+Live bestätigt:
+- Ranger mit Live-Skills `huntersmark` und `supershot`;
+- Preflight, Combat-Start, Class-Skill, 5-Sekunden-Anti-Spam-Fenster und Cleanup jeweils PASSED;
+- Hunter's Mark serverbestätigt als Support-Skill;
+- Supershot serverbestätigt als Damage-Skill;
+- Class-Skills dispatched=2, confirmed=2, rejected=0, unknown=0;
+- H5 attackUnknown=0;
+- Range-Annäherung über H4 Movement;
+- Combat/Movement/Class-Skill-Ownership nach Cleanup vollständig freigegeben;
+- Runtime nach automatisch gestartetem Test wieder STOPPED;
+- Scheduler nach Abschluss 0 Ressourcen.
+
+H6 ist damit vollständig live bestanden. PR #6 wird nach finalen Merge-Sicherheitschecks automatisch gemerged.
 
 ## H2 Architekturregel für spätere Module
 
@@ -313,4 +381,4 @@ Bei Fehler:
 
 ## Nächster Schritt
 
-PR #5 nach vollständigen Merge-Sicherheitschecks automatisch mit Methode `merge` mergen. Danach **H6 – Klassenlogik** auf einem frischen Branch vom neuen `main` starten. Die Ein-Klick-Live-Test-Regel bleibt Standard.
+PR #6 nach den vollständigen Merge-Sicherheitschecks automatisch mit Methode `merge` mergen. Danach **H7 – Party** auf einem frischen Branch vom neuen `main` starten. Die Ein-Klick-Live-Test-Regel bleibt Standard.

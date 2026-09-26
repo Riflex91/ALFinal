@@ -1,4 +1,4 @@
-/* AL Bot 0.5.0-h5 | generated file | do not edit dist directly */
+/* AL Bot 0.6.0-h6 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -1173,6 +1173,115 @@
       return clone(rows);
     }
 
+    skillDefinition(skillId) {
+      const id = cleanText(skillId || '', 120);
+      if (!id) return null;
+      const G = this._gameData();
+      const raw = G && G.skills && G.skills[id];
+      if (!raw || typeof raw !== 'object') return null;
+      const classesRaw = Array.isArray(raw.class) ? raw.class : (raw.class ? [raw.class] : []);
+      return {
+        id,
+        name: raw.name == null ? id : cleanText(raw.name, 160),
+        classes: classesRaw.map(value => cleanText(value, 60).toLowerCase()).filter(Boolean),
+        level: finite(raw.level),
+        mp: finite(raw.mp),
+        cooldown: finite(raw.cooldown),
+        range: finite(raw.range),
+        rangeMultiplier: finite(raw.range_multiplier),
+        rangeBonus: finite(raw.range_bonus),
+        damageMultiplier: finite(raw.damage_multiplier),
+        share: raw.share == null ? null : cleanText(raw.share, 120),
+        target: raw.target == null ? null : safeBoolean(raw.target),
+        multi: safeBoolean(raw.multi),
+        list: safeBoolean(raw.list),
+        party: safeBoolean(raw.party),
+        heal: safeBoolean(raw.heal),
+        hostile: safeBoolean(raw.hostile)
+      };
+    }
+
+    skillReadiness(skillId, targetId = null) {
+      const definition = this.skillDefinition(skillId);
+      const character = this._character();
+      const normalized = this.snapshot();
+      if (!definition || !character || !normalized.available || !normalized.character) {
+        return {
+          available: false,
+          allowed: false,
+          skillId: cleanText(skillId || '', 120) || null,
+          definition,
+          reasons: ['SKILL_OR_CHARACTER_UNAVAILABLE'],
+          cooldown: null,
+          canUse: null,
+          inRange: targetId == null ? true : null,
+          activeCondition: false
+        };
+      }
+
+      const reasons = [];
+      const c = normalized.character;
+      if (definition.classes.length && !definition.classes.includes(String(c.ctype || '').toLowerCase())) {
+        reasons.push('SKILL_CLASS_MISMATCH');
+      }
+      if (definition.level != null && c.level != null && c.level < definition.level) reasons.push('SKILL_LEVEL_TOO_LOW');
+      if (definition.mp != null && c.mp != null && c.mp < definition.mp) reasons.push('SKILL_MP_TOO_LOW');
+
+      const cooldownFn = this._resolveFunction('is_on_cooldown');
+      let cooldown = null;
+      try { if (cooldownFn) cooldown = cooldownFn.fn.call(cooldownFn.owner, definition.id) === true; } catch (_) {}
+      if (cooldown === true) reasons.push('SKILL_COOLDOWN');
+
+      const canUseFn = this._resolveFunction('can_use');
+      let canUse = null;
+      try { if (canUseFn) canUse = canUseFn.fn.call(canUseFn.owner, definition.id) === true; } catch (_) {}
+      if (canUse === false) reasons.push('SKILL_CAN_USE_FALSE');
+
+      let inRange = targetId == null;
+      if (targetId != null) {
+        const rawTarget = this.entityReference(targetId);
+        if (!rawTarget) {
+          inRange = false;
+          reasons.push('SKILL_TARGET_UNAVAILABLE');
+        } else {
+          const inRangeFn = this._resolveFunction('is_in_range');
+          let observed = null;
+          try { if (inRangeFn) observed = inRangeFn.fn.call(inRangeFn.owner, rawTarget, definition.id) === true; } catch (_) {}
+          if (observed == null) {
+            const cp = this._position(character);
+            const tp = this._position(rawTarget);
+            let allowedRange = definition.range;
+            if (allowedRange == null && c.range != null) {
+              allowedRange = c.range * (definition.rangeMultiplier == null ? 1 : definition.rangeMultiplier)
+                + (definition.rangeBonus == null ? 0 : definition.rangeBonus);
+            }
+            observed = cp.x != null && cp.y != null && tp.x != null && tp.y != null && allowedRange != null
+              ? Math.hypot(cp.x - tp.x, cp.y - tp.y) <= allowedRange
+              : false;
+          }
+          inRange = observed;
+          if (!inRange) reasons.push('SKILL_OUT_OF_RANGE');
+        }
+      }
+
+      let activeCondition = false;
+      try {
+        activeCondition = !!(character.s && character.s[definition.id]);
+      } catch (_) {}
+
+      return {
+        available: true,
+        allowed: reasons.length === 0,
+        skillId: definition.id,
+        definition,
+        reasons,
+        cooldown,
+        canUse,
+        inRange,
+        activeCondition
+      };
+    }
+
     combatReadiness(targetId) {
       const character = this._character();
       const raw = this.entityReference(targetId);
@@ -1294,6 +1403,7 @@
           maxMp: finite(character.max_mp),
           gold: finite(character.gold),
           xp: finite(character.xp),
+          attack: finite(character.attack),
           range: finite(character.range),
           speed: finite(character.speed),
           frequency: finite(character.frequency),
@@ -2734,6 +2844,660 @@
   const clone = ns.helpers.clone;
   const cleanText = ns.helpers.cleanText;
 
+  const SUPPORTED_CLASSES = Object.freeze(['warrior', 'ranger', 'mage', 'priest', 'rogue', 'paladin']);
+  const CLASS_SKILLS = Object.freeze({
+    warrior: Object.freeze(['hardshell', 'charge', 'taunt', 'warcry']),
+    ranger: Object.freeze(['huntersmark', 'supershot']),
+    mage: Object.freeze(['burst']),
+    priest: Object.freeze(['curse', 'darkblessing']),
+    rogue: Object.freeze(['invis', 'mentalburst', 'quickpunch']),
+    paladin: Object.freeze(['selfheal', 'smash'])
+  });
+
+  function finite(value) {
+    if (value == null || value === '') return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function ratio(value, max) {
+    const current = finite(value);
+    const total = finite(max);
+    if (current == null || total == null || total <= 0) return null;
+    return Math.max(0, Math.min(1, current / total));
+  }
+
+  function errorReason(value, fallback = 'CLASS_SKILL_UNKNOWN') {
+    if (value && typeof value === 'object') {
+      const raw = value.reason || value.code || value.message;
+      if (raw) return cleanText(raw, 240);
+    }
+    const text = cleanText(value, 240);
+    return text || fallback;
+  }
+
+  class ClassSkillController {
+    constructor(options = {}) {
+      this.root = options.root || root;
+      this.logger = options.logger || null;
+      this.game = options.game;
+      this.actions = options.actions;
+      this.now = typeof options.now === 'function' ? options.now : () => Date.now();
+      this.config = {
+        minGlobalIntervalMs: Math.max(150, Math.min(2000, Number(options.minGlobalIntervalMs) || 350)),
+        rejectionBackoffMs: Math.max(1000, Math.min(30000, Number(options.rejectionBackoffMs) || 5000)),
+        mpReserveRatio: Math.max(0, Math.min(0.8, Number(options.mpReserveRatio) || 0.20)),
+        defensiveHpRatio: Math.max(0.35, Math.min(0.8, Number(options.defensiveHpRatio) || 0.50)),
+        paladinHealHpRatio: Math.max(0.40, Math.min(0.9, Number(options.paladinHealHpRatio) || 0.70)),
+        longFightHpFactor: Math.max(2, Math.min(20, Number(options.longFightHpFactor) || 4))
+      };
+
+      this.active = false;
+      this.sessionId = null;
+      this.pending = null;
+      this.pendingGeneration = 0;
+      this.suspendedSessionId = null;
+      this.suspendedReason = null;
+      this.lastAttemptAtMs = 0;
+      this.lastDecision = null;
+      this.lastUse = null;
+      this.suppression = new Map();
+      this.metrics = {
+        decisions: 0,
+        dispatched: 0,
+        confirmed: 0,
+        rejected: 0,
+        unknown: 0,
+        damageSkills: 0,
+        supportSkills: 0,
+        defensiveSkills: 0,
+        mobilitySkills: 0,
+        skillKillsConfirmed: 0,
+        cooldownSkips: 0,
+        mpSkips: 0,
+        rangeSkips: 0,
+        spamSkips: 0,
+        overkillSkips: 0,
+        unavailableSkips: 0,
+        activeConditionSkips: 0
+      };
+    }
+
+    start() {
+      this.active = true;
+      return this.status();
+    }
+
+    stop(reason = 'CLASS_SKILLS_STOP') {
+      this.active = false;
+      this.endSession(reason);
+      return this.status();
+    }
+
+    beginSession(sessionId) {
+      const id = cleanText(sessionId || '', 120) || null;
+      if (id && id !== this.sessionId) {
+        this.sessionId = id;
+        this.suspendedSessionId = null;
+        this.suspendedReason = null;
+        this.pendingGeneration += 1;
+        this.pending = null;
+      }
+      return this.status();
+    }
+
+    endSession(reason = 'COMBAT_SESSION_END') {
+      this.pendingGeneration += 1;
+      this.pending = null;
+      this.sessionId = null;
+      this.suspendedSessionId = null;
+      this.suspendedReason = null;
+      this.lastDecision = this.lastDecision ? { ...this.lastDecision, sessionEndReason: cleanText(reason, 180) } : null;
+      return this.status();
+    }
+
+    supportedSkills(ctype) {
+      const key = cleanText(ctype || '', 60).toLowerCase();
+      return (CLASS_SKILLS[key] || []).slice();
+    }
+
+    liveSkillSummary(ctype) {
+      return this.supportedSkills(ctype).map(id => {
+        const definition = this.game && typeof this.game.skillDefinition === 'function'
+          ? this.game.skillDefinition(id)
+          : null;
+        return { id, available: !!definition, definition };
+      });
+    }
+
+    _suppressionKey(skillId, targetId) {
+      return String(skillId) + ':' + (targetId == null ? '*' : String(targetId));
+    }
+
+    _isSuppressed(skillId, targetId) {
+      const key = this._suppressionKey(skillId, targetId);
+      const until = this.suppression.get(key) || 0;
+      if (until <= this.now()) {
+        if (until) this.suppression.delete(key);
+        return false;
+      }
+      return true;
+    }
+
+    _suppress(skillId, targetId, ms) {
+      const duration = Math.max(0, Number(ms) || 0);
+      if (!duration) return;
+      this.suppression.set(this._suppressionKey(skillId, targetId), this.now() + duration);
+      if (this.suppression.size > 80) {
+        const now = this.now();
+        for (const [key, until] of this.suppression.entries()) {
+          if (until <= now) this.suppression.delete(key);
+        }
+      }
+    }
+
+    _skillCandidate(skillId, target, game, options = {}) {
+      const targetId = options.targeted === false ? null : (target && target.id);
+      if (this._isSuppressed(skillId, targetId)) {
+        this.metrics.spamSkips += 1;
+        return null;
+      }
+
+      const readiness = this.game.skillReadiness(skillId, targetId);
+      if (!readiness || !readiness.available) {
+        this.metrics.unavailableSkips += 1;
+        return null;
+      }
+      if (readiness.activeCondition && options.skipIfActive !== false) {
+        this.metrics.activeConditionSkips += 1;
+        return null;
+      }
+      if (!readiness.allowed) {
+        const reasons = readiness.reasons || [];
+        if (reasons.includes('SKILL_COOLDOWN') || reasons.includes('SKILL_CAN_USE_FALSE')) this.metrics.cooldownSkips += 1;
+        if (reasons.includes('SKILL_MP_TOO_LOW')) this.metrics.mpSkips += 1;
+        if (reasons.includes('SKILL_OUT_OF_RANGE') || reasons.includes('SKILL_TARGET_UNAVAILABLE')) this.metrics.rangeSkips += 1;
+        return null;
+      }
+
+      const character = game && game.character;
+      const cost = finite(readiness.definition && readiness.definition.mp) || 0;
+      const mp = finite(character && character.mp);
+      const maxMp = finite(character && character.maxMp);
+      const reserveRatio = options.mpReserveRatio == null ? this.config.mpReserveRatio : Number(options.mpReserveRatio);
+      if (mp != null && maxMp != null && maxMp > 0 && mp - cost < maxMp * reserveRatio) {
+        this.metrics.mpSkips += 1;
+        return null;
+      }
+
+      return {
+        id: skillId,
+        targetId,
+        readiness,
+        args: targetId == null ? [skillId] : [skillId, String(targetId)],
+        kind: options.kind || 'support',
+        reason: options.reason || 'CLASS_SKILL_SELECTED',
+        recastMs: Math.max(0, Number(options.recastMs) || 0),
+        baselineHp: target && finite(target.hp),
+        utility: Number(options.utility) || 0
+      };
+    }
+
+    _choose(game, target) {
+      const character = game && game.character;
+      if (!character || !target) return null;
+      const ctype = String(character.ctype || '').toLowerCase();
+      if (!SUPPORTED_CLASSES.includes(ctype)) return null;
+
+      const hpRatio = ratio(character.hp, character.maxHp);
+      const mpRatio = ratio(character.mp, character.maxMp);
+      const attack = Math.max(1, finite(character.attack) || 100);
+      const targetHp = finite(target.hp);
+      const distance = finite(target.distance);
+      const range = Math.max(1, finite(character.range) || 40);
+      const longFight = targetHp != null && targetHp >= attack * this.config.longFightHpFactor;
+
+      if (ctype === 'warrior') {
+        if (hpRatio != null && hpRatio <= this.config.defensiveHpRatio) {
+          const defensive = this._skillCandidate('hardshell', target, game, {
+            targeted: false,
+            kind: 'defensive',
+            reason: 'WARRIOR_LOW_HP_HARDSHELL',
+            recastMs: 12000,
+            utility: 300
+          });
+          if (defensive) return defensive;
+        }
+        if (distance != null && distance > Math.max(35, range * 1.4)) {
+          const charge = this._skillCandidate('charge', target, game, {
+            targeted: false,
+            kind: 'mobility',
+            reason: 'WARRIOR_CLOSE_DISTANCE_CHARGE',
+            recastMs: 30000,
+            utility: 220
+          });
+          if (charge) return charge;
+        }
+        if (target.targetId !== character.name) {
+          const taunt = this._skillCandidate('taunt', target, game, {
+            kind: 'support',
+            reason: target.targetId ? 'WARRIOR_RECLAIM_AGGRO' : 'WARRIOR_CONTROLLED_ENGAGE_TAUNT',
+            recastMs: 12000,
+            utility: 180
+          });
+          if (taunt) return taunt;
+        }
+        if (longFight && mpRatio != null && mpRatio >= 0.65) {
+          const warcry = this._skillCandidate('warcry', target, game, {
+            targeted: false,
+            kind: 'support',
+            reason: 'WARRIOR_LONG_FIGHT_WARCRY',
+            recastMs: 55000,
+            utility: 120
+          });
+          if (warcry) return warcry;
+        }
+      }
+
+      if (ctype === 'ranger') {
+        if (longFight && mpRatio != null && mpRatio >= 0.50) {
+          const mark = this._skillCandidate('huntersmark', target, game, {
+            kind: 'support',
+            reason: 'RANGER_LONG_FIGHT_HUNTERSMARK',
+            recastMs: 10000,
+            utility: 220
+          });
+          if (mark) return mark;
+        }
+        if (targetHp != null && targetHp > Math.max(150, attack * 1.5)) {
+          const shot = this._skillCandidate('supershot', target, game, {
+            kind: 'damage',
+            reason: 'RANGER_SUPERSHOT_SAFE_DAMAGE',
+            recastMs: 25000,
+            utility: 180
+          });
+          if (shot) return shot;
+        } else if (targetHp != null) {
+          this.metrics.overkillSkips += 1;
+        }
+      }
+
+      if (ctype === 'mage') {
+        if (targetHp != null && targetHp > Math.max(100, attack * 1.3)) {
+          const burst = this._skillCandidate('burst', target, game, {
+            kind: 'damage',
+            reason: 'MAGE_BURST_SAFE_DAMAGE',
+            recastMs: 5000,
+            utility: 180
+          });
+          if (burst) return burst;
+        } else if (targetHp != null) {
+          this.metrics.overkillSkips += 1;
+        }
+      }
+
+      if (ctype === 'priest') {
+        if (longFight && mpRatio != null && mpRatio >= 0.80) {
+          const blessing = this._skillCandidate('darkblessing', target, game, {
+            targeted: false,
+            kind: 'support',
+            reason: 'PRIEST_LONG_FIGHT_DARKBLESSING',
+            recastMs: 55000,
+            utility: 200
+          });
+          if (blessing) return blessing;
+        }
+        if (targetHp != null && targetHp > Math.max(300, attack * 3) && mpRatio != null && mpRatio >= 0.55) {
+          const curse = this._skillCandidate('curse', target, game, {
+            kind: 'support',
+            reason: 'PRIEST_LONG_FIGHT_CURSE',
+            recastMs: 5000,
+            utility: 170
+          });
+          if (curse) return curse;
+        }
+      }
+
+      if (ctype === 'rogue') {
+        if (hpRatio != null && hpRatio <= this.config.defensiveHpRatio) {
+          const invis = this._skillCandidate('invis', target, game, {
+            targeted: false,
+            kind: 'defensive',
+            reason: 'ROGUE_LOW_HP_INVIS',
+            recastMs: 10000,
+            utility: 300
+          });
+          if (invis) return invis;
+        }
+        if (targetHp != null && targetHp > Math.max(140, attack * 1.5)) {
+          const burst = this._skillCandidate('mentalburst', target, game, {
+            kind: 'damage',
+            reason: 'ROGUE_MENTALBURST_SAFE_DAMAGE',
+            recastMs: 750,
+            utility: 190
+          });
+          if (burst) return burst;
+        }
+        if (targetHp != null && targetHp > Math.max(90, attack * 1.15)) {
+          const punch = this._skillCandidate('quickpunch', target, game, {
+            kind: 'damage',
+            reason: 'ROGUE_QUICKPUNCH_SAFE_DAMAGE',
+            recastMs: 300,
+            utility: 150
+          });
+          if (punch) return punch;
+        } else if (targetHp != null) {
+          this.metrics.overkillSkips += 1;
+        }
+      }
+
+      if (ctype === 'paladin') {
+        if (hpRatio != null && hpRatio <= this.config.paladinHealHpRatio) {
+          const heal = this._skillCandidate('selfheal', target, game, {
+            targeted: false,
+            kind: 'defensive',
+            reason: 'PALADIN_SELFHEAL_THRESHOLD',
+            recastMs: 1000,
+            utility: 280,
+            mpReserveRatio: 0.05
+          });
+          if (heal) return heal;
+        }
+        if (targetHp != null && targetHp > Math.max(150, attack * 1.5)) {
+          const smash = this._skillCandidate('smash', target, game, {
+            kind: 'damage',
+            reason: 'PALADIN_SMASH_SAFE_DAMAGE',
+            recastMs: 400,
+            utility: 170
+          });
+          if (smash) return smash;
+        } else if (targetHp != null) {
+          this.metrics.overkillSkips += 1;
+        }
+      }
+
+      return null;
+    }
+
+    preview(targetId) {
+      const game = this.game && typeof this.game.snapshot === 'function' ? this.game.snapshot() : null;
+      if (!game || !game.character) return null;
+      const targets = this.game && typeof this.game.visibleMonsters === 'function' ? this.game.visibleMonsters() : [];
+      const target = targetId == null
+        ? (game.target || targets[0] || null)
+        : targets.find(row => String(row.id) === String(targetId)) || (game.target && String(game.target.id) === String(targetId) ? game.target : null);
+      if (!target) return null;
+      const decision = this._choose(game, target);
+      return decision ? clone({
+        skillId: decision.id,
+        targetId: decision.targetId,
+        kind: decision.kind,
+        reason: decision.reason,
+        recastMs: decision.recastMs
+      }) : null;
+    }
+
+    _knownRejection(reason) {
+      const value = String(reason || '').toLowerCase();
+      if (!value) return false;
+      if (value.includes('disconnect') || value.includes('timeout') || value.includes('network')) return false;
+      return [
+        'cooldown', 'no_mp', 'mp', 'too_far', 'range', 'not_found', 'cant_use',
+        'cannot_use', 'level', 'weapon', 'requirements', 'disabled', 'stunned'
+      ].some(token => value.includes(token));
+    }
+
+    _settleConfirmed(pending, response) {
+      if (!pending) return;
+      this.metrics.confirmed += 1;
+      if (pending.kind === 'damage') this.metrics.damageSkills += 1;
+      else if (pending.kind === 'defensive') this.metrics.defensiveSkills += 1;
+      else if (pending.kind === 'mobility') this.metrics.mobilitySkills += 1;
+      else this.metrics.supportSkills += 1;
+
+      const damage = response && typeof response === 'object' ? finite(response.damage) : null;
+      const lethal = damage != null && pending.baselineHp != null && damage >= pending.baselineHp;
+      if (lethal) this.metrics.skillKillsConfirmed += 1;
+
+      this.lastUse = {
+        at: new Date().toISOString(),
+        sessionId: pending.sessionId,
+        skillId: pending.skillId,
+        targetId: pending.targetId,
+        kind: pending.kind,
+        reason: pending.reason,
+        state: 'CONFIRMED',
+        damage,
+        lethal,
+        response: response == null ? null : clone(response)
+      };
+      this.pending = null;
+      if (this.logger) this.logger.info('Klassen-Skill bestätigt', {
+        skillId: pending.skillId,
+        targetId: pending.targetId,
+        kind: pending.kind,
+        reason: pending.reason,
+        damage,
+        lethal
+      });
+    }
+
+    _settleRejected(pending, reason, response) {
+      if (!pending) return;
+      this.metrics.rejected += 1;
+      this._suppress(pending.skillId, pending.targetId, this.config.rejectionBackoffMs);
+      this.lastUse = {
+        at: new Date().toISOString(),
+        sessionId: pending.sessionId,
+        skillId: pending.skillId,
+        targetId: pending.targetId,
+        kind: pending.kind,
+        reason: pending.reason,
+        state: 'REJECTED',
+        error: cleanText(reason, 240),
+        response: response == null ? null : clone(response)
+      };
+      this.pending = null;
+      if (this.logger) this.logger.warn('Klassen-Skill serverseitig abgelehnt', {
+        skillId: pending.skillId,
+        targetId: pending.targetId,
+        error: reason
+      });
+    }
+
+    _settleUnknown(pending, reason, details) {
+      if (!pending) return;
+      this.metrics.unknown += 1;
+      this.suspendedSessionId = pending.sessionId;
+      this.suspendedReason = cleanText(reason, 240);
+      this.lastUse = {
+        at: new Date().toISOString(),
+        sessionId: pending.sessionId,
+        skillId: pending.skillId,
+        targetId: pending.targetId,
+        kind: pending.kind,
+        reason: pending.reason,
+        state: 'UNKNOWN',
+        error: this.suspendedReason,
+        response: details == null ? null : clone(details)
+      };
+      this.pending = null;
+      if (this.logger) this.logger.error('Klassen-Skill Outcome unklar; Skills für Combat-Session suspendiert', {
+        skillId: pending.skillId,
+        targetId: pending.targetId,
+        error: this.suspendedReason
+      });
+    }
+
+    _watch(dispatch, pending, generation) {
+      const value = dispatch && dispatch.value;
+      if (!value || typeof value.then !== 'function') {
+        const response = value;
+        if (response && typeof response === 'object' && response.failed === true) {
+          this._settleRejected(pending, errorReason(response, 'SKILL_REJECTED'), response);
+        } else if (response && typeof response === 'object' && (response.success === true || response.place || response.response)) {
+          this._settleConfirmed(pending, response);
+        } else {
+          this._settleUnknown(pending, 'SKILL_RESULT_UNCONFIRMED', response);
+        }
+        return;
+      }
+
+      Promise.resolve(value).then(response => {
+        if (generation !== this.pendingGeneration) return;
+        if (!this.pending || this.pending.id !== pending.id) return;
+        if (response && typeof response === 'object' && response.failed === true) {
+          this._settleRejected(pending, errorReason(response, 'SKILL_REJECTED'), response);
+          return;
+        }
+        this._settleConfirmed(pending, response);
+      }, error => {
+        if (generation !== this.pendingGeneration) return;
+        if (!this.pending || this.pending.id !== pending.id) return;
+        const reason = errorReason(error, 'SKILL_PROMISE_REJECTED');
+        if (this._knownRejection(reason)) this._settleRejected(pending, reason, error);
+        else this._settleUnknown(pending, reason, error);
+      }).catch(() => {});
+    }
+
+    maybeUse(context = {}) {
+      if (!this.active) return { handled: false, reason: 'CLASS_SKILLS_INACTIVE' };
+      const session = context.session || null;
+      const game = context.game || (this.game && this.game.snapshot ? this.game.snapshot() : null);
+      const target = context.target || (game && game.target) || null;
+      if (!session || !session.id || !game || !game.character || !target) return { handled: false, reason: 'CLASS_SKILL_CONTEXT_INCOMPLETE' };
+
+      this.beginSession(session.id);
+      if (this.suspendedSessionId === session.id) {
+        return { handled: false, suspended: true, reason: this.suspendedReason || 'CLASS_SKILLS_SUSPENDED' };
+      }
+      if (this.pending) return { handled: true, pending: true, skillId: this.pending.skillId };
+
+      const now = this.now();
+      if (now - this.lastAttemptAtMs < this.config.minGlobalIntervalMs) {
+        this.metrics.spamSkips += 1;
+        return { handled: false, reason: 'CLASS_SKILL_GLOBAL_INTERVAL' };
+      }
+
+      this.metrics.decisions += 1;
+      const decision = this._choose(game, target);
+      this.lastDecision = decision ? {
+        at: new Date().toISOString(),
+        sessionId: session.id,
+        characterClass: game.character.ctype,
+        skillId: decision.id,
+        targetId: decision.targetId,
+        kind: decision.kind,
+        reason: decision.reason
+      } : {
+        at: new Date().toISOString(),
+        sessionId: session.id,
+        characterClass: game.character.ctype,
+        skillId: null,
+        targetId: target.id || null,
+        kind: null,
+        reason: 'NO_CLASS_SKILL_SELECTED'
+      };
+      if (!decision) return { handled: false, reason: 'NO_CLASS_SKILL_SELECTED' };
+
+      let dispatch;
+      try {
+        dispatch = this.actions.dispatch('use_skill', decision.args);
+      } catch (error) {
+        return { handled: false, reason: errorReason(error, 'CLASS_SKILL_ACTION_BLOCKED') };
+      }
+
+      this.lastAttemptAtMs = now;
+      this._suppress(decision.id, decision.targetId, decision.recastMs);
+
+      if (!dispatch || dispatch.state === 'UNAVAILABLE') {
+        this.metrics.unavailableSkips += 1;
+        return { handled: false, reason: 'USE_SKILL_API_UNAVAILABLE' };
+      }
+      if (dispatch.state === 'UNKNOWN') {
+        const pseudo = {
+          id: dispatch.id || ('skill-' + now),
+          sessionId: session.id,
+          skillId: decision.id,
+          targetId: decision.targetId,
+          kind: decision.kind,
+          reason: decision.reason,
+          baselineHp: decision.baselineHp
+        };
+        this._settleUnknown(pseudo, errorReason(dispatch.error, 'SKILL_DISPATCH_UNKNOWN'), dispatch);
+        return { handled: true, unknown: true, skillId: decision.id };
+      }
+
+      const pending = {
+        id: dispatch.id,
+        sessionId: session.id,
+        skillId: decision.id,
+        targetId: decision.targetId,
+        kind: decision.kind,
+        reason: decision.reason,
+        baselineHp: decision.baselineHp,
+        dispatchedAt: new Date().toISOString(),
+        dispatchedAtMs: now
+      };
+      this.pending = pending;
+      this.metrics.dispatched += 1;
+      const generation = this.pendingGeneration;
+      this._watch(dispatch, pending, generation);
+
+      if (this.logger) this.logger.info('Klassen-Skill gesendet', {
+        id: dispatch.id,
+        sessionId: session.id,
+        skillId: decision.id,
+        targetId: decision.targetId,
+        kind: decision.kind,
+        reason: decision.reason
+      });
+
+      return {
+        handled: true,
+        pending: !!this.pending,
+        skillId: decision.id,
+        targetId: decision.targetId,
+        kind: decision.kind,
+        reason: decision.reason
+      };
+    }
+
+    status() {
+      const game = this.game && typeof this.game.snapshot === 'function' ? this.game.snapshot() : null;
+      const ctype = game && game.character && game.character.ctype || null;
+      return {
+        schemaVersion: 1,
+        active: this.active,
+        supportedClasses: SUPPORTED_CLASSES.slice(),
+        currentClass: ctype,
+        supportedSkills: this.supportedSkills(ctype),
+        liveSkills: this.liveSkillSummary(ctype),
+        sessionId: this.sessionId,
+        suspended: !!(this.sessionId && this.suspendedSessionId === this.sessionId),
+        suspendedReason: this.suspendedReason,
+        pending: clone(this.pending),
+        lastDecision: clone(this.lastDecision),
+        lastUse: clone(this.lastUse),
+        config: clone(this.config),
+        metrics: clone(this.metrics)
+      };
+    }
+  }
+
+  ns.ClassSkillController = ClassSkillController;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+
+(function (root) {
+  'use strict';
+
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns) throw new Error('ALBOT_INTERNALS_MISSING');
+
+  const clone = ns.helpers.clone;
+  const cleanText = ns.helpers.cleanText;
+
   function finite(value) {
     if (value == null || value === '') return null;
     const number = Number(value);
@@ -2763,6 +3527,7 @@
       this.game = options.game;
       this.actions = options.actions;
       this.movement = options.movement;
+      this.classSkills = options.classSkills || null;
       this.now = typeof options.now === 'function' ? options.now : () => Date.now();
 
       this.config = {
@@ -2892,6 +3657,9 @@
       };
       this.pendingAttack = null;
       this.targetConfirmDeadlineMs = null;
+      if (this.classSkills && typeof this.classSkills.beginSession === 'function') {
+        this.classSkills.beginSession(id);
+      }
       this.metrics.sessions += 1;
       if (this.logger) this.logger.warn('Combat-Session gestartet', {
         id,
@@ -2953,6 +3721,9 @@
       this._cancelCombatMovement(reason);
       this._clearGameTarget(reason);
       this.pendingAttack = null;
+      if (this.classSkills && typeof this.classSkills.endSession === 'function') {
+        try { this.classSkills.endSession(reason); } catch (_) {}
+      }
       this.lastSession = this._publicSession(session);
       this.session = null;
 
@@ -2974,6 +3745,9 @@
       this._cancelCombatMovement(reason);
       this._clearGameTarget(reason);
       this.pendingAttack = null;
+      if (this.classSkills && typeof this.classSkills.endSession === 'function') {
+        try { this.classSkills.endSession(reason); } catch (_) {}
+      }
       this.lastSession = this._publicSession(this.session);
       if (this.logger) this.logger.error('Combat fail-safe beendet', {
         id: this.session.id,
@@ -3423,6 +4197,29 @@
         return;
       }
 
+      if (this.classSkills && typeof this.classSkills.maybeUse === 'function') {
+        const skill = this.classSkills.maybeUse({
+          game,
+          target,
+          session: this.session,
+          readiness
+        });
+        if (skill && skill.handled) {
+          this.session.state = skill.unknown ? 'CLASS_SKILL_UNKNOWN'
+            : skill.pending ? 'CLASS_SKILL_PENDING'
+              : 'CLASS_SKILL_ACTION';
+          this.session.lastDecision = {
+            at: new Date().toISOString(),
+            type: skill.unknown ? 'CLASS_SKILL_UNKNOWN' : 'CLASS_SKILL',
+            skillId: skill.skillId || null,
+            targetId: skill.targetId || target.id,
+            kind: skill.kind || null,
+            reason: skill.reason || null
+          };
+          return;
+        }
+      }
+
       if (!readiness.inRange) {
         this._approach(game, target);
         return;
@@ -3804,7 +4601,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.5.0-h5';
+      this.version = options.version || '0.6.0-h6';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -3832,12 +4629,19 @@
         game: this.game,
         actions: this.actions
       });
+      this.classSkills = new ns.ClassSkillController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions
+      });
       this.combat = new ns.CombatController({
         root: this.root,
         logger: this.logger,
         game: this.game,
         actions: this.actions,
-        movement: this.movement
+        movement: this.movement,
+        classSkills: this.classSkills
       });
       this.knowledge = new ns.KnowledgeService({ logger: this.logger, storage: this.storage });
       this.knowledgeProvider = new ns.WindowsBridgeKnowledgeProvider({ root: this.root, logger: this.logger });
@@ -3866,7 +4670,7 @@
       this.modules.register({
         id: 'runtime-health',
         title: 'Runtime Health',
-        version: '0.5.0',
+        version: '0.6.0',
         watchdogMs: 4000,
         start: context => {
           context.scope.interval('heartbeat', () => {
@@ -3888,16 +4692,25 @@
       this.modules.register({
         id: 'movement',
         title: 'Movement',
-        version: '0.5.0',
+        version: '0.6.0',
         start: context => this.movement.start(context),
         stop: reason => this.movement.stop(reason),
         status: () => this.movement.status()
       });
 
       this.modules.register({
+        id: 'class-skills',
+        title: 'Class Skills',
+        version: '0.6.0',
+        start: () => this.classSkills.start(),
+        stop: reason => this.classSkills.stop(reason),
+        status: () => this.classSkills.status()
+      });
+
+      this.modules.register({
         id: 'combat',
         title: 'Combat',
-        version: '0.5.0',
+        version: '0.6.0',
         start: context => this.combat.start(context),
         stop: reason => this.combat.stop(reason),
         status: () => this.combat.status()
@@ -3907,6 +4720,8 @@
     _registerLiveTests() {
       let baseline = null;
       let livePlan = null;
+      let h6Baseline = null;
+      let h6Plan = null;
       this.liveTests.register({
         id: 'h5-combat',
         title: 'H5 – Einfacher Kampf',
@@ -4089,6 +4904,235 @@
           }
         ]
       });
+
+      this.liveTests.register({
+        id: 'h6-class-logic',
+        title: 'H6 – Klassenlogik',
+        description: 'Ein-Klick-Live-Test für klassenspezifische Skills, Cooldown-/MP-Planung, Defensive/Support und Anti-Spam.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.combat.stopSession('H6_LIVE_TEST_RESET'); } catch (_) {}
+          h6Plan = null;
+          const skillMetrics = runtime.classSkills.status().metrics;
+          const combatMetrics = runtime.combat.status().metrics;
+          h6Baseline = {
+            dispatched: skillMetrics.dispatched,
+            confirmed: skillMetrics.confirmed,
+            rejected: skillMetrics.rejected,
+            unknown: skillMetrics.unknown,
+            spamSkips: skillMetrics.spamSkips,
+            cooldownSkips: skillMetrics.cooldownSkips,
+            attackUnknown: combatMetrics.attackUnknown
+          };
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.combat.stopSession('H6_LIVE_TEST_CLEANUP'); } catch (_) {}
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Klasse, Live-Skills und sicheren Gegner prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(game.character.rip !== true, 'CHARACTER_DEAD');
+              assert(runtime.actions.available('use_skill'), 'USE_SKILL_API_UNAVAILABLE');
+
+              const classModule = runtime.modules.describe('class-skills');
+              assert(classModule && classModule.state === 'ACTIVE', 'CLASS_SKILL_MODULE_NOT_ACTIVE');
+
+              const ctype = String(game.character.ctype || '').toLowerCase();
+              const supported = runtime.classSkills.supportedSkills(ctype);
+              assert(supported.length > 0, 'CLASS_NOT_SUPPORTED_BY_H6:' + ctype);
+              const liveSkills = runtime.classSkills.liveSkillSummary(ctype).filter(row => row.available);
+              assert(liveSkills.length > 0, 'NO_SUPPORTED_LIVE_SKILL_FOR_CLASS:' + ctype);
+
+              const currentHp = Number(game.character.hp);
+              const maxHp = Number(game.character.maxHp);
+              assert(Number.isFinite(currentHp) && currentHp > 0, 'CHARACTER_HP_UNAVAILABLE');
+              assert(Number.isFinite(maxHp) && maxHp > 0, 'CHARACTER_MAX_HP_UNAVAILABLE');
+
+              const attackBudget = Math.max(5, Math.min(maxHp * 0.08, currentHp * 0.08));
+              const candidates = runtime.combat.safeCandidates({
+                maxAcquireDistance: 450,
+                maxAttack: attackBudget
+              });
+              assert(candidates.length > 0, 'NO_SAFE_VISIBLE_MONSTER_FOR_H6');
+
+              let chosen = null;
+              let preview = null;
+              for (const candidate of candidates) {
+                const decision = runtime.classSkills.preview(candidate.id);
+                if (decision) {
+                  chosen = candidate;
+                  preview = decision;
+                  break;
+                }
+              }
+              assert(chosen && preview, 'NO_SAFE_CLASS_SKILL_OPPORTUNITY:' + ctype);
+
+              const targetAttack = Number(chosen.attack);
+              assert(Number.isFinite(targetAttack) && targetAttack >= 0, 'TARGET_ATTACK_UNAVAILABLE');
+              const absoluteRetreatHp = Math.max(100, targetAttack * 20);
+              const minimumStartHp = Math.max(150, targetAttack * 25);
+              assert(currentHp >= minimumStartHp,
+                'HP_TOO_LOW_FOR_SAFE_H6_TEST:' + Math.round(currentHp) + '<' + Math.round(minimumStartHp));
+
+              const retreatHpRatio = Math.max(0.05, Math.min(0.35, absoluteRetreatHp / maxHp));
+              const resumeHpRatio = Math.max(
+                retreatHpRatio + 0.05,
+                Math.min(0.65, retreatHpRatio * 1.75)
+              );
+
+              h6Plan = {
+                characterClass: ctype,
+                monsterType: chosen.mtype || null,
+                maxAttack: attackBudget,
+                retreatHpRatio,
+                resumeHpRatio,
+                previewSkillId: preview.skillId,
+                previewReason: preview.reason
+              };
+
+              return {
+                character: game.character.name,
+                characterClass: ctype,
+                supportedSkills: supported,
+                liveSkills: liveSkills.map(row => row.id),
+                previewSkillId: preview.skillId,
+                previewReason: preview.reason,
+                target: chosen.name || chosen.mtype || chosen.id,
+                distance: chosen.distance,
+                attack: chosen.attack,
+                retreatHp: Math.round(maxHp * retreatHpRatio)
+              };
+            }
+          },
+          {
+            id: 'start-combat',
+            title: 'Combat mit H6-Klassenlogik starten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(h6Plan, 'H6_LIVE_TEST_PLAN_MISSING');
+              const result = runtime.combat.startSession({
+                owner: 'live-test-h6',
+                monsterType: h6Plan.monsterType || undefined,
+                maxAcquireDistance: 450,
+                maxAttack: h6Plan.maxAttack,
+                retreatHpRatio: h6Plan.retreatHpRatio,
+                resumeHpRatio: h6Plan.resumeHpRatio,
+                minMpRatio: 0,
+                kiting: false
+              });
+              assert(result && result.accepted === true, result && result.reason || 'H6_COMBAT_SESSION_START_FAILED');
+              const status = await waitFor(() => {
+                const combat = runtime.combat.status();
+                if (combat.lastSession && ['FAILED_SAFE', 'UNKNOWN'].includes(combat.lastSession.state)) {
+                  throw new Error(combat.lastSession.reason || combat.lastSession.state);
+                }
+                return combat.session && combat.session.targetId ? combat : null;
+              }, { timeoutMs: 8000, pollMs: 100, label: 'h6-target-acquisition' });
+              return {
+                sessionId: status.session.id,
+                targetId: status.session.targetId,
+                targetType: status.session.targetType
+              };
+            }
+          },
+          {
+            id: 'class-skill',
+            title: 'Mindestens einen klassenspezifischen Skill serverbestätigt einsetzen',
+            timeoutMs: 20000,
+            run: async ({ runtime, assert, waitFor }) => {
+              const status = await waitFor(() => {
+                const skills = runtime.classSkills.status();
+                if (skills.metrics.unknown > h6Baseline.unknown) {
+                  throw new Error(skills.suspendedReason || 'CLASS_SKILL_UNKNOWN');
+                }
+                return skills.metrics.confirmed > h6Baseline.confirmed ? skills : null;
+              }, { timeoutMs: 15000, pollMs: 100, label: 'confirmed-class-skill' });
+
+              assert(status.lastUse && status.lastUse.state === 'CONFIRMED', 'CLASS_SKILL_NOT_CONFIRMED');
+              return {
+                skillId: status.lastUse.skillId,
+                kind: status.lastUse.kind,
+                reason: status.lastUse.reason,
+                damage: status.lastUse.damage,
+                lethal: status.lastUse.lethal,
+                dispatched: status.metrics.dispatched - h6Baseline.dispatched,
+                confirmed: status.metrics.confirmed - h6Baseline.confirmed
+              };
+            }
+          },
+          {
+            id: 'anti-spam-window',
+            title: 'Klassenlogik fünf Sekunden ohne Skill-Spam/UNKNOWN beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              await sleep(5000);
+              const skills = runtime.classSkills.status();
+              const combat = runtime.combat.status();
+
+              assert(skills.metrics.unknown === h6Baseline.unknown, 'CLASS_SKILL_UNKNOWN_DURING_STABILITY_WINDOW');
+              assert(combat.metrics.attackUnknown === h6Baseline.attackUnknown, 'ATTACK_UNKNOWN_DURING_H6_STABILITY_WINDOW');
+              assert(!(combat.lastSession && ['FAILED_SAFE', 'UNKNOWN'].includes(combat.lastSession.state)),
+                combat.lastSession && combat.lastSession.reason || 'COMBAT_FAILED_DURING_H6');
+
+              const dispatched = skills.metrics.dispatched - h6Baseline.dispatched;
+              const confirmed = skills.metrics.confirmed - h6Baseline.confirmed;
+              const rejected = skills.metrics.rejected - h6Baseline.rejected;
+              const pending = skills.pending ? 1 : 0;
+              assert(dispatched <= confirmed + rejected + pending, 'CLASS_SKILL_DISPATCH_ACCOUNTING_INVALID');
+              assert(dispatched <= 12, 'CLASS_SKILL_SPAM_GUARD_EXCEEDED:' + dispatched);
+
+              return {
+                class: skills.currentClass,
+                dispatched,
+                confirmed,
+                rejected,
+                pending,
+                spamSkips: skills.metrics.spamSkips - h6Baseline.spamSkips,
+                cooldownSkips: skills.metrics.cooldownSkips - h6Baseline.cooldownSkips,
+                suspended: skills.suspended
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'Klassenlogik und Combat sauber freigeben',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.combat.stopSession('H6_LIVE_TEST_COMPLETE');
+              const combat = runtime.combat.status();
+              const skills = runtime.classSkills.status();
+              const movement = runtime.movement.status();
+
+              assert(combat.active === false, 'H6_COMBAT_STILL_ACTIVE_AFTER_STOP');
+              assert(skills.pending == null, 'H6_CLASS_SKILL_STILL_PENDING_AFTER_STOP');
+              assert(skills.sessionId == null, 'H6_CLASS_SKILL_SESSION_STILL_OWNED');
+              assert(!(movement.activeOrder && String(movement.activeOrder.owner || '').startsWith('combat-h5')),
+                'H6_COMBAT_MOVEMENT_STILL_ACTIVE');
+
+              return {
+                combatActive: combat.active,
+                classSkillPending: !!skills.pending,
+                classSkillSessionId: skills.sessionId,
+                movementActive: movement.active,
+                skillMetrics: {
+                  dispatched: skills.metrics.dispatched - h6Baseline.dispatched,
+                  confirmed: skills.metrics.confirmed - h6Baseline.confirmed,
+                  rejected: skills.metrics.rejected - h6Baseline.rejected,
+                  unknown: skills.metrics.unknown - h6Baseline.unknown
+                }
+              };
+            }
+          }
+        ]
+      });
     }
 
     _installErrorCapture() {
@@ -4232,6 +5276,7 @@
         game: this.game.status(),
         actions: this.actions.status(),
         movement: this.movement.status(),
+        classSkills: this.classSkills.status(),
         combat: this.combat.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
@@ -4252,6 +5297,7 @@
         character: game && game.character ? ns.helpers.clone(game.character) : null,
         actionBoundary: this.actions.status(),
         movement: this.movement.status(),
+        classSkills: this.classSkills.status(),
         combat: this.combat.status(),
         liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
@@ -4271,6 +5317,7 @@
       push('game-adapter', !!this.game.status() && typeof this.game.snapshot === 'function', this.game.status());
       push('action-boundary', !!this.actions.status() && this.actions.status().supportedActions.includes('move') && this.actions.status().supportedActions.includes('smart_move'), this.actions.status());
       push('movement-controller', !!this.movement.status() && typeof this.movement.moveLocal === 'function' && typeof this.movement.smartMove === 'function', this.movement.status());
+      push('class-skill-controller', !!this.classSkills.status() && typeof this.classSkills.maybeUse === 'function', this.classSkills.status());
       push('combat-controller', !!this.combat.status() && typeof this.combat.startSession === 'function' && typeof this.combat.stopSession === 'function', this.combat.status());
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
@@ -4752,12 +5799,16 @@
       const combat = status.combat || {};
       const session = combat.session || null;
       const metrics = combat.metrics || {};
+      const classSkills = status.classSkills || {};
+      const skillMetrics = classSkills.metrics || {};
+      const pendingSkill = classSkills.pending || null;
+      const liveSkills = Array.isArray(classSkills.liveSkills) ? classSkills.liveSkills.filter(row => row.available).map(row => row.id) : [];
       const pending = combat.pendingAttack || null;
       const candidates = Array.isArray(combat.safeCandidates) ? combat.safeCandidates : [];
-      const resultText = this.combatResult ? JSON.stringify(this.combatResult, null, 2) : 'Noch keine manuelle H5-Combat-Session.';
+      const resultText = this.combatResult ? JSON.stringify(this.combatResult, null, 2) : 'Noch keine manuelle H6-Combat-Session.';
 
-      panel.innerHTML = `<div class="albot-card"><b>H5 Einfacher Kampf</b>
-<div class="albot-small">H5 verwendet nur den normalen Angriff. Klassenspezifische Skills folgen in H6. Targets werden pro Tick aus der frischen sichtbaren Entity-Sicht bestätigt.</div>
+      panel.innerHTML = `<div class="albot-card"><b>H5/H6 Combat & Klassenlogik</b>
+<div class="albot-small">H5 stellt Targeting, Movement und Basisangriff bereit. H6 ergänzt klassenspezifische Skills mit Live-Readiness, MP-Reserve, Cooldown-Prüfung und Anti-Spam. Party- und AoE-Logik folgen erst in H7/H8.</div>
 <div class="albot-grid" style="margin-top:8px">
 <div><span class="albot-k">Modul</span><div class="albot-v">${combat.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
 <div><span class="albot-k">Combat</span><div class="albot-v">${esc(combat.state || 'IDLE')}</div></div>
@@ -4769,7 +5820,21 @@
 <div><span class="albot-k">Retreats</span><div class="albot-v">${esc(metrics.retreats || 0)}</div></div>
 </div></div>
 
-<div class="albot-card"><b>Manuelle H5-Session</b>
+<div class="albot-card"><b>H6 Klassen-Skills</b>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Klasse</span><div class="albot-v">${esc(classSkills.currentClass || '-')}</div></div>
+<div><span class="albot-k">Live Skills</span><div class="albot-v">${liveSkills.length ? liveSkills.map(esc).join(', ') : 'keine'}</div></div>
+<div><span class="albot-k">Pending</span><div class="albot-v">${pendingSkill ? esc(pendingSkill.skillId) : 'keiner'}</div></div>
+<div><span class="albot-k">Bestätigt</span><div class="albot-v">${esc(skillMetrics.confirmed || 0)}</div></div>
+<div><span class="albot-k">Abgelehnt</span><div class="albot-v">${esc(skillMetrics.rejected || 0)}</div></div>
+<div><span class="albot-k">UNKNOWN</span><div class="albot-v">${esc(skillMetrics.unknown || 0)}</div></div>
+<div><span class="albot-k">Anti-Spam Skips</span><div class="albot-v">${esc(skillMetrics.spamSkips || 0)}</div></div>
+<div><span class="albot-k">Suspendiert</span><div class="albot-v">${classSkills.suspended ? 'JA · '+esc(classSkills.suspendedReason || '-') : 'NEIN'}</div></div>
+</div>
+<div class="albot-small" style="margin-top:8px">Letzter Skill: ${classSkills.lastUse ? esc(classSkills.lastUse.skillId)+' · '+esc(classSkills.lastUse.state)+' · '+esc(classSkills.lastUse.reason || '-') : 'noch keiner'}</div>
+</div>
+
+<div class="albot-card"><b>Manuelle H6-Session</b>
 <div class="albot-row"><input id="albot-combat-type" placeholder="Monster-Typ optional, z.B. goo"><input id="albot-combat-maxattack" type="number" min="0" step="1" placeholder="Max. Monster-Angriff optional"></div>
 <div class="albot-row"><label class="albot-small"><input id="albot-combat-kiting" type="checkbox"> Kiting-Grundlage aktivieren</label></div>
 <div class="albot-row"><button id="albot-combat-start" class="albot-btn" ${combat.active ? 'disabled' : ''}>Combat starten</button><button id="albot-combat-stop" class="albot-btn warn" ${combat.active ? '' : 'disabled'}>Combat stoppen</button></div>
@@ -4790,7 +5855,7 @@
         const maxRaw = panel.querySelector('#albot-combat-maxattack').value;
         const kiting = panel.querySelector('#albot-combat-kiting').checked;
         run(() => this.runtime.combat.startSession({
-          owner: 'gui-h5-combat',
+          owner: 'gui-h6-combat',
           monsterType: type || undefined,
           maxAttack: maxRaw === '' ? undefined : Number(maxRaw),
           kiting
@@ -4924,7 +5989,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
     renderDev(status) {
       const panel = this.host.querySelector('#albot-panel-dev');
       const scheduler = status.scheduler || {};
-      const resultText = this.devResult ? JSON.stringify(this.devResult, null, 2) : 'H5 Combat · ' + status.version;
+      const resultText = this.devResult ? JSON.stringify(this.devResult, null, 2) : 'H6 Klassenlogik · ' + status.version;
       panel.innerHTML = `<div class="albot-card"><b>Entwicklung</b>
 <div class="albot-row"><button id="albot-selftest" class="albot-btn">Selftest</button><button id="albot-stability-test" class="albot-btn">H2 Runtime-Test</button><button id="albot-reset-stop" class="albot-btn danger">STOP zurücksetzen</button><button id="albot-show" class="albot-btn">GUI anzeigen</button></div>
 <div class="albot-small">Scheduler: ${scheduler.enabled ? 'ACTIVE' : 'STOPPED'} · Ressourcen: ${esc(scheduler.totalResources || 0)} · Generation: ${esc(scheduler.generation || 0)} · Boot: #${esc(status.bootCount || 1)}</div>
@@ -5030,7 +6095,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.5.0-h5',
+    version: '0.6.0-h6',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -5103,6 +6168,13 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
       candidates: options => runtime.combat.safeCandidates(options || {})
     },
 
+    classSkills: {
+      status: () => runtime.classSkills.status(),
+      supported: ctype => runtime.classSkills.supportedSkills(ctype),
+      live: ctype => runtime.classSkills.liveSkillSummary(ctype),
+      preview: targetId => runtime.classSkills.preview(targetId)
+    },
+
     liveTests: {
       status: () => runtime.liveTests.status(),
       list: () => runtime.liveTests.list(),
@@ -5148,6 +6220,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
   Object.freeze(api.game);
   Object.freeze(api.movement);
   Object.freeze(api.combat);
+  Object.freeze(api.classSkills);
   Object.freeze(api.liveTests);
   Object.freeze(api.knowledge);
   Object.freeze(api.roster);
@@ -5165,7 +6238,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
     };
   } catch (_) {}
 
-  runtime.logger.info('AL Bot H5 geladen', {
+  runtime.logger.info('AL Bot H6 geladen', {
     version: api.version,
     bootCount,
     hotReload: !!previous,

@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.5.0-h5';
+      this.version = options.version || '0.6.0-h6';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -33,12 +33,19 @@
         game: this.game,
         actions: this.actions
       });
+      this.classSkills = new ns.ClassSkillController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions
+      });
       this.combat = new ns.CombatController({
         root: this.root,
         logger: this.logger,
         game: this.game,
         actions: this.actions,
-        movement: this.movement
+        movement: this.movement,
+        classSkills: this.classSkills
       });
       this.knowledge = new ns.KnowledgeService({ logger: this.logger, storage: this.storage });
       this.knowledgeProvider = new ns.WindowsBridgeKnowledgeProvider({ root: this.root, logger: this.logger });
@@ -67,7 +74,7 @@
       this.modules.register({
         id: 'runtime-health',
         title: 'Runtime Health',
-        version: '0.5.0',
+        version: '0.6.0',
         watchdogMs: 4000,
         start: context => {
           context.scope.interval('heartbeat', () => {
@@ -89,16 +96,25 @@
       this.modules.register({
         id: 'movement',
         title: 'Movement',
-        version: '0.5.0',
+        version: '0.6.0',
         start: context => this.movement.start(context),
         stop: reason => this.movement.stop(reason),
         status: () => this.movement.status()
       });
 
       this.modules.register({
+        id: 'class-skills',
+        title: 'Class Skills',
+        version: '0.6.0',
+        start: () => this.classSkills.start(),
+        stop: reason => this.classSkills.stop(reason),
+        status: () => this.classSkills.status()
+      });
+
+      this.modules.register({
         id: 'combat',
         title: 'Combat',
-        version: '0.5.0',
+        version: '0.6.0',
         start: context => this.combat.start(context),
         stop: reason => this.combat.stop(reason),
         status: () => this.combat.status()
@@ -108,6 +124,8 @@
     _registerLiveTests() {
       let baseline = null;
       let livePlan = null;
+      let h6Baseline = null;
+      let h6Plan = null;
       this.liveTests.register({
         id: 'h5-combat',
         title: 'H5 – Einfacher Kampf',
@@ -290,6 +308,235 @@
           }
         ]
       });
+
+      this.liveTests.register({
+        id: 'h6-class-logic',
+        title: 'H6 – Klassenlogik',
+        description: 'Ein-Klick-Live-Test für klassenspezifische Skills, Cooldown-/MP-Planung, Defensive/Support und Anti-Spam.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.combat.stopSession('H6_LIVE_TEST_RESET'); } catch (_) {}
+          h6Plan = null;
+          const skillMetrics = runtime.classSkills.status().metrics;
+          const combatMetrics = runtime.combat.status().metrics;
+          h6Baseline = {
+            dispatched: skillMetrics.dispatched,
+            confirmed: skillMetrics.confirmed,
+            rejected: skillMetrics.rejected,
+            unknown: skillMetrics.unknown,
+            spamSkips: skillMetrics.spamSkips,
+            cooldownSkips: skillMetrics.cooldownSkips,
+            attackUnknown: combatMetrics.attackUnknown
+          };
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.combat.stopSession('H6_LIVE_TEST_CLEANUP'); } catch (_) {}
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Klasse, Live-Skills und sicheren Gegner prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(game.character.rip !== true, 'CHARACTER_DEAD');
+              assert(runtime.actions.available('use_skill'), 'USE_SKILL_API_UNAVAILABLE');
+
+              const classModule = runtime.modules.describe('class-skills');
+              assert(classModule && classModule.state === 'ACTIVE', 'CLASS_SKILL_MODULE_NOT_ACTIVE');
+
+              const ctype = String(game.character.ctype || '').toLowerCase();
+              const supported = runtime.classSkills.supportedSkills(ctype);
+              assert(supported.length > 0, 'CLASS_NOT_SUPPORTED_BY_H6:' + ctype);
+              const liveSkills = runtime.classSkills.liveSkillSummary(ctype).filter(row => row.available);
+              assert(liveSkills.length > 0, 'NO_SUPPORTED_LIVE_SKILL_FOR_CLASS:' + ctype);
+
+              const currentHp = Number(game.character.hp);
+              const maxHp = Number(game.character.maxHp);
+              assert(Number.isFinite(currentHp) && currentHp > 0, 'CHARACTER_HP_UNAVAILABLE');
+              assert(Number.isFinite(maxHp) && maxHp > 0, 'CHARACTER_MAX_HP_UNAVAILABLE');
+
+              const attackBudget = Math.max(5, Math.min(maxHp * 0.08, currentHp * 0.08));
+              const candidates = runtime.combat.safeCandidates({
+                maxAcquireDistance: 450,
+                maxAttack: attackBudget
+              });
+              assert(candidates.length > 0, 'NO_SAFE_VISIBLE_MONSTER_FOR_H6');
+
+              let chosen = null;
+              let preview = null;
+              for (const candidate of candidates) {
+                const decision = runtime.classSkills.preview(candidate.id);
+                if (decision) {
+                  chosen = candidate;
+                  preview = decision;
+                  break;
+                }
+              }
+              assert(chosen && preview, 'NO_SAFE_CLASS_SKILL_OPPORTUNITY:' + ctype);
+
+              const targetAttack = Number(chosen.attack);
+              assert(Number.isFinite(targetAttack) && targetAttack >= 0, 'TARGET_ATTACK_UNAVAILABLE');
+              const absoluteRetreatHp = Math.max(100, targetAttack * 20);
+              const minimumStartHp = Math.max(150, targetAttack * 25);
+              assert(currentHp >= minimumStartHp,
+                'HP_TOO_LOW_FOR_SAFE_H6_TEST:' + Math.round(currentHp) + '<' + Math.round(minimumStartHp));
+
+              const retreatHpRatio = Math.max(0.05, Math.min(0.35, absoluteRetreatHp / maxHp));
+              const resumeHpRatio = Math.max(
+                retreatHpRatio + 0.05,
+                Math.min(0.65, retreatHpRatio * 1.75)
+              );
+
+              h6Plan = {
+                characterClass: ctype,
+                monsterType: chosen.mtype || null,
+                maxAttack: attackBudget,
+                retreatHpRatio,
+                resumeHpRatio,
+                previewSkillId: preview.skillId,
+                previewReason: preview.reason
+              };
+
+              return {
+                character: game.character.name,
+                characterClass: ctype,
+                supportedSkills: supported,
+                liveSkills: liveSkills.map(row => row.id),
+                previewSkillId: preview.skillId,
+                previewReason: preview.reason,
+                target: chosen.name || chosen.mtype || chosen.id,
+                distance: chosen.distance,
+                attack: chosen.attack,
+                retreatHp: Math.round(maxHp * retreatHpRatio)
+              };
+            }
+          },
+          {
+            id: 'start-combat',
+            title: 'Combat mit H6-Klassenlogik starten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(h6Plan, 'H6_LIVE_TEST_PLAN_MISSING');
+              const result = runtime.combat.startSession({
+                owner: 'live-test-h6',
+                monsterType: h6Plan.monsterType || undefined,
+                maxAcquireDistance: 450,
+                maxAttack: h6Plan.maxAttack,
+                retreatHpRatio: h6Plan.retreatHpRatio,
+                resumeHpRatio: h6Plan.resumeHpRatio,
+                minMpRatio: 0,
+                kiting: false
+              });
+              assert(result && result.accepted === true, result && result.reason || 'H6_COMBAT_SESSION_START_FAILED');
+              const status = await waitFor(() => {
+                const combat = runtime.combat.status();
+                if (combat.lastSession && ['FAILED_SAFE', 'UNKNOWN'].includes(combat.lastSession.state)) {
+                  throw new Error(combat.lastSession.reason || combat.lastSession.state);
+                }
+                return combat.session && combat.session.targetId ? combat : null;
+              }, { timeoutMs: 8000, pollMs: 100, label: 'h6-target-acquisition' });
+              return {
+                sessionId: status.session.id,
+                targetId: status.session.targetId,
+                targetType: status.session.targetType
+              };
+            }
+          },
+          {
+            id: 'class-skill',
+            title: 'Mindestens einen klassenspezifischen Skill serverbestätigt einsetzen',
+            timeoutMs: 20000,
+            run: async ({ runtime, assert, waitFor }) => {
+              const status = await waitFor(() => {
+                const skills = runtime.classSkills.status();
+                if (skills.metrics.unknown > h6Baseline.unknown) {
+                  throw new Error(skills.suspendedReason || 'CLASS_SKILL_UNKNOWN');
+                }
+                return skills.metrics.confirmed > h6Baseline.confirmed ? skills : null;
+              }, { timeoutMs: 15000, pollMs: 100, label: 'confirmed-class-skill' });
+
+              assert(status.lastUse && status.lastUse.state === 'CONFIRMED', 'CLASS_SKILL_NOT_CONFIRMED');
+              return {
+                skillId: status.lastUse.skillId,
+                kind: status.lastUse.kind,
+                reason: status.lastUse.reason,
+                damage: status.lastUse.damage,
+                lethal: status.lastUse.lethal,
+                dispatched: status.metrics.dispatched - h6Baseline.dispatched,
+                confirmed: status.metrics.confirmed - h6Baseline.confirmed
+              };
+            }
+          },
+          {
+            id: 'anti-spam-window',
+            title: 'Klassenlogik fünf Sekunden ohne Skill-Spam/UNKNOWN beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              await sleep(5000);
+              const skills = runtime.classSkills.status();
+              const combat = runtime.combat.status();
+
+              assert(skills.metrics.unknown === h6Baseline.unknown, 'CLASS_SKILL_UNKNOWN_DURING_STABILITY_WINDOW');
+              assert(combat.metrics.attackUnknown === h6Baseline.attackUnknown, 'ATTACK_UNKNOWN_DURING_H6_STABILITY_WINDOW');
+              assert(!(combat.lastSession && ['FAILED_SAFE', 'UNKNOWN'].includes(combat.lastSession.state)),
+                combat.lastSession && combat.lastSession.reason || 'COMBAT_FAILED_DURING_H6');
+
+              const dispatched = skills.metrics.dispatched - h6Baseline.dispatched;
+              const confirmed = skills.metrics.confirmed - h6Baseline.confirmed;
+              const rejected = skills.metrics.rejected - h6Baseline.rejected;
+              const pending = skills.pending ? 1 : 0;
+              assert(dispatched <= confirmed + rejected + pending, 'CLASS_SKILL_DISPATCH_ACCOUNTING_INVALID');
+              assert(dispatched <= 12, 'CLASS_SKILL_SPAM_GUARD_EXCEEDED:' + dispatched);
+
+              return {
+                class: skills.currentClass,
+                dispatched,
+                confirmed,
+                rejected,
+                pending,
+                spamSkips: skills.metrics.spamSkips - h6Baseline.spamSkips,
+                cooldownSkips: skills.metrics.cooldownSkips - h6Baseline.cooldownSkips,
+                suspended: skills.suspended
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'Klassenlogik und Combat sauber freigeben',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.combat.stopSession('H6_LIVE_TEST_COMPLETE');
+              const combat = runtime.combat.status();
+              const skills = runtime.classSkills.status();
+              const movement = runtime.movement.status();
+
+              assert(combat.active === false, 'H6_COMBAT_STILL_ACTIVE_AFTER_STOP');
+              assert(skills.pending == null, 'H6_CLASS_SKILL_STILL_PENDING_AFTER_STOP');
+              assert(skills.sessionId == null, 'H6_CLASS_SKILL_SESSION_STILL_OWNED');
+              assert(!(movement.activeOrder && String(movement.activeOrder.owner || '').startsWith('combat-h5')),
+                'H6_COMBAT_MOVEMENT_STILL_ACTIVE');
+
+              return {
+                combatActive: combat.active,
+                classSkillPending: !!skills.pending,
+                classSkillSessionId: skills.sessionId,
+                movementActive: movement.active,
+                skillMetrics: {
+                  dispatched: skills.metrics.dispatched - h6Baseline.dispatched,
+                  confirmed: skills.metrics.confirmed - h6Baseline.confirmed,
+                  rejected: skills.metrics.rejected - h6Baseline.rejected,
+                  unknown: skills.metrics.unknown - h6Baseline.unknown
+                }
+              };
+            }
+          }
+        ]
+      });
     }
 
     _installErrorCapture() {
@@ -433,6 +680,7 @@
         game: this.game.status(),
         actions: this.actions.status(),
         movement: this.movement.status(),
+        classSkills: this.classSkills.status(),
         combat: this.combat.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
@@ -453,6 +701,7 @@
         character: game && game.character ? ns.helpers.clone(game.character) : null,
         actionBoundary: this.actions.status(),
         movement: this.movement.status(),
+        classSkills: this.classSkills.status(),
         combat: this.combat.status(),
         liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
@@ -472,6 +721,7 @@
       push('game-adapter', !!this.game.status() && typeof this.game.snapshot === 'function', this.game.status());
       push('action-boundary', !!this.actions.status() && this.actions.status().supportedActions.includes('move') && this.actions.status().supportedActions.includes('smart_move'), this.actions.status());
       push('movement-controller', !!this.movement.status() && typeof this.movement.moveLocal === 'function' && typeof this.movement.smartMove === 'function', this.movement.status());
+      push('class-skill-controller', !!this.classSkills.status() && typeof this.classSkills.maybeUse === 'function', this.classSkills.status());
       push('combat-controller', !!this.combat.status() && typeof this.combat.startSession === 'function' && typeof this.combat.stopSession === 'function', this.combat.status());
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());

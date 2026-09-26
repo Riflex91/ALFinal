@@ -4,8 +4,8 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
-const source = ['src/core.js', 'src/scheduler.js', 'src/game-adapter.js', 'src/knowledge.js', 'src/action-boundary.js', 'src/movement.js', 'src/combat.js', 'src/live-test.js', 'src/runtime.js', 'src/ui.js', 'src/entry.js'];
-const banner = `/* AL Bot 0.5.0-h5 | generated file | do not edit dist directly */\n`;
+const source = ['src/core.js', 'src/scheduler.js', 'src/game-adapter.js', 'src/knowledge.js', 'src/action-boundary.js', 'src/movement.js', 'src/class-skills.js', 'src/combat.js', 'src/live-test.js', 'src/runtime.js', 'src/ui.js', 'src/entry.js'];
+const banner = `/* AL Bot 0.6.0-h6 | generated file | do not edit dist directly */\n`;
 const body = source.map(file => fs.readFileSync(path.join(root, file), 'utf8')).join('\n\n');
 fs.mkdirSync(path.join(root, 'dist'), { recursive: true });
 fs.writeFileSync(path.join(root, 'dist/al-bot.js'), banner + body + '\n', 'utf8');

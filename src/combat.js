@@ -36,6 +36,7 @@
       this.game = options.game;
       this.actions = options.actions;
       this.movement = options.movement;
+      this.classSkills = options.classSkills || null;
       this.now = typeof options.now === 'function' ? options.now : () => Date.now();
 
       this.config = {
@@ -165,6 +166,9 @@
       };
       this.pendingAttack = null;
       this.targetConfirmDeadlineMs = null;
+      if (this.classSkills && typeof this.classSkills.beginSession === 'function') {
+        this.classSkills.beginSession(id);
+      }
       this.metrics.sessions += 1;
       if (this.logger) this.logger.warn('Combat-Session gestartet', {
         id,
@@ -226,6 +230,9 @@
       this._cancelCombatMovement(reason);
       this._clearGameTarget(reason);
       this.pendingAttack = null;
+      if (this.classSkills && typeof this.classSkills.endSession === 'function') {
+        try { this.classSkills.endSession(reason); } catch (_) {}
+      }
       this.lastSession = this._publicSession(session);
       this.session = null;
 
@@ -247,6 +254,9 @@
       this._cancelCombatMovement(reason);
       this._clearGameTarget(reason);
       this.pendingAttack = null;
+      if (this.classSkills && typeof this.classSkills.endSession === 'function') {
+        try { this.classSkills.endSession(reason); } catch (_) {}
+      }
       this.lastSession = this._publicSession(this.session);
       if (this.logger) this.logger.error('Combat fail-safe beendet', {
         id: this.session.id,
@@ -694,6 +704,29 @@
         this._clearGameTarget('TARGET_NOT_FRESH');
         this.session.state = 'ACQUIRING';
         return;
+      }
+
+      if (this.classSkills && typeof this.classSkills.maybeUse === 'function') {
+        const skill = this.classSkills.maybeUse({
+          game,
+          target,
+          session: this.session,
+          readiness
+        });
+        if (skill && skill.handled) {
+          this.session.state = skill.unknown ? 'CLASS_SKILL_UNKNOWN'
+            : skill.pending ? 'CLASS_SKILL_PENDING'
+              : 'CLASS_SKILL_ACTION';
+          this.session.lastDecision = {
+            at: new Date().toISOString(),
+            type: skill.unknown ? 'CLASS_SKILL_UNKNOWN' : 'CLASS_SKILL',
+            skillId: skill.skillId || null,
+            targetId: skill.targetId || target.id,
+            kind: skill.kind || null,
+            reason: skill.reason || null
+          };
+          return;
+        }
       }
 
       if (!readiness.inRange) {

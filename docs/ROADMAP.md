@@ -121,6 +121,8 @@ Live-Ergebnis:
 
 ## H6 – Klassenlogik
 
+**🟩 BESTANDEN – 2026-09-26**
+
 **🟦 BAU**
 - Ranger-/Mage-/Warrior-/Priest-/Rogue-/Paladin-spezifische Skills
 - Cooldown-/Ressourcenplanung
@@ -128,8 +130,22 @@ Live-Ergebnis:
 - Spam-Vermeidung
 
 **🟧 LIVE-TEST**
+- Ein-Klick-Test über **Test starten**
+- aktuelle Klasse und Live-`G.skills` werden automatisch erkannt
+- Bot wählt selbst einen konservativ sicheren Gegner
+- mindestens ein klassenspezifischer Skill muss serverbestätigt eingesetzt werden
+- 5-Sekunden-Fenster prüft UNKNOWN, Cooldown-/MP-Planung und Anti-Spam
+- Cleanup + Diagnosekopie automatisch
 - verwendete Charaktere nutzen Skills sinnvoll
 - kein unnötiger Skill-Spam
+
+Live-Ergebnis:
+- Ein-Klick-Suite vollständig PASSED
+- Ranger live mit Hunter's Mark + Supershot validiert
+- 2 Class-Skills dispatched, 2 bestätigt
+- 0 rejected, 0 UNKNOWN
+- H4-Range-Annäherung und H5-Basiscombat blieben stabil
+- Cleanup vollständig, Scheduler danach 0 Ressourcen
 
 ---
 
