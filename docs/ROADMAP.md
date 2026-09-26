@@ -151,7 +151,7 @@ Live-Ergebnis:
 
 ## H7 – Party
 
-**🟦 BAU – aktuell**
+**🟩 BESTANDEN – 2026-09-26**
 - Party-Erkennung aus Live-Party-State + sichtbaren Entities
 - Owned-/Foreign-Validierung ohne hartcodierte Namen
 - Assist
@@ -171,6 +171,16 @@ Live-Ergebnis:
 - 5-Sekunden-Fenster auf UNKNOWN und Focus-Pingpong
 - Cleanup + Diagnosekopie automatisch
 - mehrere Charaktere kämpfen als koordinierte Gruppe
+
+
+Live-Ergebnis:
+- Rogue/DPS, Warrior/TANK und Priest/HEALER live vollständig PASSED
+- Merchant/LOGISTICS final observer-only `PASSED / ALL_STEPS_PASSED`
+- Merchant ohne Combat-Start: `combatState = NOT_STARTED`, keine Attack-Dispatches
+- `attackUnknown = 0`
+- `focusPingPongs = 0`
+- Cleanup vollständig, Runtime STOPPED, Scheduler danach 0 Ressourcen
+- synchrones Support-UNKNOWN zusätzlich per Regressionstest fail-closed abgesichert
 
 ---
 
