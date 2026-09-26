@@ -85,7 +85,7 @@ test('knowledge provider failures keep last-known-good snapshot', async () => {
   let fail = false;
   ctx.ALBot.knowledge.setProvider({
     status: () => ({ name: 'test-provider', ready: !fail }),
-    getSnapshot: async () => { if (fail) throw new Error('offline'); return { generation: 7, source: 'TEST' }; }
+    getSnapshot: async () => { if (fail) throw new Error('offline'); return { schemaVersion: 1, generation: 7, source: 'TEST', snapshotSha256: 'a'.repeat(64), factCount: 0, facts: [] }; }
   });
   await ctx.ALBot.knowledge.refresh();
   assert.equal(ctx.ALBot.knowledge.status().lastKnownGood.generation, 7);
