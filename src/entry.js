@@ -164,6 +164,7 @@
       status: () => runtime.inventory.status(),
       plan: () => runtime.inventory.plan(),
       tick: () => runtime.inventory.tick(),
+      reset: reason => runtime.inventory.resetSafety(reason || 'API_H10_RESET'),
       rules: rules => rules == null ? runtime.inventory.ruleSnapshot() : runtime.inventory.setRules(rules)
     },
 
