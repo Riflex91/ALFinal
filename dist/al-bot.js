@@ -1031,18 +1031,24 @@
     _entityByIdOrName(id) {
       if (id == null) return null;
       const wanted = String(id);
-      for (const entity of Object.values(this._entities())) {
+      for (const [key, entity] of Object.entries(this._entities())) {
         if (!entity) continue;
-        if (String(entity.id || '') === wanted || String(entity.name || '') === wanted) return entity;
+        if (String(key) === wanted
+          || String(entity.id || '') === wanted
+          || String(entity.name || '') === wanted) {
+          return { key: String(key), entity };
+        }
       }
       return null;
     }
 
-    _normalizeEntity(entity, characterMap) {
-      if (!entity) return null;
+    _normalizeEntity(match, characterMap) {
+      if (!match) return null;
+      const entity = match.entity || match;
+      const fallbackId = match.key != null ? String(match.key) : null;
       const pos = this._position(entity);
       return {
-        id: entity.id == null ? null : String(entity.id),
+        id: entity.id == null ? fallbackId : String(entity.id),
         name: entity.name == null ? null : cleanText(entity.name, 120),
         type: entity.type == null ? null : cleanText(entity.type, 80),
         mtype: entity.mtype == null ? null : cleanText(entity.mtype, 120),
