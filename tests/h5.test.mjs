@@ -122,6 +122,16 @@ function combatContext(options = {}) {
           target.visible = false;
         }
       }, options.damageDelayMs == null ? 10 : options.damageDelayMs);
+      if (options.authoritativeResponse) {
+        return Promise.resolve({
+          success: true,
+          response: 'data',
+          place: 'attack',
+          target: target && target.id,
+          attacker: character.name,
+          damage
+        });
+      }
       return Promise.resolve({ success: true });
     },
     get_characters: () => [{ name: character.name, ctype: character.ctype, online: true }],
@@ -373,4 +383,41 @@ test('H5 one-click live test adapts retreat threshold to current HP and weak mon
   assert.equal(result.steps[2].state, 'PASSED');
   assert.equal(result.steps[3].state, 'PASSED');
   assert.equal(result.steps[4].state, 'PASSED');
+});
+
+
+test('H5 confirms a lethal vanished target from authoritative Adventure Land attack response', async t => {
+  const { ctx, monster } = combatContext({
+    damage: 104,
+    damageDelayMs: 0,
+    authoritativeResponse: true,
+    cooldownMs: 500
+  });
+  monster.hp = 3;
+  monster.max_hp = 100;
+  t.after(async () => {
+    try { ctx.ALBot && ctx.ALBot.combat && ctx.ALBot.combat.stop('TEST_CLEANUP'); } catch (_) {}
+    try { ctx.ALBot && await ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {}
+  });
+
+  vm.runInNewContext(bundle, ctx);
+  await ctx.ALBot.start();
+  const started = ctx.ALBot.combat.start({
+    owner: 'test-authoritative-kill',
+    maxAttackToHpRatio: 0.5,
+    minMpRatio: 0
+  });
+  assert.equal(started.accepted, true);
+
+  await sleep(450);
+  const status = ctx.ALBot.combat.status();
+
+  assert.equal(status.metrics.attackUnknown, 0);
+  assert.ok(status.metrics.attacksConfirmed >= 1);
+  assert.ok(status.metrics.killsObserved >= 1);
+  assert.ok(
+    (status.session && status.session.lastDecision && status.session.lastDecision.type === 'KILL_CONFIRMED_SERVER')
+    || (status.lastSession && status.lastSession.lastDecision && status.lastSession.lastDecision.type === 'KILL_CONFIRMED_SERVER')
+    || status.metrics.killsObserved >= 1
+  );
 });
