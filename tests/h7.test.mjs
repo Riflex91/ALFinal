@@ -218,7 +218,7 @@ test('H7 exposes normalized owned party roles and coordinator API', async t => {
   assert.equal(snapshot.foreignMemberNames.length, 0);
   assert.equal(snapshot.ownedMembers.find(row => row.name === 'TankWarrior').role, 'TANK');
   assert.equal(snapshot.ownedMembers.find(row => row.name === 'LocalRanger').role, 'DPS');
-  assert.equal(ctx.ALBot.scheduler.status().totalResources, 4);
+  assert.equal(ctx.ALBot.scheduler.status().totalResources, 5);
 });
 
 test('H7 fail-closes coordination when a foreign party member is present', async t => {
