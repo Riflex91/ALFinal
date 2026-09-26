@@ -339,6 +339,7 @@
         rangeMultiplier: finite(raw.range_multiplier),
         rangeBonus: finite(raw.range_bonus),
         damageMultiplier: finite(raw.damage_multiplier),
+        maxTargets: finite(raw.max_targets),
         share: raw.share == null ? null : cleanText(raw.share, 120),
         target: raw.target == null ? null : safeBoolean(raw.target),
         multi: safeBoolean(raw.multi),
