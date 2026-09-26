@@ -486,6 +486,8 @@ Bereits umgesetzt:
 - keine direkte H9-ActionBoundary-Umgehung;
 - H9 stiehlt keine fremde H8-Farming-Ownership;
 - H9 stoppt nur eigene H4/H8-Ownership;
+- fremdes Party-Mitglied während einer laufenden H9-Session -> eigene H8/H4-Arbeit sofort stoppen + H9 suspendieren;
+- fremde aktive H4-Movement-Ownership -> H9 suspendiert, kein konkurrierender Move-Dispatch;
 - H4 Movement `UNKNOWN` / `FAILED_SAFE` -> H9-Suspension ohne Blind-Retry;
 - Mindest-Hold-Zeit;
 - Switch-Cooldown;
