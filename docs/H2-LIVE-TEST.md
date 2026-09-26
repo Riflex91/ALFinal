@@ -45,7 +45,7 @@ Nach dem Laden zeigt die Übersicht:
     - kein Modul bleibt in `STARTING` oder `STOPPING`.
 12. Wieder **Start** drücken.
 13. Prüfen, dass die Gesamtzahl der Scheduler-Ressourcen wieder genau dem gemerkten Ausgangswert entspricht und nicht wächst.
-14. Während Runtime = `RUNNING` dasselbe H2-Bundle erneut laden.
+14. Während Runtime = `RUNNING` dasselbe H2-Bundle erneut laden. Adventure Land darf dafür einen neuen Runner-Kontext erzeugen; H2 verankert die Hot-Reload-Erkennung im gemeinsamen same-origin Host-Fenster.
 15. Nach dem Reload prüfen:
     - Boot-Zähler ist erhöht;
     - Anzeige enthält `Hot Reload`;
