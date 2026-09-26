@@ -6684,7 +6684,8 @@
       this.sequence = 0;
       this.config = {
         tickMs: Math.max(250, Math.min(5000, Number(options.tickMs) || 750)),
-        reserveFreeSlots: Math.max(1, Math.min(12, Number(options.reserveFreeSlots) || 2))
+        reserveFreeSlots: Math.max(1, Math.min(12, Number(options.reserveFreeSlots) || 2)),
+        lootOutcomeTimeoutMs: Math.max(1000, Math.min(60000, Number(options.lootOutcomeTimeoutMs) || 5000))
       };
       this.rules = {
         keepNames: new Set(),
@@ -6787,7 +6788,9 @@
       if (item.expiresAt) return { disposition: 'PROTECT', reason: 'ITEM_EXPIRING', protected: true };
       if (level > 0) return { disposition: 'PROTECT', reason: 'LEVELED_ITEM', protected: true };
       if (goalTargets.has(name)) return { disposition: 'RESERVE', reason: 'ACTIVE_COLLECTION_GOAL', protected: true };
-      if (type === 'quest') return { disposition: 'RESERVE', reason: 'QUEST_ITEM', protected: true };
+      if (type === 'quest' || definition.quest === true) {
+        return { disposition: 'RESERVE', reason: 'QUEST_ITEM', protected: true };
+      }
 
       const equipmentTypes = new Set([
         'weapon', 'shield', 'helmet', 'coat', 'pants', 'gloves', 'shoes',
@@ -6870,7 +6873,21 @@
 
     _observePendingLoot() {
       const pending = this.pendingLoot;
-      if (!pending || pending.settlement === 'PENDING') return false;
+      if (!pending) return false;
+      if (pending.settlement === 'PENDING') {
+        const deadlineAtMs = finite(pending.deadlineAtMs);
+        if (deadlineAtMs == null || Date.now() < deadlineAtMs) return false;
+        this.pendingLoot = null;
+        this.metrics.lootUnknown += 1;
+        this.suspendedReason = 'H10_LOOT_OUTCOME_TIMEOUT';
+        this.lastAction = {
+          at: new Date().toISOString(),
+          type: 'LOOT_UNKNOWN',
+          reason: this.suspendedReason,
+          chestId: pending.chestId
+        };
+        return true;
+      }
       this.pendingLoot = null;
 
       if (pending.settlement === 'REJECTED') {
@@ -6938,10 +6955,13 @@
         return { state: 'WAITING', reason: result && result.state || 'H10_LOOT_REJECTED', plan };
       }
 
+      const dispatchedAtMs = Date.now();
       const pending = {
         id: 'loot-' + (++this.sequence),
         chestId: String(chestId),
-        dispatchedAt: new Date().toISOString(),
+        dispatchedAt: new Date(dispatchedAtMs).toISOString(),
+        dispatchedAtMs,
+        deadlineAtMs: dispatchedAtMs + this.config.lootOutcomeTimeoutMs,
         settlement: 'PENDING',
         response: null,
         error: null
