@@ -151,16 +151,25 @@ Live-Ergebnis:
 
 ## H7 – Party
 
-**🟦 BAU**
-- Party-Erkennung
+**🟦 BAU – aktuell**
+- Party-Erkennung aus Live-Party-State + sichtbaren Entities
+- Owned-/Foreign-Validierung ohne hartcodierte Namen
 - Assist
-- Focus Fire
+- stabiler Focus Fire mit Anti-Pingpong-Hold
 - Healing
 - Rollen
-- Buffs/Auras
+- Buff-/Aura-Live-Sicht
 - Revive/Recovery-Basis
+- Support-UNKNOWN ohne Blind-Retry
 
 **🟧 LIVE-TEST**
+- Ein-Klick-Test über **Test starten**
+- mindestens zwei eigene Charaktere müssen bereits in derselben Party sein
+- Rollen und Party-Zusammensetzung automatisch prüfen
+- Combat und Party-Focus müssen konvergieren
+- Party-Health-/Recovery-Sicht automatisch prüfen
+- 5-Sekunden-Fenster auf UNKNOWN und Focus-Pingpong
+- Cleanup + Diagnosekopie automatisch
 - mehrere Charaktere kämpfen als koordinierte Gruppe
 
 ---
