@@ -342,8 +342,13 @@ H7 Live-Test:
 - Cleanup;
 - Diagnose automatisch in Zwischenablage.
 
+Aktueller technischer Stand:
+- vollständige H1–H7-Suite: **71/71 Tests GRÜN**;
+- H5/H6-Regressionen laufen explizit gegen ihre jeweilige Suite;
+- Monster, die ein eigenes Party-Mitglied angreifen, gelten bei aktivem Party-Assist als legitime koordinierte Kandidaten, bleiben aber unter allen übrigen H5-Safety-Regeln;
+- H7-Ein-Klick-Suite im automatischen Test grün.
+
 Noch ausstehend:
-- vollständige H1–H7-CI auf finalem PR-Head;
 - echter H7-Ein-Klick-Live-Test;
 - danach Auto-Merge gemäß Sicherheitsregeln.
 
