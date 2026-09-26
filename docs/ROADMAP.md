@@ -231,17 +231,41 @@ Live-Ergebnis:
 
 ## H9 – Farm Intelligence
 
-**🟦 BAU**
-- Monsterwahl
-- XP-/Gold-/Drop-Effizienz
-- Reisezeit
-- Respawn
-- Konkurrenz
-- Farmspot-Wechsel
-- Anti-Pingpong-Entscheidungen
+**🟦 BAU – aktuell**
+- eigener `FarmIntelligenceController`
+- H5-sichere sichtbare Monstercluster als primäre Live-Kandidaten
+- aktuelle Spawnpunkte aus live `G.maps`
+- Monsterwerte aus live `G.monsters`
+- erklärbares Scoring:
+  - XP-Effizienz
+  - Gold-Effizienz
+  - Drop-Signal
+  - sichere Mob-Dichte
+  - Reisezeit
+  - Respawn-Signal
+  - sichtbare Konkurrenz
+  - Sicherheitskonfidenz
+- H4 Smart Move für Spot-Reisen
+- H8 Adaptive Farming für Combat/Farming-Ausführung
+- keine direkten H9-Gameplay-Dispatches
+- Ownership-Schutz für H4/H8
+- Movement UNKNOWN/FAILED_SAFE -> Suspension ohne Blind-Retry
+- Mindest-Hold + Switch-Cooldown + Score-Margin
+- A→B→A Anti-Pingpong
+- Beobachtungsbasis für Depletion/Respawn
+- eigener Farm-Intelligence-Tab
+- Headless API `ALBot.farmIntelligence.*`
+- `docs/H9-LIVE-TEST.md`
 
 **🟧 LIVE-TEST**
-- Bot wählt und wechselt Farmziele selbstständig und nachvollziehbar
+- Ein-Klick-Test über **Test starten**
+- H9 wählt selbst ein erklärbares sichtbares Farmziel
+- H8 übernimmt das gewählte Monsterziel
+- echte H8-AoE- oder H5-Aktion muss bestätigt werden
+- natürlicher Farmspot-Wechsel nach geänderter Live-Lage
+- kein A→B→A-Pingpong
+- kein H8/H5 UNKNOWN und kein Ownership-Verlust
+- Cleanup + Diagnosekopie automatisch
 
 ### 🟩 Meilenstein 1
 Nach H9 existiert ein echter autonomer Farming-Bot.
