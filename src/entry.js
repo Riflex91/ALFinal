@@ -50,7 +50,7 @@
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.2.0-h2',
+    version: '0.3.0-h3',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -100,11 +100,17 @@
       setPriority: (name, value) => runtime.goals.setPriority(name, value)
     },
 
+    game: {
+      snapshot: () => runtime.game.snapshot(),
+      status: () => runtime.game.status()
+    },
+
     knowledge: {
       setProvider: provider => runtime.knowledge.setProvider(provider),
       refresh: () => runtime.knowledge.refresh(),
       status: () => runtime.knowledge.status(),
-      snapshot: () => runtime.knowledge.snapshot()
+      snapshot: () => runtime.knowledge.snapshot(),
+      fact: id => runtime.knowledge.fact(id)
     },
 
     roster: {
@@ -120,7 +126,8 @@
     },
 
     dev: {
-      stabilityProbe: () => runtime.runStabilityProbe()
+      stabilityProbe: () => runtime.runStabilityProbe(),
+      knowledgeRefresh: () => runtime.knowledge.refresh()
     },
 
     ui: {
@@ -132,6 +139,7 @@
 
   Object.freeze(api.scheduler);
   Object.freeze(api.modules);
+  Object.freeze(api.game);
   Object.freeze(api.knowledge);
   Object.freeze(api.roster);
   Object.freeze(api.actions);
@@ -148,7 +156,7 @@
     };
   } catch (_) {}
 
-  runtime.logger.info('AL Bot H2 geladen', {
+  runtime.logger.info('AL Bot H3 geladen', {
     version: api.version,
     bootCount,
     hotReload: !!previous,
