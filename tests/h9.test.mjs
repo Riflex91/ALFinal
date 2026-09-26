@@ -376,8 +376,10 @@ test('H9 foreign party blocks planning before any H4 travel or H8 farming action
   });
   const started = f.controller.startAutonomy();
   assert.equal(started.accepted, true);
-  assert.equal(started.tick.state, 'BLOCKED');
+  assert.equal(started.tick.state, 'SUSPENDED');
   assert.equal(started.tick.reason, 'H9_FOREIGN_PARTY_BLOCK');
+  assert.equal(f.controller.status().suspended, true);
+  assert.equal(f.controller.status().suspendedReason, 'H9_FOREIGN_PARTY_BLOCK');
   assert.equal(f.movementCalls.length, 0);
   assert.equal(f.farmingCalls.length, 0);
   assert.equal(f.controller.status().metrics.foreignPartyBlocks, 1);
