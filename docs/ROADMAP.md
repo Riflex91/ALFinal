@@ -319,18 +319,52 @@ Nach H9 existiert ein echter autonomer Farming-Bot.
 
 ## H11 – Merchant-Grundbetrieb
 
-**🟦 BAU**
-- Merchant Loop
-- Farmer↔Merchant-Logistik
-- MLuck
-- Pickup/Delivery
-- Inventory Pressure
-- Service-Prioritäten
-- Anti-Pingpong
+**🟦 IMPLEMENTIERT · CI GRÜN · LIVE-TEST OFFEN**
+- eigener `MerchantController`
+- dynamische Rollen aus dem zentralen Account-Roster:
+  - `MERCHANT`
+  - `FARMER`
+  - Observer/Unavailable fail-closed
+- Farmer→eigener Merchant bei H10-Inventardruck
+- kontrollierte Merchant→eigener-Farmer-Delivery
+- Item-Transfers ausschließlich über zentrale ActionBoundary `send_item`
+- Transferbestätigung ausschließlich über beobachtetes lokales Inventardelta
+- temporär nicht verfügbares Inventar gilt niemals als Transfererfolg
+- bounded Transfer-Outcome-Timeout -> UNKNOWN + Suspension ohne Blind-Retry
+- MLuck-Service für sichtbare eigene Farmer
+- gesunder MLuck wird nicht gespammt
+- auslaufender MLuck gilt erst nach beobachtbarer Erneuerung als bestätigt
+- bounded MLuck-Outcome-Timeout -> UNKNOWN + Suspension ohne Blind-Retry
+- Service-Prioritäten:
+  - explizite kontrollierte Delivery
+  - Inventory-Pressure-Handoff
+  - MLuck
+  - Idle
+- H4 Movement für Servicewege
+- Service-Switch-Cooldown + A→B→A Anti-Pingpong
+- fremde Targets blockiert
+- Gear, Quest-/Goal-Reserve, locked, leveled, Upgrade-/Compound-Items blockiert
+- kein `send_gold`
+- keine Bank-/Sell-/Exchange-/Markt-Aktionen
+- Headless API `ALBot.merchant.*`
+- eigener Control-Center-Tab **Merchant**
+- H11-Ein-Klick-Suite `h11-merchant`
+- `docs/H11-LIVE-TEST.md`
 
-**🟧 LIVE-TEST**
-- Merchant arbeitet selbstständig mit den Farmern
-- keine Aufgaben-Pingpong-Schleifen
+**🟩 PRE-LIVE CI**
+- Run #227 auf Head `593bfe3a961b326b534d1b449a6c248842f780b4`: `completed / success`
+- 134/134 Tests grün
+- fünf Review-Funde abgearbeitet und Threads resolved
+- nach Dokumentationscommits ist erneut Exact-Head-CI erforderlich
+
+**🟧 LIVE-TEST NOCH AUSSTEHEND**
+- auf dem eigenen Merchant ausführen
+- mindestens ein eigener Farmer sichtbar
+- genau 1 sichere Item-Einheit wird real an einen eigenen Farmer geliefert
+- MLuck wird live geprüft/erneuert
+- 5-Sekunden-Stabilitätsfenster ohne UNKNOWN/Pingpong
+- Cleanup + Auto-Restore
+- Nutzer klickt nur **Test starten**
 
 ---
 
