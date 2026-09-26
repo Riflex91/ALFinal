@@ -1,4 +1,4 @@
-/* AL Bot 0.9.0-h9 | generated file | do not edit dist directly */
+/* AL Bot 0.10.0-h10 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -1304,6 +1304,98 @@
       return clone(rows);
     }
 
+    itemDefinition(name) {
+      const id = cleanText(name || '', 160);
+      if (!id) return null;
+      const G = this._gameData();
+      const raw = G && G.items && G.items[id];
+      if (!raw || typeof raw !== 'object') return null;
+      return {
+        id,
+        name: raw.name == null ? id : cleanText(raw.name, 200),
+        type: raw.type == null ? null : cleanText(raw.type, 80).toLowerCase(),
+        g: finite(raw.g),
+        e: finite(raw.e),
+        upgrade: safeBoolean(raw.upgrade),
+        compound: safeBoolean(raw.compound),
+        cash: safeBoolean(raw.cash),
+        quest: safeBoolean(raw.quest) || String(raw.type || '').toLowerCase() === 'quest',
+        skin: raw.skin == null ? null : cleanText(raw.skin, 120)
+      };
+    }
+
+    inventorySnapshot() {
+      const character = this._character();
+      if (!character || !character.name) {
+        return {
+          schemaVersion: 1,
+          available: false,
+          reason: 'CHARACTER_UNAVAILABLE',
+          capacity: 0,
+          usedSlots: 0,
+          freeSlots: 0,
+          reportedEmptySlots: null,
+          items: []
+        };
+      }
+
+      const rawItems = Array.isArray(character.items) ? character.items : [];
+      const items = [];
+      for (let slot = 0; slot < rawItems.length; slot += 1) {
+        const item = rawItems[slot];
+        if (!item || !item.name) continue;
+        const name = cleanText(item.name, 160);
+        items.push({
+          slot,
+          name,
+          quantity: Math.max(1, finite(item.q) || 1),
+          level: Math.max(0, finite(item.level) || 0),
+          statType: item.stat_type == null ? null : cleanText(item.stat_type, 80),
+          locked: !!item.l,
+          giveaway: !!item.giveaway,
+          gift: !!item.gift,
+          property: item.p == null ? null : clone(item.p),
+          expiresAt: item.expires == null ? null : item.expires,
+          definition: this.itemDefinition(name)
+        });
+      }
+
+      const reportedEmptySlots = finite(character.esize);
+      const capacity = rawItems.length;
+      const usedSlots = items.length;
+      return {
+        schemaVersion: 1,
+        available: true,
+        reason: null,
+        capacity,
+        usedSlots,
+        freeSlots: Math.max(0, capacity - usedSlots),
+        reportedEmptySlots,
+        items
+      };
+    }
+
+    chestSnapshot() {
+      let raw = null;
+      const getChests = this._resolveFunction('get_chests');
+      try {
+        if (getChests) raw = getChests.fn.call(getChests.owner);
+      } catch (_) {}
+      if (!raw || typeof raw !== 'object') raw = this._read('chests');
+      if (!raw || typeof raw !== 'object') raw = {};
+      const chests = Object.entries(raw).map(([id, chest]) => ({
+        id: String(id),
+        items: chest && finite(chest.items),
+        lastLootAt: chest && chest.last_loot ? String(chest.last_loot) : null
+      }));
+      return {
+        schemaVersion: 1,
+        available: true,
+        count: chests.length,
+        chests
+      };
+    }
+
     monsterDefinition(mtype) {
       const id = cleanText(mtype || '', 120);
       if (!id) return null;
@@ -2272,7 +2364,8 @@
     use_skill: Object.freeze({ publicName: 'use_skill', family: 'skill' }),
     attack: Object.freeze({ publicName: 'attack', family: 'combat' }),
     heal: Object.freeze({ publicName: 'heal', family: 'party-heal' }),
-    change_target: Object.freeze({ publicName: 'change_target', family: 'combat-target' })
+    change_target: Object.freeze({ publicName: 'change_target', family: 'combat-target' }),
+    loot: Object.freeze({ publicName: 'loot', family: 'loot' })
   });
 
   function errorDetails(error) {
@@ -6570,6 +6663,325 @@
   const clone = ns.helpers.clone;
   const cleanText = ns.helpers.cleanText;
 
+  function finite(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  class LootInventoryController {
+    constructor(options = {}) {
+      this.root = options.root || root;
+      this.logger = options.logger || null;
+      this.game = options.game || null;
+      this.actions = options.actions || null;
+      this.goals = options.goals || null;
+      this.moduleActive = false;
+      this.scope = null;
+      this.pendingLoot = null;
+      this.suspendedReason = null;
+      this.lastPlan = null;
+      this.lastAction = null;
+      this.sequence = 0;
+      this.config = {
+        tickMs: Math.max(250, Math.min(5000, Number(options.tickMs) || 750)),
+        reserveFreeSlots: Math.max(1, Math.min(12, Number(options.reserveFreeSlots) || 2))
+      };
+      this.rules = {
+        keepNames: new Set(),
+        reserveNames: new Set(),
+        sellNames: new Set(),
+        bankNames: new Set(),
+        exchangeNames: new Set()
+      };
+      this.metrics = {
+        ticks: 0,
+        plans: 0,
+        lootDispatched: 0,
+        lootConfirmed: 0,
+        lootKnownRejected: 0,
+        lootUnknown: 0,
+        inventoryFullBlocks: 0,
+        protectedItems: 0,
+        reserveItems: 0
+      };
+    }
+
+    start(context = {}) {
+      if (this.moduleActive) return { started: false, reason: 'H10_ALREADY_ACTIVE' };
+      this.moduleActive = true;
+      this.scope = context.scope || null;
+      this.suspendedReason = null;
+      if (this.scope && typeof this.scope.interval === 'function') {
+        this.scope.interval('loot-inventory-tick', () => this.tick(), this.config.tickMs, { immediate: true });
+      }
+      return { started: true };
+    }
+
+    stop(reason = 'H10_MODULE_STOP') {
+      this.moduleActive = false;
+      this.scope = null;
+      this.pendingLoot = null;
+      this.lastAction = {
+        at: new Date().toISOString(),
+        type: 'STOP',
+        reason: cleanText(reason, 240)
+      };
+      return { stopped: true };
+    }
+
+    resetSafety(reason = 'H10_EXPLICIT_RESET') {
+      this.pendingLoot = null;
+      this.suspendedReason = null;
+      this.lastAction = {
+        at: new Date().toISOString(),
+        type: 'RESET',
+        reason: cleanText(reason, 240)
+      };
+      return this.status();
+    }
+
+    setRules(rules = {}) {
+      for (const key of Object.keys(this.rules)) {
+        if (!Array.isArray(rules[key])) continue;
+        this.rules[key] = new Set(rules[key].map(value => cleanText(value, 160)).filter(Boolean));
+      }
+      return this.ruleSnapshot();
+    }
+
+    ruleSnapshot() {
+      return Object.fromEntries(Object.entries(this.rules).map(([key, value]) => [key, [...value]]));
+    }
+
+    _activeGoalTargets() {
+      const names = new Set();
+      if (!this.goals || typeof this.goals.list !== 'function') return names;
+      let rows = [];
+      try { rows = this.goals.list() || []; } catch (_) {}
+      for (const goal of rows) {
+        if (!goal || !['ACTIVE', 'PAUSED'].includes(String(goal.status || 'ACTIVE'))) continue;
+        if (String(goal.type || '').toUpperCase() !== 'COLLECT_ITEM') continue;
+        const target = cleanText(goal.target || '', 160);
+        if (target) names.add(target);
+      }
+      return names;
+    }
+
+    _classify(item, goalTargets) {
+      const definition = item && item.definition || {};
+      const name = cleanText(item && item.name || '', 160);
+      const level = finite(item && item.level) || 0;
+      const type = cleanText(definition.type || '', 80).toLowerCase();
+      const explicit = [
+        ['reserveNames', 'RESERVE', 'RULE_RESERVE'],
+        ['keepNames', 'KEEP', 'RULE_KEEP'],
+        ['exchangeNames', 'EXCHANGE', 'RULE_EXCHANGE'],
+        ['bankNames', 'BANK', 'RULE_BANK'],
+        ['sellNames', 'SELL', 'RULE_SELL']
+      ];
+      for (const [rule, disposition, reason] of explicit) {
+        if (this.rules[rule].has(name)) return { disposition, reason, protected: disposition !== 'SELL' };
+      }
+
+      if (item.locked) return { disposition: 'PROTECT', reason: 'ITEM_LOCKED', protected: true };
+      if (item.giveaway) return { disposition: 'PROTECT', reason: 'ITEM_GIVEAWAY', protected: true };
+      if (item.expiresAt) return { disposition: 'PROTECT', reason: 'ITEM_EXPIRING', protected: true };
+      if (level > 0) return { disposition: 'PROTECT', reason: 'LEVELED_ITEM', protected: true };
+      if (goalTargets.has(name)) return { disposition: 'RESERVE', reason: 'ACTIVE_COLLECTION_GOAL', protected: true };
+      if (type === 'quest') return { disposition: 'RESERVE', reason: 'QUEST_ITEM', protected: true };
+
+      const equipmentTypes = new Set([
+        'weapon', 'shield', 'helmet', 'coat', 'pants', 'gloves', 'shoes',
+        'cape', 'ring', 'earring', 'amulet', 'belt', 'orb', 'source', 'quiver'
+      ]);
+      if (equipmentTypes.has(type) || definition.upgrade || definition.compound) {
+        return { disposition: 'PROTECT', reason: 'GEAR_OR_UPGRADE_ITEM', protected: true };
+      }
+
+      if (definition.e != null || definition.exchange === true) {
+        return { disposition: 'EXCHANGE', reason: 'LIVE_ITEM_EXCHANGEABLE', protected: true };
+      }
+
+      if (['pot', 'elixir', 'food', 'scroll', 'booster'].includes(type)) {
+        return { disposition: 'KEEP', reason: 'CONSUMABLE_OR_UTILITY', protected: true };
+      }
+
+      return { disposition: 'BANK', reason: 'SAFE_DEFAULT_UNKNOWN_VALUE', protected: true };
+    }
+
+    plan() {
+      this.metrics.plans += 1;
+      const inventory = this.game && typeof this.game.inventorySnapshot === 'function'
+        ? this.game.inventorySnapshot()
+        : { available: false, reason: 'INVENTORY_ADAPTER_UNAVAILABLE', items: [] };
+      const chests = this.game && typeof this.game.chestSnapshot === 'function'
+        ? this.game.chestSnapshot()
+        : { available: false, chests: [] };
+      const goalTargets = this._activeGoalTargets();
+      const items = (inventory.items || []).map(item => {
+        const classification = this._classify(item, goalTargets);
+        return { ...item, ...classification };
+      });
+      const counts = {};
+      for (const row of items) counts[row.disposition] = (counts[row.disposition] || 0) + 1;
+      this.metrics.protectedItems = items.filter(row => row.protected).length;
+      this.metrics.reserveItems = items.filter(row => row.disposition === 'RESERVE').length;
+
+      const freeSlots = finite(inventory.freeSlots);
+      const lootable = (chests.chests || []).filter(chest => {
+        const count = finite(chest.items);
+        if (freeSlots == null || count == null) return false;
+        return count <= Math.max(0, freeSlots - this.config.reserveFreeSlots);
+      });
+      const plan = {
+        state: inventory.available === false ? 'BLOCKED' : 'READY',
+        reason: inventory.available === false ? inventory.reason || 'INVENTORY_UNAVAILABLE' : 'H10_INVENTORY_READY',
+        inventory: {
+          capacity: inventory.capacity,
+          usedSlots: inventory.usedSlots,
+          freeSlots: inventory.freeSlots,
+          reportedEmptySlots: inventory.reportedEmptySlots
+        },
+        items,
+        counts,
+        chests: clone(chests.chests || []),
+        lootableChestIds: lootable.map(row => row.id),
+        reserveFreeSlots: this.config.reserveFreeSlots
+      };
+      this.lastPlan = clone(plan);
+      return clone(plan);
+    }
+
+    _watchLoot(value, pending) {
+      if (!value || typeof value.then !== 'function') {
+        pending.settlement = 'RETURNED';
+        pending.response = value == null ? null : clone(value);
+        return;
+      }
+      Promise.resolve(value).then(response => {
+        if (!this.pendingLoot || this.pendingLoot.id !== pending.id) return;
+        this.pendingLoot.settlement = 'RESOLVED';
+        this.pendingLoot.response = response == null ? null : clone(response);
+      }, error => {
+        if (!this.pendingLoot || this.pendingLoot.id !== pending.id) return;
+        this.pendingLoot.settlement = 'REJECTED';
+        this.pendingLoot.error = cleanText(error && error.message || error || 'H10_LOOT_REJECTED', 500);
+      }).catch(() => {});
+    }
+
+    _observePendingLoot() {
+      const pending = this.pendingLoot;
+      if (!pending || pending.settlement === 'PENDING') return false;
+      this.pendingLoot = null;
+
+      if (pending.settlement === 'REJECTED') {
+        this.metrics.lootUnknown += 1;
+        this.suspendedReason = pending.error || 'H10_LOOT_UNKNOWN';
+        this.lastAction = { at: new Date().toISOString(), type: 'LOOT_UNKNOWN', reason: this.suspendedReason };
+        return true;
+      }
+
+      const response = pending.response;
+      const responseReason = cleanText(response && response.reason || '', 240);
+      if (response && response.failed === true) {
+        this.metrics.lootKnownRejected += 1;
+        this.lastAction = {
+          at: new Date().toISOString(),
+          type: 'LOOT_REJECTED',
+          reason: responseReason || 'H10_LOOT_REJECTED'
+        };
+        return true;
+      }
+      if (response && (response.success === false || ['nothing_to_loot', 'safety'].includes(responseReason))) {
+        this.metrics.lootKnownRejected += 1;
+        this.lastAction = {
+          at: new Date().toISOString(),
+          type: 'LOOT_SKIPPED',
+          reason: responseReason || 'H10_LOOT_SKIPPED'
+        };
+        return true;
+      }
+
+      this.metrics.lootConfirmed += 1;
+      this.lastAction = { at: new Date().toISOString(), type: 'LOOT_CONFIRMED', chestId: pending.chestId };
+      return true;
+    }
+
+    tick() {
+      this.metrics.ticks += 1;
+      this._observePendingLoot();
+      const plan = this.plan();
+
+      if (!this.moduleActive) return { state: 'IDLE', plan };
+      if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason, plan };
+      if (this.pendingLoot) return { state: 'LOOT_PENDING', chestId: this.pendingLoot.chestId, plan };
+      if (plan.state !== 'READY') return { state: plan.state, reason: plan.reason, plan };
+
+      const freeSlots = finite(plan.inventory.freeSlots);
+      if ((plan.chests || []).length && (freeSlots == null || freeSlots <= this.config.reserveFreeSlots)) {
+        this.metrics.inventoryFullBlocks += 1;
+        return { state: 'INVENTORY_PRESSURE', reason: 'H10_FREE_SLOT_RESERVE_REACHED', plan };
+      }
+      const chestId = plan.lootableChestIds[0];
+      if (!chestId) return { state: 'READY', reason: 'H10_NOTHING_SAFE_TO_LOOT', plan };
+      if (!this.actions || typeof this.actions.dispatch !== 'function') {
+        return { state: 'BLOCKED', reason: 'H10_ACTION_BOUNDARY_UNAVAILABLE', plan };
+      }
+
+      const result = this.actions.dispatch('loot', [chestId]);
+      if (!result || result.state !== 'DISPATCHED') {
+        if (result && result.state === 'UNKNOWN') {
+          this.metrics.lootUnknown += 1;
+          this.suspendedReason = result.error && result.error.message || 'H10_LOOT_UNKNOWN';
+          return { state: 'SUSPENDED', reason: this.suspendedReason, plan };
+        }
+        this.metrics.lootKnownRejected += 1;
+        return { state: 'WAITING', reason: result && result.state || 'H10_LOOT_REJECTED', plan };
+      }
+
+      const pending = {
+        id: 'loot-' + (++this.sequence),
+        chestId: String(chestId),
+        dispatchedAt: new Date().toISOString(),
+        settlement: 'PENDING',
+        response: null,
+        error: null
+      };
+      this.pendingLoot = pending;
+      this.metrics.lootDispatched += 1;
+      this.lastAction = { at: pending.dispatchedAt, type: 'LOOT_DISPATCHED', chestId: pending.chestId };
+      this._watchLoot(result.value, pending);
+      return { state: 'LOOT_PENDING', chestId: pending.chestId, plan };
+    }
+
+    status() {
+      return {
+        schemaVersion: 1,
+        moduleActive: this.moduleActive,
+        suspended: !!this.suspendedReason,
+        suspendedReason: this.suspendedReason,
+        pendingLoot: clone(this.pendingLoot),
+        lastPlan: clone(this.lastPlan),
+        lastAction: clone(this.lastAction),
+        rules: this.ruleSnapshot(),
+        config: clone(this.config),
+        metrics: clone(this.metrics)
+      };
+    }
+  }
+
+  ns.LootInventoryController = LootInventoryController;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+
+(function (root) {
+  'use strict';
+
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns) throw new Error('ALBOT_INTERNALS_MISSING');
+
+  const clone = ns.helpers.clone;
+  const cleanText = ns.helpers.cleanText;
+
   function errorDetails(error) {
     return {
       name: cleanText(error && error.name || 'Error', 80),
@@ -6901,7 +7313,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.9.0-h9';
+      this.version = options.version || '0.10.0-h10';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -6973,6 +7385,13 @@
         farming: this.farming,
         movement: this.movement,
         party: this.party
+      });
+      this.inventory = new ns.LootInventoryController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        goals: this.goals
       });
       this.liveTests = new ns.LiveTestRunner({
         runtime: this,
@@ -7069,6 +7488,15 @@
         stop: reason => this.farmIntelligence.stop(reason),
         status: () => this.farmIntelligence.status()
       });
+
+      this.modules.register({
+        id: 'loot-inventory',
+        title: 'Loot & Inventory',
+        version: '0.10.0',
+        start: context => this.inventory.start(context),
+        stop: reason => this.inventory.stop(reason),
+        status: () => this.inventory.status()
+      });
     }
 
     _registerLiveTests() {
@@ -7082,6 +7510,9 @@
       let h8Plan = null;
       let h9Baseline = null;
       let h9Plan = null;
+      let h10Baseline = null;
+      let h10Before = null;
+      let h10StartedH9 = false;
       this.liveTests.register({
         id: 'h5-combat',
         title: 'H5 – Einfacher Kampf',
@@ -8192,6 +8623,241 @@
           }
         ]
       });
+
+      this.liveTests.register({
+        id: 'h10-loot-inventory',
+        title: 'H10 – Loot & Inventar',
+        description: 'Ein-Klick-Live-Test für sicheren Loot, Inventarschutz, Slot-Reserve und erklärbare Item-Dispositionen.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.farmIntelligence.stopAutonomy('H10_LIVE_TEST_RESET'); } catch (_) {}
+          try { runtime.farming.stopSession('H10_LIVE_TEST_RESET'); } catch (_) {}
+          try {
+            const movement = runtime.movement.status();
+            if (movement.activeOrder && String(movement.activeOrder.owner || '') === 'farm-intelligence-h9') {
+              runtime.movement.cancel('H10_LIVE_TEST_RESET');
+            }
+          } catch (_) {}
+          try { runtime.inventory.resetSafety('H10_LIVE_TEST_RESET'); } catch (_) {}
+          h10StartedH9 = false;
+          const inventory = runtime.inventory.status();
+          const combat = runtime.combat.status();
+          const intelligence = runtime.farmIntelligence.status();
+          h10Baseline = {
+            lootDispatched: inventory.metrics.lootDispatched,
+            lootConfirmed: inventory.metrics.lootConfirmed,
+            lootKnownRejected: inventory.metrics.lootKnownRejected,
+            lootUnknown: inventory.metrics.lootUnknown,
+            attacksConfirmed: combat.metrics.attacksConfirmed,
+            attackUnknown: combat.metrics.attackUnknown,
+            h9Decisions: intelligence.metrics.decisions
+          };
+          h10Before = null;
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.farmIntelligence.stopAutonomy('H10_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try { runtime.farming.stopSession('H10_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try {
+            const movement = runtime.movement.status();
+            if (movement.activeOrder && String(movement.activeOrder.owner || '') === 'farm-intelligence-h9') {
+              runtime.movement.cancel('H10_LIVE_TEST_CLEANUP');
+            }
+          } catch (_) {}
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Live-Inventar, Schutzregeln und Loot-API prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const module = runtime.modules.describe('loot-inventory');
+              assert(module && module.state === 'ACTIVE', 'H10_MODULE_NOT_ACTIVE');
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character && !game.character.rip, 'CHARACTER_UNAVAILABLE');
+              assert(String(game.character.ctype || '').toLowerCase() !== 'merchant', 'H10_LIVE_TEST_NEEDS_FARMER');
+              assert(runtime.actions.available('loot'), 'H10_LOOT_API_UNAVAILABLE');
+
+              const plan = runtime.inventory.plan();
+              assert(plan && plan.state === 'READY', plan && plan.reason || 'H10_INVENTORY_PLAN_UNAVAILABLE');
+              assert(Number.isFinite(Number(plan.inventory.capacity)) && Number(plan.inventory.capacity) > 0,
+                'H10_INVENTORY_CAPACITY_UNAVAILABLE');
+              assert(Array.isArray(plan.items), 'H10_ITEMS_UNAVAILABLE');
+              assert(plan.items.every(row => row && row.disposition && typeof row.protected === 'boolean'),
+                'H10_ITEM_CLASSIFICATION_INCOMPLETE');
+
+              const protectedItems = plan.items
+                .filter(row => ['PROTECT', 'RESERVE'].includes(String(row.disposition)))
+                .map(row => ({
+                  name: row.name,
+                  level: Number(row.level || 0),
+                  statType: row.statType || null,
+                  quantity: Number(row.quantity || 1),
+                  disposition: row.disposition,
+                  reason: row.reason
+                }));
+              h10Before = {
+                capacity: Number(plan.inventory.capacity),
+                usedSlots: Number(plan.inventory.usedSlots),
+                freeSlots: Number(plan.inventory.freeSlots),
+                protectedItems
+              };
+              return {
+                character: game.character.name,
+                ctype: game.character.ctype,
+                capacity: h10Before.capacity,
+                usedSlots: h10Before.usedSlots,
+                freeSlots: h10Before.freeSlots,
+                protectedCount: protectedItems.length,
+                dispositionCounts: plan.counts,
+                visibleChests: plan.chests.length,
+                reserveFreeSlots: plan.reserveFreeSlots
+              };
+            }
+          },
+          {
+            id: 'autonomous-farming',
+            title: 'H9-Farming starten, damit echter Loot entstehen kann',
+            timeoutMs: 90000,
+            run: async ({ runtime, assert, waitFor }) => {
+              const h9Plan = runtime.farmIntelligence.plan();
+              assert(h9Plan && h9Plan.selected, h9Plan && h9Plan.reason || 'H10_NO_H9_FARM_CANDIDATE');
+              const started = runtime.farmIntelligence.startAutonomy({
+                owner: 'live-test-h10',
+                allowTravel: true
+              });
+              assert(started && started.accepted === true, started && started.reason || 'H10_H9_START_FAILED');
+              h10StartedH9 = true;
+
+              const active = await waitFor(() => {
+                const intelligence = runtime.farmIntelligence.status();
+                if (intelligence.suspended) throw new Error(intelligence.suspendedReason || 'H10_H9_SUSPENDED');
+                const farming = runtime.farming.status();
+                return farming.active && intelligence.currentSelection ? { intelligence, farming } : null;
+              }, { timeoutMs: 85000, pollMs: 200, label: 'h10-farming-start' });
+
+              return {
+                selection: active.intelligence.currentSelection,
+                farmingOwner: active.farming.session && active.farming.session.owner || null
+              };
+            }
+          },
+          {
+            id: 'confirmed-loot',
+            title: 'Echten Farming-Loot bestätigen und Inventardelta erfassen',
+            timeoutMs: 120000,
+            run: async ({ runtime, assert, waitFor }) => {
+              const observed = await waitFor(() => {
+                const inventory = runtime.inventory.status();
+                const intelligence = runtime.farmIntelligence.status();
+                const combat = runtime.combat.status();
+                if (inventory.suspended) throw new Error(inventory.suspendedReason || 'H10_INVENTORY_SUSPENDED');
+                if (inventory.metrics.lootUnknown > h10Baseline.lootUnknown) throw new Error('H10_LOOT_UNKNOWN');
+                if (combat.metrics.attackUnknown > h10Baseline.attackUnknown) throw new Error('H10_ATTACK_UNKNOWN');
+                if (intelligence.suspended) throw new Error(intelligence.suspendedReason || 'H10_H9_SUSPENDED');
+                const confirmed = inventory.metrics.lootConfirmed - h10Baseline.lootConfirmed;
+                return confirmed > 0 ? { inventory, intelligence, combat } : null;
+              }, { timeoutMs: 115000, pollMs: 250, label: 'h10-confirmed-loot' });
+
+              const afterPlan = runtime.inventory.plan();
+              assert(afterPlan && afterPlan.state === 'READY', 'H10_POST_LOOT_INVENTORY_UNAVAILABLE');
+              return {
+                lootDispatched: observed.inventory.metrics.lootDispatched - h10Baseline.lootDispatched,
+                lootConfirmed: observed.inventory.metrics.lootConfirmed - h10Baseline.lootConfirmed,
+                knownSkips: observed.inventory.metrics.lootKnownRejected - h10Baseline.lootKnownRejected,
+                attacksConfirmed: observed.combat.metrics.attacksConfirmed - h10Baseline.attacksConfirmed,
+                decisions: observed.intelligence.metrics.decisions - h10Baseline.h9Decisions,
+                beforeUsedSlots: h10Before && h10Before.usedSlots,
+                afterUsedSlots: afterPlan.inventory.usedSlots,
+                afterFreeSlots: afterPlan.inventory.freeSlots,
+                dispositionCounts: afterPlan.counts
+              };
+            }
+          },
+          {
+            id: 'protection-delta',
+            title: 'Geschützte und reservierte Items gegen Inventarverlust prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              assert(h10Before, 'H10_BEFORE_SNAPSHOT_MISSING');
+              const plan = runtime.inventory.plan();
+              const aggregate = new Map();
+              for (const row of plan.items || []) {
+                const key = String(row.name) + '|' + Number(row.level || 0) + '|' + String(row.statType || '');
+                aggregate.set(key, (aggregate.get(key) || 0) + Number(row.quantity || 1));
+              }
+              for (const row of h10Before.protectedItems) {
+                const key = String(row.name) + '|' + Number(row.level || 0) + '|' + String(row.statType || '');
+                assert((aggregate.get(key) || 0) >= Number(row.quantity || 1),
+                  'H10_PROTECTED_ITEM_LOST:' + row.name + ':' + row.level);
+              }
+              return {
+                checkedProtectedItems: h10Before.protectedItems.length,
+                currentUsedSlots: plan.inventory.usedSlots,
+                currentFreeSlots: plan.inventory.freeSlots,
+                reserveFreeSlots: plan.reserveFreeSlots
+              };
+            }
+          },
+          {
+            id: 'stability-window',
+            title: 'Fünf Sekunden ohne Loot-UNKNOWN oder Inventar-Safety-Verlust beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              await sleep(5000);
+              const inventory = runtime.inventory.status();
+              const plan = runtime.inventory.plan();
+              const combat = runtime.combat.status();
+              assert(inventory.suspended === false, inventory.suspendedReason || 'H10_SUSPENDED_DURING_STABILITY');
+              assert(inventory.metrics.lootUnknown === h10Baseline.lootUnknown, 'H10_LOOT_UNKNOWN_DURING_STABILITY');
+              assert(combat.metrics.attackUnknown === h10Baseline.attackUnknown, 'H10_ATTACK_UNKNOWN_DURING_STABILITY');
+              assert(Number(plan.inventory.freeSlots) >= 0, 'H10_NEGATIVE_FREE_SLOTS');
+              return {
+                lootConfirmed: inventory.metrics.lootConfirmed - h10Baseline.lootConfirmed,
+                knownSkips: inventory.metrics.lootKnownRejected - h10Baseline.lootKnownRejected,
+                lootUnknown: inventory.metrics.lootUnknown - h10Baseline.lootUnknown,
+                freeSlots: plan.inventory.freeSlots,
+                reserveFreeSlots: plan.reserveFreeSlots,
+                dispositionCounts: plan.counts
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'H9-Farming freigeben und H10 ohne Pending Loot hinterlassen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert, waitFor }) => {
+              if (h10StartedH9) runtime.farmIntelligence.stopAutonomy('H10_LIVE_TEST_COMPLETE');
+              try { runtime.farming.stopSession('H10_LIVE_TEST_COMPLETE'); } catch (_) {}
+              const inventory = await waitFor(() => {
+                const current = runtime.inventory.status();
+                return current.pendingLoot == null ? current : null;
+              }, { timeoutMs: 3000, pollMs: 100, label: 'h10-loot-settle' });
+              const intelligence = runtime.farmIntelligence.status();
+              const farming = runtime.farming.status();
+              const combat = runtime.combat.status();
+              const movement = runtime.movement.status();
+              assert(intelligence.active === false, 'H10_H9_SESSION_STILL_ACTIVE');
+              assert(farming.active === false, 'H10_H8_SESSION_STILL_ACTIVE');
+              assert(combat.active === false, 'H10_COMBAT_STILL_ACTIVE');
+              assert(!(movement.activeOrder && String(movement.activeOrder.owner || '') === 'farm-intelligence-h9'),
+                'H10_H9_MOVEMENT_STILL_ACTIVE');
+              assert(inventory.pendingLoot == null, 'H10_LOOT_STILL_PENDING');
+              return {
+                inventoryActive: inventory.moduleActive,
+                inventorySuspended: inventory.suspended,
+                pendingLoot: !!inventory.pendingLoot,
+                h9Active: intelligence.active,
+                farmingActive: farming.active,
+                combatActive: combat.active,
+                movementActive: movement.active
+              };
+            }
+          }
+        ]
+      });
     }
 
     _installErrorCapture() {
@@ -8340,6 +9006,7 @@
         combat: this.combat.status(),
         farming: this.farming.status(),
         farmIntelligence: this.farmIntelligence.status(),
+        inventory: this.inventory.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
         roster,
@@ -8364,6 +9031,7 @@
         combat: this.combat.status(),
         farming: this.farming.status(),
         farmIntelligence: this.farmIntelligence.status(),
+        inventory: this.inventory.status(),
         liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
         logs: this.logger.list(160),
@@ -8387,6 +9055,7 @@
       push('combat-controller', !!this.combat.status() && typeof this.combat.startSession === 'function' && typeof this.combat.stopSession === 'function', this.combat.status());
       push('adaptive-farming-controller', !!this.farming.status() && typeof this.farming.plan === 'function' && typeof this.farming.startSession === 'function', this.farming.status());
       push('farm-intelligence-controller', !!this.farmIntelligence.status() && typeof this.farmIntelligence.plan === 'function' && typeof this.farmIntelligence.startAutonomy === 'function', this.farmIntelligence.status());
+      push('loot-inventory-controller', !!this.inventory.status() && typeof this.inventory.plan === 'function' && typeof this.inventory.tick === 'function', this.inventory.status());
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
       push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);
@@ -8513,6 +9182,7 @@
       this.combatResult = null;
       this.farmingResult = null;
       this.farmIntelligenceResult = null;
+      this.inventoryResult = null;
       this.liveTestClipboard = null;
       this._offLog = null;
       this._dragCleanup = null;
@@ -8569,7 +9239,7 @@
 </style>
 <div class="albot-head" id="albot-drag-handle"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-minimize" class="albot-window-btn" title="Fenster minimieren" aria-label="Fenster minimieren">—</button><button id="albot-emergency" class="albot-stop">STOP</button></div>
 <div class="albot-tabs">
-<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
+<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
 </div>
 <div class="albot-body">
 <section id="albot-panel-overview" class="albot-panel active"></section>
@@ -8579,6 +9249,7 @@
 <section id="albot-panel-party" class="albot-panel"></section>
 <section id="albot-panel-farming" class="albot-panel"></section>
 <section id="albot-panel-farm-intelligence" class="albot-panel"></section>
+<section id="albot-panel-inventory" class="albot-panel"></section>
 <section id="albot-panel-live-test" class="albot-panel"></section>
 <section id="albot-panel-knowledge" class="albot-panel"></section>
 <section id="albot-panel-logs" class="albot-panel"></section>
@@ -8717,6 +9388,7 @@
         if (!focused) this.renderCombat(status);
       }
       if (this.activeTab === 'party') this.renderParty(status);
+      if (this.activeTab === 'inventory') this.renderInventory(status);
       if (this.activeTab === 'live-test') this.renderLiveTest(status);
       if (this.activeTab === 'knowledge') this.renderKnowledge(status);
       if (this.activeTab === 'logs') this.renderLogs();
@@ -8735,6 +9407,7 @@
       this.renderParty(status);
       this.renderFarming(status);
       this.renderFarmIntelligence(status);
+      this.renderInventory(status);
       this.renderLiveTest(status);
       this.renderKnowledge(status);
       this.renderLogs();
@@ -9109,6 +9782,60 @@ ${candidates.length ? candidates.slice(0, 8).map((row, index) => {
       if (stopButton) stopButton.onclick = () => run(() => this.runtime.farmIntelligence.stopAutonomy('GUI_H9_STOP'));
     }
 
+    renderInventory(status) {
+      const panel = this.host.querySelector('#albot-panel-inventory');
+      if (!panel) return;
+      const inventory = status.inventory || {};
+      const metrics = inventory.metrics || {};
+      const plan = inventory.lastPlan || null;
+      const items = plan && Array.isArray(plan.items) ? plan.items : [];
+      const counts = plan && plan.counts || {};
+      const slots = plan && plan.inventory || {};
+      const action = inventory.lastAction || null;
+      const resultText = this.inventoryResult
+        ? JSON.stringify(this.inventoryResult, null, 2)
+        : 'Noch keine manuelle H10-Aktion.';
+
+      panel.innerHTML = `<div class="albot-card"><b>H10 Loot & Inventar</b>
+<div class="albot-small">H10 lootet nur über die zentrale ActionBoundary und klassifiziert Items konservativ. Unbekannter Wert wird niemals automatisch zu SELL. Sell/Bank/Exchange werden in H10 nicht ausgeführt.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${inventory.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Suspendiert</span><div class="albot-v">${inventory.suspended ? 'JA · '+esc(inventory.suspendedReason || '-') : 'NEIN'}</div></div>
+<div><span class="albot-k">Slots</span><div class="albot-v">${esc(slots.usedSlots == null ? '-' : slots.usedSlots)} / ${esc(slots.capacity == null ? '-' : slots.capacity)}</div></div>
+<div><span class="albot-k">Frei</span><div class="albot-v">${esc(slots.freeSlots == null ? '-' : slots.freeSlots)} · Reserve ${esc(plan && plan.reserveFreeSlots != null ? plan.reserveFreeSlots : '-')}</div></div>
+<div><span class="albot-k">Chests sichtbar</span><div class="albot-v">${esc(plan && plan.chests ? plan.chests.length : 0)}</div></div>
+<div><span class="albot-k">Chests lootbar</span><div class="albot-v">${esc(plan && plan.lootableChestIds ? plan.lootableChestIds.length : 0)}</div></div>
+<div><span class="albot-k">Loot bestätigt</span><div class="albot-v">${esc(metrics.lootConfirmed || 0)}</div></div>
+<div><span class="albot-k">Loot UNKNOWN</span><div class="albot-v">${esc(metrics.lootUnknown || 0)}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Dispositionen</b><div class="albot-small">
+PROTECT ${esc(counts.PROTECT || 0)} · RESERVE ${esc(counts.RESERVE || 0)} · KEEP ${esc(counts.KEEP || 0)} · BANK ${esc(counts.BANK || 0)} · EXCHANGE ${esc(counts.EXCHANGE || 0)} · SELL ${esc(counts.SELL || 0)}
+</div></div>
+
+<div class="albot-card"><b>Inventar</b>
+${items.length ? items.slice(0, 24).map(row => '<div class="albot-small">#'+esc(row.slot)+' · <b>'+esc(row.name)+'</b> x'+esc(row.quantity || 1)+' · L'+esc(row.level || 0)+' · '+esc(row.disposition || '-')+' · '+esc(row.reason || '-')+'</div>').join('') : '<div class="albot-small">Noch kein H10-Inventarplan vorhanden.</div>'}
+</div>
+
+<div class="albot-card"><b>Steuerung</b>
+<div class="albot-row"><button id="albot-h10-plan" class="albot-btn">Inventar neu bewerten</button><button id="albot-h10-reset" class="albot-btn warn" ${inventory.suspended ? '' : 'disabled'}>Safety zurücksetzen</button></div>
+<div class="albot-small">Ein Safety-Reset ist explizit. UNKNOWN wird niemals automatisch zurückgesetzt.</div>
+</div>
+
+<div class="albot-card"><b>Letzte Aktion</b><div class="albot-small">${esc(action && action.type || '-')} · ${esc(action && (action.reason || action.chestId) || '-')}</div></div>
+<div class="albot-card"><b>Letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.inventoryResult = fn(); }
+        catch (error) { this.inventoryResult = { ok: false, reason: String(error && error.message || error) }; }
+        this.renderInventory(this.runtime.status());
+      };
+      const planButton = panel.querySelector('#albot-h10-plan');
+      if (planButton) planButton.onclick = () => run(() => this.runtime.inventory.plan());
+      const resetButton = panel.querySelector('#albot-h10-reset');
+      if (resetButton) resetButton.onclick = () => run(() => this.runtime.inventory.resetSafety('GUI_H10_RESET'));
+    }
+
     async runRecommendedLiveTest() {
       const state = this.runtime.status();
       if (state.emergencyStop && state.emergencyStop.latched) {
@@ -9339,7 +10066,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.9.0-h9',
+    version: '0.10.0-h10',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -9395,7 +10122,10 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
       visibleMonsters: options => runtime.game.visibleMonsters(options || {}),
       visiblePlayers: options => runtime.game.visiblePlayers(options || {}),
       monsterDefinition: mtype => runtime.game.monsterDefinition(mtype),
-      farmSpots: options => runtime.game.farmSpotCatalog(options || {})
+      itemDefinition: name => runtime.game.itemDefinition(name),
+      farmSpots: options => runtime.game.farmSpotCatalog(options || {}),
+      inventory: () => runtime.game.inventorySnapshot(),
+      chests: () => runtime.game.chestSnapshot()
     },
 
     movement: {
@@ -9444,6 +10174,14 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
       stop: reason => runtime.farmIntelligence.stopAutonomy(reason || 'API_H9_STOP'),
       plan: () => runtime.farmIntelligence.plan(),
       tick: () => runtime.farmIntelligence.tick()
+    },
+
+    inventory: {
+      status: () => runtime.inventory.status(),
+      plan: () => runtime.inventory.plan(),
+      tick: () => runtime.inventory.tick(),
+      reset: reason => runtime.inventory.resetSafety(reason || 'API_H10_RESET'),
+      rules: rules => rules == null ? runtime.inventory.ruleSnapshot() : runtime.inventory.setRules(rules)
     },
 
     liveTests: {
@@ -9495,6 +10233,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
   Object.freeze(api.party);
   Object.freeze(api.farming);
   Object.freeze(api.farmIntelligence);
+  Object.freeze(api.inventory);
   Object.freeze(api.liveTests);
   Object.freeze(api.knowledge);
   Object.freeze(api.roster);
@@ -9512,7 +10251,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
     };
   } catch (_) {}
 
-  runtime.logger.info('AL Bot H9 geladen', {
+  runtime.logger.info('AL Bot H10 geladen', {
     version: api.version,
     bootCount,
     hotReload: !!previous,
