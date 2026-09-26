@@ -85,12 +85,12 @@ Bereits im H2-Branch umgesetzt:
 - H2-Regressionstests;
 - `docs/H2-LIVE-TEST.md`.
 
-Noch ausstehend für H2:
-- Browser-Bundle aus aktuellem H2-Source bauen;
-- automatische Tests/CI vollständig grün verifizieren;
-- PR2 öffnen;
-- echten H2-Live-Test im Adventure-Land-Client durchführen;
-- erst nach User-Freigabe mergen.
+H2 aktueller Stand:
+- Browser-Bundle aus aktuellem H2-Source gebaut;
+- H1-Regression und H2-Stabilitätstests in GitHub Actions **grün**;
+- **PR #2 – H2: Runtime stability and centralized scheduler** ist offen;
+- noch ausstehend: echter H2-Live-Test im Adventure-Land-Client;
+- Merge erst nach bestandenem Live-Test und ausdrücklicher User-Freigabe.
 
 ## H2 Architekturregel für spätere Module
 
@@ -185,6 +185,6 @@ Bei Fehler:
 
 ## Nächster Schritt
 
-H2 fertigstellen → PR2 öffnen → User führt `docs/H2-LIVE-TEST.md` im echten Spiel aus.
+User führt `docs/H2-LIVE-TEST.md` im echten Spiel gegen den aktuellen PR2-Head aus.
 
 Bei bestandenem H2 folgt nach ausdrücklicher Merge-Freigabe **H3 – Game Adapter & Knowledge**.
