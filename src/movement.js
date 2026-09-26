@@ -487,8 +487,9 @@
         'movement-observer:' + order.id,
         () => this._observeOrder(),
         this.config.pollMs,
-        { immediate: true }
+        { immediate: false }
       );
+      this._observeOrder();
       this._watchCommand(order, dispatch);
 
       if (this.logger) this.logger.warn('Bewegungsauftrag gestartet', {
@@ -612,9 +613,7 @@
     }
 
     emergencyStop(reason = 'EMERGENCY_STOP') {
-      const result = this._cancelActive(reason, { cleanup: true, forceCleanup: true });
-      if (!result.cancelled) this._bestEffortStop(reason, { smart: true, local: true });
-      return result;
+      return this._cancelActive(reason, { cleanup: true, forceCleanup: true });
     }
 
     captureSafePoint(source = 'MANUAL') {
