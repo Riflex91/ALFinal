@@ -15,7 +15,8 @@
     attack: Object.freeze({ publicName: 'attack', family: 'combat' }),
     heal: Object.freeze({ publicName: 'heal', family: 'party-heal' }),
     change_target: Object.freeze({ publicName: 'change_target', family: 'combat-target' }),
-    loot: Object.freeze({ publicName: 'loot', family: 'loot' })
+    loot: Object.freeze({ publicName: 'loot', family: 'loot' }),
+    send_item: Object.freeze({ publicName: 'send_item', family: 'merchant-logistics' })
   });
 
   function errorDetails(error) {
