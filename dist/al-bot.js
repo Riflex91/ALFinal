@@ -1000,6 +1000,22 @@
       return null;
     }
 
+    _resolveFunction(name) {
+      for (const candidate of this._roots()) {
+        try {
+          if (candidate && typeof candidate[name] === 'function') {
+            return { owner: candidate, fn: candidate[name] };
+          }
+        } catch (_) {}
+        try {
+          if (candidate && candidate.parent && typeof candidate.parent[name] === 'function') {
+            return { owner: candidate.parent, fn: candidate.parent[name] };
+          }
+        } catch (_) {}
+      }
+      return null;
+    }
+
     _character() {
       return this._read('character');
     }
@@ -1105,8 +1121,106 @@
         y: pos.y,
         hp: finite(entity.hp),
         maxHp: finite(entity.max_hp),
+        xp: finite(entity.xp),
+        attack: finite(entity.attack),
+        range: finite(entity.range),
+        frequency: finite(entity.frequency),
+        visible: entity.visible !== false,
         targetId: entity.target == null ? null : String(entity.target),
         dead: safeBoolean(entity.dead) || safeBoolean(entity.rip)
+      };
+    }
+
+    entityReference(id) {
+      const match = this._entityByIdOrName(id);
+      if (match && match.entity && match.entity.visible !== false && !match.entity.dead && !match.entity.rip) {
+        return match.entity;
+      }
+      const current = this._currentTarget();
+      if (current && current.entity) {
+        const currentId = current.entity.id == null ? null : String(current.entity.id);
+        if (id == null || currentId === String(id)) return current.entity;
+      }
+      return null;
+    }
+
+    visibleMonsters(options = {}) {
+      const character = this._character();
+      if (!character || !character.name) return [];
+      const charPos = this._position(character);
+      const type = cleanText(options.type || options.mtype || '', 120) || null;
+      const rows = [];
+      for (const row of this._entityEntries()) {
+        const entity = row.entity;
+        if (!entity || entity.visible === false || entity.dead === true || entity.rip === true) continue;
+        if (!(entity.type === 'monster' || entity.mtype)) continue;
+        if (type && String(entity.mtype || '') !== type) continue;
+        if (entity.map && character.map && String(entity.map) !== String(character.map)) continue;
+        const normalized = this._normalizeEntity({ key: row.key, entity }, character.map || null);
+        if (!normalized || normalized.dead || normalized.visible === false) continue;
+        if (charPos.x != null && charPos.y != null && normalized.x != null && normalized.y != null) {
+          normalized.distance = Math.hypot(charPos.x - normalized.x, charPos.y - normalized.y);
+        } else {
+          normalized.distance = null;
+        }
+        rows.push(normalized);
+      }
+      rows.sort((a, b) => {
+        const ad = a.distance == null ? Number.POSITIVE_INFINITY : a.distance;
+        const bd = b.distance == null ? Number.POSITIVE_INFINITY : b.distance;
+        return ad - bd;
+      });
+      return clone(rows);
+    }
+
+    combatReadiness(targetId) {
+      const character = this._character();
+      const raw = this.entityReference(targetId);
+      if (!character || !raw) {
+        return {
+          available: false,
+          targetAvailable: !!raw,
+          canAttack: false,
+          inRange: false,
+          cooldown: null,
+          source: 'unavailable'
+        };
+      }
+
+      const canAttackFn = this._resolveFunction('can_attack');
+      const inRangeFn = this._resolveFunction('is_in_range');
+      const cooldownFn = this._resolveFunction('is_on_cooldown');
+
+      let canAttack = null;
+      let inRange = null;
+      let cooldown = null;
+
+      try { if (canAttackFn) canAttack = canAttackFn.fn.call(canAttackFn.owner, raw) === true; } catch (_) {}
+      try { if (inRangeFn) inRange = inRangeFn.fn.call(inRangeFn.owner, raw, 'attack') === true; } catch (_) {}
+      try { if (cooldownFn) cooldown = cooldownFn.fn.call(cooldownFn.owner, 'attack') === true; } catch (_) {}
+
+      if (inRange == null) {
+        const cp = this._position(character);
+        const tp = this._position(raw);
+        const range = finite(character.range);
+        if (cp.x != null && cp.y != null && tp.x != null && tp.y != null && range != null) {
+          inRange = Math.hypot(cp.x - tp.x, cp.y - tp.y) <= range;
+        } else {
+          inRange = false;
+        }
+      }
+      if (cooldown == null) cooldown = false;
+      if (canAttack == null) {
+        canAttack = !safeBoolean(character.rip) && inRange && !cooldown;
+      }
+
+      return {
+        available: true,
+        targetAvailable: true,
+        canAttack,
+        inRange,
+        cooldown,
+        source: canAttackFn || inRangeFn || cooldownFn ? 'adventure-land-api' : 'adapter-fallback'
       };
     }
 
@@ -1767,7 +1881,9 @@
     move: Object.freeze({ publicName: 'move', family: 'movement' }),
     smart_move: Object.freeze({ publicName: 'smart_move', family: 'movement' }),
     stop: Object.freeze({ publicName: 'stop', family: 'movement-cleanup' }),
-    use_skill: Object.freeze({ publicName: 'use_skill', family: 'skill' })
+    use_skill: Object.freeze({ publicName: 'use_skill', family: 'skill' }),
+    attack: Object.freeze({ publicName: 'attack', family: 'combat' }),
+    change_target: Object.freeze({ publicName: 'change_target', family: 'combat-target' })
   });
 
   function errorDetails(error) {
@@ -1843,8 +1959,11 @@
       if (!Array.isArray(args)) throw new Error('ALBOT_ACTION_ARGS_INVALID:' + action);
 
       const cleanup = options.cleanup === true;
-      if (cleanup && action !== 'stop' && action !== 'use_skill') {
+      if (cleanup && action !== 'stop' && action !== 'use_skill' && action !== 'change_target') {
         throw new Error('ALBOT_CLEANUP_ACTION_NOT_ALLOWED:' + action);
+      }
+      if (cleanup && action === 'change_target' && args[0] != null) {
+        throw new Error('ALBOT_CLEANUP_TARGET_MUST_CLEAR');
       }
 
       this.metrics.attempted += 1;
@@ -2608,6 +2727,339 @@
 
 (function (root) {
   'use strict';
+
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns) throw new Error('ALBOT_INTERNALS_MISSING');
+
+  const clone = ns.helpers.clone;
+  const cleanText = ns.helpers.cleanText;
+
+  function errorDetails(error) {
+    return {
+      name: cleanText(error && error.name || 'Error', 80),
+      message: cleanText(error && error.message || error || 'Unknown error', 600),
+      stack: error && error.stack ? String(error.stack).slice(0, 4000) : null
+    };
+  }
+
+  class LiveTestRunner {
+    constructor(options = {}) {
+      this.runtime = options.runtime || null;
+      this.logger = options.logger || null;
+      this.bus = options.bus || null;
+      this.suites = new Map();
+      this.recommendedId = null;
+      this.sequence = 0;
+      this.current = null;
+      this.lastRun = null;
+      this.cancelRequested = false;
+    }
+
+    register(definition) {
+      if (!definition || typeof definition !== 'object') throw new Error('LIVE_TEST_DEFINITION_REQUIRED');
+      const id = cleanText(definition.id, 100);
+      if (!id) throw new Error('LIVE_TEST_ID_REQUIRED');
+      if (this.suites.has(id)) throw new Error('LIVE_TEST_DUPLICATE:' + id);
+      const steps = Array.isArray(definition.steps) ? definition.steps : [];
+      if (!steps.length) throw new Error('LIVE_TEST_STEPS_REQUIRED:' + id);
+      for (const step of steps) {
+        if (!step || typeof step.run !== 'function') throw new Error('LIVE_TEST_STEP_RUN_REQUIRED:' + id);
+      }
+      const suite = {
+        id,
+        title: cleanText(definition.title || id, 160),
+        description: cleanText(definition.description || '', 500),
+        version: cleanText(definition.version || '1', 40),
+        autoStartRuntime: definition.autoStartRuntime !== false,
+        restoreRuntimeState: definition.restoreRuntimeState !== false,
+        prepare: typeof definition.prepare === 'function' ? definition.prepare : null,
+        cleanup: typeof definition.cleanup === 'function' ? definition.cleanup : null,
+        steps: steps.map((step, index) => ({
+          id: cleanText(step.id || ('step-' + (index + 1)), 100),
+          title: cleanText(step.title || step.id || ('Schritt ' + (index + 1)), 180),
+          timeoutMs: Math.max(250, Math.min(10 * 60 * 1000, Number(step.timeoutMs) || 30000)),
+          run: step.run
+        }))
+      };
+      this.suites.set(id, suite);
+      if (definition.recommended === true || !this.recommendedId) this.recommendedId = id;
+      return this.describe(id);
+    }
+
+    setRecommended(id) {
+      if (!this.suites.has(id)) throw new Error('LIVE_TEST_UNKNOWN:' + id);
+      this.recommendedId = id;
+      return this.describe(id);
+    }
+
+    list() {
+      return Array.from(this.suites.values()).map(suite => ({
+        id: suite.id,
+        title: suite.title,
+        description: suite.description,
+        version: suite.version,
+        recommended: suite.id === this.recommendedId,
+        steps: suite.steps.map(step => ({ id: step.id, title: step.title, timeoutMs: step.timeoutMs }))
+      }));
+    }
+
+    describe(id) {
+      const suite = this.suites.get(id);
+      if (!suite) return null;
+      return this.list().find(row => row.id === id) || null;
+    }
+
+    _emit() {
+      if (this.bus) {
+        try { this.bus.emit('live-test', this.status()); } catch (_) {}
+      }
+    }
+
+    _publicRun(run) {
+      if (!run) return null;
+      return clone({
+        id: run.id,
+        suiteId: run.suiteId,
+        title: run.title,
+        state: run.state,
+        reason: run.reason,
+        startedAt: run.startedAt,
+        finishedAt: run.finishedAt,
+        runtimeWasRunning: run.runtimeWasRunning,
+        runtimeAutoStarted: run.runtimeAutoStarted,
+        currentStepId: run.currentStepId,
+        steps: run.steps,
+        cleanup: run.cleanup
+      });
+    }
+
+    _assertNotCancelled() {
+      if (this.cancelRequested) throw new Error('LIVE_TEST_CANCELLED');
+      if (this.runtime && this.runtime.stopLatch && this.runtime.stopLatch.status().latched) {
+        throw new Error('LIVE_TEST_EMERGENCY_STOP_LATCHED');
+      }
+    }
+
+    _context(run, suite) {
+      const sleep = ms => new Promise((resolve, reject) => {
+        const delay = Math.max(0, Number(ms) || 0);
+        const timerRoot = this.runtime && this.runtime.root || root;
+        const set = timerRoot && typeof timerRoot.setTimeout === 'function' ? timerRoot.setTimeout.bind(timerRoot) : setTimeout;
+        set(() => {
+          try {
+            this._assertNotCancelled();
+            resolve();
+          } catch (error) {
+            reject(error);
+          }
+        }, delay);
+      });
+
+      const waitFor = async (predicate, options = {}) => {
+        const timeoutMs = Math.max(100, Math.min(10 * 60 * 1000, Number(options.timeoutMs) || 10000));
+        const pollMs = Math.max(25, Math.min(2000, Number(options.pollMs) || 100));
+        const started = Date.now();
+        let lastValue = null;
+        while (Date.now() - started <= timeoutMs) {
+          this._assertNotCancelled();
+          lastValue = await predicate();
+          if (lastValue) return lastValue;
+          await sleep(pollMs);
+        }
+        const label = cleanText(options.label || 'condition', 120);
+        throw new Error('LIVE_TEST_WAIT_TIMEOUT:' + label);
+      };
+
+      return {
+        runtime: this.runtime,
+        suite: this.describe(suite.id),
+        run: () => this._publicRun(run),
+        assert: (condition, message = 'LIVE_TEST_ASSERTION_FAILED') => {
+          if (!condition) throw new Error(cleanText(message, 300) || 'LIVE_TEST_ASSERTION_FAILED');
+          return true;
+        },
+        assertNotCancelled: () => this._assertNotCancelled(),
+        sleep,
+        waitFor,
+        game: () => this.runtime && this.runtime.game ? this.runtime.game.snapshot() : null,
+        status: () => this.runtime ? this.runtime.status() : null,
+        note: details => {
+          const step = run.steps.find(row => row.id === run.currentStepId);
+          if (step) step.details = clone(details);
+          this._emit();
+        }
+      };
+    }
+
+    async _runStep(run, suite, step, context) {
+      const row = run.steps.find(candidate => candidate.id === step.id);
+      row.state = 'RUNNING';
+      row.startedAt = new Date().toISOString();
+      run.currentStepId = step.id;
+      this._emit();
+
+      let timer = null;
+      const timeoutPromise = new Promise((_, reject) => {
+        const timerRoot = this.runtime && this.runtime.root || root;
+        const set = timerRoot && typeof timerRoot.setTimeout === 'function' ? timerRoot.setTimeout.bind(timerRoot) : setTimeout;
+        timer = set(() => reject(new Error('LIVE_TEST_STEP_TIMEOUT:' + step.id)), step.timeoutMs);
+      });
+
+      try {
+        this._assertNotCancelled();
+        const result = await Promise.race([
+          Promise.resolve().then(() => step.run(context)),
+          timeoutPromise
+        ]);
+        this._assertNotCancelled();
+        row.state = 'PASSED';
+        row.finishedAt = new Date().toISOString();
+        row.result = result == null ? null : clone(result);
+        row.error = null;
+      } catch (error) {
+        row.state = this.cancelRequested ? 'CANCELLED' : 'FAILED';
+        row.finishedAt = new Date().toISOString();
+        row.error = errorDetails(error);
+        throw error;
+      } finally {
+        if (timer != null) {
+          const timerRoot = this.runtime && this.runtime.root || root;
+          const clear = timerRoot && typeof timerRoot.clearTimeout === 'function' ? timerRoot.clearTimeout.bind(timerRoot) : clearTimeout;
+          try { clear(timer); } catch (_) {}
+        }
+        this._emit();
+      }
+    }
+
+    async start(id) {
+      if (this.current && this.current.state === 'RUNNING') throw new Error('LIVE_TEST_ALREADY_RUNNING');
+      const suiteId = id || this.recommendedId;
+      const suite = this.suites.get(suiteId);
+      if (!suite) throw new Error('LIVE_TEST_UNKNOWN:' + cleanText(suiteId, 100));
+      if (!this.runtime) throw new Error('LIVE_TEST_RUNTIME_MISSING');
+      if (this.runtime.stopLatch.status().latched) throw new Error('LIVE_TEST_EMERGENCY_STOP_LATCHED');
+
+      this.cancelRequested = false;
+      const runtimeWasRunning = this.runtime.running === true;
+      const run = {
+        id: 'live-test-' + (++this.sequence),
+        suiteId: suite.id,
+        title: suite.title,
+        state: 'RUNNING',
+        reason: null,
+        startedAt: new Date().toISOString(),
+        finishedAt: null,
+        runtimeWasRunning,
+        runtimeAutoStarted: false,
+        currentStepId: null,
+        cleanup: { attempted: false, ok: null, error: null },
+        steps: suite.steps.map(step => ({
+          id: step.id,
+          title: step.title,
+          state: 'PENDING',
+          startedAt: null,
+          finishedAt: null,
+          details: null,
+          result: null,
+          error: null
+        }))
+      };
+      this.current = run;
+      this._emit();
+      if (this.logger) this.logger.warn('Live-Test gestartet', { id: run.id, suite: suite.id, title: suite.title });
+
+      const context = this._context(run, suite);
+      try {
+        if (!runtimeWasRunning && suite.autoStartRuntime) {
+          await this.runtime.start();
+          run.runtimeAutoStarted = true;
+          this._emit();
+        }
+        this._assertNotCancelled();
+        if (suite.prepare) await suite.prepare(context);
+
+        for (const step of suite.steps) {
+          await this._runStep(run, suite, step, context);
+        }
+
+        run.state = 'PASSED';
+        run.reason = 'ALL_STEPS_PASSED';
+      } catch (error) {
+        run.state = this.cancelRequested ? 'CANCELLED' : 'FAILED';
+        run.reason = cleanText(error && error.message || error || 'LIVE_TEST_FAILED', 300);
+        for (const row of run.steps) {
+          if (row.state === 'PENDING') row.state = 'SKIPPED';
+        }
+      } finally {
+        run.cleanup.attempted = true;
+        try {
+          if (suite.cleanup) await suite.cleanup(context, run.state);
+          if (run.runtimeAutoStarted && suite.restoreRuntimeState && this.runtime.running) {
+            await this.runtime.stop('LIVE_TEST_AUTO_RESTORE');
+          }
+          run.cleanup.ok = true;
+        } catch (cleanupError) {
+          run.cleanup.ok = false;
+          run.cleanup.error = errorDetails(cleanupError);
+          if (run.state === 'PASSED') {
+            run.state = 'FAILED';
+            run.reason = 'LIVE_TEST_CLEANUP_FAILED:' + run.cleanup.error.message;
+          }
+        }
+
+        run.finishedAt = new Date().toISOString();
+        run.currentStepId = null;
+        this.lastRun = this._publicRun(run);
+        this.current = null;
+        this._emit();
+        if (this.logger) {
+          const data = { id: run.id, suite: suite.id, state: run.state, reason: run.reason };
+          if (run.state === 'PASSED') this.logger.info('Live-Test beendet: BESTANDEN', data);
+          else this.logger.error('Live-Test beendet: ' + run.state, data);
+        }
+      }
+
+      return clone(this.lastRun);
+    }
+
+    startRecommended() {
+      return this.start(this.recommendedId);
+    }
+
+    cancel(reason = 'MANUAL_TEST_CANCEL') {
+      if (!this.current || this.current.state !== 'RUNNING') {
+        return { cancelled: false, reason: 'NO_RUNNING_LIVE_TEST' };
+      }
+      this.cancelRequested = true;
+      this.current.reason = cleanText(reason, 200);
+      this._emit();
+      if (this.logger) this.logger.warn('Live-Test Abbruch angefordert', {
+        id: this.current.id,
+        suite: this.current.suiteId,
+        reason: this.current.reason
+      });
+      return { cancelled: true, id: this.current.id, suiteId: this.current.suiteId };
+    }
+
+    status() {
+      return {
+        schemaVersion: 1,
+        recommendedId: this.recommendedId,
+        recommended: this.describe(this.recommendedId),
+        running: !!(this.current && this.current.state === 'RUNNING'),
+        current: this._publicRun(this.current),
+        lastRun: clone(this.lastRun),
+        suites: this.list()
+      };
+    }
+  }
+
+  ns.LiveTestRunner = LiveTestRunner;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+
+(function (root) {
+  'use strict';
   const ns = root.__ALBOT_INTERNALS__;
   if (!ns || !ns.Scheduler) throw new Error('ALBOT_SCHEDULER_MISSING');
 
@@ -2645,6 +3097,11 @@
       this.knowledgeProvider = new ns.WindowsBridgeKnowledgeProvider({ root: this.root, logger: this.logger });
       this.knowledge.setProvider(this.knowledgeProvider);
       this.roster = new ns.CharacterRosterService({ root: this.root, logger: this.logger });
+      this.liveTests = new ns.LiveTestRunner({
+        runtime: this,
+        logger: this.logger,
+        bus: this.bus
+      });
       this.ui = null;
       this.lastError = null;
       this._destroyed = false;
@@ -2766,6 +3223,7 @@
     async emergencyStop(reason = 'MANUAL_EMERGENCY_STOP') {
       const stop = this.stopLatch.latch(reason);
       this.running = false;
+      try { this.liveTests.cancel('EMERGENCY_STOP'); } catch (_) {}
 
       // Die Notbremse stoppt zuerst zentral alle Timer/Listener. Modul-Stop-Hooks
       // laufen danach nur noch zur fachlichen Bereinigung.
@@ -2831,6 +3289,7 @@
         game: this.game.status(),
         actions: this.actions.status(),
         movement: this.movement.status(),
+        liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
         roster,
         goals: this.goals.list(),
@@ -2849,6 +3308,7 @@
         character: game && game.character ? ns.helpers.clone(game.character) : null,
         actionBoundary: this.actions.status(),
         movement: this.movement.status(),
+        liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
         logs: this.logger.list(160),
         userAgent: this.root && this.root.navigator && this.root.navigator.userAgent || null
@@ -2866,6 +3326,7 @@
       push('game-adapter', !!this.game.status() && typeof this.game.snapshot === 'function', this.game.status());
       push('action-boundary', !!this.actions.status() && this.actions.status().supportedActions.includes('move') && this.actions.status().supportedActions.includes('smart_move'), this.actions.status());
       push('movement-controller', !!this.movement.status() && typeof this.movement.moveLocal === 'function' && typeof this.movement.smartMove === 'function', this.movement.status());
+      push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
       push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);
       push('dynamic-roster-no-hardcoded-names', roster.hardcodedNamesRequired === false, {
@@ -2939,6 +3400,7 @@
     prepareHotReload(reason = 'HOT_RELOAD') {
       if (this._destroyed) return;
       this.running = false;
+      try { this.liveTests.cancel(reason); } catch (_) {}
 
       // Zuerst alle zentral verwalteten Ressourcen synchron stoppen. Dadurch kann
       // ein neu geladenes Bundle niemals alte Timer/Listener weiterlaufen lassen.
@@ -2987,6 +3449,7 @@
       this.minimized = false;
       this.devResult = null;
       this.navigationResult = null;
+      this.liveTestClipboard = null;
       this._offLog = null;
       this._dragCleanup = null;
     }
@@ -3042,12 +3505,13 @@
 </style>
 <div class="albot-head" id="albot-drag-handle"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-minimize" class="albot-window-btn" title="Fenster minimieren" aria-label="Fenster minimieren">—</button><button id="albot-emergency" class="albot-stop">STOP</button></div>
 <div class="albot-tabs">
-<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
+<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
 </div>
 <div class="albot-body">
 <section id="albot-panel-overview" class="albot-panel active"></section>
 <section id="albot-panel-priorities" class="albot-panel"></section>
 <section id="albot-panel-navigation" class="albot-panel"></section>
+<section id="albot-panel-live-test" class="albot-panel"></section>
 <section id="albot-panel-knowledge" class="albot-panel"></section>
 <section id="albot-panel-logs" class="albot-panel"></section>
 <section id="albot-panel-dev" class="albot-panel"></section>
@@ -3166,6 +3630,7 @@
         const focused = panel && this.doc && this.doc.activeElement && panel.contains(this.doc.activeElement);
         if (!focused) this.renderNavigation(status);
       }
+      if (this.activeTab === 'live-test') this.renderLiveTest(status);
       if (this.activeTab === 'knowledge') this.renderKnowledge(status);
       if (this.activeTab === 'logs') this.renderLogs();
       if (this.activeTab === 'dev') this.renderDev(status);
@@ -3179,6 +3644,7 @@
       this.renderOverview(status);
       this.renderPriorities(status);
       this.renderNavigation(status);
+      this.renderLiveTest(status);
       this.renderKnowledge(status);
       this.renderLogs();
       this.renderDev(status);
@@ -3313,6 +3779,69 @@
       panel.querySelector('#albot-nav-safe-return').onclick = () => run(() => this.runtime.movement.safeReturn({ owner: 'gui-h4-safe-return' }));
     }
 
+    renderLiveTest(status) {
+      const panel = this.host.querySelector('#albot-panel-live-test');
+      if (!panel) return;
+      const tests = status.liveTests || {};
+      const recommended = tests.recommended || null;
+      const run = tests.current || tests.lastRun || null;
+      const running = tests.running === true;
+      const state = run ? run.state : 'BEREIT';
+      const stateClass = state === 'PASSED' ? 'albot-ok' : (state === 'FAILED' || state === 'CANCELLED' ? 'albot-bad' : '');
+      const clipboard = this.liveTestClipboard;
+      const clipboardText = clipboard == null
+        ? 'Nach Testende wird der vollständige Fehlerbericht automatisch in die Zwischenablage kopiert.'
+        : clipboard.copied
+          ? 'Test beendet · Fehlerbericht automatisch in die Zwischenablage kopiert.'
+          : clipboard.pending
+            ? 'Test läuft · Bericht wird nach Abschluss automatisch kopiert.'
+            : 'Test beendet · automatische Zwischenablage-Kopie fehlgeschlagen: ' + esc(clipboard.error || 'unbekannt');
+
+      const steps = run && Array.isArray(run.steps) ? run.steps : recommended && Array.isArray(recommended.steps)
+        ? recommended.steps.map(step => ({ ...step, state: 'PENDING' }))
+        : [];
+
+      panel.innerHTML = `<div class="albot-card"><b>Ein-Klick-Live-Test</b>
+<div class="albot-small">Ab H5 laufen Live-Tests automatisch als definierte Schrittfolge. Du musst nur „Test starten“ drücken. Bei einem Fehler wird fail-safe abgebrochen; der globale rote STOP bleibt jederzeit verfügbar.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Testsuite</span><div class="albot-v">${recommended ? esc(recommended.title) : 'noch nicht registriert'}</div></div>
+<div><span class="albot-k">Status</span><div class="albot-v ${stateClass}">${esc(state)}</div></div>
+<div><span class="albot-k">Aktueller Schritt</span><div class="albot-v">${run && run.currentStepId ? esc(run.currentStepId) : '-'}</div></div>
+<div><span class="albot-k">Runtime</span><div class="albot-v">${status.running ? 'RUNNING' : 'STOPPED'}</div></div>
+</div>
+<div class="albot-row"><button id="albot-live-test-start" class="albot-btn" ${running || !recommended ? 'disabled' : ''}>Test starten</button>${running ? '<span class="albot-small">Test läuft automatisch …</span>' : ''}</div>
+<div class="albot-small ${clipboard && clipboard.copied ? 'albot-ok' : clipboard && !clipboard.pending ? 'albot-bad' : ''}">${clipboardText}</div>
+</div>
+
+<div class="albot-card"><b>Testschritte</b>
+${steps.length ? steps.map((step, index) => {
+  const stepClass = step.state === 'PASSED' ? 'albot-ok' : (step.state === 'FAILED' || step.state === 'CANCELLED' ? 'albot-bad' : 'albot-muted');
+  const details = step.error ? ' · '+esc(step.error.message || step.error) : step.result != null ? ' · '+esc(JSON.stringify(step.result)) : '';
+  return '<div class="'+stepClass+'">'+esc(index + 1)+'. '+esc(step.title || step.id)+' — '+esc(step.state || 'PENDING')+details+'</div>';
+}).join('') : '<div class="albot-small">Für den aktuellen Entwicklungsstand ist noch keine Live-Testsuite registriert.</div>'}
+</div>
+
+${run ? `<div class="albot-card"><b>Letztes Testergebnis</b>
+<div class="${stateClass}"><b>${state === 'PASSED' ? 'TEST BEENDET – BESTANDEN' : state === 'RUNNING' ? 'TEST LÄUFT' : 'TEST BEENDET – '+esc(state)}</b></div>
+<div class="albot-small">Grund: ${esc(run.reason || '-')}</div>
+<div class="albot-small">Start: ${esc(run.startedAt || '-')} · Ende: ${esc(run.finishedAt || '-')}</div>
+</div>` : ''}`;
+
+      const start = panel.querySelector('#albot-live-test-start');
+      if (start) start.onclick = async () => {
+        this.liveTestClipboard = { pending: true, copied: false, error: null };
+        this.renderLiveTest(this.runtime.status());
+        try {
+          await this.runtime.liveTests.startRecommended();
+        } catch (error) {
+          this.runtime.logger.error('Live-Test konnte nicht gestartet werden', { error: String(error && error.message || error) });
+        }
+        const copy = await this.copyDiagnostics();
+        this.liveTestClipboard = { pending: false, copied: copy.copied === true, error: copy.error || null };
+        this.renderLiveTest(this.runtime.status());
+      };
+    }
+
     renderKnowledge(status) {
       const panel = this.host.querySelector('#albot-panel-knowledge');
       if (!panel) return;
@@ -3389,9 +3918,13 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
           const area = this.doc.createElement('textarea'); area.value = text; area.style.position='fixed'; area.style.opacity='0'; this.doc.body.appendChild(area); area.select(); this.doc.execCommand('copy'); area.remove();
         }
         this.runtime.logger.info('Fehlerbericht in Zwischenablage kopiert');
-      } catch (e) { this.runtime.logger.error('Clipboard-Kopie fehlgeschlagen', { error: e.message }); }
-      this.renderLogs();
-      return text;
+        this.renderLogs();
+        return { copied: true, text, error: null };
+      } catch (e) {
+        this.runtime.logger.error('Clipboard-Kopie fehlgeschlagen', { error: e.message });
+        this.renderLogs();
+        return { copied: false, text, error: String(e && e.message || e) };
+      }
     }
 
     show() { if (this.host) this.host.style.display = 'block'; }
@@ -3528,6 +4061,14 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
       safeReturn: options => runtime.movement.safeReturn(options || {})
     },
 
+    liveTests: {
+      status: () => runtime.liveTests.status(),
+      list: () => runtime.liveTests.list(),
+      start: id => runtime.liveTests.start(id),
+      startRecommended: () => runtime.liveTests.startRecommended(),
+      cancel: reason => runtime.liveTests.cancel(reason || 'API_LIVE_TEST_CANCEL')
+    },
+
     knowledge: {
       setProvider: provider => runtime.knowledge.setProvider(provider),
       refresh: () => runtime.knowledge.refresh(),
@@ -3564,6 +4105,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
   Object.freeze(api.modules);
   Object.freeze(api.game);
   Object.freeze(api.movement);
+  Object.freeze(api.liveTests);
   Object.freeze(api.knowledge);
   Object.freeze(api.roster);
   Object.freeze(api.actions);
