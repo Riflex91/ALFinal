@@ -223,6 +223,115 @@
       return clone(rows);
     }
 
+    skillDefinition(skillId) {
+      const id = cleanText(skillId || '', 120);
+      if (!id) return null;
+      const G = this._gameData();
+      const raw = G && G.skills && G.skills[id];
+      if (!raw || typeof raw !== 'object') return null;
+      const classesRaw = Array.isArray(raw.class) ? raw.class : (raw.class ? [raw.class] : []);
+      return {
+        id,
+        name: raw.name == null ? id : cleanText(raw.name, 160),
+        classes: classesRaw.map(value => cleanText(value, 60).toLowerCase()).filter(Boolean),
+        level: finite(raw.level),
+        mp: finite(raw.mp),
+        cooldown: finite(raw.cooldown),
+        range: finite(raw.range),
+        rangeMultiplier: finite(raw.range_multiplier),
+        rangeBonus: finite(raw.range_bonus),
+        damageMultiplier: finite(raw.damage_multiplier),
+        share: raw.share == null ? null : cleanText(raw.share, 120),
+        target: raw.target == null ? null : safeBoolean(raw.target),
+        multi: safeBoolean(raw.multi),
+        list: safeBoolean(raw.list),
+        party: safeBoolean(raw.party),
+        heal: safeBoolean(raw.heal),
+        hostile: safeBoolean(raw.hostile)
+      };
+    }
+
+    skillReadiness(skillId, targetId = null) {
+      const definition = this.skillDefinition(skillId);
+      const character = this._character();
+      const normalized = this.snapshot();
+      if (!definition || !character || !normalized.available || !normalized.character) {
+        return {
+          available: false,
+          allowed: false,
+          skillId: cleanText(skillId || '', 120) || null,
+          definition,
+          reasons: ['SKILL_OR_CHARACTER_UNAVAILABLE'],
+          cooldown: null,
+          canUse: null,
+          inRange: targetId == null ? true : null,
+          activeCondition: false
+        };
+      }
+
+      const reasons = [];
+      const c = normalized.character;
+      if (definition.classes.length && !definition.classes.includes(String(c.ctype || '').toLowerCase())) {
+        reasons.push('SKILL_CLASS_MISMATCH');
+      }
+      if (definition.level != null && c.level != null && c.level < definition.level) reasons.push('SKILL_LEVEL_TOO_LOW');
+      if (definition.mp != null && c.mp != null && c.mp < definition.mp) reasons.push('SKILL_MP_TOO_LOW');
+
+      const cooldownFn = this._resolveFunction('is_on_cooldown');
+      let cooldown = null;
+      try { if (cooldownFn) cooldown = cooldownFn.fn.call(cooldownFn.owner, definition.id) === true; } catch (_) {}
+      if (cooldown === true) reasons.push('SKILL_COOLDOWN');
+
+      const canUseFn = this._resolveFunction('can_use');
+      let canUse = null;
+      try { if (canUseFn) canUse = canUseFn.fn.call(canUseFn.owner, definition.id) === true; } catch (_) {}
+      if (canUse === false) reasons.push('SKILL_CAN_USE_FALSE');
+
+      let inRange = targetId == null;
+      if (targetId != null) {
+        const rawTarget = this.entityReference(targetId);
+        if (!rawTarget) {
+          inRange = false;
+          reasons.push('SKILL_TARGET_UNAVAILABLE');
+        } else {
+          const inRangeFn = this._resolveFunction('is_in_range');
+          let observed = null;
+          try { if (inRangeFn) observed = inRangeFn.fn.call(inRangeFn.owner, rawTarget, definition.id) === true; } catch (_) {}
+          if (observed == null) {
+            const cp = this._position(character);
+            const tp = this._position(rawTarget);
+            let allowedRange = definition.range;
+            if (allowedRange == null && c.range != null) {
+              allowedRange = c.range * (definition.rangeMultiplier == null ? 1 : definition.rangeMultiplier)
+                + (definition.rangeBonus == null ? 0 : definition.rangeBonus);
+            }
+            observed = cp.x != null && cp.y != null && tp.x != null && tp.y != null && allowedRange != null
+              ? Math.hypot(cp.x - tp.x, cp.y - tp.y) <= allowedRange
+              : false;
+          }
+          inRange = observed;
+          if (!inRange) reasons.push('SKILL_OUT_OF_RANGE');
+        }
+      }
+
+      let activeCondition = false;
+      try {
+        activeCondition = !!(character.s && character.s[definition.id]);
+      } catch (_) {}
+
+      return {
+        available: true,
+        allowed: reasons.length === 0,
+        skillId: definition.id,
+        definition,
+        reasons,
+        cooldown,
+        canUse,
+        inRange,
+        activeCondition
+      };
+    }
+
     combatReadiness(targetId) {
       const character = this._character();
       const raw = this.entityReference(targetId);
@@ -344,6 +453,7 @@
           maxMp: finite(character.max_mp),
           gold: finite(character.gold),
           xp: finite(character.xp),
+          attack: finite(character.attack),
           range: finite(character.range),
           speed: finite(character.speed),
           frequency: finite(character.frequency),
