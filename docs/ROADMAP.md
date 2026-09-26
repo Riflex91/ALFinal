@@ -282,16 +282,35 @@ Nach H9 existiert ein echter autonomer Farming-Bot.
 
 ## H10 – Loot & Inventar
 
-**🟦 BAU**
-- Loot
-- Inventarplatz
-- Itemklassifizierung
-- Keep/Reserve/Sell/Bank/Exchange
-- Schutz wichtiger Items
+**🟦 BAU – vorbereitet, wartet auf H9-Merge**
+- eigener `LootInventoryController`
+- Live-Inventar aus `character.items` + Empty-Slot-Signal aus `character.esize`
+- Live-Chests aus `get_chests()` / `chests`
+- Loot ausschließlich über zentrale ActionBoundary
+- 2 freie Slots als konservative Standardreserve
+- Itemklassifizierung: `PROTECT / RESERVE / KEEP / BANK / EXCHANGE / SELL`
+- locked, Giveaway, auslaufende, gelevelte, Gear-/Upgrade-/Compound- und Questitems geschützt
+- aktive `COLLECT_ITEM`-Goals reservieren passende Items dynamisch
+- unbekannter Wert defaultet zu `BANK`, niemals automatisch zu `SELL`
+- `SELL` nur explizit per Regel freigebbar
+- `nothing_to_loot` / `safety` als bekannte Skips
+- Loot-`UNKNOWN` -> Suspension ohne Blind-Retry
+- expliziter Safety-Reset erforderlich
+- Headless API `ALBot.inventory.*`
+- eigener Control-Center-Tab **Loot & Inventar**
+- keine destruktiven Sell/Bank/Exchange-Dispatches in H10
+- `docs/H10-LIVE-TEST.md`
 
-**🟧 LIVE-TEST**
-- mehrere Farmzyklen beobachten
-- nichts Wichtiges darf verloren gehen
+**🟧 LIVE-TEST – Suite implementiert**
+- Ein-Klick-Suite `h10-loot-inventory`
+- Preflight: Live-Inventar, Schutzregeln und Loot-API
+- H9 startet selbstständig Farming, damit echter Loot entsteht
+- mindestens ein bestätigter realer Loot
+- Inventardelta nach Loot erklären und neu klassifizieren
+- geschützte/reservierte Baseline-Items dürfen nicht verschwinden
+- 5-Sekunden-Stabilität ohne Loot-/Attack-UNKNOWN
+- Cleanup von H9/H8/H5/H4 + kein Pending Loot
+- echter Adventure-Land-Live-Test erst nach H9-Merge und finaler H10-CI
 
 ---
 
