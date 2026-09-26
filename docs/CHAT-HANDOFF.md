@@ -269,9 +269,12 @@ H6 Live-Test:
 - Cleanup;
 - Diagnose automatisch in die Zwischenablage.
 
+Aktueller technischer Stand:
+- vollständige H1–H6-CI auf aktuellem Branch-Head: **GRÜN**;
+- H6-Regressionen für explizite H5-Suite und Warrior `charge → taunt` bereinigt.
+
 Noch ausstehend:
 - PR #6 öffnen;
-- vollständige H1–H6-CI;
 - echter H6-Ein-Klick-Live-Test;
 - danach Auto-Merge gemäß Sicherheitsregeln.
 
