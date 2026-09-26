@@ -235,7 +235,7 @@ Live-Ergebnis:
 - eigener `FarmIntelligenceController`
 - H5-sichere sichtbare Monstercluster als primäre Live-Kandidaten
 - aktuelle Spawnpunkte aus live `G.maps`
-- Monsterwerte aus live `G.monsters`
+- Kampfwerte aus live `G.monsters`, Gold aus `G.monster_gold`/`G.drops.gold`, Drops aus `G.drops.monsters`
 - erklärbares Scoring:
   - XP-Effizienz
   - Gold-Effizienz
@@ -259,10 +259,11 @@ Live-Ergebnis:
 
 **🟧 LIVE-TEST**
 - Ein-Klick-Test über **Test starten**
-- H9 wählt selbst ein erklärbares sichtbares Farmziel
+- H9 wählt selbst ein erklärbares Farmziel; sichtbare Safe-Cluster und bekannte `G.maps`-Spawns konkurrieren im Score
 - H8 übernimmt das gewählte Monsterziel
 - echte H8-AoE- oder H5-Aktion muss bestätigt werden
-- natürlicher Farmspot-Wechsel nach geänderter Live-Lage
+- mehrere adaptive Live-Entscheidungszyklen; natürlicher Farmspot-Wechsel wird erfasst, wenn die Lage ihn auslöst
+- stabiler Hold ist bei unverändert bestem Spot korrekt; kein erzwungener Testwechsel
 - kein A→B→A-Pingpong
 - kein H8/H5 UNKNOWN und kein Ownership-Verlust
 - Cleanup + Diagnosekopie automatisch
