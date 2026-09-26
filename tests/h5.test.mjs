@@ -321,6 +321,67 @@ test('H5 kiting foundation can create a bounded local separation move', async t 
   await ctx.ALBot.stop('DONE');
 });
 
+test('H5 physical combat excludes near-unhittable high-evasion monsters', async t => {
+  const { ctx, calls, character, monster } = combatContext({ damage: 1, cooldownMs: 100 });
+  character.ctype = 'warrior';
+  character.damage_type = 'physical';
+  monster.mtype = 'frog';
+  monster.name = 'Froggie';
+  monster.attack = 24;
+  ctx.G.monsters.frog = { name: 'Froggie', hp: 600, attack: 24, xp: 7200, evasion: 99 };
+  t.after(async () => {
+    try { ctx.ALBot && ctx.ALBot.combat && ctx.ALBot.combat.stop('TEST_CLEANUP'); } catch (_) {}
+    try { ctx.ALBot && await ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {}
+  });
+
+  vm.runInNewContext(bundle, ctx);
+  await ctx.ALBot.start();
+
+  const candidates = ctx.ALBot.combat.candidates({
+    maxAttackToHpRatio: 0.5,
+    minExpectedHitChance: 0.25
+  });
+  assert.equal(candidates.length, 0);
+
+  const started = ctx.ALBot.combat.start({
+    owner: 'high-evasion-physical-test',
+    monsterType: 'frog',
+    maxAttackToHpRatio: 0.5,
+    minExpectedHitChance: 0.25,
+    minMpRatio: 0
+  });
+  assert.equal(started.accepted, true);
+
+  await sleep(350);
+  assert.equal(calls.attack, 0);
+  assert.equal(calls.changeTarget, 0);
+  assert.equal(ctx.ALBot.combat.status().metrics.targetsAcquired, 0);
+});
+
+test('H5 magical combat does not reject a monster solely for physical evasion', async t => {
+  const { ctx, character, monster } = combatContext();
+  character.ctype = 'mage';
+  character.damage_type = 'magical';
+  monster.mtype = 'frog';
+  monster.name = 'Froggie';
+  monster.attack = 24;
+  ctx.G.monsters.frog = { name: 'Froggie', hp: 600, attack: 24, xp: 7200, evasion: 99 };
+  t.after(async () => {
+    try { ctx.ALBot && await ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {}
+  });
+
+  vm.runInNewContext(bundle, ctx);
+  await ctx.ALBot.start();
+
+  const candidates = ctx.ALBot.combat.candidates({
+    maxAttackToHpRatio: 0.5,
+    minExpectedHitChance: 0.25
+  });
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0].mtype, 'frog');
+  assert.equal(candidates[0].expectedHitChance, 1);
+});
+
 test('global STOP shuts down combat, movement and all scheduler resources', async t => {
   const { ctx } = combatContext({ damage: 1, cooldownMs: 1000 });
   t.after(async () => {
