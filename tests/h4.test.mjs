@@ -383,3 +383,42 @@ test('H4 control center exposes movement tab and controls', () => {
   assert.match(ui, /Safe Point hier setzen/);
   assert.match(ui, /Zum Safe Point zurück/);
 });
+
+
+test('same-map smart move without coordinates is rejected instead of claiming immediate arrival', async () => {
+  const { context: ctx, calls } = runtimeContext();
+  vm.runInNewContext(bundle, ctx);
+  await ctx.ALBot.start();
+
+  const result = ctx.ALBot.movement.smart('main');
+  assert.equal(result.accepted, false);
+  assert.equal(result.reason, 'SMART_MOVE_SAME_MAP_NEEDS_COORDINATES');
+  assert.equal(calls.smart.length, 0);
+  assert.equal(ctx.ALBot.movement.status().lastOrder, null);
+
+  await ctx.ALBot.stop('DONE');
+});
+
+test('hot reload during active movement cancels observer and movement best-effort', async () => {
+  const { context: ctx, calls } = runtimeContext({
+    smartMove: destination => {
+      calls.smart.push(destination);
+      return new Promise(() => {});
+    }
+  });
+  vm.runInNewContext(bundle, ctx);
+  await ctx.ALBot.start();
+
+  const started = ctx.ALBot.movement.smart({ map: 'main', x: 400, y: 400 });
+  assert.equal(started.accepted, true);
+  assert.equal(ctx.ALBot.scheduler.owner('module:movement').resources.length, 1);
+
+  ctx.ALBot.__runtime.prepareHotReload('H4_TEST_RELOAD');
+  const status = ctx.ALBot.__runtime.status();
+
+  assert.equal(status.running, false);
+  assert.equal(status.scheduler.totalResources, 0);
+  assert.equal(status.movement.active, false);
+  assert.equal(status.movement.lastOrder.state, 'CANCELLED');
+  assert.ok(calls.stop.length + calls.skills.length >= 1);
+});
