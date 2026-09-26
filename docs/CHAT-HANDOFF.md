@@ -62,34 +62,50 @@ H1-Core enthält:
 - Headless-fähige Control API;
 - automatische Smoke-Tests.
 
-## H2 – aktuell in Arbeit
+## H2 – abgeschlossen und gemerged
+
+**PR #2 – H2: Runtime stability and centralized scheduler** wurde am 2026-09-26 nach bestandenem Live-Test gemerged.
+
+Merge-Commit:
+`d90b3bf6294c447499f2e88ee0948b1c5374f964`
+
+Im echten Adventure-Land-Client bestätigt:
+- wiederholtes Start/Stop ohne Ressourcen-Leak;
+- Scheduler-Ressourcen werden vollständig bereinigt;
+- Runtime-Probe `passed: true`;
+- Modul-Restarts erzeugen keine doppelten Timer;
+- Emergency STOP räumt Scheduler sofort leer;
+- Hot Reload funktioniert auch über getrennte Adventure-Land-Runner-Kontexte;
+- gemeinsamer same-origin Host dient als Hot-Reload-Anker.
+
+## H3 – aktuell in Arbeit
 
 Aktiver Entwicklungsbranch:
-`chatgpt/h2-runtime-stability`
+`chatgpt/h3-game-adapter-knowledge`
 
-Ziel: **Runtime-Stabilität**, weiterhin ohne Gameplay-Automation.
+PR:
+**#3 – H3: Game adapter and Windows Bridge knowledge**
 
-Bereits im H2-Branch umgesetzt:
-- zentraler Scheduler;
-- Resource-Scopes pro Modul;
-- zentrale Timeouts/Intervalle;
-- zentrale Event-Listener-Verwaltung;
-- Cleanup-Hooks;
-- Module Lifecycle: Start/Stop/Restart;
-- Crash-Isolation auf Modulebene;
-- Watchdog-Basis;
-- synchrones Resource-Cleanup bei Hot Reload;
-- Runtime Boot-/Reload-Zähler;
-- Scheduler- und Module-Health-Anzeige im Control Center;
-- harmloser `H2 Runtime-Test` im Entwicklungs-Tab;
-- H2-Regressionstests;
-- `docs/H2-LIVE-TEST.md`.
+Ziel: read-only **Game Adapter & Knowledge**, weiterhin ohne Gameplay-Automation.
 
-H2 aktueller Stand:
-- Browser-Bundle aus aktuellem H2-Source gebaut;
-- H1-Regression und H2-Stabilitätstests in GitHub Actions **grün**;
-- **PR #2 – H2: Runtime stability and centralized scheduler** ist offen;
-- noch ausstehend: echter H2-Live-Test im Adventure-Land-Client;
+Bereits umgesetzt:
+- normalisierter Adventure-Land-Game-Adapter für Character, Klasse, Level, Map, HP/MP, Position, Gold/XP und Target;
+- Target-Auflösung aus Live-Entities inklusive Distanz;
+- Server-/Entity-/GameData-Metadaten;
+- bestehende dynamische Roster-Erkennung bleibt zentrale Account-/Farmer-Sicht;
+- `WindowsBridgeKnowledgeProvider` als read-only Provider;
+- bevorzugter same-origin Bridge-Handoff, falls vorhanden;
+- fester GitHub-Mirror-Fallback auf `Riflex91/Riflex91-Repo/main/v5/wissensbasis/live/snapshot/**`;
+- Validierung von Manifest, `BEREIT`-Status, Generation, Live-Fakten und Snapshot-SHA256;
+- persistenter Last-Known-Good Cache;
+- `WAITING_FOR_BRIDGE`, wenn noch kein Bridge-Snapshot existiert;
+- Knowledge-Ausfall stoppt den Runtime-Core nicht;
+- Knowledge-Tab und Live-Game-Anzeige im Control Center;
+- automatische H1/H2/H3-Suite grün;
+- `docs/H3-LIVE-TEST.md`.
+
+Noch ausstehend:
+- echter H3-Live-Test im Adventure-Land-Client;
 - Merge erst nach bestandenem Live-Test und ausdrücklicher User-Freigabe.
 
 ## H2 Architekturregel für spätere Module
@@ -185,6 +201,6 @@ Bei Fehler:
 
 ## Nächster Schritt
 
-User führt `docs/H2-LIVE-TEST.md` im echten Spiel gegen den aktuellen PR2-Head aus.
+User führt `docs/H3-LIVE-TEST.md` im echten Spiel gegen den aktuellen PR3-Head aus.
 
-Bei bestandenem H2 folgt nach ausdrücklicher Merge-Freigabe **H3 – Game Adapter & Knowledge**.
+Bei bestandenem H3 folgt nach ausdrücklicher Merge-Freigabe **H4 – Bewegung**.
