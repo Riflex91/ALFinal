@@ -3096,6 +3096,23 @@
       }).catch(() => {});
     }
 
+    _serverAttackEvidence(pending) {
+      if (!pending || pending.commandSettlement !== 'RESOLVED') return null;
+      const response = pending.commandResponse;
+      if (!response || typeof response !== 'object') return null;
+      if (response.failed === true || response.success !== true) return null;
+      if (String(response.place || '') !== 'attack') return null;
+      if (response.target == null || String(response.target) !== String(pending.targetId)) return null;
+      const damage = finite(response.damage);
+      if (damage == null || damage <= 0) return null;
+      return {
+        source: 'attack-game-response',
+        damage,
+        lethal: pending.baselineHp != null && damage >= pending.baselineHp,
+        response: clone(response)
+      };
+    }
+
     _observePendingAttack() {
       const pending = this.pendingAttack;
       if (!pending || !this.session) return false;
@@ -3103,6 +3120,28 @@
       if (pending.commandSettlement === 'REJECTED') {
         this.metrics.attackUnknown += 1;
         this._fail('UNKNOWN', pending.commandError || 'ATTACK_COMMAND_REJECTED', clone(pending));
+        return true;
+      }
+
+      const serverEvidence = this._serverAttackEvidence(pending);
+      if (serverEvidence) {
+        this.metrics.attacksConfirmed += 1;
+        this.session.counters.attacksConfirmed += 1;
+        if (serverEvidence.lethal) {
+          this.metrics.killsObserved += 1;
+          this.session.counters.killsObserved += 1;
+        }
+        this.pendingAttack = null;
+        this.session.state = serverEvidence.lethal ? 'ACQUIRING' : 'ENGAGED';
+        this.session.lastDecision = {
+          at: new Date().toISOString(),
+          type: serverEvidence.lethal ? 'KILL_CONFIRMED_SERVER' : 'ATTACK_CONFIRMED_SERVER',
+          targetId: pending.targetId,
+          hpBefore: pending.baselineHp,
+          damage: serverEvidence.damage,
+          source: serverEvidence.source
+        };
+        if (serverEvidence.lethal) this._clearGameTarget('TARGET_LETHAL_SERVER_EVIDENCE');
         return true;
       }
 
