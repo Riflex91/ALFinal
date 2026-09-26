@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.6.0-h6';
+      this.version = options.version || '0.7.0-h7';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -51,6 +51,14 @@
       this.knowledgeProvider = new ns.WindowsBridgeKnowledgeProvider({ root: this.root, logger: this.logger });
       this.knowledge.setProvider(this.knowledgeProvider);
       this.roster = new ns.CharacterRosterService({ root: this.root, logger: this.logger });
+      this.party = new ns.PartyCoordinator({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        roster: this.roster
+      });
+      this.combat.party = this.party;
       this.liveTests = new ns.LiveTestRunner({
         runtime: this,
         logger: this.logger,
@@ -74,7 +82,7 @@
       this.modules.register({
         id: 'runtime-health',
         title: 'Runtime Health',
-        version: '0.6.0',
+        version: '0.7.0',
         watchdogMs: 4000,
         start: context => {
           context.scope.interval('heartbeat', () => {
@@ -96,7 +104,7 @@
       this.modules.register({
         id: 'movement',
         title: 'Movement',
-        version: '0.6.0',
+        version: '0.7.0',
         start: context => this.movement.start(context),
         stop: reason => this.movement.stop(reason),
         status: () => this.movement.status()
@@ -105,16 +113,25 @@
       this.modules.register({
         id: 'class-skills',
         title: 'Class Skills',
-        version: '0.6.0',
+        version: '0.7.0',
         start: () => this.classSkills.start(),
         stop: reason => this.classSkills.stop(reason),
         status: () => this.classSkills.status()
       });
 
       this.modules.register({
+        id: 'party',
+        title: 'Party',
+        version: '0.7.0',
+        start: context => this.party.start(context),
+        stop: reason => this.party.stop(reason),
+        status: () => this.party.status()
+      });
+
+      this.modules.register({
         id: 'combat',
         title: 'Combat',
-        version: '0.6.0',
+        version: '0.7.0',
         start: context => this.combat.start(context),
         stop: reason => this.combat.stop(reason),
         status: () => this.combat.status()
@@ -126,6 +143,8 @@
       let livePlan = null;
       let h6Baseline = null;
       let h6Plan = null;
+      let h7Baseline = null;
+      let h7Plan = null;
       this.liveTests.register({
         id: 'h5-combat',
         title: 'H5 – Einfacher Kampf',
@@ -537,6 +556,199 @@
           }
         ]
       });
+
+      this.liveTests.register({
+        id: 'h7-party',
+        title: 'H7 – Party',
+        description: 'Ein-Klick-Live-Test für dynamische Party-Erkennung, Rollen, Focus Fire, Assist, Support-Sicht und Cleanup.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.combat.stopSession('H7_LIVE_TEST_RESET'); } catch (_) {}
+          h7Plan = null;
+          const party = runtime.party.status();
+          const combat = runtime.combat.status();
+          h7Baseline = {
+            focusChanges: party.metrics.focusChanges,
+            supportUnknown: party.metrics.supportUnknown,
+            supportConfirmed: party.metrics.supportConfirmed,
+            attackUnknown: combat.metrics.attackUnknown,
+            attacksConfirmed: combat.metrics.attacksConfirmed
+          };
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.combat.stopSession('H7_LIVE_TEST_CLEANUP'); } catch (_) {}
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Eigene aktive Party, Rollen und sicheren Gegner prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const partyModule = runtime.modules.describe('party');
+              assert(partyModule && partyModule.state === 'ACTIVE', 'PARTY_MODULE_NOT_ACTIVE');
+              const party = runtime.party.snapshot();
+              assert(party.available && party.size >= 2, 'H7_NEEDS_ACTIVE_PARTY_OF_AT_LEAST_2');
+              assert(party.foreignMemberNames.length === 0,
+                'H7_FOREIGN_PARTY_MEMBER_BLOCK:' + party.foreignMemberNames.join(','));
+              assert(party.coordinationEnabled === true, 'H7_PARTY_COORDINATION_NOT_READY');
+              assert(party.ownedMembers.filter(member => !member.rip).length >= 2, 'H7_NEEDS_2_LIVING_OWNED_PARTY_MEMBERS');
+
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character && !game.character.rip, 'CHARACTER_UNAVAILABLE');
+              const currentHp = Number(game.character.hp);
+              const maxHp = Number(game.character.maxHp);
+              assert(Number.isFinite(currentHp) && currentHp > 0, 'CHARACTER_HP_UNAVAILABLE');
+              assert(Number.isFinite(maxHp) && maxHp > 0, 'CHARACTER_MAX_HP_UNAVAILABLE');
+
+              const attackBudget = Math.max(5, Math.min(maxHp * 0.08, currentHp * 0.08));
+              const candidates = runtime.combat.safeCandidates({ maxAcquireDistance: 450, maxAttack: attackBudget });
+              assert(candidates.length > 0, 'NO_SAFE_VISIBLE_MONSTER_FOR_H7');
+              const chosen = candidates[0];
+              const targetAttack = Number(chosen.attack);
+              assert(Number.isFinite(targetAttack) && targetAttack >= 0, 'TARGET_ATTACK_UNAVAILABLE');
+              const absoluteRetreatHp = Math.max(100, targetAttack * 20);
+              const minimumStartHp = Math.max(150, targetAttack * 25);
+              assert(currentHp >= minimumStartHp,
+                'HP_TOO_LOW_FOR_SAFE_H7_TEST:' + Math.round(currentHp) + '<' + Math.round(minimumStartHp));
+
+              const retreatHpRatio = Math.max(0.05, Math.min(0.35, absoluteRetreatHp / maxHp));
+              const resumeHpRatio = Math.max(retreatHpRatio + 0.05, Math.min(0.65, retreatHpRatio * 1.75));
+              h7Plan = {
+                monsterType: chosen.mtype || null,
+                maxAttack: attackBudget,
+                retreatHpRatio,
+                resumeHpRatio
+              };
+
+              return {
+                local: game.character.name,
+                localRole: party.localRole,
+                leader: party.leader,
+                partySize: party.size,
+                ownedMembers: party.ownedMembers.map(member => ({
+                  name: member.name,
+                  ctype: member.ctype,
+                  role: member.role,
+                  visible: member.visible,
+                  rip: member.rip
+                })),
+                target: chosen.name || chosen.mtype || chosen.id,
+                targetId: chosen.id
+              };
+            }
+          },
+          {
+            id: 'focus-fire',
+            title: 'Combat starten und Party-Focus/Assist konvergieren lassen',
+            timeoutMs: 15000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(h7Plan, 'H7_LIVE_TEST_PLAN_MISSING');
+              const result = runtime.combat.startSession({
+                owner: 'live-test-h7',
+                monsterType: h7Plan.monsterType || undefined,
+                maxAcquireDistance: 450,
+                maxAttack: h7Plan.maxAttack,
+                retreatHpRatio: h7Plan.retreatHpRatio,
+                resumeHpRatio: h7Plan.resumeHpRatio,
+                minMpRatio: 0,
+                kiting: false,
+                partyAssist: true
+              });
+              assert(result && result.accepted === true, result && result.reason || 'H7_COMBAT_SESSION_START_FAILED');
+
+              const converged = await waitFor(() => {
+                const party = runtime.party.status();
+                const combat = runtime.combat.status();
+                if (party.support.suspended) throw new Error(party.support.suspendedReason || 'PARTY_SUPPORT_UNKNOWN');
+                if (combat.lastSession && ['FAILED_SAFE', 'UNKNOWN'].includes(combat.lastSession.state)) {
+                  throw new Error(combat.lastSession.reason || combat.lastSession.state);
+                }
+                if (!party.focus.targetId || !combat.session || !combat.session.targetId) return null;
+                return String(party.focus.targetId) === String(combat.session.targetId)
+                  ? { party, combat }
+                  : null;
+              }, { timeoutMs: 12000, pollMs: 125, label: 'party-focus-convergence' });
+
+              return {
+                focusTargetId: converged.party.focus.targetId,
+                focusSource: converged.party.focus.source,
+                combatTargetId: converged.combat.session.targetId,
+                combatState: converged.combat.state
+              };
+            }
+          },
+          {
+            id: 'party-health',
+            title: 'Party-Health, Healing- und Recovery-Basis prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const party = runtime.party.status();
+              assert(party.party.coordinationEnabled === true, 'H7_COORDINATION_LOST');
+              assert(party.metrics.supportUnknown === h7Baseline.supportUnknown, 'PARTY_SUPPORT_UNKNOWN_DURING_TEST');
+              const downed = party.party.ownedMembers.filter(member => member.rip).map(member => member.name);
+              const injured = party.party.ownedMembers
+                .filter(member => !member.rip && member.hpRatio != null && member.hpRatio < 0.999)
+                .map(member => ({ name: member.name, hpRatio: member.hpRatio }));
+              return {
+                localRole: party.party.localRole,
+                injured,
+                downed,
+                partyBuffSkills: party.partyBuffSkills,
+                supportConfirmed: party.metrics.supportConfirmed - h7Baseline.supportConfirmed,
+                supportPending: !!party.support.pending
+              };
+            }
+          },
+          {
+            id: 'stability-window',
+            title: 'Fünf Sekunden Focus-Fire ohne UNKNOWN/Pingpong beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              await sleep(5000);
+              const party = runtime.party.status();
+              const combat = runtime.combat.status();
+              assert(party.metrics.supportUnknown === h7Baseline.supportUnknown, 'PARTY_SUPPORT_UNKNOWN_DURING_STABILITY_WINDOW');
+              assert(combat.metrics.attackUnknown === h7Baseline.attackUnknown, 'ATTACK_UNKNOWN_DURING_H7_STABILITY_WINDOW');
+              assert(party.party.coordinationEnabled === true, 'H7_COORDINATION_LOST_DURING_STABILITY_WINDOW');
+              const focusChanges = party.metrics.focusChanges - h7Baseline.focusChanges;
+              assert(focusChanges <= 6, 'PARTY_FOCUS_PINGPONG_GUARD_EXCEEDED:' + focusChanges);
+              return {
+                focusTargetId: party.focus.targetId,
+                focusSource: party.focus.source,
+                focusChanges,
+                attacksConfirmed: combat.metrics.attacksConfirmed - h7Baseline.attacksConfirmed,
+                supportConfirmed: party.metrics.supportConfirmed - h7Baseline.supportConfirmed,
+                supportUnknown: party.metrics.supportUnknown - h7Baseline.supportUnknown
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'Party-Combat sauber stoppen und Ownership freigeben',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.combat.stopSession('H7_LIVE_TEST_COMPLETE');
+              const combat = runtime.combat.status();
+              const movement = runtime.movement.status();
+              const party = runtime.party.status();
+              assert(combat.active === false, 'H7_COMBAT_STILL_ACTIVE_AFTER_STOP');
+              assert(!(movement.activeOrder && String(movement.activeOrder.owner || '').startsWith('combat-h5')),
+                'H7_COMBAT_MOVEMENT_STILL_ACTIVE');
+              assert(party.support.pending == null, 'H7_PARTY_SUPPORT_STILL_PENDING');
+              return {
+                combatActive: combat.active,
+                movementActive: movement.active,
+                supportPending: !!party.support.pending,
+                focusTargetId: party.focus.targetId,
+                partySize: party.party.size
+              };
+            }
+          }
+        ]
+      });
     }
 
     _installErrorCapture() {
@@ -681,6 +893,7 @@
         actions: this.actions.status(),
         movement: this.movement.status(),
         classSkills: this.classSkills.status(),
+        party: this.party.status(),
         combat: this.combat.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
@@ -702,6 +915,7 @@
         actionBoundary: this.actions.status(),
         movement: this.movement.status(),
         classSkills: this.classSkills.status(),
+        party: this.party.status(),
         combat: this.combat.status(),
         liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
@@ -722,6 +936,7 @@
       push('action-boundary', !!this.actions.status() && this.actions.status().supportedActions.includes('move') && this.actions.status().supportedActions.includes('smart_move'), this.actions.status());
       push('movement-controller', !!this.movement.status() && typeof this.movement.moveLocal === 'function' && typeof this.movement.smartMove === 'function', this.movement.status());
       push('class-skill-controller', !!this.classSkills.status() && typeof this.classSkills.maybeUse === 'function', this.classSkills.status());
+      push('party-coordinator', !!this.party.status() && typeof this.party.preferredTargetId === 'function', this.party.status());
       push('combat-controller', !!this.combat.status() && typeof this.combat.startSession === 'function' && typeof this.combat.stopSession === 'function', this.combat.status());
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
