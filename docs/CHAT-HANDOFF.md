@@ -293,7 +293,7 @@ PR #6 wurde am 2026-09-26 automatisch gemerged.
 Merge-Commit:
 `69d620c502c4f45a03d998c44491aaf8166f4d52`
 
-## H7 – aktuell in Arbeit
+## H7 – vollständig live bestanden
 
 Aktiver Entwicklungsbranch:
 `chatgpt/h7-party`
@@ -364,10 +364,21 @@ Korrektur nach Live-Evidence:
 - H5 Combat blockiert Merchant jetzt bereits vor dem ersten Attack mit `COMBAT_UNSUPPORTED_CLASS:merchant`;
 - Regressionstest stellt sicher: Merchant-H7-Ein-Klick-Test PASSED und `attacks=0`.
 
-Noch ausstehend:
-- finaler H7-CI-Lauf auf dem Merchant/LOGISTICS-Fix;
-- kurzer echter H7-Retest nur auf Merchant;
-- danach Auto-Merge gemäß Sicherheitsregeln.
+Finaler Live-Stand:
+- Rogue/DPS: vollständig PASSED, Focus Fire/Stability/Cleanup bestanden, `focusPingPongs=0`;
+- Warrior/TANK: vollständig PASSED; mehrere legitime Target-Fortschritte ohne falsche Pingpong-Erkennung;
+- Priest/HEALER: vollständig PASSED; Party-Support-/Buff-Sicht live bestätigt;
+- Merchant/LOGISTICS: finaler Observer-only-Retest **PASSED / ALL_STEPS_PASSED**;
+- Merchant: `observerOnly=true`, `combatState=NOT_STARTED`, keine Attack-Dispatches, `attackUnknown=0`;
+- Merchant Stability PASSED, `focusPingPongs=0`, Cleanup PASSED;
+- Runtime nach Test wieder STOPPED;
+- Scheduler danach 0 Ressourcen.
+
+Review-Safety-Nachbesserung:
+- synchrones Support-`UNKNOWN` aus der ActionBoundary suspendiert Party-Support jetzt sofort;
+- Regressionstest verhindert Blind-Retry dieses UNKNOWN-Pfads.
+
+H7 ist damit vollständig live bestanden. Vor dem Merge bleiben nur die finalen GitHub-Sicherheitschecks und grüne CI auf dem finalen Head.
 
 ## H2 Architekturregel für spätere Module
 
@@ -462,4 +473,4 @@ Bei Fehler:
 
 ## Nächster Schritt
 
-H7-CI vollständig grün bekommen und PR öffnen. Danach mit mindestens zwei eigenen Charakteren in derselben Party nur **Test starten** drücken. Bei bestandenem Live-Test wird H7 automatisch gemerged; danach startet **H8 – AoE & adaptives Farming** auf einem frischen Branch.
+H7 nach final grüner CI und vollständigen Merge-Sicherheitschecks automatisch mergen. Danach **H8 – AoE & adaptives Farming** auf einem frischen Branch vom neuen `main` starten.
