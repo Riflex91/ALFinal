@@ -319,7 +319,7 @@ Nach H9 existiert ein echter autonomer Farming-Bot.
 
 ## H11 – Merchant-Grundbetrieb
 
-**🟦 IMPLEMENTIERT · CI GRÜN · LIVE-TEST OFFEN**
+**🟩 BESTANDEN – 2026-09-27**
 - eigener `MerchantController`
 - dynamische Rollen aus dem zentralen Account-Roster:
   - `MERCHANT`
@@ -357,14 +357,18 @@ Nach H9 existiert ein echter autonomer Farming-Bot.
 - fünf Review-Funde abgearbeitet und Threads resolved
 - nach Dokumentationscommits ist erneut Exact-Head-CI erforderlich
 
-**🟧 LIVE-TEST NOCH AUSSTEHEND**
-- auf dem eigenen Merchant ausführen
-- mindestens ein eigener Farmer sichtbar
-- genau 1 sichere Item-Einheit wird real an einen eigenen Farmer geliefert
-- MLuck wird live geprüft/erneuert
-- 5-Sekunden-Stabilitätsfenster ohne UNKNOWN/Pingpong
-- Cleanup + Auto-Restore
-- Nutzer klickt nur **Test starten**
+**🟩 LIVE-TEST BESTANDEN**
+- Suite `h11-merchant`: `PASSED / ALL_STEPS_PASSED`
+- Merchant `My_Merchant`, eigener sichtbarer Farmer `My_Priest`
+- exakt 1 `hpot0` geliefert; Sender-Inventar `6000 -> 5999`
+- `transfersConfirmed=1`, `transfersUnknown=0`
+- MLuck bereits gesund, daher kein unnötiger Cast
+- `mluckUnknown=0`, `pingPongBlocks=0`
+- Cleanup ohne Pending, Delivery oder H11-Movement
+- Runtime wieder STOPPED, Scheduler `totalResources=0`
+- finale Evidence: `docs/H11-LIVE-TEST.md`
+
+Vor Merge: neuer Exact-Head-CI und vollständiger Merge-Gate.
 
 ---
 

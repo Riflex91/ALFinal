@@ -543,7 +543,7 @@ Finale Review-Härtung:
 - keine offenen Review-Threads;
 - finaler Exact-Head-CI vor Merge grün.
 
-## H11 – Merchant-Grundbetrieb – Implementierung CI-grün, Live-Test offen
+## H11 – Merchant-Grundbetrieb – live bestanden, finaler Merge-Gate offen
 
 Aktiver Branch:
 `chatgpt/h11-merchant-grundbetrieb`
@@ -551,95 +551,37 @@ Aktiver Branch:
 PR:
 `#11 – H11: Merchant-Grundbetrieb`
 
-Basis:
-`main` bei H10-Merge-Commit `de22a87236106add06750efd0e83c04dc995c804`
-
 Version:
 `0.11.0-h11`
 
-Technisch umgesetzt:
-- eigener `MerchantController`;
-- Runtime-Modul `merchant`;
-- dynamische lokale Rolle aus dem zentralen Roster:
-  - Merchant;
-  - Farmer;
-  - sonst fail-closed Observer;
-- Farmer→eigener Merchant bei H10-Inventardruck;
-- kontrollierte Merchant→eigener Farmer Delivery;
-- `send_item` als neue zentrale ActionBoundary-Aktion;
-- keinerlei direkter Logistics-Write außerhalb der ActionBoundary;
-- Transferbestätigung über beobachtetes lokales Inventardelta;
-- unavailable Inventory bestätigt niemals einen Transfer;
-- Transfer-Timeout -> UNKNOWN + Suspension ohne Blind-Retry;
-- MLuck für sichtbare eigene Farmer;
-- gesunder MLuck wird nicht gespammt;
-- bei bereits aktivem auslaufendem MLuck ist eine beobachtbare Erneuerung erforderlich;
-- MLuck-Timeout -> UNKNOWN + Suspension ohne Blind-Retry;
-- H4 Movement für Servicewege;
-- Service-Switch-Cooldown;
-- A→B→A Anti-Pingpong;
+Finale Live-Evidence:
+- Suite `h11-merchant`: **PASSED / ALL_STEPS_PASSED**;
+- Merchant `My_Merchant`, eigener Farmer `My_Priest`;
+- exakt 1 `hpot0` geliefert;
+- Sender-Inventardelta `6000 -> 5999`;
+- `transfersDispatched=1`, `transfersConfirmed=1`, `transfersUnknown=0`;
+- MLuck bereits gesund (`remainingMs=3576369`), deshalb korrekt kein neuer Cast;
+- `mluckUnknown=0`, `pingPongBlocks=0`;
+- keine Suspension;
+- Cleanup PASSED: kein Pending, keine Delivery, keine H11-Movement-Order;
+- Runtime wieder STOPPED;
+- Scheduler `totalResources=0`.
+
+Safety:
+- Itemwrites nur über ActionBoundary `send_item`;
+- Bestätigung nur durch beobachtetes Inventardelta;
+- unavailable Inventory ist kein Erfolg;
+- Transfer-/MLuck-UNKNOWN ohne Blind-Retry;
 - fremde Targets blockiert;
-- sichere Itemfilter:
-  - kein Gear;
-  - keine Quest-/Goal-Reserve;
-  - keine locked/gelevelten Items;
-  - keine Upgrade-/Compound-Items;
-- kein Goldtransfer;
-- keine Bank-/Sell-/Exchange-/Markt-Aktionen;
-- Public API `ALBot.merchant.*`;
-- Control-Center-Tab **Merchant**;
-- Ein-Klick-Live-Suite `h11-merchant`;
-- `docs/H11-LIVE-TEST.md`;
-- `tests/h11.test.mjs`.
+- kein Goldtransfer, keine Bank-/Sell-/Exchange-/Markt-Aktionen.
 
-Review-Funde während H11:
-1. P1: unavailable Inventory durfte nicht als Transferdelta interpretiert werden -> behoben + Regression.
-2. P2: bereits aktiver auslaufender MLuck durfte nicht allein durch `active=true` als Refresh gelten -> vor dem Cast wird Condition-Evidence gespeichert; Bestätigung erst bei echter Erneuerung.
-3. alte H8/H9/H10-Version-Assertions nach 0.11-Bump -> behoben.
-4. VM-Cross-Realm-Testobjekte -> Test korrekt feldweise verglichen.
-5. Delivery kann im selben Tick bereits in MLuck-Service übergehen -> Regression an reale Service-Chaining-Semantik angepasst.
+Nächster Schritt:
+1. Exact-Head-CI des Evidence-Heads grün bestätigen;
+2. `behind_by=0`, Checks, Reviews, Threads und Mergeability frisch prüfen;
+3. PR #11 mit Methode `merge` und exaktem `expected_head_sha` mergen;
+4. Merge auf `main` verifizieren;
+5. H12 Bank auf frischem Branch vom neuen `main` beginnen.
 
-Alle fünf Review-Threads sind resolved.
-
-Letzter vollständig grüner Pre-Live-Code-Run:
-- GitHub Actions Run #227;
-- Head `593bfe3a961b326b534d1b449a6c248842f780b4`;
-- completed / success;
-- **134/134 Tests grün**;
-- 0 fail;
-- 0 skipped.
-
-Danach wurden nur H11-Dokumentation/ROADMAP/Handoff aktualisiert. Daher gilt:
-- alten Run #227 nicht als Merge-Evidence für den neuen Doku-Head verwenden;
-- vor Freigabe des Live-Tests den neuen exakten Head und dessen CI prüfen.
-
-H11-Live-Test:
-- muss auf dem **eigenen Merchant** laufen;
-- mindestens ein eigener Farmer muss sichtbar sein;
-- mindestens ein sicher transferierbares Item muss vorhanden sein;
-- Nutzer klickt nur **Test starten**;
-- Suite führt autonom aus:
-  1. Preflight;
-  2. reale Delivery von genau 1 sicherer Item-Einheit an eigenen Farmer;
-  3. MLuck prüfen/erneuern;
-  4. 5 Sekunden Stability;
-  5. Cleanup;
-- Diagnose wird automatisch kopiert.
-
-Wichtig:
-- die 1 transferierte Item-Einheit wird nicht automatisch zurückgeschickt;
-- kein Gold, keine Bank, kein Sell, kein Exchange, kein Markt;
-- bei UNKNOWN kein Blind-Retry.
-
-Nach bestandenem H11-Live-Test:
-1. Diagnose auswerten;
-2. echte Passing-Evidence in `docs/H11-LIVE-TEST.md`, ROADMAP und Handoff schreiben;
-3. dadurch neuen Evidence-Head erzeugen;
-4. Exact-Head-CI erneut grün;
-5. vollständigen Merge-Gate prüfen;
-6. PR #11 nur mit Methode `merge` und exaktem `expected_head_sha` mergen;
-7. Merge verifizieren;
-8. H12 auf frischem Branch vom neuen `main` starten.
 
 ## H2 Architekturregel für spätere Module
 
