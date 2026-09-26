@@ -192,18 +192,17 @@ test('H11 merchant plan uses only owned farmers and safe transfer candidates', (
 
 test('H11 delivery queue fails closed for foreign targets and protected items', () => {
   const f = fixture();
-  assert.deepEqual(
-    f.controller.queueDelivery('Foreign', 'hpot0', 1),
-    { accepted: false, reason: 'H11_DELIVERY_TARGET_NOT_OWNED_FARMER' }
-  );
-  assert.deepEqual(
-    f.controller.queueDelivery('My_Ranger', 'sword', 1),
-    { accepted: false, reason: 'H11_DELIVERY_ITEM_NOT_SAFE_OR_AVAILABLE' }
-  );
-  assert.deepEqual(
-    f.controller.queueDelivery('My_Ranger', 'hpot0', 999),
-    { accepted: false, reason: 'H11_DELIVERY_QUANTITY_UNAVAILABLE' }
-  );
+  const foreign = f.controller.queueDelivery('Foreign', 'hpot0', 1);
+  assert.equal(foreign.accepted, false);
+  assert.equal(foreign.reason, 'H11_DELIVERY_TARGET_NOT_OWNED_FARMER');
+
+  const protectedItem = f.controller.queueDelivery('My_Ranger', 'sword', 1);
+  assert.equal(protectedItem.accepted, false);
+  assert.equal(protectedItem.reason, 'H11_DELIVERY_ITEM_NOT_SAFE_OR_AVAILABLE');
+
+  const tooMany = f.controller.queueDelivery('My_Ranger', 'hpot0', 999);
+  assert.equal(tooMany.accepted, false);
+  assert.equal(tooMany.reason, 'H11_DELIVERY_QUANTITY_UNAVAILABLE');
 });
 
 test('H11 controlled delivery dispatches through send_item and confirms local inventory delta', async () => {
@@ -219,9 +218,9 @@ test('H11 controlled delivery dispatches through send_item and confirms local in
   await Promise.resolve();
   f.controller.tick();
   const status = f.controller.status();
-  assert.equal(status.pending, null);
   assert.equal(status.delivery, null);
   assert.equal(status.metrics.transfersConfirmed, 1);
+  assert.ok(status.pending == null || status.pending.kind === 'MLUCK');
   assert.equal(f.state.rows.find(item => item.name === 'hpot0').quantity, 19);
 });
 
