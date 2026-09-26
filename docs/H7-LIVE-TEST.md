@@ -162,3 +162,29 @@ Falls Clipboard-Schreiben vom Browser blockiert wird, bleibt **Fehlerbericht kop
 Wenn mindestens zwei eigene Charaktere bereits in derselben Party sind:
 
 **nur einmal „Test starten“ drücken.**
+
+## Finale Live-Evidence – 2026-09-26
+
+H7 ist über vier echte Charakter-Rollen live validiert:
+
+- Rogue → DPS: Suite vollständig PASSED, Focus Fire/Stability/Cleanup bestanden, `focusPingPongs = 0`.
+- Warrior → TANK: mehrere normale Focus-Wechsel über aufeinanderfolgende Goo-Kills, `focusPingPongs = 0`; damit sind legitime Target-Fortschritte von echtem A → B → A-Pingpong abgegrenzt.
+- Priest → HEALER: Party-Support-/Buff-Sicht live bestätigt; Stability und Cleanup bestanden.
+- Merchant → LOGISTICS: finaler Retest nach Observer-only-Korrektur vollständig PASSED.
+
+Merchant-Retest:
+- `PASSED / ALL_STEPS_PASSED`;
+- `localRole = LOGISTICS`;
+- `observerOnly = true`;
+- Party-Größe 4, alle Mitglieder als eigene Roster-Mitglieder erkannt;
+- kein Combat-Start: `combatState = NOT_STARTED`;
+- keine Merchant-Attacks;
+- `attackUnknown = 0`;
+- `focusPingPongs = 0`;
+- Stability PASSED;
+- Cleanup PASSED;
+- Runtime danach wieder STOPPED;
+- Scheduler danach `totalResources = 0`.
+
+Zusätzlich wurde nach Review ein Safety-Regressionsfall ergänzt: Ein synchrones `UNKNOWN` aus der zentralen ActionBoundary suspendiert Party-Support nun sofort und verhindert Blind-Retry.
+
