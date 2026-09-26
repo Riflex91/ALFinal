@@ -4531,9 +4531,18 @@
       if (!pack.some(row => String(row.id) === String(primary.id)) && capacity > 0) {
         const attack = finite(primary.attack);
         if (attack != null && attack <= maxAggregateAttack) {
-          pack.unshift(primary);
-          if (pack.length > capacity) pack.pop();
-          aggregateAttack = pack.reduce((sum, row) => sum + (finite(row.attack) || 0), 0);
+          while (pack.length >= capacity) {
+            const removed = pack.pop();
+            aggregateAttack -= finite(removed && removed.attack) || 0;
+          }
+          while (pack.length && aggregateAttack + attack > maxAggregateAttack) {
+            const removed = pack.pop();
+            aggregateAttack -= finite(removed && removed.attack) || 0;
+          }
+          if (aggregateAttack + attack <= maxAggregateAttack) {
+            pack.unshift(primary);
+            aggregateAttack += attack;
+          }
         }
       }
 
