@@ -383,7 +383,7 @@ H7 ist vollständig live bestanden und wurde am 2026-09-26 automatisch gemerged.
 Merge-Commit:
 `7d8fc403238fc827812b70a4cd0707db1139eae0`
 
-## H8 – aktuell in Arbeit
+## H8 – vollständig live bestanden
 
 Aktiver Entwicklungsbranch:
 `chatgpt/h8-aoe-adaptive-farming`
@@ -435,10 +435,29 @@ Regressionen decken u.a. ab:
 - bekannte Ablehnung mit Backoff;
 - Combat-Ownership/Cleanup.
 
-Noch ausstehend:
-- finale vollständige H1–H8-CI auf dem finalen Build;
-- echter Adventure-Land-H8-Ein-Klick-Live-Test;
-- danach Evidence-Doku und Auto-Merge nach den vereinbarten Sicherheitschecks.
+Finaler technischer Stand:
+- vollständige H1–H8-Suite vor dem Live-Test: **87/87 Tests GRÜN**;
+- PR-Review-Overpull-Fall behoben und regressionsgetestet;
+- Bundle-Newline-Review-Fall behoben;
+- keine offenen Review-Threads vor dem Live-Test.
+
+Live-Evidence vom 2026-09-26:
+- AL Bot `0.8.0-h8`;
+- Suite `h8-adaptive-farming`: **PASSED / ALL_STEPS_PASSED**;
+- Ranger Level 60;
+- live `3shot` erkannt und serverbestätigt;
+- Preflight: 6 sichere sichtbare Goos;
+- AoE-Plan: 3 Targets, Kapazität 5, aggregierter Attack-Wert 25;
+- `aoeDispatched=1`, `aoeConfirmed=1`, `aoeRejected=0`, `aoeUnknown=0`;
+- H5 `attackUnknown=0`;
+- H7 `focusPingPongs=0`;
+- alle fünf Schritte PASSED;
+- Cleanup `ok=true`;
+- Farming/Combat/Movement danach inaktiv;
+- Runtime danach STOPPED;
+- Scheduler danach 0 Ressourcen.
+
+H8 ist damit vollständig live bestanden. Es folgen nur noch die finalen GitHub-Sicherheitschecks und bei grüner CI der autorisierte Auto-Merge.
 
 ## H2 Architekturregel für spätere Module
 
