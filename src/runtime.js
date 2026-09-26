@@ -37,6 +37,11 @@
       this.knowledgeProvider = new ns.WindowsBridgeKnowledgeProvider({ root: this.root, logger: this.logger });
       this.knowledge.setProvider(this.knowledgeProvider);
       this.roster = new ns.CharacterRosterService({ root: this.root, logger: this.logger });
+      this.liveTests = new ns.LiveTestRunner({
+        runtime: this,
+        logger: this.logger,
+        bus: this.bus
+      });
       this.ui = null;
       this.lastError = null;
       this._destroyed = false;
@@ -158,6 +163,7 @@
     async emergencyStop(reason = 'MANUAL_EMERGENCY_STOP') {
       const stop = this.stopLatch.latch(reason);
       this.running = false;
+      try { this.liveTests.cancel('EMERGENCY_STOP'); } catch (_) {}
 
       // Die Notbremse stoppt zuerst zentral alle Timer/Listener. Modul-Stop-Hooks
       // laufen danach nur noch zur fachlichen Bereinigung.
@@ -223,6 +229,7 @@
         game: this.game.status(),
         actions: this.actions.status(),
         movement: this.movement.status(),
+        liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
         roster,
         goals: this.goals.list(),
@@ -241,6 +248,7 @@
         character: game && game.character ? ns.helpers.clone(game.character) : null,
         actionBoundary: this.actions.status(),
         movement: this.movement.status(),
+        liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
         logs: this.logger.list(160),
         userAgent: this.root && this.root.navigator && this.root.navigator.userAgent || null
@@ -258,6 +266,7 @@
       push('game-adapter', !!this.game.status() && typeof this.game.snapshot === 'function', this.game.status());
       push('action-boundary', !!this.actions.status() && this.actions.status().supportedActions.includes('move') && this.actions.status().supportedActions.includes('smart_move'), this.actions.status());
       push('movement-controller', !!this.movement.status() && typeof this.movement.moveLocal === 'function' && typeof this.movement.smartMove === 'function', this.movement.status());
+      push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
       push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);
       push('dynamic-roster-no-hardcoded-names', roster.hardcodedNamesRequired === false, {
@@ -331,6 +340,7 @@
     prepareHotReload(reason = 'HOT_RELOAD') {
       if (this._destroyed) return;
       this.running = false;
+      try { this.liveTests.cancel(reason); } catch (_) {}
 
       // Zuerst alle zentral verwalteten Ressourcen synchron stoppen. Dadurch kann
       // ein neu geladenes Bundle niemals alte Timer/Listener weiterlaufen lassen.
