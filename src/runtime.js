@@ -58,7 +58,17 @@
         actions: this.actions,
         roster: this.roster
       });
+      this.farming = new ns.AdaptiveFarmingController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        combat: this.combat,
+        party: this.party,
+        classSkills: this.classSkills
+      });
       this.combat.party = this.party;
+      this.combat.farming = this.farming;
       this.liveTests = new ns.LiveTestRunner({
         runtime: this,
         logger: this.logger,
@@ -135,6 +145,15 @@
         start: context => this.combat.start(context),
         stop: reason => this.combat.stop(reason),
         status: () => this.combat.status()
+      });
+
+      this.modules.register({
+        id: 'adaptive-farming',
+        title: 'Adaptive Farming',
+        version: '0.8.0',
+        start: context => this.farming.start(context),
+        stop: reason => this.farming.stop(reason),
+        status: () => this.farming.status()
       });
     }
 
@@ -938,6 +957,7 @@
         classSkills: this.classSkills.status(),
         party: this.party.status(),
         combat: this.combat.status(),
+        farming: this.farming.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
         roster,
@@ -960,6 +980,7 @@
         classSkills: this.classSkills.status(),
         party: this.party.status(),
         combat: this.combat.status(),
+        farming: this.farming.status(),
         liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
         logs: this.logger.list(160),
@@ -981,6 +1002,7 @@
       push('class-skill-controller', !!this.classSkills.status() && typeof this.classSkills.maybeUse === 'function', this.classSkills.status());
       push('party-coordinator', !!this.party.status() && typeof this.party.preferredTargetId === 'function', this.party.status());
       push('combat-controller', !!this.combat.status() && typeof this.combat.startSession === 'function' && typeof this.combat.stopSession === 'function', this.combat.status());
+      push('adaptive-farming-controller', !!this.farming.status() && typeof this.farming.plan === 'function' && typeof this.farming.startSession === 'function', this.farming.status());
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
       push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);
