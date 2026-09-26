@@ -163,3 +163,32 @@ Bei Abweichung:
 1. roten STOP drücken;
 2. **Fehlerbericht kopieren**;
 3. Bericht plus sichtbare Beobachtung an ChatGPT senden.
+
+
+---
+
+## Live-Ergebnis 2026-09-26
+
+**BESTANDEN**
+
+Im echten Adventure-Land-Client bestätigt:
+
+- Runtime `0.4.0-h4` startet mit aktivem, healthy Movement-Modul.
+- Safe Point wird beim Runtime-Start aus der aktuellen Live-Position erfasst.
+- lokale Bewegung wird mit beobachteter Position als `COMPLETED / ARRIVAL_VERIFIED` abgeschlossen.
+- Smart Move wird nicht allein durch Command-Return als fertig gewertet, sondern erst durch beobachtete Arrival-Evidence.
+- Retarget beendet den alten Auftrag sauber mit `CANCELLED / RETARGET` und übergibt den einzigen Movement-Owner an den neuen Auftrag.
+- manuelles Cancel beendet laufenden Smart Move mit `CANCELLED / GUI_MOVEMENT_CANCEL`.
+- Safe Return funktioniert und wird nicht durch normale Anti-Pingpong-Sperren blockiert.
+- Target-Annäherung funktioniert; im Live-Test wurde ein `gui-h4-target-approach` Auftrag erfolgreich als `COMPLETED / ARRIVAL_VERIFIED` abgeschlossen.
+- während der getesteten Target-Annäherung wurde kein Angriff ausgelöst.
+- nach abgeschlossenen/cancelled Bewegungen fällt `module:movement` wieder auf 0 Ressourcen zurück.
+- Stuck-/UNKNOWN-Szenarien bleiben durch die automatischen Tests abgesichert und führen nicht zu Blind-Retry.
+- globaler roter STOP während laufendem Smart Move:
+  - latch = true;
+  - Runtime = stopped;
+  - Scheduler = 0 Ressourcen;
+  - Movement = inaktiv;
+  - laufender Auftrag = `CANCELLED / EMERGENCY_STOP`;
+  - `stop('smart')` und `use_skill('stop')` wurden als best-effort Cleanup ausgelöst.
+- keine Callback-/Overlap-Fehler in den Live-Tests.
