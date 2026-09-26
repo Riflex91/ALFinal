@@ -348,8 +348,20 @@ Aktueller technischer Stand:
 - Monster, die ein eigenes Party-Mitglied angreifen, gelten bei aktivem Party-Assist als legitime koordinierte Kandidaten, bleiben aber unter allen übrigen H5-Safety-Regeln;
 - H7-Ein-Klick-Suite im automatischen Test grün.
 
+Live-Evidence vom 2026-09-26:
+- Priest-Lauf: **vollständig PASSED / ALL_STEPS_PASSED**;
+- Warrior-Lauf: Preflight, Focus-Fire und Party-Health PASSED; Stability schlug nur wegen der alten `focusChanges <= 6`-Heuristik fehl;
+- Live-Logs zeigten dabei vier unterschiedliche aufeinanderfolgende Goo-Targets bei drei bestätigten Kills, also legitime Fortschritte statt A→B→A-Pingpong;
+- Merchant und Rogue waren nicht in der aktiven Zweier-Party und wurden erwartungsgemäß fail-closed mit `H7_NEEDS_ACTIVE_PARTY_OF_AT_LEAST_2` abgewiesen.
+
+Korrektur nach Live-Evidence:
+- H7 misst jetzt explizit echte A→B→A-Focus-Rückkehr innerhalb eines 6-Sekunden-Fensters;
+- eindeutige Sequenzen A→B→C→D werden nicht mehr als Pingpong gewertet;
+- neue Unit-Coverage prüft beides.
+
 Noch ausstehend:
-- echter H7-Ein-Klick-Live-Test;
+- finaler H7-CI-Lauf auf dem korrigierten Head;
+- kurzer echter H7-Retest auf Warrior/Priest;
 - danach Auto-Merge gemäß Sicherheitsregeln.
 
 ## H2 Architekturregel für spätere Module
