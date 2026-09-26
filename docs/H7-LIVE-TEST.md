@@ -136,7 +136,9 @@ Fünf Sekunden:
 - kein Party-Support-UNKNOWN;
 - kein H5-Attack-UNKNOWN;
 - Party-Koordination bleibt aktiv;
-- kein Focus-Pingpong.
+- kein echtes Focus-Pingpong.
+
+**Wichtig:** normale Fortschritte durch mehrere besiegte Monster dürfen den Test nicht fehlschlagen lassen. Als Pingpong zählt eine Rückkehr **A → B → A** innerhalb des konfigurierten Focus-Pingpong-Fensters; reine Sequenzen wie **A → B → C → D** sind legitime Target-Fortschritte.
 
 ### 5. Cleanup
 - Combat stoppen;
