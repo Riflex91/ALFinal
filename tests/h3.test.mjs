@@ -180,7 +180,7 @@ test('H3 game adapter normalizes live character, position and target', () => {
   vm.runInNewContext(bundle, ctx, { filename: 'al-bot.js' });
 
   const snap = ctx.ALBot.game.snapshot();
-  assert.equal(ctx.ALBot.version, '0.4.0-h4');
+  assert.equal(ctx.ALBot.version, '0.5.0-h5');
   assert.equal(snap.available, true);
   assert.equal(snap.character.name, 'FarmerA');
   assert.equal(snap.character.ctype, 'ranger');
@@ -260,7 +260,7 @@ test('Knowledge refresh failure preserves Last Known Good and runtime stability'
   assert.equal(failed.lastKnownGood.generation, 7);
   assert.equal(ctx.ALBot.knowledge.fact('server.eu.i.monster.frog.spawn').wert.mtype, 'frog');
   assert.equal(ctx.ALBot.status().running, true);
-  assert.equal(ctx.ALBot.scheduler.status().totalResources, 2);
+  assert.equal(ctx.ALBot.scheduler.status().totalResources, 3);
 
   await ctx.ALBot.stop('DONE');
 });
@@ -275,7 +275,7 @@ test('Bridge outage without any LKG is diagnosable but does not crash core', asy
   assert.equal(status.lastKnownGood, null);
   assert.match(status.lastRefreshError, /KNOWLEDGE_FETCH_FAILED/);
   assert.equal(ctx.ALBot.status().running, true);
-  assert.equal(ctx.ALBot.scheduler.status().totalResources, 2);
+  assert.equal(ctx.ALBot.scheduler.status().totalResources, 3);
 
   await ctx.ALBot.stop('DONE');
 });
