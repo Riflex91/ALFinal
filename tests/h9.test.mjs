@@ -59,7 +59,9 @@ function makeFixture(options = {}) {
     }
   };
 
-  let movementState = { active: false, activeOrder: null, lastOrder: null };
+  let movementState = options.foreignMovement
+    ? { active: true, activeOrder: { id: 'foreign-move', owner: 'other-module', state: 'ACTIVE', destination: { map: 'main', x: 400, y: 0 } }, lastOrder: null }
+    : { active: false, activeOrder: null, lastOrder: null };
   const movementCalls = [];
   const movement = {
     status: () => JSON.parse(JSON.stringify(movementState)),
@@ -86,9 +88,10 @@ function makeFixture(options = {}) {
     }))
   };
   const combat = { safeCandidates: () => safe.map(row => ({ ...row })) };
+  let foreignParty = options.foreignParty ? ['Stranger'] : [];
   const party = { status: () => ({ party: {
     ownedMemberNames: ['Farmer'],
-    foreignMemberNames: options.foreignParty ? ['Stranger'] : []
+    foreignMemberNames: foreignParty.slice()
   } }) };
 
   const ctx = {
@@ -122,6 +125,7 @@ function makeFixture(options = {}) {
     setSafe: rows => { safe = rows.map(row => ({ ...row })); },
     setCatalog: rows => { catalog = rows.map(row => ({ ...row })); },
     setPlayers: rows => { players = rows.map(row => ({ ...row })); },
+    setForeignParty: names => { foreignParty = names.slice(); },
     setNow: value => { now = value; },
     advance: ms => { now += ms; },
     movementUnknown: () => {
@@ -269,6 +273,34 @@ test('H9 foreign party blocks planning before any H4 travel or H8 farming action
   assert.equal(f.movementCalls.length, 0);
   assert.equal(f.farmingCalls.length, 0);
   assert.equal(f.controller.status().metrics.foreignPartyBlocks, 1);
+});
+
+test('H9 stops its owned H8 session and suspends if a foreign party member appears mid-run', () => {
+  const f = makeFixture({ safe: cluster('goo', 3) });
+  assert.equal(f.controller.startAutonomy().accepted, true);
+  assert.equal(f.farmState().active, true);
+
+  f.setForeignParty(['Stranger']);
+  const tick = f.controller.tick();
+  assert.equal(tick.state, 'SUSPENDED');
+  assert.equal(tick.reason, 'H9_FOREIGN_PARTY_BLOCK');
+  assert.equal(f.farmState().active, false);
+  assert.equal(f.controller.status().suspended, true);
+  assert.ok(f.farmingCalls.some(row => row.type === 'stop'));
+});
+
+test('H9 suspends instead of competing with a foreign H4 movement order', () => {
+  const f = makeFixture({
+    foreignMovement: true,
+    safe: [],
+    catalog: [{ key: 'main:bee:0', map: 'main', mtype: 'bee', x: 600, y: 0, count: 6, respawn: 10 }]
+  });
+  const started = f.controller.startAutonomy();
+  assert.equal(started.accepted, true);
+  assert.equal(started.tick.state, 'SUSPENDED');
+  assert.equal(started.tick.reason, 'H9_FOREIGN_MOVEMENT_OWNERSHIP');
+  assert.equal(f.movementCalls.filter(row => row.type === 'smart').length, 0);
+  assert.equal(f.controller.status().metrics.ownershipBlocks, 1);
 });
 
 test('H9 refuses to steal an H8 session owned by another client', () => {
