@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.3.0-h3';
+      this.version = options.version || '0.4.0-h4';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -22,6 +22,17 @@
       this.scheduler.setErrorHandler(details => this.modules.handleResourceError(details));
       this.goals = new ns.GoalService({ storage: this.storage, logger: this.logger });
       this.game = new ns.AdventureLandGameAdapter({ root: this.root, logger: this.logger });
+      this.actions = new ns.GameActionBoundary({
+        root: this.root,
+        logger: this.logger,
+        assertAllowed: action => this.assertActionAllowed(action)
+      });
+      this.movement = new ns.MovementController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions
+      });
       this.knowledge = new ns.KnowledgeService({ logger: this.logger, storage: this.storage });
       this.knowledgeProvider = new ns.WindowsBridgeKnowledgeProvider({ root: this.root, logger: this.logger });
       this.knowledge.setProvider(this.knowledgeProvider);
@@ -43,7 +54,7 @@
       this.modules.register({
         id: 'runtime-health',
         title: 'Runtime Health',
-        version: '0.3.0',
+        version: '0.4.0',
         watchdogMs: 4000,
         start: context => {
           context.scope.interval('heartbeat', () => {
@@ -60,6 +71,15 @@
           purpose: 'runtime-heartbeat',
           runEpoch: this.runEpoch
         })
+      });
+
+      this.modules.register({
+        id: 'movement',
+        title: 'Movement',
+        version: '0.4.0',
+        start: context => this.movement.start(context),
+        stop: reason => this.movement.stop(reason),
+        status: () => this.movement.status()
       });
     }
 
@@ -201,6 +221,8 @@
         scheduler: this.scheduler.status(),
         modules: this.modules.list(),
         game: this.game.status(),
+        actions: this.actions.status(),
+        movement: this.movement.status(),
         knowledge: this.knowledge.status(),
         roster,
         goals: this.goals.list(),
@@ -217,6 +239,8 @@
         runtime: this.status(),
         game,
         character: game && game.character ? ns.helpers.clone(game.character) : null,
+        actionBoundary: this.actions.status(),
+        movement: this.movement.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
         logs: this.logger.list(160),
         userAgent: this.root && this.root.navigator && this.root.navigator.userAgent || null
@@ -232,6 +256,8 @@
       push('emergency-stop-api', typeof this.emergencyStop === 'function' && typeof this.resetEmergencyStop === 'function');
       push('goal-service', Array.isArray(this.goals.list()));
       push('game-adapter', !!this.game.status() && typeof this.game.snapshot === 'function', this.game.status());
+      push('action-boundary', !!this.actions.status() && this.actions.status().supportedActions.includes('move') && this.actions.status().supportedActions.includes('smart_move'), this.actions.status());
+      push('movement-controller', !!this.movement.status() && typeof this.movement.moveLocal === 'function' && typeof this.movement.smartMove === 'function', this.movement.status());
       push('knowledge-service', !!this.knowledge.status());
       push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);
       push('dynamic-roster-no-hardcoded-names', roster.hardcodedNamesRequired === false, {
