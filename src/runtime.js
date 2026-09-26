@@ -604,6 +604,29 @@
               assert(Number.isFinite(currentHp) && currentHp > 0, 'CHARACTER_HP_UNAVAILABLE');
               assert(Number.isFinite(maxHp) && maxHp > 0, 'CHARACTER_MAX_HP_UNAVAILABLE');
 
+              const observerOnly = party.localRole === 'LOGISTICS'
+                || String(game.character.ctype || '').toLowerCase() === 'merchant';
+
+              if (observerOnly) {
+                h7Plan = { observerOnly: true };
+                return {
+                  local: game.character.name,
+                  localRole: party.localRole,
+                  leader: party.leader,
+                  partySize: party.size,
+                  observerOnly: true,
+                  ownedMembers: party.ownedMembers.map(member => ({
+                    name: member.name,
+                    ctype: member.ctype,
+                    role: member.role,
+                    visible: member.visible,
+                    rip: member.rip
+                  })),
+                  target: null,
+                  targetId: null
+                };
+              }
+
               const attackBudget = Math.max(5, Math.min(maxHp * 0.08, currentHp * 0.08));
               const candidates = runtime.combat.safeCandidates({ maxAcquireDistance: 450, maxAttack: attackBudget });
               assert(candidates.length > 0, 'NO_SAFE_VISIBLE_MONSTER_FOR_H7');
@@ -618,6 +641,7 @@
               const retreatHpRatio = Math.max(0.05, Math.min(0.35, absoluteRetreatHp / maxHp));
               const resumeHpRatio = Math.max(retreatHpRatio + 0.05, Math.min(0.65, retreatHpRatio * 1.75));
               h7Plan = {
+                observerOnly: false,
                 monsterType: chosen.mtype || null,
                 maxAttack: attackBudget,
                 retreatHpRatio,
@@ -629,6 +653,7 @@
                 localRole: party.localRole,
                 leader: party.leader,
                 partySize: party.size,
+                observerOnly: false,
                 ownedMembers: party.ownedMembers.map(member => ({
                   name: member.name,
                   ctype: member.ctype,
@@ -643,10 +668,22 @@
           },
           {
             id: 'focus-fire',
-            title: 'Combat starten und Party-Focus/Assist konvergieren lassen',
+            title: 'Party-Focus/Assist prüfen und bei Combat-Rollen konvergieren lassen',
             timeoutMs: 15000,
             run: async ({ runtime, assert, waitFor }) => {
               assert(h7Plan, 'H7_LIVE_TEST_PLAN_MISSING');
+              if (h7Plan.observerOnly) {
+                const party = runtime.party.status();
+                assert(party.party.coordinationEnabled === true, 'H7_COORDINATION_LOST');
+                return {
+                  observerOnly: true,
+                  reason: 'LOGISTICS_ROLE_NO_COMBAT',
+                  focusTargetId: party.focus.targetId || null,
+                  focusSource: party.focus.source || null,
+                  combatTargetId: null,
+                  combatState: 'NOT_STARTED'
+                };
+              }
               const result = runtime.combat.startSession({
                 owner: 'live-test-h7',
                 monsterType: h7Plan.monsterType || undefined,
@@ -712,12 +749,15 @@
               const party = runtime.party.status();
               const combat = runtime.combat.status();
               assert(party.metrics.supportUnknown === h7Baseline.supportUnknown, 'PARTY_SUPPORT_UNKNOWN_DURING_STABILITY_WINDOW');
-              assert(combat.metrics.attackUnknown === h7Baseline.attackUnknown, 'ATTACK_UNKNOWN_DURING_H7_STABILITY_WINDOW');
+              if (!(h7Plan && h7Plan.observerOnly)) {
+                assert(combat.metrics.attackUnknown === h7Baseline.attackUnknown, 'ATTACK_UNKNOWN_DURING_H7_STABILITY_WINDOW');
+              }
               assert(party.party.coordinationEnabled === true, 'H7_COORDINATION_LOST_DURING_STABILITY_WINDOW');
               const focusChanges = party.metrics.focusChanges - h7Baseline.focusChanges;
               const focusPingPongs = party.metrics.focusPingPongs - h7Baseline.focusPingPongs;
               assert(focusPingPongs === 0, 'PARTY_FOCUS_PINGPONG_DETECTED:' + focusPingPongs);
               return {
+                observerOnly: !!(h7Plan && h7Plan.observerOnly),
                 focusTargetId: party.focus.targetId,
                 focusSource: party.focus.source,
                 focusChanges,
