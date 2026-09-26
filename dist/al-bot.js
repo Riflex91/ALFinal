@@ -1,4 +1,4 @@
-/* AL Bot 0.6.0-h6 | generated file | do not edit dist directly */
+/* AL Bot 0.7.0-h7 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -1113,6 +1113,7 @@
         id: entity.id == null ? fallbackId : String(entity.id),
         name: entity.name == null ? null : cleanText(entity.name, 120),
         type: entity.type == null ? null : cleanText(entity.type, 80),
+        ctype: entity.ctype == null ? null : cleanText(entity.ctype, 80),
         mtype: entity.mtype == null ? null : cleanText(entity.mtype, 120),
         player: safeBoolean(entity.player),
         npc: safeBoolean(entity.npc) || entity.type === 'npc',
@@ -1121,13 +1122,110 @@
         y: pos.y,
         hp: finite(entity.hp),
         maxHp: finite(entity.max_hp),
+        mp: finite(entity.mp),
+        maxMp: finite(entity.max_mp),
+        level: finite(entity.level),
         xp: finite(entity.xp),
         attack: finite(entity.attack),
         range: finite(entity.range),
         frequency: finite(entity.frequency),
         visible: entity.visible !== false,
+        party: entity.party == null ? null : cleanText(entity.party, 120),
         targetId: entity.target == null ? null : String(entity.target),
         dead: safeBoolean(entity.dead) || safeBoolean(entity.rip)
+      };
+    }
+
+    playerReference(name, options = {}) {
+      if (name == null) return null;
+      const wanted = String(name);
+      const character = this._character();
+      if (character && (String(character.name || '') === wanted || String(character.id || '') === wanted)) {
+        if (options.allowDead === true || (!character.rip && !character.dead)) return character;
+      }
+      const match = this._entityByIdOrName(wanted);
+      if (!match || !match.entity) return null;
+      const entity = match.entity;
+      const isPlayer = entity.type === 'character' || entity.player === true || entity.ctype != null;
+      if (!isPlayer) return null;
+      if (options.allowDead !== true && (entity.dead || entity.rip || entity.visible === false)) return null;
+      return entity;
+    }
+
+    partySnapshot() {
+      const character = this._character();
+      let rawParty = {};
+      let rawList = [];
+      const getParty = this._resolveFunction('get_party');
+      try {
+        if (getParty) rawParty = getParty.fn.call(getParty.owner) || {};
+      } catch (_) {}
+      if (!rawParty || typeof rawParty !== 'object' || Array.isArray(rawParty)) rawParty = {};
+      for (const candidate of this._roots()) {
+        try {
+          if (candidate && Array.isArray(candidate.party_list)) {
+            rawList = candidate.party_list.slice();
+            break;
+          }
+        } catch (_) {}
+        try {
+          if (candidate && candidate.parent && Array.isArray(candidate.parent.party_list)) {
+            rawList = candidate.parent.party_list.slice();
+            break;
+          }
+        } catch (_) {}
+      }
+
+      const names = [];
+      const addName = value => {
+        const name = cleanText(value || '', 120);
+        if (name && !names.includes(name)) names.push(name);
+      };
+      rawList.forEach(addName);
+      Object.keys(rawParty).forEach(addName);
+      if (character && character.party) addName(character.name);
+
+      const members = names.map(name => {
+        const partyRow = rawParty[name] && typeof rawParty[name] === 'object' ? rawParty[name] : {};
+        const live = this.playerReference(name, { allowDead: true });
+        const source = live || partyRow;
+        const pos = this._position(source);
+        const local = !!(character && String(character.name || '') === name);
+        const hp = finite(live && live.hp != null ? live.hp : partyRow.hp);
+        const maxHp = finite(live && live.max_hp != null ? live.max_hp : partyRow.max_hp);
+        const mp = finite(live && live.mp != null ? live.mp : partyRow.mp);
+        const maxMp = finite(live && live.max_mp != null ? live.max_mp : partyRow.max_mp);
+        return {
+          name,
+          local,
+          visible: local || !!live,
+          ctype: cleanText((live && live.ctype) || partyRow.ctype || partyRow.type || '', 80) || null,
+          level: finite((live && live.level) != null ? live.level : partyRow.level),
+          map: (live && live.map) || partyRow.map || (local && character && character.map) || null,
+          x: pos.x,
+          y: pos.y,
+          hp,
+          maxHp,
+          hpRatio: hp != null && maxHp != null && maxHp > 0 ? hp / maxHp : null,
+          mp,
+          maxMp,
+          rip: safeBoolean((live && live.rip) || partyRow.rip || (live && live.dead)),
+          targetId: ((live && live.target) != null ? live.target : partyRow.target) == null
+            ? null
+            : String((live && live.target) != null ? live.target : partyRow.target)
+        };
+      });
+
+      return {
+        schemaVersion: 1,
+        available: names.length > 0,
+        partyId: character && character.party ? String(character.party) : null,
+        leader: rawList.length ? cleanText(rawList[0], 120) : (names[0] || null),
+        memberNames: names,
+        members,
+        size: members.length,
+        rawListAvailable: rawList.length > 0,
+        rawPartyAvailable: Object.keys(rawParty).length > 0
       };
     }
 
@@ -1201,7 +1299,7 @@
       };
     }
 
-    skillReadiness(skillId, targetId = null) {
+    skillReadiness(skillId, targetId = null, options = {}) {
       const definition = this.skillDefinition(skillId);
       const character = this._character();
       const normalized = this.snapshot();
@@ -1239,7 +1337,9 @@
 
       let inRange = targetId == null;
       if (targetId != null) {
-        const rawTarget = this.entityReference(targetId);
+        const rawTarget = options.allowDeadTarget === true
+          ? this.playerReference(targetId, { allowDead: true })
+          : this.entityReference(targetId);
         if (!rawTarget) {
           inRange = false;
           reasons.push('SKILL_TARGET_UNAVAILABLE');
@@ -1993,6 +2093,7 @@
     stop: Object.freeze({ publicName: 'stop', family: 'movement-cleanup' }),
     use_skill: Object.freeze({ publicName: 'use_skill', family: 'skill' }),
     attack: Object.freeze({ publicName: 'attack', family: 'combat' }),
+    heal: Object.freeze({ publicName: 'heal', family: 'party-heal' }),
     change_target: Object.freeze({ publicName: 'change_target', family: 'combat-target' })
   });
 
@@ -3504,6 +3605,450 @@
     return Number.isFinite(number) ? number : null;
   }
 
+  function roleForClass(ctype, hasWarrior) {
+    const value = String(ctype || '').toLowerCase();
+    if (value === 'warrior') return 'TANK';
+    if (value === 'priest') return 'HEALER';
+    if (value === 'paladin') return hasWarrior ? 'SUPPORT' : 'TANK';
+    if (['ranger', 'mage', 'rogue'].includes(value)) return 'DPS';
+    if (value === 'merchant') return 'LOGISTICS';
+    return 'UNKNOWN';
+  }
+
+  function errorReason(value, fallback = 'PARTY_ACTION_UNKNOWN') {
+    if (value && typeof value === 'object') {
+      const raw = value.reason || value.code || value.message;
+      if (raw) return cleanText(raw, 240);
+    }
+    const text = cleanText(value, 240);
+    return text || fallback;
+  }
+
+  class PartyCoordinator {
+    constructor(options = {}) {
+      this.root = options.root || root;
+      this.logger = options.logger || null;
+      this.game = options.game;
+      this.actions = options.actions;
+      this.roster = options.roster;
+      this.now = typeof options.now === 'function' ? options.now : () => Date.now();
+      this.config = {
+        tickMs: Math.max(100, Math.min(2000, Number(options.tickMs) || 250)),
+        focusHoldMs: Math.max(250, Math.min(10000, Number(options.focusHoldMs) || 1200)),
+        healHpRatio: Math.max(0.25, Math.min(0.95, Number(options.healHpRatio) || 0.70)),
+        partyHealHpRatio: Math.max(0.25, Math.min(0.95, Number(options.partyHealHpRatio) || 0.68)),
+        partyHealMinMembers: Math.max(2, Math.min(8, Number(options.partyHealMinMembers) || 2)),
+        supportBackoffMs: Math.max(1000, Math.min(30000, Number(options.supportBackoffMs) || 4000))
+      };
+
+      this.active = false;
+      this.scope = null;
+      this.heartbeat = null;
+      this.lastSnapshot = null;
+      this.focusTargetId = null;
+      this.focusSource = null;
+      this.focusSinceMs = 0;
+      this.pendingFocusId = null;
+      this.pendingFocusSinceMs = 0;
+      this.pendingSupport = null;
+      this.supportGeneration = 0;
+      this.supportSuspended = false;
+      this.supportSuspendedReason = null;
+      this.supportBackoffUntil = 0;
+      this.lastSupport = null;
+      this.lastDecision = null;
+      this.metrics = {
+        ticks: 0,
+        partySnapshots: 0,
+        focusUpdates: 0,
+        focusChanges: 0,
+        assistTargetsObserved: 0,
+        healsDispatched: 0,
+        partyHealsDispatched: 0,
+        revivesDispatched: 0,
+        supportConfirmed: 0,
+        supportRejected: 0,
+        supportUnknown: 0,
+        foreignPartyBlocks: 0,
+        noPartyTicks: 0
+      };
+    }
+
+    start(context) {
+      this.active = true;
+      this.scope = context && context.scope || null;
+      this.heartbeat = context && typeof context.heartbeat === 'function' ? context.heartbeat : null;
+      if (!this.scope) throw new Error('PARTY_SCOPE_REQUIRED');
+      this.scope.interval('party-loop', () => this._tick(), this.config.tickMs, { immediate: true });
+      return this.status();
+    }
+
+    stop(reason = 'PARTY_MODULE_STOP') {
+      this.active = false;
+      this.supportGeneration += 1;
+      this.pendingSupport = null;
+      this.scope = null;
+      this.heartbeat = null;
+      this.lastDecision = {
+        at: new Date().toISOString(),
+        type: 'STOP',
+        reason: cleanText(reason, 200)
+      };
+      return this.status();
+    }
+
+    _ownedNames() {
+      const status = this.roster && this.roster.status ? this.roster.status() : null;
+      const rows = status && Array.isArray(status.characters) ? status.characters : [];
+      return new Set(rows.map(row => String(row && row.name || '')).filter(Boolean));
+    }
+
+    _decorateParty(snapshot) {
+      const owned = this._ownedNames();
+      const members = (snapshot && snapshot.members || []).map(member => ({
+        ...member,
+        owned: owned.has(String(member.name || ''))
+      }));
+      const hasWarrior = members.some(member => member.owned && String(member.ctype || '').toLowerCase() === 'warrior');
+      for (const member of members) member.role = roleForClass(member.ctype, hasWarrior);
+      const foreign = members.filter(member => !member.owned).map(member => member.name);
+      const ownedMembers = members.filter(member => member.owned);
+      const local = members.find(member => member.local) || null;
+      return {
+        ...(snapshot || {}),
+        members,
+        ownedMembers,
+        foreignMemberNames: foreign,
+        ownedMemberNames: ownedMembers.map(member => member.name),
+        coordinationEnabled: ownedMembers.length >= 2 && foreign.length === 0,
+        localRole: local ? local.role : null
+      };
+    }
+
+    snapshot() {
+      const raw = this.game && this.game.partySnapshot ? this.game.partySnapshot() : null;
+      return this._decorateParty(raw || {
+        schemaVersion: 1,
+        available: false,
+        partyId: null,
+        leader: null,
+        memberNames: [],
+        members: [],
+        size: 0
+      });
+    }
+
+    _visibleMonsterIds() {
+      const monsters = this.game && this.game.visibleMonsters ? this.game.visibleMonsters() : [];
+      return new Set(monsters.map(row => String(row.id)));
+    }
+
+    _proposedFocus(snapshot) {
+      if (!snapshot || !snapshot.coordinationEnabled) return null;
+      const visibleMonsters = this._visibleMonsterIds();
+      const alive = snapshot.ownedMembers.filter(member => !member.rip && member.targetId && visibleMonsters.has(String(member.targetId)));
+      if (!alive.length) return null;
+
+      const tank = alive.find(member => member.role === 'TANK');
+      if (tank) return { id: String(tank.targetId), source: 'tank:' + tank.name };
+
+      const leader = alive.find(member => String(member.name) === String(snapshot.leader || ''));
+      if (leader) return { id: String(leader.targetId), source: 'leader:' + leader.name };
+
+      const counts = new Map();
+      for (const member of alive) {
+        const key = String(member.targetId);
+        counts.set(key, (counts.get(key) || 0) + 1);
+      }
+      let best = null;
+      for (const [id, count] of counts.entries()) {
+        if (!best || count > best.count || (count === best.count && id < best.id)) best = { id, count };
+      }
+      return best ? { id: best.id, source: 'majority:' + best.count } : null;
+    }
+
+    _updateFocus(snapshot) {
+      const proposed = this._proposedFocus(snapshot);
+      const now = this.now();
+
+      if (!proposed) {
+        this.pendingFocusId = null;
+        this.pendingFocusSinceMs = 0;
+        if (this.focusTargetId && !this._visibleMonsterIds().has(String(this.focusTargetId))) {
+          this.focusTargetId = null;
+          this.focusSource = null;
+          this.focusSinceMs = 0;
+          this.metrics.focusChanges += 1;
+        }
+        return;
+      }
+
+      this.metrics.assistTargetsObserved += 1;
+      if (String(proposed.id) === String(this.focusTargetId || '')) {
+        this.pendingFocusId = null;
+        this.pendingFocusSinceMs = 0;
+        this.focusSource = proposed.source;
+        return;
+      }
+
+      if (String(proposed.id) !== String(this.pendingFocusId || '')) {
+        this.pendingFocusId = proposed.id;
+        this.pendingFocusSinceMs = now;
+        if (!this.focusTargetId) this.pendingFocusSinceMs = now - this.config.focusHoldMs;
+      }
+
+      if (now - this.pendingFocusSinceMs < this.config.focusHoldMs) return;
+      this.focusTargetId = proposed.id;
+      this.focusSource = proposed.source;
+      this.focusSinceMs = now;
+      this.pendingFocusId = null;
+      this.pendingFocusSinceMs = 0;
+      this.metrics.focusUpdates += 1;
+      this.metrics.focusChanges += 1;
+      if (this.logger) this.logger.info('Party Focus aktualisiert', {
+        targetId: this.focusTargetId,
+        source: this.focusSource
+      });
+    }
+
+    preferredTargetId() {
+      return this.focusTargetId;
+    }
+
+    _supportReadiness(skillId, member, allowDead = false) {
+      if (!this.game || typeof this.game.skillReadiness !== 'function') return null;
+      return this.game.skillReadiness(skillId, member && member.name || null, { allowDeadTarget: allowDead });
+    }
+
+    _chooseSupport(snapshot) {
+      if (!snapshot || !snapshot.coordinationEnabled) return null;
+      const local = snapshot.ownedMembers.find(member => member.local);
+      if (!local || String(local.ctype || '').toLowerCase() !== 'priest') return null;
+      if (this.supportSuspended || this.pendingSupport || this.now() < this.supportBackoffUntil) return null;
+
+      const downed = snapshot.ownedMembers
+        .filter(member => !member.local && member.rip && member.visible)
+        .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+      if (downed.length) {
+        const target = downed[0];
+        const readiness = this._supportReadiness('revive', target, true);
+        if (readiness && readiness.allowed) {
+          return { kind: 'revive', action: 'use_skill', args: ['revive', target.name], target, readiness };
+        }
+      }
+
+      const injured = snapshot.ownedMembers
+        .filter(member => !member.rip && member.visible && member.hpRatio != null && member.hpRatio < 0.999)
+        .sort((a, b) => a.hpRatio - b.hpRatio);
+      const partyHealTargets = injured.filter(member => member.hpRatio <= this.config.partyHealHpRatio);
+      if (partyHealTargets.length >= this.config.partyHealMinMembers) {
+        const readiness = this.game.skillReadiness('partyheal');
+        if (readiness && readiness.allowed) {
+          return { kind: 'partyheal', action: 'use_skill', args: ['partyheal'], target: null, readiness };
+        }
+      }
+
+      const target = injured.find(member => member.hpRatio <= this.config.healHpRatio);
+      if (target) {
+        const readiness = this._supportReadiness('heal', target, false);
+        if (readiness && readiness.allowed && this.actions.available('heal')) {
+          const raw = this.game.playerReference(target.name);
+          if (raw) return { kind: 'heal', action: 'heal', args: [raw], target, readiness };
+        }
+      }
+      return null;
+    }
+
+    _settleSupport(pending, state, response) {
+      if (!pending || !this.pendingSupport || this.pendingSupport.id !== pending.id) return;
+      if (state === 'CONFIRMED') {
+        this.metrics.supportConfirmed += 1;
+        this.lastSupport = {
+          at: new Date().toISOString(),
+          id: pending.id,
+          kind: pending.kind,
+          target: pending.targetName,
+          state,
+          response: response == null ? null : clone(response)
+        };
+      } else if (state === 'REJECTED') {
+        this.metrics.supportRejected += 1;
+        this.supportBackoffUntil = this.now() + this.config.supportBackoffMs;
+        this.lastSupport = {
+          at: new Date().toISOString(),
+          id: pending.id,
+          kind: pending.kind,
+          target: pending.targetName,
+          state,
+          error: errorReason(response, 'PARTY_SUPPORT_REJECTED')
+        };
+      } else {
+        this.metrics.supportUnknown += 1;
+        this.supportSuspended = true;
+        this.supportSuspendedReason = errorReason(response, 'PARTY_SUPPORT_UNKNOWN');
+        this.lastSupport = {
+          at: new Date().toISOString(),
+          id: pending.id,
+          kind: pending.kind,
+          target: pending.targetName,
+          state: 'UNKNOWN',
+          error: this.supportSuspendedReason
+        };
+      }
+      this.pendingSupport = null;
+    }
+
+    _watchSupport(dispatch, pending, generation) {
+      const value = dispatch && dispatch.value;
+      if (!value || typeof value.then !== 'function') {
+        if (value && typeof value === 'object' && value.failed === true) this._settleSupport(pending, 'REJECTED', value);
+        else if (value && typeof value === 'object' && (value.success === true || value.response || value.place || value.heal != null)) this._settleSupport(pending, 'CONFIRMED', value);
+        else this._settleSupport(pending, 'UNKNOWN', value);
+        return;
+      }
+      Promise.resolve(value).then(response => {
+        if (generation !== this.supportGeneration) return;
+        if (!this.pendingSupport || this.pendingSupport.id !== pending.id) return;
+        if (response && typeof response === 'object' && response.failed === true) this._settleSupport(pending, 'REJECTED', response);
+        else this._settleSupport(pending, 'CONFIRMED', response);
+      }, error => {
+        if (generation !== this.supportGeneration) return;
+        if (!this.pendingSupport || this.pendingSupport.id !== pending.id) return;
+        const reason = errorReason(error, 'PARTY_SUPPORT_PROMISE_REJECTED');
+        const known = /cooldown|no_mp|too_far|range|not_found|cant_use|cannot_use|level|disabled/i.test(reason);
+        this._settleSupport(pending, known ? 'REJECTED' : 'UNKNOWN', error);
+      }).catch(() => {});
+    }
+
+    _dispatchSupport(decision) {
+      let dispatch;
+      try {
+        dispatch = this.actions.dispatch(decision.action, decision.args);
+      } catch (error) {
+        this.lastDecision = { at: new Date().toISOString(), type: 'SUPPORT_BLOCKED', error: errorReason(error) };
+        return;
+      }
+      if (!dispatch || dispatch.state !== 'DISPATCHED') {
+        this.lastDecision = { at: new Date().toISOString(), type: 'SUPPORT_NOT_DISPATCHED', state: dispatch && dispatch.state || null };
+        return;
+      }
+
+      if (decision.kind === 'heal') this.metrics.healsDispatched += 1;
+      if (decision.kind === 'partyheal') this.metrics.partyHealsDispatched += 1;
+      if (decision.kind === 'revive') this.metrics.revivesDispatched += 1;
+
+      const pending = {
+        id: dispatch.id,
+        kind: decision.kind,
+        targetName: decision.target && decision.target.name || null,
+        dispatchedAt: new Date().toISOString()
+      };
+      this.pendingSupport = pending;
+      this.lastDecision = {
+        at: new Date().toISOString(),
+        type: 'SUPPORT_DISPATCHED',
+        kind: pending.kind,
+        target: pending.targetName
+      };
+      const generation = this.supportGeneration;
+      this._watchSupport(dispatch, pending, generation);
+    }
+
+    _tick() {
+      if (!this.active) return;
+      this.metrics.ticks += 1;
+      const snapshot = this.snapshot();
+      this.lastSnapshot = snapshot;
+      this.metrics.partySnapshots += 1;
+
+      if (this.heartbeat) {
+        this.heartbeat({
+          phase: snapshot.coordinationEnabled ? 'party-coordination' : 'party-observe',
+          size: snapshot.size,
+          owned: snapshot.ownedMemberNames.length,
+          focusTargetId: this.focusTargetId
+        });
+      }
+
+      if (!snapshot.available || snapshot.size < 2) {
+        this.metrics.noPartyTicks += 1;
+        this.focusTargetId = null;
+        this.focusSource = null;
+        return;
+      }
+      if (snapshot.foreignMemberNames.length) {
+        this.metrics.foreignPartyBlocks += 1;
+        this.focusTargetId = null;
+        this.focusSource = null;
+        this.lastDecision = {
+          at: new Date().toISOString(),
+          type: 'FOREIGN_PARTY_BLOCK',
+          members: snapshot.foreignMemberNames.slice()
+        };
+        return;
+      }
+
+      this._updateFocus(snapshot);
+      const support = this._chooseSupport(snapshot);
+      if (support) this._dispatchSupport(support);
+    }
+
+    status() {
+      const snapshot = this.lastSnapshot || this.snapshot();
+      const localClass = snapshot && snapshot.ownedMembers && snapshot.ownedMembers.find(member => member.local);
+      const partyBuffSkills = [];
+      if (localClass && this.game && typeof this.game.skillDefinition === 'function') {
+        const candidates = ['warcry', 'darkblessing', 'partyheal'];
+        for (const id of candidates) {
+          const definition = this.game.skillDefinition(id);
+          if (definition && definition.classes.includes(String(localClass.ctype || '').toLowerCase()) && (definition.party || definition.multi || id !== 'partyheal')) {
+            partyBuffSkills.push(id);
+          }
+        }
+      }
+      return {
+        schemaVersion: 1,
+        active: this.active,
+        party: clone(snapshot),
+        focus: {
+          targetId: this.focusTargetId,
+          source: this.focusSource,
+          sinceMs: this.focusSinceMs || null,
+          pendingTargetId: this.pendingFocusId
+        },
+        support: {
+          pending: clone(this.pendingSupport),
+          suspended: this.supportSuspended,
+          suspendedReason: this.supportSuspendedReason,
+          last: clone(this.lastSupport),
+          backoffUntilMs: this.supportBackoffUntil || null
+        },
+        partyBuffSkills,
+        lastDecision: clone(this.lastDecision),
+        metrics: clone(this.metrics)
+      };
+    }
+  }
+
+  ns.PartyCoordinator = PartyCoordinator;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+
+(function (root) {
+  'use strict';
+
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns) throw new Error('ALBOT_INTERNALS_MISSING');
+
+  const clone = ns.helpers.clone;
+  const cleanText = ns.helpers.cleanText;
+
+  function finite(value) {
+    if (value == null || value === '') return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
   function ratio(value, max) {
     const current = finite(value);
     const total = finite(max);
@@ -3528,6 +4073,7 @@
       this.actions = options.actions;
       this.movement = options.movement;
       this.classSkills = options.classSkills || null;
+      this.party = options.party || null;
       this.now = typeof options.now === 'function' ? options.now : () => Date.now();
 
       this.config = {
@@ -3600,6 +4146,7 @@
         maxAcquireDistance: Math.max(50, Math.min(1200, Number(options.maxAcquireDistance) || this.config.maxAcquireDistance)),
         allowContested: options.allowContested === true,
         allowUnknownAttack: options.allowUnknownAttack === true,
+        partyAssist: options.partyAssist !== false,
         kiting: options.kiting === true,
         preferredRangeRatio: Math.max(0.25, Math.min(0.95, Number(options.preferredRangeRatio) || this.config.preferredRangeRatio)),
         retreatHpRatio: Math.max(0.05, Math.min(0.9, Number(options.retreatHpRatio) || this.config.retreatHpRatio)),
@@ -3799,7 +4346,12 @@
         return null;
       }
 
-      const target = candidates[0];
+      const preferredId = this.session.policy.partyAssist && this.party && typeof this.party.preferredTargetId === 'function'
+        ? this.party.preferredTargetId()
+        : null;
+      const target = preferredId == null
+        ? candidates[0]
+        : (candidates.find(candidate => String(candidate.id) === String(preferredId)) || candidates[0]);
       const raw = this.game.entityReference(target.id);
       if (!raw) {
         this.session.state = 'ACQUIRING';
@@ -4171,6 +4723,18 @@
       }
 
       if (this._observePendingAttack()) return;
+
+      if (this.session.policy.partyAssist && this.party && typeof this.party.preferredTargetId === 'function') {
+        const preferredId = this.party.preferredTargetId();
+        if (preferredId != null && this.session.targetId != null && String(preferredId) !== String(this.session.targetId)) {
+          const preferred = this.safeCandidates(this.session.policy)
+            .find(candidate => String(candidate.id) === String(preferredId));
+          if (preferred) {
+            this._clearGameTarget('PARTY_FOCUS_RETARGET');
+            this.session.state = 'ACQUIRING';
+          }
+        }
+      }
 
       let target = this._freshTarget();
       if (!target) {
@@ -4601,7 +5165,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.6.0-h6';
+      this.version = options.version || '0.7.0-h7';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -4647,6 +5211,14 @@
       this.knowledgeProvider = new ns.WindowsBridgeKnowledgeProvider({ root: this.root, logger: this.logger });
       this.knowledge.setProvider(this.knowledgeProvider);
       this.roster = new ns.CharacterRosterService({ root: this.root, logger: this.logger });
+      this.party = new ns.PartyCoordinator({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        roster: this.roster
+      });
+      this.combat.party = this.party;
       this.liveTests = new ns.LiveTestRunner({
         runtime: this,
         logger: this.logger,
@@ -4670,7 +5242,7 @@
       this.modules.register({
         id: 'runtime-health',
         title: 'Runtime Health',
-        version: '0.6.0',
+        version: '0.7.0',
         watchdogMs: 4000,
         start: context => {
           context.scope.interval('heartbeat', () => {
@@ -4692,7 +5264,7 @@
       this.modules.register({
         id: 'movement',
         title: 'Movement',
-        version: '0.6.0',
+        version: '0.7.0',
         start: context => this.movement.start(context),
         stop: reason => this.movement.stop(reason),
         status: () => this.movement.status()
@@ -4701,16 +5273,25 @@
       this.modules.register({
         id: 'class-skills',
         title: 'Class Skills',
-        version: '0.6.0',
+        version: '0.7.0',
         start: () => this.classSkills.start(),
         stop: reason => this.classSkills.stop(reason),
         status: () => this.classSkills.status()
       });
 
       this.modules.register({
+        id: 'party',
+        title: 'Party',
+        version: '0.7.0',
+        start: context => this.party.start(context),
+        stop: reason => this.party.stop(reason),
+        status: () => this.party.status()
+      });
+
+      this.modules.register({
         id: 'combat',
         title: 'Combat',
-        version: '0.6.0',
+        version: '0.7.0',
         start: context => this.combat.start(context),
         stop: reason => this.combat.stop(reason),
         status: () => this.combat.status()
@@ -4722,6 +5303,8 @@
       let livePlan = null;
       let h6Baseline = null;
       let h6Plan = null;
+      let h7Baseline = null;
+      let h7Plan = null;
       this.liveTests.register({
         id: 'h5-combat',
         title: 'H5 – Einfacher Kampf',
@@ -5133,6 +5716,199 @@
           }
         ]
       });
+
+      this.liveTests.register({
+        id: 'h7-party',
+        title: 'H7 – Party',
+        description: 'Ein-Klick-Live-Test für dynamische Party-Erkennung, Rollen, Focus Fire, Assist, Support-Sicht und Cleanup.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.combat.stopSession('H7_LIVE_TEST_RESET'); } catch (_) {}
+          h7Plan = null;
+          const party = runtime.party.status();
+          const combat = runtime.combat.status();
+          h7Baseline = {
+            focusChanges: party.metrics.focusChanges,
+            supportUnknown: party.metrics.supportUnknown,
+            supportConfirmed: party.metrics.supportConfirmed,
+            attackUnknown: combat.metrics.attackUnknown,
+            attacksConfirmed: combat.metrics.attacksConfirmed
+          };
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.combat.stopSession('H7_LIVE_TEST_CLEANUP'); } catch (_) {}
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Eigene aktive Party, Rollen und sicheren Gegner prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const partyModule = runtime.modules.describe('party');
+              assert(partyModule && partyModule.state === 'ACTIVE', 'PARTY_MODULE_NOT_ACTIVE');
+              const party = runtime.party.snapshot();
+              assert(party.available && party.size >= 2, 'H7_NEEDS_ACTIVE_PARTY_OF_AT_LEAST_2');
+              assert(party.foreignMemberNames.length === 0,
+                'H7_FOREIGN_PARTY_MEMBER_BLOCK:' + party.foreignMemberNames.join(','));
+              assert(party.coordinationEnabled === true, 'H7_PARTY_COORDINATION_NOT_READY');
+              assert(party.ownedMembers.filter(member => !member.rip).length >= 2, 'H7_NEEDS_2_LIVING_OWNED_PARTY_MEMBERS');
+
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character && !game.character.rip, 'CHARACTER_UNAVAILABLE');
+              const currentHp = Number(game.character.hp);
+              const maxHp = Number(game.character.maxHp);
+              assert(Number.isFinite(currentHp) && currentHp > 0, 'CHARACTER_HP_UNAVAILABLE');
+              assert(Number.isFinite(maxHp) && maxHp > 0, 'CHARACTER_MAX_HP_UNAVAILABLE');
+
+              const attackBudget = Math.max(5, Math.min(maxHp * 0.08, currentHp * 0.08));
+              const candidates = runtime.combat.safeCandidates({ maxAcquireDistance: 450, maxAttack: attackBudget });
+              assert(candidates.length > 0, 'NO_SAFE_VISIBLE_MONSTER_FOR_H7');
+              const chosen = candidates[0];
+              const targetAttack = Number(chosen.attack);
+              assert(Number.isFinite(targetAttack) && targetAttack >= 0, 'TARGET_ATTACK_UNAVAILABLE');
+              const absoluteRetreatHp = Math.max(100, targetAttack * 20);
+              const minimumStartHp = Math.max(150, targetAttack * 25);
+              assert(currentHp >= minimumStartHp,
+                'HP_TOO_LOW_FOR_SAFE_H7_TEST:' + Math.round(currentHp) + '<' + Math.round(minimumStartHp));
+
+              const retreatHpRatio = Math.max(0.05, Math.min(0.35, absoluteRetreatHp / maxHp));
+              const resumeHpRatio = Math.max(retreatHpRatio + 0.05, Math.min(0.65, retreatHpRatio * 1.75));
+              h7Plan = {
+                monsterType: chosen.mtype || null,
+                maxAttack: attackBudget,
+                retreatHpRatio,
+                resumeHpRatio
+              };
+
+              return {
+                local: game.character.name,
+                localRole: party.localRole,
+                leader: party.leader,
+                partySize: party.size,
+                ownedMembers: party.ownedMembers.map(member => ({
+                  name: member.name,
+                  ctype: member.ctype,
+                  role: member.role,
+                  visible: member.visible,
+                  rip: member.rip
+                })),
+                target: chosen.name || chosen.mtype || chosen.id,
+                targetId: chosen.id
+              };
+            }
+          },
+          {
+            id: 'focus-fire',
+            title: 'Combat starten und Party-Focus/Assist konvergieren lassen',
+            timeoutMs: 15000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(h7Plan, 'H7_LIVE_TEST_PLAN_MISSING');
+              const result = runtime.combat.startSession({
+                owner: 'live-test-h7',
+                monsterType: h7Plan.monsterType || undefined,
+                maxAcquireDistance: 450,
+                maxAttack: h7Plan.maxAttack,
+                retreatHpRatio: h7Plan.retreatHpRatio,
+                resumeHpRatio: h7Plan.resumeHpRatio,
+                minMpRatio: 0,
+                kiting: false,
+                partyAssist: true
+              });
+              assert(result && result.accepted === true, result && result.reason || 'H7_COMBAT_SESSION_START_FAILED');
+
+              const converged = await waitFor(() => {
+                const party = runtime.party.status();
+                const combat = runtime.combat.status();
+                if (party.support.suspended) throw new Error(party.support.suspendedReason || 'PARTY_SUPPORT_UNKNOWN');
+                if (combat.lastSession && ['FAILED_SAFE', 'UNKNOWN'].includes(combat.lastSession.state)) {
+                  throw new Error(combat.lastSession.reason || combat.lastSession.state);
+                }
+                if (!party.focus.targetId || !combat.session || !combat.session.targetId) return null;
+                return String(party.focus.targetId) === String(combat.session.targetId)
+                  ? { party, combat }
+                  : null;
+              }, { timeoutMs: 12000, pollMs: 125, label: 'party-focus-convergence' });
+
+              return {
+                focusTargetId: converged.party.focus.targetId,
+                focusSource: converged.party.focus.source,
+                combatTargetId: converged.combat.session.targetId,
+                combatState: converged.combat.state
+              };
+            }
+          },
+          {
+            id: 'party-health',
+            title: 'Party-Health, Healing- und Recovery-Basis prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const party = runtime.party.status();
+              assert(party.party.coordinationEnabled === true, 'H7_COORDINATION_LOST');
+              assert(party.metrics.supportUnknown === h7Baseline.supportUnknown, 'PARTY_SUPPORT_UNKNOWN_DURING_TEST');
+              const downed = party.party.ownedMembers.filter(member => member.rip).map(member => member.name);
+              const injured = party.party.ownedMembers
+                .filter(member => !member.rip && member.hpRatio != null && member.hpRatio < 0.999)
+                .map(member => ({ name: member.name, hpRatio: member.hpRatio }));
+              return {
+                localRole: party.party.localRole,
+                injured,
+                downed,
+                partyBuffSkills: party.partyBuffSkills,
+                supportConfirmed: party.metrics.supportConfirmed - h7Baseline.supportConfirmed,
+                supportPending: !!party.support.pending
+              };
+            }
+          },
+          {
+            id: 'stability-window',
+            title: 'Fünf Sekunden Focus-Fire ohne UNKNOWN/Pingpong beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              await sleep(5000);
+              const party = runtime.party.status();
+              const combat = runtime.combat.status();
+              assert(party.metrics.supportUnknown === h7Baseline.supportUnknown, 'PARTY_SUPPORT_UNKNOWN_DURING_STABILITY_WINDOW');
+              assert(combat.metrics.attackUnknown === h7Baseline.attackUnknown, 'ATTACK_UNKNOWN_DURING_H7_STABILITY_WINDOW');
+              assert(party.party.coordinationEnabled === true, 'H7_COORDINATION_LOST_DURING_STABILITY_WINDOW');
+              const focusChanges = party.metrics.focusChanges - h7Baseline.focusChanges;
+              assert(focusChanges <= 6, 'PARTY_FOCUS_PINGPONG_GUARD_EXCEEDED:' + focusChanges);
+              return {
+                focusTargetId: party.focus.targetId,
+                focusSource: party.focus.source,
+                focusChanges,
+                attacksConfirmed: combat.metrics.attacksConfirmed - h7Baseline.attacksConfirmed,
+                supportConfirmed: party.metrics.supportConfirmed - h7Baseline.supportConfirmed,
+                supportUnknown: party.metrics.supportUnknown - h7Baseline.supportUnknown
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'Party-Combat sauber stoppen und Ownership freigeben',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.combat.stopSession('H7_LIVE_TEST_COMPLETE');
+              const combat = runtime.combat.status();
+              const movement = runtime.movement.status();
+              const party = runtime.party.status();
+              assert(combat.active === false, 'H7_COMBAT_STILL_ACTIVE_AFTER_STOP');
+              assert(!(movement.activeOrder && String(movement.activeOrder.owner || '').startsWith('combat-h5')),
+                'H7_COMBAT_MOVEMENT_STILL_ACTIVE');
+              assert(party.support.pending == null, 'H7_PARTY_SUPPORT_STILL_PENDING');
+              return {
+                combatActive: combat.active,
+                movementActive: movement.active,
+                supportPending: !!party.support.pending,
+                focusTargetId: party.focus.targetId,
+                partySize: party.party.size
+              };
+            }
+          }
+        ]
+      });
     }
 
     _installErrorCapture() {
@@ -5277,6 +6053,7 @@
         actions: this.actions.status(),
         movement: this.movement.status(),
         classSkills: this.classSkills.status(),
+        party: this.party.status(),
         combat: this.combat.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
@@ -5298,6 +6075,7 @@
         actionBoundary: this.actions.status(),
         movement: this.movement.status(),
         classSkills: this.classSkills.status(),
+        party: this.party.status(),
         combat: this.combat.status(),
         liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
@@ -5318,6 +6096,7 @@
       push('action-boundary', !!this.actions.status() && this.actions.status().supportedActions.includes('move') && this.actions.status().supportedActions.includes('smart_move'), this.actions.status());
       push('movement-controller', !!this.movement.status() && typeof this.movement.moveLocal === 'function' && typeof this.movement.smartMove === 'function', this.movement.status());
       push('class-skill-controller', !!this.classSkills.status() && typeof this.classSkills.maybeUse === 'function', this.classSkills.status());
+      push('party-coordinator', !!this.party.status() && typeof this.party.preferredTargetId === 'function', this.party.status());
       push('combat-controller', !!this.combat.status() && typeof this.combat.startSession === 'function' && typeof this.combat.stopSession === 'function', this.combat.status());
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
@@ -5499,13 +6278,14 @@
 </style>
 <div class="albot-head" id="albot-drag-handle"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-minimize" class="albot-window-btn" title="Fenster minimieren" aria-label="Fenster minimieren">—</button><button id="albot-emergency" class="albot-stop">STOP</button></div>
 <div class="albot-tabs">
-<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
+<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
 </div>
 <div class="albot-body">
 <section id="albot-panel-overview" class="albot-panel active"></section>
 <section id="albot-panel-priorities" class="albot-panel"></section>
 <section id="albot-panel-navigation" class="albot-panel"></section>
 <section id="albot-panel-combat" class="albot-panel"></section>
+<section id="albot-panel-party" class="albot-panel"></section>
 <section id="albot-panel-live-test" class="albot-panel"></section>
 <section id="albot-panel-knowledge" class="albot-panel"></section>
 <section id="albot-panel-logs" class="albot-panel"></section>
@@ -5643,6 +6423,7 @@
         const focused = panel && this.doc && this.doc.activeElement && panel.contains(this.doc.activeElement);
         if (!focused) this.renderCombat(status);
       }
+      if (this.activeTab === 'party') this.renderParty(status);
       if (this.activeTab === 'live-test') this.renderLiveTest(status);
       if (this.activeTab === 'knowledge') this.renderKnowledge(status);
       if (this.activeTab === 'logs') this.renderLogs();
@@ -5658,6 +6439,7 @@
       this.renderPriorities(status);
       this.renderNavigation(status);
       this.renderCombat(status);
+      this.renderParty(status);
       this.renderLiveTest(status);
       this.renderKnowledge(status);
       this.renderLogs();
@@ -5865,6 +6647,38 @@
       if (stop) stop.onclick = () => run(() => this.runtime.combat.stopSession('GUI_COMBAT_STOP'));
     }
 
+    renderParty(status) {
+      const panel = this.host.querySelector('#albot-panel-party');
+      if (!panel) return;
+      const partyStatus = status.party || {};
+      const party = partyStatus.party || {};
+      const focus = partyStatus.focus || {};
+      const support = partyStatus.support || {};
+      const metrics = partyStatus.metrics || {};
+      const members = Array.isArray(party.members) ? party.members : [];
+      panel.innerHTML = `<div class="albot-card"><b>H7 Party</b>
+<div class="albot-small">Koordination ist nur aktiv, wenn mindestens zwei eigene Party-Mitglieder erkannt wurden und kein fremdes Mitglied enthalten ist. Focus Fire basiert auf frischen sichtbaren Targets; Healing/Revive laufen nur über bestätigte Live-Readiness.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Party</span><div class="albot-v">${party.available ? esc(party.size)+' Mitglieder' : 'keine'}</div></div>
+<div><span class="albot-k">Koordination</span><div class="albot-v">${party.coordinationEnabled ? 'AKTIV' : 'BLOCKIERT / SOLO'}</div></div>
+<div><span class="albot-k">Leader</span><div class="albot-v">${esc(party.leader || '-')}</div></div>
+<div><span class="albot-k">Lokale Rolle</span><div class="albot-v">${esc(party.localRole || '-')}</div></div>
+<div><span class="albot-k">Focus Target</span><div class="albot-v">${esc(focus.targetId || '-')}</div></div>
+<div><span class="albot-k">Focus Quelle</span><div class="albot-v">${esc(focus.source || '-')}</div></div>
+<div><span class="albot-k">Support</span><div class="albot-v">${support.suspended ? 'SUSPENDIERT' : support.pending ? 'PENDING' : 'bereit'}</div></div>
+<div><span class="albot-k">Support bestätigt</span><div class="albot-v">${esc(metrics.supportConfirmed || 0)}</div></div>
+</div></div>
+<div class="albot-card"><b>Party-Mitglieder & Rollen</b>
+${members.length ? members.map(member => '<div class="albot-small"><b>'+esc(member.name)+'</b> · '+esc(member.ctype || '?')+' · '+esc(member.role || 'UNKNOWN')+' · '+(member.owned ? 'OWNED' : 'FOREIGN')+' · '+(member.rip ? 'DOWN' : member.hpRatio == null ? 'HP ?' : 'HP '+esc(Math.round(member.hpRatio*100))+'%')+' · Target '+esc(member.targetId || '-')+'</div>').join('') : '<div class="albot-small">Keine Party-Mitglieder erkannt.</div>'}
+</div>
+<div class="albot-card"><b>Support / Recovery</b>
+<div class="albot-small">Party-Buffs/Auras aus Live-Skills: ${partyStatus.partyBuffSkills && partyStatus.partyBuffSkills.length ? partyStatus.partyBuffSkills.map(esc).join(', ') : 'keine für lokale Klasse erkannt'}</div>
+<div class="albot-small">Heal Dispatches: ${esc(metrics.healsDispatched || 0)} · Party Heal: ${esc(metrics.partyHealsDispatched || 0)} · Revive: ${esc(metrics.revivesDispatched || 0)} · UNKNOWN: ${esc(metrics.supportUnknown || 0)}</div>
+${party.foreignMemberNames && party.foreignMemberNames.length ? '<div class="albot-small albot-bad">Fremde Party-Mitglieder blockieren automatische Koordination: '+party.foreignMemberNames.map(esc).join(', ')+'</div>' : ''}
+${support.suspended ? '<div class="albot-small albot-bad">Support suspendiert: '+esc(support.suspendedReason || '-')+'</div>' : ''}
+</div>`;
+    }
+
     async runRecommendedLiveTest() {
       const state = this.runtime.status();
       if (state.emergencyStop && state.emergencyStop.latched) {
@@ -5989,7 +6803,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
     renderDev(status) {
       const panel = this.host.querySelector('#albot-panel-dev');
       const scheduler = status.scheduler || {};
-      const resultText = this.devResult ? JSON.stringify(this.devResult, null, 2) : 'H6 Klassenlogik · ' + status.version;
+      const resultText = this.devResult ? JSON.stringify(this.devResult, null, 2) : 'H7 Party · ' + status.version;
       panel.innerHTML = `<div class="albot-card"><b>Entwicklung</b>
 <div class="albot-row"><button id="albot-selftest" class="albot-btn">Selftest</button><button id="albot-stability-test" class="albot-btn">H2 Runtime-Test</button><button id="albot-reset-stop" class="albot-btn danger">STOP zurücksetzen</button><button id="albot-show" class="albot-btn">GUI anzeigen</button></div>
 <div class="albot-small">Scheduler: ${scheduler.enabled ? 'ACTIVE' : 'STOPPED'} · Ressourcen: ${esc(scheduler.totalResources || 0)} · Generation: ${esc(scheduler.generation || 0)} · Boot: #${esc(status.bootCount || 1)}</div>
@@ -6095,7 +6909,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.6.0-h6',
+    version: '0.7.0-h7',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -6175,6 +6989,12 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
       preview: targetId => runtime.classSkills.preview(targetId)
     },
 
+    party: {
+      status: () => runtime.party.status(),
+      snapshot: () => runtime.party.snapshot(),
+      focusTarget: () => runtime.party.preferredTargetId()
+    },
+
     liveTests: {
       status: () => runtime.liveTests.status(),
       list: () => runtime.liveTests.list(),
@@ -6221,6 +7041,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
   Object.freeze(api.movement);
   Object.freeze(api.combat);
   Object.freeze(api.classSkills);
+  Object.freeze(api.party);
   Object.freeze(api.liveTests);
   Object.freeze(api.knowledge);
   Object.freeze(api.roster);
@@ -6238,7 +7059,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
     };
   } catch (_) {}
 
-  runtime.logger.info('AL Bot H6 geladen', {
+  runtime.logger.info('AL Bot H7 geladen', {
     version: api.version,
     bootCount,
     hotReload: !!previous,
