@@ -110,7 +110,7 @@
         preferredRangeRatio: Math.max(0.25, Math.min(0.95, Number(options.preferredRangeRatio) || this.config.preferredRangeRatio)),
         retreatHpRatio: Math.max(0.05, Math.min(0.9, Number(options.retreatHpRatio) || this.config.retreatHpRatio)),
         resumeHpRatio: Math.max(0.1, Math.min(1, Number(options.resumeHpRatio) || this.config.resumeHpRatio)),
-        minMpRatio: Math.max(0, Math.min(0.9, Number(options.minMpRatio) || this.config.minMpRatio))
+        minMpRatio: Math.max(0, Math.min(0.9, options.minMpRatio == null ? this.config.minMpRatio : Number(options.minMpRatio)))
       };
     }
 
@@ -378,13 +378,24 @@
 
       const target = this._freshTarget();
       if (!target) {
-        this.metrics.attacksConfirmed += 1;
-        this.metrics.killsObserved += 1;
-        this.session.counters.attacksConfirmed += 1;
-        this.session.counters.killsObserved += 1;
-        this.pendingAttack = null;
-        this._clearGameTarget('TARGET_DISAPPEARED_AFTER_ATTACK');
-        this.session.state = 'ACQUIRING';
+        const snap = this.game.snapshot();
+        const observed = snap && snap.target && String(snap.target.id) === String(pending.targetId) ? snap.target : null;
+        if (observed && observed.dead === true) {
+          this.metrics.attacksConfirmed += 1;
+          this.metrics.killsObserved += 1;
+          this.session.counters.attacksConfirmed += 1;
+          this.session.counters.killsObserved += 1;
+          this.pendingAttack = null;
+          this._clearGameTarget('TARGET_DEAD_AFTER_ATTACK');
+          this.session.state = 'ACQUIRING';
+          return true;
+        }
+        if (this.now() >= pending.deadlineAtMs) {
+          this.metrics.attackUnknown += 1;
+          this._fail('UNKNOWN', 'ATTACK_TARGET_LOST_WITHOUT_DEATH_EVIDENCE', clone(pending));
+          return true;
+        }
+        this.session.state = 'WAITING_ATTACK_OUTCOME';
         return true;
       }
 
