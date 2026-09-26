@@ -35,6 +35,7 @@
       pause: (id) => runtime.goals.setStatus(id, 'PAUSED'),
       resume: (id) => runtime.goals.setStatus(id, 'ACTIVE'),
       cancel: (id) => runtime.goals.setStatus(id, 'CANCELLED'),
+      remove: (id) => runtime.goals.remove(id),
       setProgress: (id, value) => runtime.goals.setProgress(id, value),
       priorities: () => runtime.goals.getPriorities(),
       setPriority: (name, value) => runtime.goals.setPriority(name, value)
