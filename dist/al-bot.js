@@ -9205,7 +9205,11 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
     game: {
       snapshot: () => runtime.game.snapshot(),
-      status: () => runtime.game.status()
+      status: () => runtime.game.status(),
+      visibleMonsters: options => runtime.game.visibleMonsters(options || {}),
+      visiblePlayers: options => runtime.game.visiblePlayers(options || {}),
+      monsterDefinition: mtype => runtime.game.monsterDefinition(mtype),
+      farmSpots: options => runtime.game.farmSpotCatalog(options || {})
     },
 
     movement: {
