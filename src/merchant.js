@@ -346,7 +346,8 @@
       const snapshot = this.game && typeof this.game.inventorySnapshot === 'function'
         ? this.game.inventorySnapshot()
         : null;
-      const items = snapshot && snapshot.items || [];
+      if (!snapshot || snapshot.available === false) return false;
+      const items = snapshot.items || [];
       const row = items.find(item => Number(item.slot) === Number(pending.slot));
       if (!row || String(row.name || '') !== String(pending.itemName || '')) return true;
       const after = finite(row.quantity) || 0;
@@ -356,7 +357,20 @@
     _mluckObserved(pending) {
       if (!this.game || typeof this.game.playerCondition !== 'function') return false;
       const condition = this.game.playerCondition(pending.targetName, 'mluck');
-      return !!(condition && condition.active);
+      if (!condition || !condition.active) return false;
+
+      const before = pending.beforeCondition || null;
+      if (!before || before.active !== true) return true;
+
+      const beforeRemaining = finite(before.remainingMs);
+      const afterRemaining = finite(condition.remainingMs);
+      if (beforeRemaining != null && afterRemaining != null && afterRemaining > beforeRemaining + 1000) return true;
+
+      const beforeSource = cleanText(before.source || '', 120);
+      const afterSource = cleanText(condition.source || '', 120);
+      if (beforeSource && afterSource && beforeSource !== afterSource) return true;
+
+      return false;
     }
 
     _observePending() {
@@ -494,6 +508,7 @@
         id: 'merchant-' + (++this.sequence),
         kind: 'MLUCK',
         targetName: target.name,
+        beforeCondition: condition ? clone(condition) : null,
         itemName: null,
         quantity: null,
         dispatchedAt: nowIso(),
