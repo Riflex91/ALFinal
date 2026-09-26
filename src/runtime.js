@@ -1381,7 +1381,7 @@
                 'H10_ITEM_CLASSIFICATION_INCOMPLETE');
 
               const protectedItems = plan.items
-                .filter(row => ['PROTECT', 'RESERVE'].includes(String(row.disposition)))
+                .filter(row => row && row.protected === true)
                 .map(row => ({
                   name: row.name,
                   level: Number(row.level || 0),
