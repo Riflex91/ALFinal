@@ -32,15 +32,24 @@ Diese Dokumente bilden den aktuell verbindlichen Projektkontext.
 - Roadmap H1–H29
 - H1 enthält bereits das Grundgerüst für Prioritäten, Headless, Knowledge und Control Center
 
+### Aktuell in Arbeit
+- **H1 / PR1 – AL Bot Foundation & Control Center**
+- Runtime-Core-Grundgerüst
+- Control Center
+- globaler persistenter STOP
+- Goals/Prioritäten
+- KnowledgeService-Schnittstelle
+- dynamische Character-/Farmer-Erkennung ohne hartcodierte Namen
+- automatische H1-Smoke-Tests
+
 ### Noch nicht begonnen
-- eigentliche AL-Bot-Implementierung
-- Gameplay-Code
-- Runtime-Core-Code
-- GUI-Code
-- KnowledgeProvider-Code
+- Gameplay-Automation
+- Navigation
+- Combat
+- echter Windows-Bridge-KnowledgeProvider
 
 ### Nächster Schritt
-**H1 / PR1 – AL Bot Foundation & Control Center**
+**H1 fertigstellen, PR automatisch prüfen und anschließend H1 direkt im Spiel testen.**
 
 H1 soll laut Roadmap enthalten:
 - AL Bot Core
@@ -116,6 +125,17 @@ Goals müssen:
 - ihren Blockierungsgrund diagnostizierbar machen.
 
 Später darf der Strategic Brain mehrere Goals kombinieren.
+
+## Dynamische Farmer-Erkennung – fest beschlossen
+
+AL Bot benötigt keine hartcodierten Charakternamen.
+
+- `get_characters()` dient bevorzugt für eigene Account-Charaktere und Klassenmetadaten.
+- `get_active_characters()` dient für aktive Runner/Liveness.
+- Combat-Klassen werden automatisch als Farmer erkannt.
+- `merchant` wird automatisch als Merchant erkannt.
+- Spätere Module müssen die zentrale Roster-Schnittstelle verwenden.
+- Details: `docs/CHARACTER-DISCOVERY.md`.
 
 ## Windows Bridge / Knowledge – fest beschlossen
 
