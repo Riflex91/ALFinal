@@ -3,143 +3,163 @@
 Stand: 2026-09-26  
 Aktives Repository: `Riflex91/ALFinal`
 
-## Zweck dieses Dokuments
+## Pflichtlektüre für einen neuen Chat
 
-Dieses Dokument ist der Einstiegspunkt für einen neuen Chat oder parallelen Arbeitskontext. Vor Implementierungsarbeiten müssen zusätzlich gelesen werden:
+Vor Änderungen lesen:
 
 1. `README.md`
 2. `docs/PROJECT-CHARTER.md`
 3. `docs/ROADMAP.md`
+4. dieses Dokument
+5. für Roster-Fragen: `docs/CHARACTER-DISCOVERY.md`
 
-Diese Dokumente bilden den aktuell verbindlichen Projektkontext.
+Neuere Repo-Entscheidungen haben Vorrang vor älteren Handoff-Angaben.
 
-## Aktueller Status
+## Verbindliche Projektregeln
 
-### Freigegeben und entschieden
-- Produktname: **AL Bot**
-- internes „V6“ ist nur eine Entwicklungsbezeichnung
-- `Riflex91/ALFinal` ist das aktive Zielrepo
-- Zuverlässigkeit ist oberste Priorität
-- modularer Core
-- Headless-Fähigkeit von Anfang an
-- mitwachsende Haupt-GUI / Control Center
-- globaler roter STOP
-- Windows-Bridge-Knowledge-Anbindung
-- Last-Known-Good Knowledge Cache
-- Live-Spielwahrheit schlägt persistiertes Wissen bei zeitkritischen Aktionen
-- direkte Live-Test-Häppchen statt langer V5-Gate-Ketten
-- Prioritäten-/Goal-System als Kernbestandteil
-- Roadmap H1–H29
-- H1 enthält bereits das Grundgerüst für Prioritäten, Headless, Knowledge und Control Center
+- Produktname: **AL Bot**.
+- „V6“ ist nur eine interne Entwicklungsgeneration.
+- Zuverlässigkeit hat oberste Priorität.
+- modularer Core statt monolithischem Bot.
+- Headless-Fähigkeit von Anfang an.
+- GUI ist nur ein Client des Core.
+- mitwachsendes Control Center.
+- globaler roter STOP als Notbremse.
+- keine hartcodierten Farmer-/Charakternamen.
+- Windows-Bridge-Wissen nur über den read-only `KnowledgeService`.
+- Live-Spielzustand schlägt persistiertes Wissen bei zeitkritischen Aktionen.
+- direkte kleine Live-Test-Häppchen statt verpflichtender V5-Ketten wie
+  `Shadow → Evidence → Authorization → One-shot → 5m → 15m`.
+- vor GitHub-Writes Branch gegen aktuellen `main` prüfen; auf stale Branches nicht weiterschreiben.
+- PRs nur nach ausdrücklicher User-Freigabe mergen.
 
-### H1 / PR1 – Live-Test bestanden
-- **H1 / PR1 – AL Bot Foundation & Control Center** wurde im echten Adventure-Land-Client erfolgreich getestet.
-- Runtime-Core-Grundgerüst
-- Control Center
-- globaler persistenter STOP
-- Goals/Prioritäten
-- KnowledgeService-Schnittstelle
-- dynamische Character-/Farmer-Erkennung ohne hartcodierte Namen
-- automatische H1-Smoke-Tests
+## H1 – abgeschlossen und gemerged
 
-### Noch nicht begonnen
-- Gameplay-Automation
-- Navigation
-- Combat
-- echter Windows-Bridge-KnowledgeProvider
+**PR #1 – AL Bot Foundation & Control Center** wurde am 2026-09-26 nach bestandenem Live-Test gemerged.
 
-### Nächster Schritt
-**PR1 nach ausdrücklicher Freigabe mergen. Danach H2 – Runtime-Stabilität beginnen.**
+Merge-Commit:
+`4f251a6a15cb94f0e5c5db511c02f013e39251a8`
 
-H1 soll laut Roadmap enthalten:
-- AL Bot Core
-- Haupt-GUI / Control Center
-- globaler STOP
-- Logging
-- Clipboard-Diagnose
-- Modul-Registry
-- Konfigurationssystem
-- Headless-fähige Control API
-- KnowledgeService-Schnittstelle
-- Knowledge-Status in GUI
-- Prioritäten-/Goal-Datenmodell
-- Prioritäten-GUI-Grundgerüst
+Bestätigt im echten Adventure-Land-Client:
+- Control Center erscheint in der richtigen Adventure-Land-Hauptebene.
+- Größe/Resize funktionieren.
+- Drag funktioniert.
+- Minimieren/Ausklappen funktioniert.
+- roter STOP bleibt sichtbar.
+- dynamische Character-/Farmer-Erkennung ohne hartcodierte Namen.
+- Prioritäten-/Goal-GUI funktioniert.
+- Goals können angelegt, pausiert, fortgesetzt, abgebrochen und gelöscht werden.
+- Leveling-Standard ist `NORMAL`.
+- Clipboard-Diagnose und Selftest-Grundlage funktionieren.
 
-Danach folgt der erste echte Live-Test im Spiel.
+H1-Core enthält:
+- Runtime-Grundrahmen;
+- Control Center;
+- persistenter STOP;
+- Goals/Prioritäten;
+- KnowledgeService-Schnittstelle;
+- dynamische Roster-Erkennung;
+- Headless-fähige Control API;
+- automatische Smoke-Tests.
 
-## Verbindlicher Entwicklungsstil
+## H2 – aktuell in Arbeit
 
-### Zuverlässigkeit vor Funktionsmenge
-Keine Funktion gilt als gut, wenn sie den Runtime-Core instabil macht.
+Aktiver Entwicklungsbranch:
+`chatgpt/h2-runtime-stability`
 
-### Modular statt monolithisch
-Neue Bereiche müssen über klare Schnittstellen angebunden werden.
+Ziel: **Runtime-Stabilität**, weiterhin ohne Gameplay-Automation.
 
-### GUI ist nur ein Client
-Der Bot-Core darf nicht davon abhängen, dass die Haupt-GUI sichtbar ist.
+Bereits im H2-Branch umgesetzt:
+- zentraler Scheduler;
+- Resource-Scopes pro Modul;
+- zentrale Timeouts/Intervalle;
+- zentrale Event-Listener-Verwaltung;
+- Cleanup-Hooks;
+- Module Lifecycle: Start/Stop/Restart;
+- Crash-Isolation auf Modulebene;
+- Watchdog-Basis;
+- synchrones Resource-Cleanup bei Hot Reload;
+- Runtime Boot-/Reload-Zähler;
+- Scheduler- und Module-Health-Anzeige im Control Center;
+- harmloser `H2 Runtime-Test` im Entwicklungs-Tab;
+- H2-Regressionstests;
+- `docs/H2-LIVE-TEST.md`.
 
-### Headless-Grenzen von Anfang an
-Kein zentraler Runtime-Service darf unnötig an Browser-DOM/UI gekoppelt werden.
+H2 aktueller Stand:
+- Browser-Bundle aus aktuellem H2-Source gebaut;
+- H1-Regression und H2-Stabilitätstests in GitHub Actions **grün**;
+- **PR #2 – H2: Runtime stability and centralized scheduler** ist offen;
+- noch ausstehend: echter H2-Live-Test im Adventure-Land-Client;
+- Merge erst nach bestandenem Live-Test und ausdrücklicher User-Freigabe.
 
-### Zentraler STOP
-Jedes später hinzukommende Modul muss in den globalen STOP-Lifecycle integrierbar sein.
+## H2 Architekturregel für spätere Module
 
-### Knowledge nur abstrahiert
-Gameplay-Module greifen nicht direkt auf Windows-Bridge-Dateien, GitHub-Rohdaten oder Knowledge-Rohsnapshots zu. Sie nutzen den read-only `KnowledgeService`.
+Spätere Gameplay-Module sollen eigene Timer/Listener nicht unkontrolliert direkt verwalten.
 
-## Prioritäten-/Goal-System – fest beschlossen
-
-Es gibt zwei Ebenen:
-
-1. **Konkrete Goals**
-   - z.B. „Farme 200 XYZ“
-   - „Besorge bessere Rüstung“
-   - „Level Ranger auf 80“
-   - „Verdiene 50 Millionen Gold“
-
-2. **Strategische Grundprioritäten**
-   - Leveln
-   - Gold
-   - Gear
-   - Itemfarming
-   - Events
-   - Quests
-   - Merchant/Economy
-
-Prioritätshierarchie:
+Ein Modul bekommt einen eigenen Resource-Scope:
 
 ```text
-1. NOTFALL / SAFETY / STOP
-2. manueller konkreter Auftrag
-3. zeitkritische Aufgabe / Eventregel
-4. strategische Prioritäten
-5. normale Hintergrundarbeit
+Module
+  │
+  ▼
+ResourceScope
+  ├─ interval
+  ├─ timeout
+  ├─ event
+  └─ cleanup
+        │
+        ▼
+Central Scheduler
 ```
 
-Goals müssen:
-- Fortschritt besitzen;
-- pausierbar sein;
-- bearbeitet/abgebrochen werden können;
-- klare Abschlussbedingungen besitzen;
-- einen Scope besitzen;
-- ihren Blockierungsgrund diagnostizierbar machen.
+Bei:
+- normalem Stop,
+- Modul-Restart,
+- Crash,
+- Emergency STOP,
+- Hot Reload
 
-Später darf der Strategic Brain mehrere Goals kombinieren.
+werden die registrierten Ressourcen zentral entfernt.
 
-## Dynamische Farmer-Erkennung – fest beschlossen
+Ein fehlerhaftes Scheduler-Callback eines Moduls soll nur dieses Modul in `ERROR` setzen und dessen Ressourcen entfernen. Der restliche Runtime-Core läuft weiter.
 
-AL Bot benötigt keine hartcodierten Charakternamen.
+Der Watchdog markiert zunächst nur `STALE`; automatische Self-Healing-Aktionen folgen später in H23.
 
-- `get_characters()` dient bevorzugt für eigene Account-Charaktere und Klassenmetadaten.
-- `get_active_characters()` dient für aktive Runner/Liveness.
-- Combat-Klassen werden automatisch als Farmer erkannt.
-- `merchant` wird automatisch als Merchant erkannt.
-- Spätere Module müssen die zentrale Roster-Schnittstelle verwenden.
-- Details: `docs/CHARACTER-DISCOVERY.md`.
+## Prioritäten-/Goal-System
 
-## Windows Bridge / Knowledge – fest beschlossen
+Zwei Ebenen:
 
-Ziel:
+1. konkrete Goals, z.B. `Farme 200 XYZ`, `Level Ranger auf 80`, `Bessere Rüstung besorgen`;
+2. strategische Grundprioritäten wie Leveln, Gold, Gear, Items, Events, Quests, Economy.
+
+Hierarchie:
+
+```text
+1. Safety / STOP
+2. konkreter manueller Auftrag
+3. zeitkritische Aufgabe / Eventregel
+4. strategische Prioritäten
+5. Hintergrundarbeit
+```
+
+Goals brauchen klaren Scope, Fortschritt, Status und Abschlussbedingung.
+
+## Dynamische Character-/Farmer-Erkennung
+
+Keine hartcodierten Namen.
+
+Bevorzugte Quellen:
+- `get_characters()` für Account-Charaktere/Klassen;
+- `get_active_characters()` für aktive Runner;
+- lokaler `character` als sichere Mindestinformation.
+
+Combat-Klassen werden als Farmer erkannt, `merchant` als Merchant.
+
+Spätere Party-/Combat-/Logistics-Module müssen die zentrale Roster-Schicht verwenden.
+
+## Windows Bridge / Knowledge
+
+Zielarchitektur:
 
 ```text
 Gameplay-Module
@@ -153,111 +173,18 @@ KnowledgeProvider
   └─ Last-Known-Good Cache
 ```
 
-Die Bridge darf ausfallen, ohne dass der Core automatisch zusammenbricht.
+Die Bridge ist keine harte Runtime-Abhängigkeit. H3 baut den echten Windows-Bridge-Provider und den Game Adapter aus.
 
-Aktuelle Spielwahrheit bleibt maßgeblich für aktuelle:
-- Positionen;
-- HP/MP;
-- Entities;
-- Cooldowns;
-- Inventar;
-- aktuelle Target-/Combat-Situation.
+## Diagnose-Workflow
 
-## Testmodell
-
-Nicht wieder als Pflichtprozess einführen:
-
-```text
-Shadow → Evidence → Authorization → One-shot → 5m → 15m
-```
-
-Stattdessen:
-
-```text
-Implementierung
-→ schnelle automatische Tests
-→ Live-Test im Spiel
-→ bestanden / Fehlerbericht
-→ nächstes Häppchen oder Korrektur
-```
-
-Bei riskanten realen Economy-Aktionen wird der erste Live-Test klein gehalten.
-
-## Diagnose-Workflow für den User
-
-Wenn etwas schiefgeht:
-
+Bei Fehler:
 1. roten STOP drücken;
-2. „Fehlerbericht kopieren“;
+2. **Fehlerbericht kopieren**;
 3. Bericht in ChatGPT einfügen;
 4. kurze sichtbare Beobachtung ergänzen.
 
-Der User soll nicht manuell mehrere Logs zusammensuchen müssen.
+## Nächster Schritt
 
-## Erwarteter H1-Live-Test
+User führt `docs/H2-LIVE-TEST.md` im echten Spiel gegen den aktuellen PR2-Head aus.
 
-Nach H1 soll der User prüfen können:
-- Control Center erscheint;
-- Start/Stop funktionieren;
-- globaler STOP reagiert;
-- STOP kann bewusst zurückgesetzt werden;
-- Fehlerbericht ist kopierbar;
-- Knowledge-Status ist sichtbar;
-- Prioritätenbereich ist sichtbar;
-- ein Test-Goal kann angelegt/pausiert/abgebrochen werden;
-- GUI funktioniert ohne Gameplay-Automation.
-
-## Alte Repositories
-
-`Riflex91/Riflex91-Repo` und V2–V5 dürfen für Architekturideen, Adventure-Land-Wissen und bewährte Mechanismen gelesen werden.
-
-Sie sind aber **nicht** das Zielrepo des finalen Bots.
-
-Keine alten V5-Gate-Strukturen ungeprüft in AL Bot übernehmen.
-
-Sinnvolle alte Schutzmuster dürfen übernommen werden, insbesondere:
-- irreversible Economy-Transaktionen;
-- keine blinden Retries nach unbekanntem Ergebnis;
-- Reservierungen;
-- Restart Reconciliation;
-- Anti-Pingpong;
-- Progress-/Stuck-Watchdogs;
-- zentrale Item-/Economy-Entscheidungen;
-- Telemetrie/Diagnostik;
-- Content Discovery/Drift.
-
-## Arbeitsanweisung an den nächsten Chat
-
-Vor jedem größeren Schritt:
-1. aktuellen `main` lesen;
-2. dieses Handoff und die beiden verbindlichen Projektdokumente lesen;
-3. neuere Repo-Entscheidungen haben Vorrang vor diesem Snapshot;
-4. bei H1/PR1 fortfahren, wenn kein neuerer Stand existiert;
-5. keine Architekturvereinbarung stillschweigend aufweichen;
-6. keine langen V5-Testketten wieder zum Pflichtprozess machen;
-7. jeden Funktionsblock so schneiden, dass der User ihn klar im echten Spiel prüfen kann;
-8. Stabilität, STOP-Fähigkeit, Modularität und Headless-Kompatibilität bei jeder Erweiterung erhalten.
-
-## Momentaufnahme
-
-Zum Zeitpunkt dieses Handoffs wurde ausschließlich Projektdokumentation erstellt. **Noch kein AL-Bot-Code wurde implementiert.**
-
-
-## H1 Live-Test Ergebnis
-
-Am 2026-09-26 wurde H1 im echten Adventure-Land-Client getestet und vom User als passend bestätigt.
-
-Bestätigt:
-- Control Center wird in der richtigen Adventure-Land-Hauptebene angezeigt.
-- Fenstergröße ist ausreichend.
-- Resize funktioniert.
-- Drag funktioniert.
-- Minimieren/Ausklappen funktioniert.
-- roter STOP bleibt sichtbar.
-- dynamische Character-/Farmer-Erkennung benötigt keine hartcodierten Namen.
-- Prioritäten-GUI funktioniert.
-- Ziele können angelegt, pausiert, fortgesetzt, abgebrochen und über rotes × gelöscht werden.
-- Leveling startet standardmäßig mit NORMAL.
-- H1 gilt damit als **LIVE-TEST BESTANDEN**.
-
-PR1 bleibt bis zu einer ausdrücklichen Merge-Anweisung ungemerged.
+Bei bestandenem H2 folgt nach ausdrücklicher Merge-Freigabe **H3 – Game Adapter & Knowledge**.
