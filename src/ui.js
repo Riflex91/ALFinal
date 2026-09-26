@@ -17,6 +17,7 @@
       this.interval = null;
       this.activeTab = 'overview';
       this.minimized = false;
+      this.devResult = null;
       this._offLog = null;
       this._dragCleanup = null;
     }
@@ -80,7 +81,7 @@
 <section id="albot-panel-logs" class="albot-panel"></section>
 <section id="albot-panel-dev" class="albot-panel"></section>
 </div>
-<div class="albot-footer"><button id="albot-start" class="albot-btn">Start</button><button id="albot-stop-normal" class="albot-btn warn">Stop Modul</button><button id="albot-copy" class="albot-btn">Fehlerbericht kopieren</button><button id="albot-hide" class="albot-btn">Ausblenden</button></div>`;
+<div class="albot-footer"><button id="albot-start" class="albot-btn">Start</button><button id="albot-stop-normal" class="albot-btn warn">Stop</button><button id="albot-copy" class="albot-btn">Fehlerbericht kopieren</button><button id="albot-hide" class="albot-btn">Ausblenden</button></div>`;
     }
 
     _bind() {
@@ -200,17 +201,22 @@
       const panel = this.host.querySelector('#albot-panel-overview');
       const roster = status.roster || { farmers: [], characters: [] };
       const knowledge = status.knowledge || {};
+      const scheduler = status.scheduler || { enabled: false, totalResources: 0, generation: 0 };
       panel.innerHTML = `<div class="albot-card"><b>System</b><div class="albot-grid" style="margin-top:6px">
 <div><span class="albot-k">Version</span><div class="albot-v">${esc(status.version)}</div></div>
 <div><span class="albot-k">Runtime</span><div class="albot-v">${status.running ? 'RUNNING' : 'STOPPED'}</div></div>
 <div><span class="albot-k">STOP</span><div class="albot-v">${status.emergencyStop.latched ? 'AKTIV' : 'bereit'}</div></div>
 <div><span class="albot-k">Knowledge</span><div class="albot-v">${knowledge.configured ? 'Provider verbunden' : 'noch nicht konfiguriert'}</div></div>
+<div><span class="albot-k">Scheduler</span><div class="albot-v">${scheduler.enabled ? 'ACTIVE' : 'STOPPED'} · ${esc(scheduler.totalResources)} Ressourcen</div></div>
+<div><span class="albot-k">Scheduler Gen.</span><div class="albot-v">${esc(scheduler.generation)}</div></div>
+<div><span class="albot-k">Boot / Reload</span><div class="albot-v">#${esc(status.bootCount || 1)}${status.replacedPrevious ? ' · Hot Reload' : ''}</div></div>
+<div><span class="albot-k">Run Epoch</span><div class="albot-v">${esc(status.runEpoch || 0)}</div></div>
 </div></div>
 <div class="albot-card"><b>Dynamisch erkannte Charaktere</b><div class="albot-small">Quelle: ${esc(roster.source || 'unbekannt')} · keine hartcodierten Namen</div>
 <div style="margin-top:6px"><span class="albot-k">Farmer:</span> <span class="albot-v">${roster.farmers && roster.farmers.length ? roster.farmers.map(x => esc(x.name)+' ('+esc(x.ctype)+')').join(', ') : 'keine erkannt'}</span></div>
 <div><span class="albot-k">Merchant:</span> <span class="albot-v">${roster.merchant ? esc(roster.merchant.name) : 'nicht erkannt'}</span></div>
 <div><span class="albot-k">Aktiv gesamt:</span> <span class="albot-v">${roster.characters ? roster.characters.length : 0}</span></div></div>
-<div class="albot-card"><b>Module</b><div class="albot-small">${status.modules.length ? status.modules.map(m => esc(m.id)+': '+esc(m.state)).join('<br>') : 'Noch keine Gameplay-Module installiert.'}</div></div>`;
+<div class="albot-card"><b>Module</b><div class="albot-small">${status.modules.length ? status.modules.map(m => esc(m.id)+': '+esc(m.state)+' / '+esc(m.health || 'UNKNOWN')+' · Ressourcen '+esc(m.resources == null ? 0 : m.resources)).join('<br>') : 'Noch keine Module installiert.'}</div></div>`;
     }
 
     renderPriorities(status) {
@@ -244,8 +250,22 @@
 
     renderDev(status) {
       const panel = this.host.querySelector('#albot-panel-dev');
-      panel.innerHTML = `<div class="albot-card"><b>Entwicklung</b><div class="albot-row"><button id="albot-selftest" class="albot-btn">Selftest</button><button id="albot-reset-stop" class="albot-btn danger">STOP zurücksetzen</button><button id="albot-show" class="albot-btn">GUI anzeigen</button></div><div id="albot-selftest-result" class="albot-small">H1 Foundation · ${esc(status.version)}</div></div>`;
-      panel.querySelector('#albot-selftest').onclick = () => { const result = this.runtime.selfTest(); panel.querySelector('#albot-selftest-result').textContent = JSON.stringify(result, null, 2); };
+      const scheduler = status.scheduler || {};
+      const resultText = this.devResult ? JSON.stringify(this.devResult, null, 2) : 'H2 Runtime Stability · ' + status.version;
+      panel.innerHTML = `<div class="albot-card"><b>Entwicklung</b>
+<div class="albot-row"><button id="albot-selftest" class="albot-btn">Selftest</button><button id="albot-stability-test" class="albot-btn">H2 Runtime-Test</button><button id="albot-reset-stop" class="albot-btn danger">STOP zurücksetzen</button><button id="albot-show" class="albot-btn">GUI anzeigen</button></div>
+<div class="albot-small">Scheduler: ${scheduler.enabled ? 'ACTIVE' : 'STOPPED'} · Ressourcen: ${esc(scheduler.totalResources || 0)} · Generation: ${esc(scheduler.generation || 0)} · Boot: #${esc(status.bootCount || 1)}</div>
+<div id="albot-selftest-result" class="albot-log" style="margin-top:8px;max-height:220px">${esc(resultText)}</div></div>`;
+      panel.querySelector('#albot-selftest').onclick = () => {
+        this.devResult = this.runtime.selfTest();
+        this.renderDev(this.runtime.status());
+      };
+      panel.querySelector('#albot-stability-test').onclick = async () => {
+        this.devResult = { running: true, message: 'H2 Runtime-Test läuft ...' };
+        this.renderDev(this.runtime.status());
+        this.devResult = await this.runtime.runStabilityProbe();
+        this.renderDev(this.runtime.status());
+      };
       panel.querySelector('#albot-reset-stop').onclick = () => { this.runtime.resetEmergencyStop(); this.render(); };
       panel.querySelector('#albot-show').onclick = () => { this.host.style.display = 'block'; };
     }
