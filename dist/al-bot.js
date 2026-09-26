@@ -6302,10 +6302,18 @@
       return { state: 'SUSPENDED', reason: this.suspendedReason };
     }
 
+    _samePhysicalSpot(a, b) {
+      if (!a || !b) return false;
+      if (a.map && b.map && String(a.map) !== String(b.map)) return false;
+      if (a.mtype && b.mtype && String(a.mtype) !== String(b.mtype)) return false;
+      const d = distance(a, b);
+      return d != null && d <= this.config.spotBucket * 1.25;
+    }
+
     _recordSelection(candidate, reason) {
       const now = this.now();
       const previous = this.currentSelection;
-      const changed = !!(previous && previous.key !== candidate.key);
+      const changed = !!(previous && !this._samePhysicalSpot(previous, candidate));
       this.currentSelection = {
         key: candidate.key,
         map: candidate.map,
