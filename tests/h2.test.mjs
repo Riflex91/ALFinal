@@ -187,3 +187,35 @@ test('latched emergency stop is explicit in the main control center', () => {
   assert.match(ui, /id="albot-reset-stop-main"/);
   assert.match(ui, /startButton\.disabled = status\.emergencyStop\.latched === true/);
 });
+
+
+test('hot reload is shared across separate same-origin runner contexts', async () => {
+  const sharedHost = { document: {} };
+
+  const first = runtimeContext();
+  first.parent = sharedHost;
+  vm.runInNewContext(bundle, first);
+  await first.ALBot.start();
+
+  const previousRuntime = first.ALBot.__runtime;
+  assert.equal(previousRuntime.status().scheduler.totalResources, 2);
+  assert.equal(first.ALBot.status().bootCount, 1);
+
+  const second = runtimeContext();
+  second.parent = sharedHost;
+  vm.runInNewContext(bundle, second);
+
+  assert.equal(second.ALBot.status().bootCount, 2);
+  assert.equal(second.ALBot.status().replacedPrevious, true);
+  assert.equal(second.ALBot.status().running, false);
+  assert.equal(second.ALBot.scheduler.status().totalResources, 0);
+
+  const oldStatus = previousRuntime.status();
+  assert.equal(oldStatus.running, false);
+  assert.equal(oldStatus.scheduler.totalResources, 0);
+  assert.ok(oldStatus.modules.every(row => row.state === 'STOPPED'));
+
+  await second.ALBot.start();
+  assert.equal(second.ALBot.scheduler.status().totalResources, 2);
+  await second.ALBot.stop('DONE');
+});
