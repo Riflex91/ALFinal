@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.5.0-h5';
+      this.version = options.version || '0.6.0-h6';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -33,12 +33,19 @@
         game: this.game,
         actions: this.actions
       });
+      this.classSkills = new ns.ClassSkillController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions
+      });
       this.combat = new ns.CombatController({
         root: this.root,
         logger: this.logger,
         game: this.game,
         actions: this.actions,
-        movement: this.movement
+        movement: this.movement,
+        classSkills: this.classSkills
       });
       this.knowledge = new ns.KnowledgeService({ logger: this.logger, storage: this.storage });
       this.knowledgeProvider = new ns.WindowsBridgeKnowledgeProvider({ root: this.root, logger: this.logger });
@@ -67,7 +74,7 @@
       this.modules.register({
         id: 'runtime-health',
         title: 'Runtime Health',
-        version: '0.5.0',
+        version: '0.6.0',
         watchdogMs: 4000,
         start: context => {
           context.scope.interval('heartbeat', () => {
@@ -89,16 +96,25 @@
       this.modules.register({
         id: 'movement',
         title: 'Movement',
-        version: '0.5.0',
+        version: '0.6.0',
         start: context => this.movement.start(context),
         stop: reason => this.movement.stop(reason),
         status: () => this.movement.status()
       });
 
       this.modules.register({
+        id: 'class-skills',
+        title: 'Class Skills',
+        version: '0.6.0',
+        start: () => this.classSkills.start(),
+        stop: reason => this.classSkills.stop(reason),
+        status: () => this.classSkills.status()
+      });
+
+      this.modules.register({
         id: 'combat',
         title: 'Combat',
-        version: '0.5.0',
+        version: '0.6.0',
         start: context => this.combat.start(context),
         stop: reason => this.combat.stop(reason),
         status: () => this.combat.status()
@@ -433,6 +449,7 @@
         game: this.game.status(),
         actions: this.actions.status(),
         movement: this.movement.status(),
+        classSkills: this.classSkills.status(),
         combat: this.combat.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
@@ -453,6 +470,7 @@
         character: game && game.character ? ns.helpers.clone(game.character) : null,
         actionBoundary: this.actions.status(),
         movement: this.movement.status(),
+        classSkills: this.classSkills.status(),
         combat: this.combat.status(),
         liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
@@ -472,6 +490,7 @@
       push('game-adapter', !!this.game.status() && typeof this.game.snapshot === 'function', this.game.status());
       push('action-boundary', !!this.actions.status() && this.actions.status().supportedActions.includes('move') && this.actions.status().supportedActions.includes('smart_move'), this.actions.status());
       push('movement-controller', !!this.movement.status() && typeof this.movement.moveLocal === 'function' && typeof this.movement.smartMove === 'function', this.movement.status());
+      push('class-skill-controller', !!this.classSkills.status() && typeof this.classSkills.maybeUse === 'function', this.classSkills.status());
       push('combat-controller', !!this.combat.status() && typeof this.combat.startSession === 'function' && typeof this.combat.stopSession === 'function', this.combat.status());
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
