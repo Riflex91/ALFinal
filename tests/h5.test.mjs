@@ -143,7 +143,7 @@ function combatContext(options = {}) {
   return { ctx, calls, character, monster };
 }
 
-test('H5 exposes combat API, module and recommended one-click live suite', async t => {
+test('H5 combat API, module and explicit H5 live suite remain available under H6', async t => {
   const { ctx } = combatContext();
   t.after(async () => {
     try { ctx.ALBot && ctx.ALBot.combat && ctx.ALBot.combat.stop('TEST_CLEANUP'); } catch (_) {}
@@ -155,7 +155,8 @@ test('H5 exposes combat API, module and recommended one-click live suite', async
   assert.equal(typeof ctx.ALBot.combat.start, 'function');
   assert.equal(typeof ctx.ALBot.combat.stop, 'function');
   assert.equal(typeof ctx.ALBot.combat.candidates, 'function');
-  assert.equal(ctx.ALBot.liveTests.status().recommendedId, 'h5-combat');
+  assert.ok(ctx.ALBot.liveTests.list().some(row => row.id === 'h5-combat'));
+  assert.equal(ctx.ALBot.liveTests.status().recommendedId, 'h6-class-logic');
 
   await ctx.ALBot.start();
   const module = ctx.ALBot.modules.list().find(row => row.id === 'combat');
@@ -373,7 +374,7 @@ test('H5 one-click live test adapts retreat threshold to current HP and weak mon
   });
 
   vm.runInNewContext(bundle, ctx);
-  const result = await ctx.ALBot.liveTests.startRecommended();
+  const result = await ctx.ALBot.liveTests.start('h5-combat');
 
   assert.equal(result.state, 'PASSED');
   assert.equal(result.steps[0].state, 'PASSED');
