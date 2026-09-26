@@ -197,15 +197,15 @@ test('H6 exposes class skill API, module and recommended live suite', async t =>
   const { ctx } = await startController({ ctype: 'warrior', level: 28, mp: 300, maxMp: 300, range: 23 });
   t.after(async () => { try { await ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {} });
 
-  assert.equal(ctx.ALBot.version, '0.10.0-h10');
+  assert.equal(ctx.ALBot.version, '0.11.0-h11');
   assert.equal(typeof ctx.ALBot.classSkills.status, 'function');
   assert.equal(typeof ctx.ALBot.classSkills.preview, 'function');
-  assert.equal(ctx.ALBot.liveTests.status().recommendedId, 'h10-loot-inventory');
+  assert.equal(ctx.ALBot.liveTests.status().recommendedId, 'h11-merchant');
 
   const module = ctx.ALBot.modules.list().find(row => row.id === 'class-skills');
   assert.equal(module.state, 'ACTIVE');
   assert.equal(module.resources, 0);
-  assert.equal(ctx.ALBot.scheduler.status().totalResources, 6);
+  assert.equal(ctx.ALBot.scheduler.status().totalResources, 7);
 });
 
 test('Game Adapter skill readiness honors class, level, MP, cooldown and range', async t => {
