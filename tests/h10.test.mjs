@@ -289,6 +289,10 @@ test('H10 runtime, public API, UI and one-click live suite are wired', () => {
   assert.match(runtime, /id: 'h10-loot-inventory'/);
   assert.match(runtime, /H10_PROTECTED_ITEM_LOST/);
   assert.match(runtime, /h10-confirmed-loot/);
+  assert.match(runtime, /visibleSafeCount/);
+  assert.match(runtime, /preferredTypes: \[probe\.mtype\]/);
+  assert.match(runtime, /safeAhp - safeBhp/);
+  assert.match(runtime, /H10_NO_LOOT_PROBE_CANDIDATE/);
   assert.match(entry, /0\.10\.0-h10/);
   assert.match(entry, /inventory:/);
   assert.match(entry, /reset: reason => runtime\.inventory\.resetSafety/);
