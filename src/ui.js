@@ -7,6 +7,11 @@
     return String(value == null ? '' : value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
   }
 
+  function formatPosition(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number.toFixed(2) : '-';
+  }
+
   class ControlCenter {
     constructor(runtime) {
       this.runtime = runtime;
@@ -229,7 +234,7 @@
 <div><span class="albot-k">Character</span><div class="albot-v">${game.available ? esc(gameCharacter.name || '-')+' ('+esc(gameCharacter.ctype || '-')+')' : 'nicht verfügbar'}</div></div>
 <div><span class="albot-k">Map</span><div class="albot-v">${esc(gameCharacter.map || '-')}</div></div>
 <div><span class="albot-k">HP / MP</span><div class="albot-v">${esc(gameCharacter.hp)} / ${esc(gameCharacter.maxHp)} · ${esc(gameCharacter.mp)} / ${esc(gameCharacter.maxMp)}</div></div>
-<div><span class="albot-k">Position</span><div class="albot-v">x=${esc(gameCharacter.x)} · y=${esc(gameCharacter.y)}</div></div>
+<div><span class="albot-k">Position</span><div class="albot-v">x=${esc(formatPosition(gameCharacter.x))} · y=${esc(formatPosition(gameCharacter.y))}</div></div>
 <div><span class="albot-k">Target</span><div class="albot-v">${game.target ? esc(game.target.name || game.target.id || '-') : 'keins'}</div></div>
 <div><span class="albot-k">Entities</span><div class="albot-v">${esc(game.world && game.world.entityCount != null ? game.world.entityCount : 0)}</div></div>
 </div></div>
