@@ -31,7 +31,7 @@ Neuere Repo-Entscheidungen haben Vorrang vor älteren Handoff-Angaben.
 - direkte kleine Live-Test-Häppchen statt verpflichtender V5-Ketten wie
   `Shadow → Evidence → Authorization → One-shot → 5m → 15m`.
 - vor GitHub-Writes Branch gegen aktuellen `main` prüfen; auf stale Branches nicht weiterschreiben.
-- PRs nur nach ausdrücklicher User-Freigabe mergen.
+- PRs automatisch mergen, sobald Implementierung vollständig, CI grün, Live-Test bestanden und alle Merge-Sicherheitschecks erfüllt sind. Keine separate Merge-Freigabe mehr erforderlich, außer der User untersagt den Merge ausdrücklich.
 
 ## H1 – abgeschlossen und gemerged
 
@@ -119,7 +119,7 @@ PR #3 wurde am 2026-09-26 nach bestandenem Live-Test gemerged.
 Merge-Commit:
 `241947f27f4471849dd1da340a312e8818361d51`
 
-## H4 – live bestanden, Merge ausstehend
+## H4 – live bestanden, automatischer Merge freigegeben
 
 Aktiver Entwicklungsbranch:
 `chatgpt/h4-movement`
@@ -159,8 +159,7 @@ Bestätigt:
 - keine Callback-/Overlap-Fehler;
 - H1–H4 Regressionen grün.
 
-Noch ausstehend:
-- Merge erst nach ausdrücklicher User-Freigabe.
+User hat ab H4 eine dauerhafte Auto-Merge-Regel festgelegt: Nach vollständig bestandenem Schritt und allen Sicherheitschecks automatisch mergen.
 
 ## H2 Architekturregel für spätere Module
 
@@ -255,4 +254,4 @@ Bei Fehler:
 
 ## Nächster Schritt
 
-PR #4 nach vollständigen Merge-Checks mit Methode `merge` mergen, sobald der User ausdrücklich `merge` freigibt. Danach **H5 – Combat** auf einem frischen Branch vom neuen `main` starten.
+PR #4 nach vollständigen Merge-Checks mit Methode `merge` automatisch mergen. Danach **H5 – Combat** auf einem frischen Branch vom neuen `main` starten. Für kommende Schritte gilt dieselbe Auto-Merge-Regel.
