@@ -138,6 +138,10 @@
         this.metrics.rejected += 1;
         return { accepted: false, reason: 'CHARACTER_DEAD', status: this.status() };
       }
+      if (String(game.character.ctype || '').toLowerCase() === 'merchant') {
+        this.metrics.rejected += 1;
+        return { accepted: false, reason: 'COMBAT_UNSUPPORTED_CLASS:merchant', status: this.status() };
+      }
 
       const id = 'combat-' + (++this.sequence);
       this.session = {
