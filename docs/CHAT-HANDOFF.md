@@ -225,7 +225,7 @@ PR #5 wurde am 2026-09-26 automatisch gemerged.
 Merge-Commit:
 `9e35ef678eefe8c476e7d6ac1fd7d90213d33195`
 
-## H6 – live bestanden, Auto-Merge freigegeben
+## H6 – abgeschlossen und gemerged
 
 Aktiver Entwicklungsbranch:
 `chatgpt/h6-class-logic`
@@ -286,7 +286,99 @@ Live bestätigt:
 - Runtime nach automatisch gestartetem Test wieder STOPPED;
 - Scheduler nach Abschluss 0 Ressourcen.
 
-H6 ist damit vollständig live bestanden. PR #6 wird nach finalen Merge-Sicherheitschecks automatisch gemerged.
+H6 ist damit vollständig live bestanden.
+
+PR #6 wurde am 2026-09-26 automatisch gemerged.
+
+Merge-Commit:
+`69d620c502c4f45a03d998c44491aaf8166f4d52`
+
+## H7 – vollständig live bestanden
+
+Aktiver Entwicklungsbranch:
+`chatgpt/h7-party`
+
+Ziel: **Party-Koordination** über dem live bestätigten H4–H6-Core.
+
+Bereits umgesetzt:
+- normalisierter Live-Party-Snapshot aus `get_party()`, `party_list` und sichtbaren Player-Entities;
+- dynamische Owned-/Foreign-Erkennung gegen die zentrale Roster-Schicht;
+- fail-closed Koordination bei fremden Party-Mitgliedern;
+- Rollen ohne hartcodierte Namen:
+  - Warrior TANK
+  - Priest HEALER
+  - Paladin TANK/SUPPORT
+  - Ranger/Mage/Rogue DPS
+  - Merchant LOGISTICS;
+- stabiler Party-Focus mit Tank → Leader → Mehrheits-Target;
+- Focus-Hold gegen Target-Pingpong;
+- H5 Combat bevorzugt einen weiterhin sicheren H7-Party-Focus;
+- direkter Priest-Heal über zentrale ActionBoundary;
+- Party Heal und Revive über `use_skill`;
+- Healing-/Revive-Live-Readiness;
+- höchstens ein Party-Support-Command gleichzeitig;
+- bekannte Support-Ablehnung → Backoff;
+- unklarer Support-Ausgang → UNKNOWN + Support-Suspension ohne Blind-Retry;
+- Party-Buff-/Aura-Sicht auf Basis live vorhandener Skilldefinitionen;
+- Party-Status im Control Center;
+- Headless API `ALBot.party.*`;
+- H7-Ein-Klick-Live-Suite;
+- `docs/H7-LIVE-TEST.md`.
+
+Bewusste Abgrenzung:
+- H7 verändert Party-Mitgliedschaft noch nicht automatisch;
+- H7 startet/stoppt keine anderen Charaktere; Character Lifecycle bleibt H19;
+- AoE-/Pull-Logik bleibt H8;
+- Party-Logistik/Supplies bleibt H18.
+
+H7 Live-Test:
+- Voraussetzung: mindestens zwei eigene lebende Charaktere befinden sich bereits in derselben Adventure-Land-Party;
+- danach nur **Test starten**;
+- Preflight;
+- Rollen;
+- Focus-Fire-Konvergenz;
+- Party-Health-/Recovery-Sicht;
+- 5-Sekunden-Stabilitätsfenster;
+- Cleanup;
+- Diagnose automatisch in Zwischenablage.
+
+Aktueller technischer Stand:
+- vollständige H1–H7-Suite: **71/71 Tests GRÜN**;
+- H5/H6-Regressionen laufen explizit gegen ihre jeweilige Suite;
+- Monster, die ein eigenes Party-Mitglied angreifen, gelten bei aktivem Party-Assist als legitime koordinierte Kandidaten, bleiben aber unter allen übrigen H5-Safety-Regeln;
+- H7-Ein-Klick-Suite im automatischen Test grün.
+
+Live-Evidence vom 2026-09-26:
+- Priest-Lauf: **vollständig PASSED / ALL_STEPS_PASSED**;
+- Warrior-Lauf: Preflight, Focus-Fire und Party-Health PASSED; Stability schlug nur wegen der alten `focusChanges <= 6`-Heuristik fehl;
+- Live-Logs zeigten dabei vier unterschiedliche aufeinanderfolgende Goo-Targets bei drei bestätigten Kills, also legitime Fortschritte statt A→B→A-Pingpong;
+- Merchant und Rogue waren nicht in der aktiven Zweier-Party und wurden erwartungsgemäß fail-closed mit `H7_NEEDS_ACTIVE_PARTY_OF_AT_LEAST_2` abgewiesen.
+
+Korrektur nach Live-Evidence:
+- H7 misst jetzt explizit echte A→B→A-Focus-Rückkehr innerhalb eines 6-Sekunden-Fensters;
+- eindeutige Sequenzen A→B→C→D werden nicht mehr als Pingpong gewertet;
+- neue Unit-Coverage prüft beides;
+- erneuter Live-Test: Warrior, Priest und Rogue vollständig PASSED mit `focusPingPongs=0`;
+- Merchant wurde live korrekt als `LOGISTICS` erkannt, aber der bisherige H7-Test startete fälschlich H5 Combat und Adventure Land lehnte den Attack mit `merchant` ab;
+- H7 hat deshalb nun einen Observer-only-Pfad für LOGISTICS/Merchant ohne Combat-Dispatch;
+- H5 Combat blockiert Merchant jetzt bereits vor dem ersten Attack mit `COMBAT_UNSUPPORTED_CLASS:merchant`;
+- Regressionstest stellt sicher: Merchant-H7-Ein-Klick-Test PASSED und `attacks=0`.
+
+Finaler Live-Stand:
+- Rogue/DPS: vollständig PASSED, Focus Fire/Stability/Cleanup bestanden, `focusPingPongs=0`;
+- Warrior/TANK: vollständig PASSED; mehrere legitime Target-Fortschritte ohne falsche Pingpong-Erkennung;
+- Priest/HEALER: vollständig PASSED; Party-Support-/Buff-Sicht live bestätigt;
+- Merchant/LOGISTICS: finaler Observer-only-Retest **PASSED / ALL_STEPS_PASSED**;
+- Merchant: `observerOnly=true`, `combatState=NOT_STARTED`, keine Attack-Dispatches, `attackUnknown=0`;
+- Merchant Stability PASSED, `focusPingPongs=0`, Cleanup PASSED;
+- Runtime nach Test wieder STOPPED;
+- Scheduler danach 0 Ressourcen.
+
+Review-Safety-Nachbesserung:
+- synchrones Support-`UNKNOWN` aus der ActionBoundary suspendiert Party-Support jetzt sofort;
+- Regressionstest verhindert Blind-Retry dieses UNKNOWN-Pfads.
+
+H7 ist damit vollständig live bestanden. Vor dem Merge bleiben nur die finalen GitHub-Sicherheitschecks und grüne CI auf dem finalen Head.
 
 ## H2 Architekturregel für spätere Module
 
@@ -381,4 +473,4 @@ Bei Fehler:
 
 ## Nächster Schritt
 
-PR #6 nach den vollständigen Merge-Sicherheitschecks automatisch mit Methode `merge` mergen. Danach **H7 – Party** auf einem frischen Branch vom neuen `main` starten. Die Ein-Klick-Live-Test-Regel bleibt Standard.
+H7 nach final grüner CI und vollständigen Merge-Sicherheitschecks automatisch mergen. Danach **H8 – AoE & adaptives Farming** auf einem frischen Branch vom neuen `main` starten.

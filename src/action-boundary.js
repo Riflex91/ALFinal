@@ -13,6 +13,7 @@
     stop: Object.freeze({ publicName: 'stop', family: 'movement-cleanup' }),
     use_skill: Object.freeze({ publicName: 'use_skill', family: 'skill' }),
     attack: Object.freeze({ publicName: 'attack', family: 'combat' }),
+    heal: Object.freeze({ publicName: 'heal', family: 'party-heal' }),
     change_target: Object.freeze({ publicName: 'change_target', family: 'combat-target' })
   });
 

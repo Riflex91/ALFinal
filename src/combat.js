@@ -37,6 +37,7 @@
       this.actions = options.actions;
       this.movement = options.movement;
       this.classSkills = options.classSkills || null;
+      this.party = options.party || null;
       this.now = typeof options.now === 'function' ? options.now : () => Date.now();
 
       this.config = {
@@ -109,6 +110,7 @@
         maxAcquireDistance: Math.max(50, Math.min(1200, Number(options.maxAcquireDistance) || this.config.maxAcquireDistance)),
         allowContested: options.allowContested === true,
         allowUnknownAttack: options.allowUnknownAttack === true,
+        partyAssist: options.partyAssist !== false,
         kiting: options.kiting === true,
         preferredRangeRatio: Math.max(0.25, Math.min(0.95, Number(options.preferredRangeRatio) || this.config.preferredRangeRatio)),
         retreatHpRatio: Math.max(0.05, Math.min(0.9, Number(options.retreatHpRatio) || this.config.retreatHpRatio)),
@@ -135,6 +137,10 @@
       if (game.character.rip === true) {
         this.metrics.rejected += 1;
         return { accepted: false, reason: 'CHARACTER_DEAD', status: this.status() };
+      }
+      if (String(game.character.ctype || '').toLowerCase() === 'merchant') {
+        this.metrics.rejected += 1;
+        return { accepted: false, reason: 'COMBAT_UNSUPPORTED_CLASS:merchant', status: this.status() };
       }
 
       const id = 'combat-' + (++this.sequence);
@@ -285,7 +291,13 @@
         if (monster.distance == null || monster.distance > policy.maxAcquireDistance) return false;
         if (maxAttack != null && monster.attack == null && !policy.allowUnknownAttack) return false;
         if (maxAttack != null && monster.attack != null && monster.attack > maxAttack) return false;
-        if (!policy.allowContested && monster.targetId && monster.targetId !== character.name) return false;
+        if (!policy.allowContested && monster.targetId && monster.targetId !== character.name) {
+          const ownedPartyTarget = policy.partyAssist
+            && this.party
+            && typeof this.party.isOwnedPartyMember === 'function'
+            && this.party.isOwnedPartyMember(monster.targetId);
+          if (!ownedPartyTarget) return false;
+        }
         return true;
       });
     }
@@ -308,7 +320,12 @@
         return null;
       }
 
-      const target = candidates[0];
+      const preferredId = this.session.policy.partyAssist && this.party && typeof this.party.preferredTargetId === 'function'
+        ? this.party.preferredTargetId()
+        : null;
+      const target = preferredId == null
+        ? candidates[0]
+        : (candidates.find(candidate => String(candidate.id) === String(preferredId)) || candidates[0]);
       const raw = this.game.entityReference(target.id);
       if (!raw) {
         this.session.state = 'ACQUIRING';
@@ -680,6 +697,18 @@
       }
 
       if (this._observePendingAttack()) return;
+
+      if (this.session.policy.partyAssist && this.party && typeof this.party.preferredTargetId === 'function') {
+        const preferredId = this.party.preferredTargetId();
+        if (preferredId != null && this.session.targetId != null && String(preferredId) !== String(this.session.targetId)) {
+          const preferred = this.safeCandidates(this.session.policy)
+            .find(candidate => String(candidate.id) === String(preferredId));
+          if (preferred) {
+            this._clearGameTarget('PARTY_FOCUS_RETARGET');
+            this.session.state = 'ACQUIRING';
+          }
+        }
+      }
 
       let target = this._freshTarget();
       if (!target) {

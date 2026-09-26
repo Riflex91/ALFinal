@@ -163,6 +163,7 @@
         id: entity.id == null ? fallbackId : String(entity.id),
         name: entity.name == null ? null : cleanText(entity.name, 120),
         type: entity.type == null ? null : cleanText(entity.type, 80),
+        ctype: entity.ctype == null ? null : cleanText(entity.ctype, 80),
         mtype: entity.mtype == null ? null : cleanText(entity.mtype, 120),
         player: safeBoolean(entity.player),
         npc: safeBoolean(entity.npc) || entity.type === 'npc',
@@ -171,13 +172,110 @@
         y: pos.y,
         hp: finite(entity.hp),
         maxHp: finite(entity.max_hp),
+        mp: finite(entity.mp),
+        maxMp: finite(entity.max_mp),
+        level: finite(entity.level),
         xp: finite(entity.xp),
         attack: finite(entity.attack),
         range: finite(entity.range),
         frequency: finite(entity.frequency),
         visible: entity.visible !== false,
+        party: entity.party == null ? null : cleanText(entity.party, 120),
         targetId: entity.target == null ? null : String(entity.target),
         dead: safeBoolean(entity.dead) || safeBoolean(entity.rip)
+      };
+    }
+
+    playerReference(name, options = {}) {
+      if (name == null) return null;
+      const wanted = String(name);
+      const character = this._character();
+      if (character && (String(character.name || '') === wanted || String(character.id || '') === wanted)) {
+        if (options.allowDead === true || (!character.rip && !character.dead)) return character;
+      }
+      const match = this._entityByIdOrName(wanted);
+      if (!match || !match.entity) return null;
+      const entity = match.entity;
+      const isPlayer = entity.type === 'character' || entity.player === true || entity.ctype != null;
+      if (!isPlayer) return null;
+      if (options.allowDead !== true && (entity.dead || entity.rip || entity.visible === false)) return null;
+      return entity;
+    }
+
+    partySnapshot() {
+      const character = this._character();
+      let rawParty = {};
+      let rawList = [];
+      const getParty = this._resolveFunction('get_party');
+      try {
+        if (getParty) rawParty = getParty.fn.call(getParty.owner) || {};
+      } catch (_) {}
+      if (!rawParty || typeof rawParty !== 'object' || Array.isArray(rawParty)) rawParty = {};
+      for (const candidate of this._roots()) {
+        try {
+          if (candidate && Array.isArray(candidate.party_list)) {
+            rawList = candidate.party_list.slice();
+            break;
+          }
+        } catch (_) {}
+        try {
+          if (candidate && candidate.parent && Array.isArray(candidate.parent.party_list)) {
+            rawList = candidate.parent.party_list.slice();
+            break;
+          }
+        } catch (_) {}
+      }
+
+      const names = [];
+      const addName = value => {
+        const name = cleanText(value || '', 120);
+        if (name && !names.includes(name)) names.push(name);
+      };
+      rawList.forEach(addName);
+      Object.keys(rawParty).forEach(addName);
+      if (character && character.party) addName(character.name);
+
+      const members = names.map(name => {
+        const partyRow = rawParty[name] && typeof rawParty[name] === 'object' ? rawParty[name] : {};
+        const live = this.playerReference(name, { allowDead: true });
+        const source = live || partyRow;
+        const pos = this._position(source);
+        const local = !!(character && String(character.name || '') === name);
+        const hp = finite(live && live.hp != null ? live.hp : partyRow.hp);
+        const maxHp = finite(live && live.max_hp != null ? live.max_hp : partyRow.max_hp);
+        const mp = finite(live && live.mp != null ? live.mp : partyRow.mp);
+        const maxMp = finite(live && live.max_mp != null ? live.max_mp : partyRow.max_mp);
+        return {
+          name,
+          local,
+          visible: local || !!live,
+          ctype: cleanText((live && live.ctype) || partyRow.ctype || partyRow.type || '', 80) || null,
+          level: finite((live && live.level) != null ? live.level : partyRow.level),
+          map: (live && live.map) || partyRow.map || (local && character && character.map) || null,
+          x: pos.x,
+          y: pos.y,
+          hp,
+          maxHp,
+          hpRatio: hp != null && maxHp != null && maxHp > 0 ? hp / maxHp : null,
+          mp,
+          maxMp,
+          rip: safeBoolean((live && live.rip) || partyRow.rip || (live && live.dead)),
+          targetId: ((live && live.target) != null ? live.target : partyRow.target) == null
+            ? null
+            : String((live && live.target) != null ? live.target : partyRow.target)
+        };
+      });
+
+      return {
+        schemaVersion: 1,
+        available: names.length > 0,
+        partyId: character && character.party ? String(character.party) : null,
+        leader: rawList.length ? cleanText(rawList[0], 120) : (names[0] || null),
+        memberNames: names,
+        members,
+        size: members.length,
+        rawListAvailable: rawList.length > 0,
+        rawPartyAvailable: Object.keys(rawParty).length > 0
       };
     }
 
@@ -251,7 +349,7 @@
       };
     }
 
-    skillReadiness(skillId, targetId = null) {
+    skillReadiness(skillId, targetId = null, options = {}) {
       const definition = this.skillDefinition(skillId);
       const character = this._character();
       const normalized = this.snapshot();
@@ -289,7 +387,9 @@
 
       let inRange = targetId == null;
       if (targetId != null) {
-        const rawTarget = this.entityReference(targetId);
+        const rawTarget = options.allowDeadTarget === true
+          ? this.playerReference(targetId, { allowDead: true })
+          : this.entityReference(targetId);
         if (!rawTarget) {
           inRange = false;
           reasons.push('SKILL_TARGET_UNAVAILABLE');

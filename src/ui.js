@@ -81,13 +81,14 @@
 </style>
 <div class="albot-head" id="albot-drag-handle"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-minimize" class="albot-window-btn" title="Fenster minimieren" aria-label="Fenster minimieren">—</button><button id="albot-emergency" class="albot-stop">STOP</button></div>
 <div class="albot-tabs">
-<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
+<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
 </div>
 <div class="albot-body">
 <section id="albot-panel-overview" class="albot-panel active"></section>
 <section id="albot-panel-priorities" class="albot-panel"></section>
 <section id="albot-panel-navigation" class="albot-panel"></section>
 <section id="albot-panel-combat" class="albot-panel"></section>
+<section id="albot-panel-party" class="albot-panel"></section>
 <section id="albot-panel-live-test" class="albot-panel"></section>
 <section id="albot-panel-knowledge" class="albot-panel"></section>
 <section id="albot-panel-logs" class="albot-panel"></section>
@@ -225,6 +226,7 @@
         const focused = panel && this.doc && this.doc.activeElement && panel.contains(this.doc.activeElement);
         if (!focused) this.renderCombat(status);
       }
+      if (this.activeTab === 'party') this.renderParty(status);
       if (this.activeTab === 'live-test') this.renderLiveTest(status);
       if (this.activeTab === 'knowledge') this.renderKnowledge(status);
       if (this.activeTab === 'logs') this.renderLogs();
@@ -240,6 +242,7 @@
       this.renderPriorities(status);
       this.renderNavigation(status);
       this.renderCombat(status);
+      this.renderParty(status);
       this.renderLiveTest(status);
       this.renderKnowledge(status);
       this.renderLogs();
@@ -447,6 +450,38 @@
       if (stop) stop.onclick = () => run(() => this.runtime.combat.stopSession('GUI_COMBAT_STOP'));
     }
 
+    renderParty(status) {
+      const panel = this.host.querySelector('#albot-panel-party');
+      if (!panel) return;
+      const partyStatus = status.party || {};
+      const party = partyStatus.party || {};
+      const focus = partyStatus.focus || {};
+      const support = partyStatus.support || {};
+      const metrics = partyStatus.metrics || {};
+      const members = Array.isArray(party.members) ? party.members : [];
+      panel.innerHTML = `<div class="albot-card"><b>H7 Party</b>
+<div class="albot-small">Koordination ist nur aktiv, wenn mindestens zwei eigene Party-Mitglieder erkannt wurden und kein fremdes Mitglied enthalten ist. Focus Fire basiert auf frischen sichtbaren Targets; Healing/Revive laufen nur über bestätigte Live-Readiness.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Party</span><div class="albot-v">${party.available ? esc(party.size)+' Mitglieder' : 'keine'}</div></div>
+<div><span class="albot-k">Koordination</span><div class="albot-v">${party.coordinationEnabled ? 'AKTIV' : 'BLOCKIERT / SOLO'}</div></div>
+<div><span class="albot-k">Leader</span><div class="albot-v">${esc(party.leader || '-')}</div></div>
+<div><span class="albot-k">Lokale Rolle</span><div class="albot-v">${esc(party.localRole || '-')}</div></div>
+<div><span class="albot-k">Focus Target</span><div class="albot-v">${esc(focus.targetId || '-')}</div></div>
+<div><span class="albot-k">Focus Quelle</span><div class="albot-v">${esc(focus.source || '-')}</div></div>
+<div><span class="albot-k">Support</span><div class="albot-v">${support.suspended ? 'SUSPENDIERT' : support.pending ? 'PENDING' : 'bereit'}</div></div>
+<div><span class="albot-k">Support bestätigt</span><div class="albot-v">${esc(metrics.supportConfirmed || 0)}</div></div>
+</div></div>
+<div class="albot-card"><b>Party-Mitglieder & Rollen</b>
+${members.length ? members.map(member => '<div class="albot-small"><b>'+esc(member.name)+'</b> · '+esc(member.ctype || '?')+' · '+esc(member.role || 'UNKNOWN')+' · '+(member.owned ? 'OWNED' : 'FOREIGN')+' · '+(member.rip ? 'DOWN' : member.hpRatio == null ? 'HP ?' : 'HP '+esc(Math.round(member.hpRatio*100))+'%')+' · Target '+esc(member.targetId || '-')+'</div>').join('') : '<div class="albot-small">Keine Party-Mitglieder erkannt.</div>'}
+</div>
+<div class="albot-card"><b>Support / Recovery</b>
+<div class="albot-small">Party-Buffs/Auras aus Live-Skills: ${partyStatus.partyBuffSkills && partyStatus.partyBuffSkills.length ? partyStatus.partyBuffSkills.map(esc).join(', ') : 'keine für lokale Klasse erkannt'}</div>
+<div class="albot-small">Heal Dispatches: ${esc(metrics.healsDispatched || 0)} · Party Heal: ${esc(metrics.partyHealsDispatched || 0)} · Revive: ${esc(metrics.revivesDispatched || 0)} · UNKNOWN: ${esc(metrics.supportUnknown || 0)} · Focus-Pingpong: ${esc(metrics.focusPingPongs || 0)}</div>
+${party.foreignMemberNames && party.foreignMemberNames.length ? '<div class="albot-small albot-bad">Fremde Party-Mitglieder blockieren automatische Koordination: '+party.foreignMemberNames.map(esc).join(', ')+'</div>' : ''}
+${support.suspended ? '<div class="albot-small albot-bad">Support suspendiert: '+esc(support.suspendedReason || '-')+'</div>' : ''}
+</div>`;
+    }
+
     async runRecommendedLiveTest() {
       const state = this.runtime.status();
       if (state.emergencyStop && state.emergencyStop.latched) {
@@ -571,7 +606,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
     renderDev(status) {
       const panel = this.host.querySelector('#albot-panel-dev');
       const scheduler = status.scheduler || {};
-      const resultText = this.devResult ? JSON.stringify(this.devResult, null, 2) : 'H6 Klassenlogik · ' + status.version;
+      const resultText = this.devResult ? JSON.stringify(this.devResult, null, 2) : 'H7 Party · ' + status.version;
       panel.innerHTML = `<div class="albot-card"><b>Entwicklung</b>
 <div class="albot-row"><button id="albot-selftest" class="albot-btn">Selftest</button><button id="albot-stability-test" class="albot-btn">H2 Runtime-Test</button><button id="albot-reset-stop" class="albot-btn danger">STOP zurücksetzen</button><button id="albot-show" class="albot-btn">GUI anzeigen</button></div>
 <div class="albot-small">Scheduler: ${scheduler.enabled ? 'ACTIVE' : 'STOPPED'} · Ressourcen: ${esc(scheduler.totalResources || 0)} · Generation: ${esc(scheduler.generation || 0)} · Boot: #${esc(status.bootCount || 1)}</div>

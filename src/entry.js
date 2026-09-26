@@ -50,7 +50,7 @@
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.6.0-h6',
+    version: '0.7.0-h7',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -130,6 +130,12 @@
       preview: targetId => runtime.classSkills.preview(targetId)
     },
 
+    party: {
+      status: () => runtime.party.status(),
+      snapshot: () => runtime.party.snapshot(),
+      focusTarget: () => runtime.party.preferredTargetId()
+    },
+
     liveTests: {
       status: () => runtime.liveTests.status(),
       list: () => runtime.liveTests.list(),
@@ -176,6 +182,7 @@
   Object.freeze(api.movement);
   Object.freeze(api.combat);
   Object.freeze(api.classSkills);
+  Object.freeze(api.party);
   Object.freeze(api.liveTests);
   Object.freeze(api.knowledge);
   Object.freeze(api.roster);
@@ -193,7 +200,7 @@
     };
   } catch (_) {}
 
-  runtime.logger.info('AL Bot H6 geladen', {
+  runtime.logger.info('AL Bot H7 geladen', {
     version: api.version,
     bootCount,
     hotReload: !!previous,
