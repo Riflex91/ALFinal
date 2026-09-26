@@ -67,11 +67,14 @@ test('global emergency stop blocks actions and persists until reset', async () =
 test('goal service supports add, pause, resume, cancel and strategic priorities', () => {
   const ctx = runtimeContext();
   vm.runInNewContext(bundle, ctx);
+  assert.equal(ctx.ALBot.goals.priorities().leveling, 'NORMAL');
   const goal = ctx.ALBot.goals.add({ type: 'COLLECT_ITEM', target: 'seashell', amount: 200, scope: 'FARMERS', priority: 'HIGH' });
   assert.equal(goal.amount, 200);
   assert.equal(ctx.ALBot.goals.pause(goal.id).status, 'PAUSED');
   assert.equal(ctx.ALBot.goals.resume(goal.id).status, 'ACTIVE');
   assert.equal(ctx.ALBot.goals.cancel(goal.id).status, 'CANCELLED');
+  assert.equal(ctx.ALBot.goals.remove(goal.id).id, goal.id);
+  assert.equal(ctx.ALBot.goals.list().some(x => x.id === goal.id), false);
   ctx.ALBot.goals.setPriority('leveling', 'CRITICAL');
   assert.equal(ctx.ALBot.goals.priorities().leveling, 'CRITICAL');
 });
@@ -108,6 +111,8 @@ test('control center source includes large resizable drag and minimize behavior'
   assert.match(ui, /toggleMinimized\(force\)/);
   assert.match(ui, /albot-minimized/);
   assert.match(ui, /id="albot-minimize"/);
+  assert.match(ui, /data-goal-delete/);
+  assert.match(ui, /albot-goal-delete/);
 });
 
 
