@@ -175,6 +175,7 @@ function makePartyContext(options = {}) {
     use_skill: (skill, target) => {
       calls.skills.push({ skill, target: target && target.id ? target.id : target });
       cooldowns.set(skill, Date.now() + 100);
+      if (options.throwSupport === skill) throw new Error('NETWORK_SYNC_UNKNOWN');
       if (options.rejectSupport === skill) return Promise.reject(new Error('NETWORK_UNCERTAIN'));
       if (skill === 'partyheal') {
         local.hp = Math.min(local.max_hp, local.hp + 200);
@@ -327,6 +328,24 @@ test('H7 support UNKNOWN suspends further automated support without blind retry'
   assert.equal(status.support.suspended, true);
   assert.equal(status.metrics.supportUnknown, 1);
   assert.equal(calls.skills.filter(row => row.skill === 'partyheal').length, 1);
+});
+
+test('H7 synchronous support UNKNOWN suspends immediately without blind retry', async t => {
+  const { ctx, calls } = makePartyContext({ localClass: 'priest', partnerHp: 400, partnerTarget: null, throwSupport: 'partyheal' });
+  ctx.character.hp = 500;
+  ctx.party.LocalRanger.hp = 500;
+  ctx.G.skills.darkblessing = { class: ['priest'], mp: 900, cooldown: 60000, party: true };
+  ctx.G.skills.curse = { class: ['priest'], mp: 400, cooldown: 5000, range: 200, target: true };
+  vm.runInNewContext(bundle, ctx);
+  t.after(async () => { try { await ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {} });
+  await ctx.ALBot.start();
+  await sleep(700);
+
+  const status = ctx.ALBot.party.status();
+  assert.equal(status.support.suspended, true);
+  assert.equal(status.metrics.supportUnknown, 1);
+  assert.equal(calls.skills.filter(row => row.skill === 'partyheal').length, 1);
+  assert.ok(ctx.ALBot.status().actions.metrics.synchronousErrors >= 1);
 });
 
 test('H7 blocks direct merchant combat before any attack dispatch', async t => {
