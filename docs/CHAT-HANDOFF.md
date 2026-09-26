@@ -225,7 +225,7 @@ PR #5 wurde am 2026-09-26 automatisch gemerged.
 Merge-Commit:
 `9e35ef678eefe8c476e7d6ac1fd7d90213d33195`
 
-## H6 – aktuell in Arbeit
+## H6 – live bestanden, Auto-Merge freigegeben
 
 Aktiver Entwicklungsbranch:
 `chatgpt/h6-class-logic`
@@ -270,13 +270,23 @@ H6 Live-Test:
 - Diagnose automatisch in die Zwischenablage.
 
 Aktueller technischer Stand:
-- vollständige H1–H6-CI auf aktuellem Branch-Head: **GRÜN**;
-- H6-Regressionen für explizite H5-Suite und Warrior `charge → taunt` bereinigt.
+- vollständige H1–H6-CI: **GRÜN**;
+- H6-Regressionen für explizite H5-Suite und Warrior `charge → taunt` bereinigt;
+- echter H6-Ein-Klick-Live-Test: **BESTANDEN**.
 
-Noch ausstehend:
-- PR #6 öffnen;
-- echter H6-Ein-Klick-Live-Test;
-- danach Auto-Merge gemäß Sicherheitsregeln.
+Live bestätigt:
+- Ranger mit Live-Skills `huntersmark` und `supershot`;
+- Preflight, Combat-Start, Class-Skill, 5-Sekunden-Anti-Spam-Fenster und Cleanup jeweils PASSED;
+- Hunter's Mark serverbestätigt als Support-Skill;
+- Supershot serverbestätigt als Damage-Skill;
+- Class-Skills dispatched=2, confirmed=2, rejected=0, unknown=0;
+- H5 attackUnknown=0;
+- Range-Annäherung über H4 Movement;
+- Combat/Movement/Class-Skill-Ownership nach Cleanup vollständig freigegeben;
+- Runtime nach automatisch gestartetem Test wieder STOPPED;
+- Scheduler nach Abschluss 0 Ressourcen.
+
+H6 ist damit vollständig live bestanden. PR #6 wird nach finalen Merge-Sicherheitschecks automatisch gemerged.
 
 ## H2 Architekturregel für spätere Module
 
@@ -371,4 +381,4 @@ Bei Fehler:
 
 ## Nächster Schritt
 
-PR #6 öffnen und die vollständige CI ausführen. Danach im echten Adventure-Land-Client nur **Test starten** drücken. Bei vollständig bestandenem H6-Live-Test wird PR #6 nach den Sicherheitschecks automatisch gemerged; danach startet **H7 – Party** auf einem frischen Branch.
+PR #6 nach den vollständigen Merge-Sicherheitschecks automatisch mit Methode `merge` mergen. Danach **H7 – Party** auf einem frischen Branch vom neuen `main` starten. Die Ein-Klick-Live-Test-Regel bleibt Standard.
