@@ -378,7 +378,86 @@ Review-Safety-Nachbesserung:
 - synchrones Support-`UNKNOWN` aus der ActionBoundary suspendiert Party-Support jetzt sofort;
 - Regressionstest verhindert Blind-Retry dieses UNKNOWN-Pfads.
 
-H7 ist damit vollständig live bestanden. Vor dem Merge bleiben nur die finalen GitHub-Sicherheitschecks und grüne CI auf dem finalen Head.
+H7 ist vollständig live bestanden und wurde am 2026-09-26 automatisch gemerged.
+
+Merge-Commit:
+`7d8fc403238fc827812b70a4cd0707db1139eae0`
+
+## H8 – vollständig live bestanden
+
+Aktiver Entwicklungsbranch:
+`chatgpt/h8-aoe-adaptive-farming`
+
+PR:
+`#8 – H8: AoE and adaptive farming`
+
+Ziel: **sicheres AoE-/Multi-Target-Farming und adaptive Gegnerzahl** über dem live bestätigten H4–H7-Core.
+
+Technisch umgesetzt:
+- eigener `AdaptiveFarmingController` als separates Modul;
+- H8 besitzt bei aktiver Farming-Session die darunterliegende H5-Combat-Session mit Owner `farming-h8`;
+- Pack-Kandidaten stammen ausschließlich aus H5-`safeCandidates`;
+- H5 Individual-Safety bleibt vollständig erhalten;
+- zusätzliche H8-Pack-Safety:
+  - Klassenkapazität;
+  - HP-Reserve;
+  - aggregiertes Monster-Angriffsbudget;
+  - gleiche Monsterart;
+  - konservative Distanz;
+- H8-AoE-Skills:
+  - Warrior `cleave` / `stomp`;
+  - Ranger `3shot` / `5shot`;
+  - Mage `cburst`;
+  - Rogue `fanofknives`;
+- Skills nur bei live vorhandener Definition + live Readiness;
+- Adventure-Land-Multi-Target-Argumentformen für `3shot`, `5shot`, `fanofknives` und `cburst`;
+- untargeted Warrior-AoE nur, wenn die komplette sichtbare Wirkzone H5-sicher ist;
+- H6 bleibt vor H8 priorisiert;
+- maximal ein Pending-H8-AoE;
+- bekannte Ablehnung -> Backoff;
+- UNKNOWN -> H8-Suspension ohne Blind-Retry;
+- Single-Target-Fallback bei reduzierter HP-Reserve;
+- Retreat-Plan bei niedrigen HP;
+- Foreign-Party fail-closed;
+- H8-Status in Runtime-Diagnostics;
+- Farming-Tab im Control Center;
+- Headless API `ALBot.farming.*`;
+- H8-Ein-Klick-Live-Suite;
+- `docs/H8-LIVE-TEST.md`.
+
+Regressionen decken u.a. ab:
+- Ranger 5shot-Pack;
+- Health-basierten Single-Target-Fallback/Retreat;
+- aggregiertes Overpull-Budget;
+- Foreign-Party-Block;
+- Warrior untargeted AoE gegen unsichere Nachbar-Mobs;
+- synchrones UNKNOWN ohne Blind-Retry;
+- bekannte Ablehnung mit Backoff;
+- Combat-Ownership/Cleanup.
+
+Finaler technischer Stand:
+- vollständige H1–H8-Suite vor dem Live-Test: **87/87 Tests GRÜN**;
+- PR-Review-Overpull-Fall behoben und regressionsgetestet;
+- Bundle-Newline-Review-Fall behoben;
+- keine offenen Review-Threads vor dem Live-Test.
+
+Live-Evidence vom 2026-09-26:
+- AL Bot `0.8.0-h8`;
+- Suite `h8-adaptive-farming`: **PASSED / ALL_STEPS_PASSED**;
+- Ranger Level 60;
+- live `3shot` erkannt und serverbestätigt;
+- Preflight: 6 sichere sichtbare Goos;
+- AoE-Plan: 3 Targets, Kapazität 5, aggregierter Attack-Wert 25;
+- `aoeDispatched=1`, `aoeConfirmed=1`, `aoeRejected=0`, `aoeUnknown=0`;
+- H5 `attackUnknown=0`;
+- H7 `focusPingPongs=0`;
+- alle fünf Schritte PASSED;
+- Cleanup `ok=true`;
+- Farming/Combat/Movement danach inaktiv;
+- Runtime danach STOPPED;
+- Scheduler danach 0 Ressourcen.
+
+H8 ist damit vollständig live bestanden. Es folgen nur noch die finalen GitHub-Sicherheitschecks und bei grüner CI der autorisierte Auto-Merge.
 
 ## H2 Architekturregel für spätere Module
 

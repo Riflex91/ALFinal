@@ -50,7 +50,7 @@
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.7.0-h7',
+    version: '0.8.0-h8',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -136,6 +136,15 @@
       focusTarget: () => runtime.party.preferredTargetId()
     },
 
+    farming: {
+      status: () => runtime.farming.status(),
+      start: options => runtime.farming.startSession(options || {}),
+      stop: reason => runtime.farming.stopSession(reason || 'API_H8_STOP'),
+      plan: () => runtime.farming.plan(),
+      supportedAoeSkills: ctype => runtime.farming.supportedAoeSkills(ctype),
+      liveAoeSkills: ctype => runtime.farming.liveAoeSkills(ctype)
+    },
+
     liveTests: {
       status: () => runtime.liveTests.status(),
       list: () => runtime.liveTests.list(),
@@ -183,6 +192,7 @@
   Object.freeze(api.combat);
   Object.freeze(api.classSkills);
   Object.freeze(api.party);
+  Object.freeze(api.farming);
   Object.freeze(api.liveTests);
   Object.freeze(api.knowledge);
   Object.freeze(api.roster);
@@ -200,7 +210,7 @@
     };
   } catch (_) {}
 
-  runtime.logger.info('AL Bot H7 geladen', {
+  runtime.logger.info('AL Bot H8 geladen', {
     version: api.version,
     bootCount,
     hotReload: !!previous,

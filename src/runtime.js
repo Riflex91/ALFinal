@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.7.0-h7';
+      this.version = options.version || '0.8.0-h8';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -58,7 +58,17 @@
         actions: this.actions,
         roster: this.roster
       });
+      this.farming = new ns.AdaptiveFarmingController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        combat: this.combat,
+        party: this.party,
+        classSkills: this.classSkills
+      });
       this.combat.party = this.party;
+      this.combat.farming = this.farming;
       this.liveTests = new ns.LiveTestRunner({
         runtime: this,
         logger: this.logger,
@@ -136,6 +146,15 @@
         stop: reason => this.combat.stop(reason),
         status: () => this.combat.status()
       });
+
+      this.modules.register({
+        id: 'adaptive-farming',
+        title: 'Adaptive Farming',
+        version: '0.8.0',
+        start: context => this.farming.start(context),
+        stop: reason => this.farming.stop(reason),
+        status: () => this.farming.status()
+      });
     }
 
     _registerLiveTests() {
@@ -145,6 +164,8 @@
       let h6Plan = null;
       let h7Baseline = null;
       let h7Plan = null;
+      let h8Baseline = null;
+      let h8Plan = null;
       this.liveTests.register({
         id: 'h5-combat',
         title: 'H5 – Einfacher Kampf',
@@ -792,6 +813,227 @@
           }
         ]
       });
+
+      this.liveTests.register({
+        id: 'h8-adaptive-farming',
+        title: 'H8 – AoE & adaptives Farming',
+        description: 'Ein-Klick-Live-Test für sichere Pack-Planung, live-bereite Klassen-AoE, adaptives Risiko, UNKNOWN-Safety und Cleanup.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.farming.stopSession('H8_LIVE_TEST_RESET'); } catch (_) {}
+          try { runtime.combat.stopSession('H8_LIVE_TEST_RESET'); } catch (_) {}
+          h8Plan = null;
+          const farming = runtime.farming.status();
+          const combat = runtime.combat.status();
+          const party = runtime.party.status();
+          h8Baseline = {
+            aoeConfirmed: farming.metrics.aoeConfirmed,
+            aoeUnknown: farming.metrics.aoeUnknown,
+            attackUnknown: combat.metrics.attackUnknown,
+            focusPingPongs: party.metrics.focusPingPongs
+          };
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.farming.stopSession('H8_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try { runtime.combat.stopSession('H8_LIVE_TEST_CLEANUP'); } catch (_) {}
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Klasse, Live-AoE und mindestens ein sicheres Pack prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const module = runtime.modules.describe('adaptive-farming');
+              assert(module && module.state === 'ACTIVE', 'H8_MODULE_NOT_ACTIVE');
+
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character && !game.character.rip, 'CHARACTER_UNAVAILABLE');
+              const ctype = String(game.character.ctype || '').toLowerCase();
+              assert(ctype !== 'merchant', 'H8_NEEDS_COMBAT_CLASS_NOT_MERCHANT');
+
+              const party = runtime.party.status();
+              const foreign = party.party && party.party.foreignMemberNames || [];
+              assert(foreign.length === 0, 'H8_FOREIGN_PARTY_MEMBER_BLOCK:' + foreign.join(','));
+
+              const supported = runtime.farming.supportedAoeSkills(ctype);
+              assert(supported.length > 0, 'H8_CLASS_HAS_NO_AOE_POLICY:' + ctype);
+
+              const ready = supported.map(id => ({
+                id,
+                definition: runtime.game.skillDefinition(id),
+                readiness: runtime.game.skillReadiness(id, null)
+              })).filter(row => row.definition && row.readiness && row.readiness.allowed === true);
+              assert(ready.length > 0,
+                'H8_NEEDS_LIVE_READY_AOE_SKILL:' + ctype + ':' + supported.join(','));
+
+              const currentHp = Number(game.character.hp);
+              const maxHp = Number(game.character.maxHp);
+              assert(Number.isFinite(currentHp) && currentHp > 0, 'CHARACTER_HP_UNAVAILABLE');
+              assert(Number.isFinite(maxHp) && maxHp > 0, 'CHARACTER_MAX_HP_UNAVAILABLE');
+              assert(currentHp / maxHp >= runtime.farming.config.aoeHpRatio,
+                'H8_HP_BELOW_AOE_THRESHOLD');
+
+              const candidates = runtime.combat.safeCandidates({
+                maxAcquireDistance: runtime.farming.config.maxAcquireDistance,
+                maxAttackToHpRatio: 0.08,
+                allowContested: false,
+                allowUnknownAttack: false,
+                partyAssist: true
+              });
+              assert(candidates.length >= 2, 'H8_NEEDS_AT_LEAST_2_SAFE_VISIBLE_MONSTERS');
+
+              const groups = new Map();
+              for (const monster of candidates) {
+                const key = String(monster.mtype || '');
+                if (!groups.has(key)) groups.set(key, []);
+                groups.get(key).push(monster);
+              }
+              const thresholds = { '3shot': 2, '5shot': 4, cleave: 3, stomp: 3, cburst: 2, fanofknives: 3 };
+              let selected = null;
+              for (const row of ready) {
+                const minimum = thresholds[row.id] || 2;
+                for (const [monsterType, rows] of groups.entries()) {
+                  if (rows.length >= minimum) {
+                    selected = { skillId: row.id, minimum, monsterType: monsterType || null, candidates: rows };
+                    break;
+                  }
+                }
+                if (selected) break;
+              }
+              assert(selected, 'H8_NO_SAFE_SAME_TYPE_PACK_FOR_READY_AOE');
+
+              h8Plan = {
+                ctype,
+                skillId: selected.skillId,
+                minimumTargets: selected.minimum,
+                monsterType: selected.monsterType,
+                safeVisible: selected.candidates.length
+              };
+              return {
+                character: game.character.name,
+                ctype,
+                skillId: selected.skillId,
+                minimumTargets: selected.minimum,
+                monsterType: selected.monsterType,
+                safeVisible: selected.candidates.length
+              };
+            }
+          },
+          {
+            id: 'adaptive-pack',
+            title: 'H8-Session starten und sicheren AoE-Packplan erreichen',
+            timeoutMs: 15000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(h8Plan, 'H8_LIVE_TEST_PLAN_MISSING');
+              const started = runtime.farming.startSession({
+                owner: 'live-test-h8',
+                monsterType: h8Plan.monsterType || undefined,
+                partyAssist: true,
+                maxAcquireDistance: runtime.farming.config.maxAcquireDistance,
+                maxAttackToHpRatio: 0.08,
+                retreatHpRatio: runtime.farming.config.retreatHpRatio,
+                minMpRatio: 0.08
+              });
+              assert(started && started.accepted === true, started && started.reason || 'H8_SESSION_START_FAILED');
+
+              const planned = await waitFor(() => {
+                const combat = runtime.combat.status();
+                if (combat.lastSession && ['FAILED_SAFE', 'UNKNOWN'].includes(combat.lastSession.state)) {
+                  throw new Error(combat.lastSession.reason || combat.lastSession.state);
+                }
+                const farming = runtime.farming.status();
+                if (farming.suspended) throw new Error(farming.suspendedReason || 'H8_AOE_SUSPENDED');
+                const plan = runtime.farming.plan();
+                return plan && plan.state === 'AOE_READY' ? plan : null;
+              }, { timeoutMs: 12000, pollMs: 150, label: 'h8-aoe-pack-plan' });
+
+              assert(planned.aoe && planned.aoe.packSize >= h8Plan.minimumTargets,
+                'H8_PACK_BELOW_SKILL_THRESHOLD');
+              return {
+                state: planned.state,
+                skillId: planned.aoe.skillId,
+                packSize: planned.aoe.packSize,
+                capacity: planned.capacity,
+                aggregateAttack: planned.aggregateAttack
+              };
+            }
+          },
+          {
+            id: 'confirmed-aoe',
+            title: 'Mindestens einen AoE-Skill serverbestätigt ausführen',
+            timeoutMs: 25000,
+            run: async ({ runtime, waitFor }) => {
+              const confirmed = await waitFor(() => {
+                const farming = runtime.farming.status();
+                if (farming.suspended) throw new Error(farming.suspendedReason || 'H8_AOE_SUSPENDED');
+                if (farming.metrics.aoeUnknown > h8Baseline.aoeUnknown) throw new Error('H8_AOE_UNKNOWN');
+                if (farming.metrics.aoeConfirmed <= h8Baseline.aoeConfirmed) return null;
+                return farming;
+              }, { timeoutMs: 22000, pollMs: 150, label: 'h8-confirmed-aoe' });
+
+              return {
+                aoeConfirmed: confirmed.metrics.aoeConfirmed - h8Baseline.aoeConfirmed,
+                lastUse: confirmed.lastUse
+              };
+            }
+          },
+          {
+            id: 'stability-window',
+            title: 'Fünf Sekunden ohne UNKNOWN, Overpull oder Focus-Pingpong beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              await sleep(5000);
+              const farming = runtime.farming.status();
+              const combat = runtime.combat.status();
+              const party = runtime.party.status();
+              assert(farming.suspended === false, 'H8_AOE_SUSPENDED_DURING_STABILITY');
+              assert(farming.metrics.aoeUnknown === h8Baseline.aoeUnknown, 'H8_AOE_UNKNOWN_DURING_STABILITY');
+              assert(combat.metrics.attackUnknown === h8Baseline.attackUnknown, 'ATTACK_UNKNOWN_DURING_H8_STABILITY');
+              assert(party.metrics.focusPingPongs === h8Baseline.focusPingPongs, 'PARTY_FOCUS_PINGPONG_DURING_H8');
+              const lastPlan = farming.lastPlan;
+              if (lastPlan && Array.isArray(lastPlan.pack)) {
+                assert(lastPlan.pack.length <= Number(lastPlan.capacity || 1), 'H8_PACK_EXCEEDS_CAPACITY');
+                assert(Number(lastPlan.aggregateAttack || 0)
+                  <= Number(runtime.game.snapshot().character.maxHp || 0) * farming.config.maxAggregateAttackToHpRatio + 0.001,
+                  'H8_AGGREGATE_ATTACK_BUDGET_EXCEEDED');
+              }
+              return {
+                aoeConfirmed: farming.metrics.aoeConfirmed - h8Baseline.aoeConfirmed,
+                aoeUnknown: farming.metrics.aoeUnknown - h8Baseline.aoeUnknown,
+                attackUnknown: combat.metrics.attackUnknown - h8Baseline.attackUnknown,
+                focusPingPongs: party.metrics.focusPingPongs - h8Baseline.focusPingPongs,
+                maxPackObserved: farming.metrics.maxPackObserved,
+                lastPlan
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'Adaptive Farming, Combat und Movement sauber freigeben',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.farming.stopSession('H8_LIVE_TEST_COMPLETE');
+              const farming = runtime.farming.status();
+              const combat = runtime.combat.status();
+              const movement = runtime.movement.status();
+              assert(farming.active === false, 'H8_SESSION_STILL_ACTIVE');
+              assert(farming.pending == null, 'H8_AOE_STILL_PENDING');
+              assert(combat.active === false, 'H8_COMBAT_STILL_ACTIVE');
+              assert(!(movement.activeOrder && String(movement.activeOrder.owner || '').startsWith('combat-h5')),
+                'H8_COMBAT_MOVEMENT_STILL_ACTIVE');
+              return {
+                farmingActive: farming.active,
+                pending: !!farming.pending,
+                combatActive: combat.active,
+                movementActive: movement.active
+              };
+            }
+          }
+        ]
+      });
     }
 
     _installErrorCapture() {
@@ -938,6 +1180,7 @@
         classSkills: this.classSkills.status(),
         party: this.party.status(),
         combat: this.combat.status(),
+        farming: this.farming.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
         roster,
@@ -960,6 +1203,7 @@
         classSkills: this.classSkills.status(),
         party: this.party.status(),
         combat: this.combat.status(),
+        farming: this.farming.status(),
         liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
         logs: this.logger.list(160),
@@ -981,6 +1225,7 @@
       push('class-skill-controller', !!this.classSkills.status() && typeof this.classSkills.maybeUse === 'function', this.classSkills.status());
       push('party-coordinator', !!this.party.status() && typeof this.party.preferredTargetId === 'function', this.party.status());
       push('combat-controller', !!this.combat.status() && typeof this.combat.startSession === 'function' && typeof this.combat.stopSession === 'function', this.combat.status());
+      push('adaptive-farming-controller', !!this.farming.status() && typeof this.farming.plan === 'function' && typeof this.farming.startSession === 'function', this.farming.status());
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
       push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);

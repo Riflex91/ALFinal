@@ -25,6 +25,7 @@
       this.devResult = null;
       this.navigationResult = null;
       this.combatResult = null;
+      this.farmingResult = null;
       this.liveTestClipboard = null;
       this._offLog = null;
       this._dragCleanup = null;
@@ -81,7 +82,7 @@
 </style>
 <div class="albot-head" id="albot-drag-handle"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-minimize" class="albot-window-btn" title="Fenster minimieren" aria-label="Fenster minimieren">—</button><button id="albot-emergency" class="albot-stop">STOP</button></div>
 <div class="albot-tabs">
-<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
+<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
 </div>
 <div class="albot-body">
 <section id="albot-panel-overview" class="albot-panel active"></section>
@@ -89,6 +90,7 @@
 <section id="albot-panel-navigation" class="albot-panel"></section>
 <section id="albot-panel-combat" class="albot-panel"></section>
 <section id="albot-panel-party" class="albot-panel"></section>
+<section id="albot-panel-farming" class="albot-panel"></section>
 <section id="albot-panel-live-test" class="albot-panel"></section>
 <section id="albot-panel-knowledge" class="albot-panel"></section>
 <section id="albot-panel-logs" class="albot-panel"></section>
@@ -243,6 +245,7 @@
       this.renderNavigation(status);
       this.renderCombat(status);
       this.renderParty(status);
+      this.renderFarming(status);
       this.renderLiveTest(status);
       this.renderKnowledge(status);
       this.renderLogs();
@@ -393,7 +396,7 @@
       const resultText = this.combatResult ? JSON.stringify(this.combatResult, null, 2) : 'Noch keine manuelle H6-Combat-Session.';
 
       panel.innerHTML = `<div class="albot-card"><b>H5/H6 Combat & Klassenlogik</b>
-<div class="albot-small">H5 stellt Targeting, Movement und Basisangriff bereit. H6 ergänzt klassenspezifische Skills mit Live-Readiness, MP-Reserve, Cooldown-Prüfung und Anti-Spam. Party- und AoE-Logik folgen erst in H7/H8.</div>
+<div class="albot-small">H5 stellt Targeting, Movement und Basisangriff bereit. H6 ergänzt klassenspezifische Skills. H7 liefert Party-Focus; H8 kann sichere Multi-Target-Aktionen ergänzen, ohne die H5/H6/H7-Safety zu umgehen.</div>
 <div class="albot-grid" style="margin-top:8px">
 <div><span class="albot-k">Modul</span><div class="albot-v">${combat.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
 <div><span class="albot-k">Combat</span><div class="albot-v">${esc(combat.state || 'IDLE')}</div></div>
@@ -448,6 +451,74 @@
       };
       const stop = panel.querySelector('#albot-combat-stop');
       if (stop) stop.onclick = () => run(() => this.runtime.combat.stopSession('GUI_COMBAT_STOP'));
+    }
+
+    renderFarming(status) {
+      const panel = this.host.querySelector('#albot-panel-farming');
+      if (!panel) return;
+      const farming = status.farming || {};
+      const metrics = farming.metrics || {};
+      const session = farming.session || null;
+      const lastPlan = farming.lastPlan || null;
+      const lastUse = farming.lastUse || null;
+      const liveSkills = Array.isArray(farming.liveAoeSkills)
+        ? farming.liveAoeSkills.filter(row => row && row.definition).map(row => row.id)
+        : [];
+      const pack = lastPlan && Array.isArray(lastPlan.pack) ? lastPlan.pack : [];
+      const resultText = this.farmingResult ? JSON.stringify(this.farmingResult, null, 2) : 'Noch keine manuelle H8-Aktion.';
+
+      panel.innerHTML = `<div class="albot-card"><b>H8 AoE & adaptives Farming</b>
+<div class="albot-small">H8 plant Packs ausschließlich aus H5-sicheren Kandidaten. HP, aggregierter Monster-Angriff, Party-Safety und live-bereite Klassen-AoE begrenzen die Gegnerzahl. UNKNOWN suspendiert AoE ohne Blind-Retry.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${farming.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Session</span><div class="albot-v">${farming.active ? 'ACTIVE' : 'IDLE'}</div></div>
+<div><span class="albot-k">Klasse</span><div class="albot-v">${esc(farming.currentClass || '-')}</div></div>
+<div><span class="albot-k">Live AoE</span><div class="albot-v">${liveSkills.length ? liveSkills.map(esc).join(', ') : 'keine live-bereiten Definitionen'}</div></div>
+<div><span class="albot-k">Combat owned</span><div class="albot-v">${farming.combatOwned ? 'JA' : 'NEIN'}</div></div>
+<div><span class="albot-k">Suspendiert</span><div class="albot-v">${farming.suspended ? 'JA · '+esc(farming.suspendedReason || '-') : 'NEIN'}</div></div>
+<div><span class="albot-k">AoE bestätigt</span><div class="albot-v">${esc(metrics.aoeConfirmed || 0)}</div></div>
+<div><span class="albot-k">AoE UNKNOWN</span><div class="albot-v">${esc(metrics.aoeUnknown || 0)}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Aktueller adaptiver Plan</b>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Zustand</span><div class="albot-v">${esc(lastPlan && lastPlan.state || '-')}</div></div>
+<div><span class="albot-k">Grund</span><div class="albot-v">${esc(lastPlan && lastPlan.reason || '-')}</div></div>
+<div><span class="albot-k">Pack</span><div class="albot-v">${esc(pack.length)} / ${esc(lastPlan && lastPlan.capacity != null ? lastPlan.capacity : '-')}</div></div>
+<div><span class="albot-k">Aggregate Attack</span><div class="albot-v">${esc(lastPlan && lastPlan.aggregateAttack != null ? Math.round(lastPlan.aggregateAttack) : '-')}</div></div>
+<div><span class="albot-k">AoE Skill</span><div class="albot-v">${esc(lastPlan && lastPlan.aoe && lastPlan.aoe.skillId || '-')}</div></div>
+<div><span class="albot-k">Letzter Outcome</span><div class="albot-v">${lastUse ? esc(lastUse.skillId)+' · '+esc(lastUse.state) : '-'}</div></div>
+</div>
+<div class="albot-small" style="margin-top:8px">Pack: ${pack.length ? pack.map(row => esc(row.mtype || row.id)+'['+esc(row.id)+']').join(', ') : 'keins'}</div>
+</div>
+
+<div class="albot-card"><b>Manuelle H8-Session</b>
+<div class="albot-row"><input id="albot-farming-type" placeholder="Monster-Typ optional, z.B. goo"></div>
+<div class="albot-row"><button id="albot-farming-plan" class="albot-btn">Plan prüfen</button><button id="albot-farming-start" class="albot-btn" ${farming.active || (status.combat && status.combat.active) ? 'disabled' : ''}>Farming starten</button><button id="albot-farming-stop" class="albot-btn warn" ${farming.active ? '' : 'disabled'}>Farming stoppen</button></div>
+<div class="albot-small">Globaler STOP und Runtime-Stop bleiben jederzeit vorrangig.</div>
+</div>
+
+<div class="albot-card"><b>H8 Metriken</b><div class="albot-small">Plans: ${esc(metrics.plans || 0)} · Packs: ${esc(metrics.packsPlanned || 0)} · Single: ${esc(metrics.singleTargetPlans || 0)} · Retreat: ${esc(metrics.retreatPlans || 0)} · Max Pack: ${esc(metrics.maxPackObserved || 0)} · Rejected: ${esc(metrics.aoeRejected || 0)}</div></div>
+<div class="albot-card"><b>Letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.farmingResult = fn(); }
+        catch (error) { this.farmingResult = { accepted: false, reason: String(error && error.message || error) }; }
+        this.renderFarming(this.runtime.status());
+      };
+      const plan = panel.querySelector('#albot-farming-plan');
+      if (plan) plan.onclick = () => run(() => this.runtime.farming.plan());
+      const start = panel.querySelector('#albot-farming-start');
+      if (start) start.onclick = () => {
+        const type = panel.querySelector('#albot-farming-type').value.trim();
+        run(() => this.runtime.farming.startSession({
+          owner: 'gui-h8-farming',
+          monsterType: type || undefined,
+          partyAssist: true
+        }));
+      };
+      const stop = panel.querySelector('#albot-farming-stop');
+      if (stop) stop.onclick = () => run(() => this.runtime.farming.stopSession('GUI_H8_STOP'));
     }
 
     renderParty(status) {

@@ -38,6 +38,7 @@
       this.movement = options.movement;
       this.classSkills = options.classSkills || null;
       this.party = options.party || null;
+      this.farming = options.farming || null;
       this.now = typeof options.now === 'function' ? options.now : () => Date.now();
 
       this.config = {
@@ -239,6 +240,9 @@
       if (this.classSkills && typeof this.classSkills.endSession === 'function') {
         try { this.classSkills.endSession(reason); } catch (_) {}
       }
+      if (this.farming && typeof this.farming.onCombatEnded === 'function') {
+        try { this.farming.onCombatEnded(session.id, reason); } catch (_) {}
+      }
       this.lastSession = this._publicSession(session);
       this.session = null;
 
@@ -262,6 +266,9 @@
       this.pendingAttack = null;
       if (this.classSkills && typeof this.classSkills.endSession === 'function') {
         try { this.classSkills.endSession(reason); } catch (_) {}
+      }
+      if (this.farming && typeof this.farming.onCombatEnded === 'function') {
+        try { this.farming.onCombatEnded(this.session.id, reason); } catch (_) {}
       }
       this.lastSession = this._publicSession(this.session);
       if (this.logger) this.logger.error('Combat fail-safe beendet', {
@@ -753,6 +760,29 @@
             targetId: skill.targetId || target.id,
             kind: skill.kind || null,
             reason: skill.reason || null
+          };
+          return;
+        }
+      }
+
+      if (this.farming && typeof this.farming.maybeUse === 'function') {
+        const aoe = this.farming.maybeUse({
+          game,
+          target,
+          session: this.session,
+          readiness
+        });
+        if (aoe && aoe.handled) {
+          this.session.state = aoe.unknown ? 'H8_AOE_UNKNOWN'
+            : aoe.pending ? 'H8_AOE_PENDING'
+              : 'H8_AOE_ACTION';
+          this.session.lastDecision = {
+            at: new Date().toISOString(),
+            type: aoe.unknown ? 'H8_AOE_UNKNOWN' : 'H8_AOE',
+            skillId: aoe.skillId || null,
+            targetIds: aoe.targetIds || [],
+            packSize: aoe.packSize || 0,
+            reason: aoe.reason || null
           };
           return;
         }
