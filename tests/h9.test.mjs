@@ -418,7 +418,7 @@ test('H9 game adapter normalizes live farm data for scoring', () => {
   const spots = adapter.farmSpotCatalog({ map: 'main', currentOnly: true });
   assert.equal(spots.length, 2);
   assert.deepEqual(
-    spots.map(row => [row.mtype, row.x, row.y, row.count]),
+    Array.from(spots, row => [row.mtype, row.x, row.y, row.count]),
     [['goo', 50, 100, 8], ['goo', 400, 400, 4]]
   );
 });
