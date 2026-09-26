@@ -153,3 +153,37 @@ Für den echten Live-Test:
 4. den automatisch kopierten Diagnosebericht senden.
 
 Keine manuellen Targets, Skill-Klicks oder Zwischenschritte sind erforderlich.
+
+## Finales Live-Ergebnis
+
+Live-Test am 2026-09-26 mit AL Bot `0.8.0-h8`:
+
+- Suite: `h8-adaptive-farming`;
+- Gesamtstatus: **PASSED / ALL_STEPS_PASSED**;
+- Preflight: PASSED;
+- Adaptive Pack: PASSED;
+- bestätigter AoE: PASSED;
+- 5-Sekunden-Stabilitätsfenster: PASSED;
+- Cleanup: PASSED;
+- lokale Klasse: Ranger, Level 60;
+- verwendeter H8-Skill: `3shot`;
+- Monsterart: `goo`;
+- Preflight sah 6 sichere sichtbare Kandidaten;
+- geplanter AoE-Pack: 3 Targets bei Kapazität 5;
+- aggregierter Attack-Wert des bestätigten Plans: 25;
+- serverbestätigter `3shot` auf 3 Targets;
+- `aoeDispatched = 1`;
+- `aoeConfirmed = 1`;
+- `aoeRejected = 0`;
+- `aoeUnknown = 0`;
+- H5 `attackUnknown = 0`;
+- H7 `focusPingPongs = 0`;
+- H8 nicht suspendiert;
+- Cleanup `ok = true`;
+- Farming danach inaktiv, kein Pending-AoE;
+- Combat danach inaktiv;
+- Movement danach inaktiv;
+- Runtime nach automatischer Wiederherstellung STOPPED;
+- Scheduler danach 0 Ressourcen.
+
+Damit ist H8 im echten Adventure-Land-Client vollständig live bestanden.
