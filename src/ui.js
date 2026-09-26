@@ -11,13 +11,36 @@
     constructor(runtime) {
       this.runtime = runtime;
       this.root = runtime.root;
-      this.doc = this.root.document;
+      this.uiRoot = this._resolveUiRoot(this.root);
+      this.doc = this.uiRoot && this.uiRoot.document ? this.uiRoot.document : this.root.document;
       this.host = null;
       this.interval = null;
       this.activeTab = 'overview';
       this.minimized = false;
       this._offLog = null;
       this._dragCleanup = null;
+    }
+
+    _resolveUiRoot(start) {
+      let current = start;
+      let best = null;
+      for (let depth = 0; depth < 8 && current; depth += 1) {
+        try {
+          if (current.document && current.document.body) best = current;
+        } catch (_) {
+          break;
+        }
+        let parentWindow = null;
+        try {
+          parentWindow = current.parent && current.parent !== current ? current.parent : null;
+          if (parentWindow) void parentWindow.document;
+        } catch (_) {
+          parentWindow = null;
+        }
+        if (!parentWindow) break;
+        current = parentWindow;
+      }
+      return best || start;
     }
 
     mount() {
@@ -30,14 +53,16 @@
       this.host = host;
       this._bind();
       this.render();
-      this.interval = this.root.setInterval(() => this._tick(), 1000);
+      const timerRoot = this.uiRoot && typeof this.uiRoot.setInterval === 'function' ? this.uiRoot : this.root;
+      this.intervalRoot = timerRoot;
+      this.interval = timerRoot.setInterval(() => this._tick(), 1000);
       this._offLog = this.runtime.bus.on('log', () => this.renderLogs());
       return true;
     }
 
     _shell() {
       return `<style>
-#albot-control-center{position:fixed;right:12px;top:12px;width:min(620px,calc(100vw - 24px));height:min(760px,calc(100vh - 24px));min-width:min(460px,calc(100vw - 24px));min-height:min(360px,calc(100vh - 24px));max-width:calc(100vw - 8px);max-height:calc(100vh - 8px);z-index:2147483647;background:#111827;color:#e5e7eb;border:1px solid #374151;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.45);font:12px/1.35 Arial,sans-serif;overflow:hidden;resize:both;display:flex;flex-direction:column}
+#albot-control-center{position:fixed;right:18px;top:18px;width:min(700px,calc(100vw - 36px));height:min(780px,calc(100vh - 36px));min-width:min(480px,calc(100vw - 36px));min-height:min(380px,calc(100vh - 36px));max-width:calc(100vw - 8px);max-height:calc(100vh - 8px);z-index:2147483647;background:#111827;color:#e5e7eb;border:1px solid #374151;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.45);font:12px/1.35 Arial,sans-serif;overflow:hidden;resize:both;display:flex;flex-direction:column}
 #albot-control-center *{box-sizing:border-box}#albot-control-center button,#albot-control-center input,#albot-control-center select{font:inherit}
 #albot-control-center.albot-minimized{height:auto!important;min-height:0!important;resize:none}
 #albot-control-center.albot-minimized .albot-tabs,#albot-control-center.albot-minimized .albot-body,#albot-control-center.albot-minimized .albot-footer{display:none}
@@ -71,7 +96,7 @@
 
     _installDrag() {
       const handle = this.host && this.host.querySelector('#albot-drag-handle');
-      if (!handle || typeof this.root.addEventListener !== 'function') return;
+      if (!handle || !this.uiRoot || typeof this.uiRoot.addEventListener !== 'function') return;
 
       let dragging = false;
       let startX = 0;
@@ -81,8 +106,8 @@
 
       const move = (event) => {
         if (!dragging || !this.host) return;
-        const viewportW = Math.max(1, Number(this.root.innerWidth) || 1);
-        const viewportH = Math.max(1, Number(this.root.innerHeight) || 1);
+        const viewportW = Math.max(1, Number(this.uiRoot.innerWidth) || Number(this.doc.documentElement && this.doc.documentElement.clientWidth) || 1);
+        const viewportH = Math.max(1, Number(this.uiRoot.innerHeight) || Number(this.doc.documentElement && this.doc.documentElement.clientHeight) || 1);
         const rect = this.host.getBoundingClientRect();
         const maxLeft = Math.max(0, viewportW - Math.min(rect.width, viewportW));
         const maxTop = Math.max(0, viewportH - Math.min(rect.height, viewportH));
@@ -116,12 +141,12 @@
       };
 
       handle.addEventListener('mousedown', down);
-      this.root.addEventListener('mousemove', move);
-      this.root.addEventListener('mouseup', up);
+      this.uiRoot.addEventListener('mousemove', move);
+      this.uiRoot.addEventListener('mouseup', up);
       this._dragCleanup = () => {
         handle.removeEventListener('mousedown', down);
-        this.root.removeEventListener('mousemove', move);
-        this.root.removeEventListener('mouseup', up);
+        this.uiRoot.removeEventListener('mousemove', move);
+        this.uiRoot.removeEventListener('mouseup', up);
         if (this.doc && this.doc.body) this.doc.body.style.userSelect = '';
       };
     }
@@ -227,8 +252,9 @@
     async copyDiagnostics() {
       const text = JSON.stringify(this.runtime.diagnostics(), null, 2);
       try {
-        if (this.root.navigator && this.root.navigator.clipboard && typeof this.root.navigator.clipboard.writeText === 'function') {
-          await this.root.navigator.clipboard.writeText(text);
+        const nav = this.uiRoot && this.uiRoot.navigator || this.root.navigator;
+        if (nav && nav.clipboard && typeof nav.clipboard.writeText === 'function') {
+          await nav.clipboard.writeText(text);
         } else {
           const area = this.doc.createElement('textarea'); area.value = text; area.style.position='fixed'; area.style.opacity='0'; this.doc.body.appendChild(area); area.select(); this.doc.execCommand('copy'); area.remove();
         }
@@ -241,7 +267,7 @@
     show() { if (this.host) this.host.style.display = 'block'; }
     hide() { if (this.host) this.host.style.display = 'none'; }
     destroy() {
-      if (this.interval != null) { try { this.root.clearInterval(this.interval); } catch (_) {} this.interval = null; }
+      if (this.interval != null) { try { (this.intervalRoot || this.root).clearInterval(this.interval); } catch (_) {} this.interval = null; }
       if (this._offLog) { try { this._offLog(); } catch (_) {} this._offLog = null; }
       if (this._dragCleanup) { try { this._dragCleanup(); } catch (_) {} this._dragCleanup = null; }
       const old = this.doc && this.doc.getElementById('albot-control-center');
