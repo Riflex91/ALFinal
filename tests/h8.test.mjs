@@ -166,6 +166,25 @@ test('H8 aggregate attack budget prevents overpull even when many H5 candidates 
   assert.ok(plan.aggregateAttack <= 220);
 });
 
+test('H8 primary insertion never exceeds aggregate attack budget', () => {
+  const f = makeFixture({
+    ctype: 'ranger',
+    targetId: 'primary',
+    monsters: [
+      { id: 'a', mtype: 'goo', distance: 40, attack: 50, targetId: 'Farmer' },
+      { id: 'b', mtype: 'goo', distance: 50, attack: 50, targetId: 'Farmer' },
+      { id: 'c', mtype: 'goo', distance: 60, attack: 50, targetId: 'Farmer' },
+      { id: 'd', mtype: 'goo', distance: 70, attack: 50, targetId: 'Farmer' },
+      { id: 'primary', mtype: 'goo', distance: 80, attack: 80, targetId: null }
+    ]
+  });
+  assert.equal(f.controller.startSession().accepted, true);
+  const plan = f.controller.plan();
+  assert.ok(plan.pack.some(row => row.id === 'primary'));
+  assert.ok(plan.aggregateAttack <= 220);
+  assert.equal(plan.aggregateAttack, plan.pack.reduce((sum, row) => sum + Number(row.attack || 0), 0));
+});
+
 test('H8 fails closed when a foreign party member is present', () => {
   const f = makeFixture({ foreign: true });
   assert.equal(f.controller.startSession().accepted, true);
