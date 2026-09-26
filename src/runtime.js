@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.9.0-h9';
+      this.version = options.version || '0.10.0-h10';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -77,6 +77,13 @@
         farming: this.farming,
         movement: this.movement,
         party: this.party
+      });
+      this.inventory = new ns.LootInventoryController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        goals: this.goals
       });
       this.liveTests = new ns.LiveTestRunner({
         runtime: this,
@@ -173,6 +180,15 @@
         stop: reason => this.farmIntelligence.stop(reason),
         status: () => this.farmIntelligence.status()
       });
+
+      this.modules.register({
+        id: 'loot-inventory',
+        title: 'Loot & Inventory',
+        version: '0.10.0',
+        start: context => this.inventory.start(context),
+        stop: reason => this.inventory.stop(reason),
+        status: () => this.inventory.status()
+      });
     }
 
     _registerLiveTests() {
@@ -186,6 +202,9 @@
       let h8Plan = null;
       let h9Baseline = null;
       let h9Plan = null;
+      let h10Baseline = null;
+      let h10Before = null;
+      let h10StartedH9 = false;
       this.liveTests.register({
         id: 'h5-combat',
         title: 'H5 – Einfacher Kampf',
@@ -1296,6 +1315,269 @@
           }
         ]
       });
+
+      this.liveTests.register({
+        id: 'h10-loot-inventory',
+        title: 'H10 – Loot & Inventar',
+        description: 'Ein-Klick-Live-Test für sicheren Loot, Inventarschutz, Slot-Reserve und erklärbare Item-Dispositionen.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.farmIntelligence.stopAutonomy('H10_LIVE_TEST_RESET'); } catch (_) {}
+          try { runtime.farming.stopSession('H10_LIVE_TEST_RESET'); } catch (_) {}
+          try {
+            const movement = runtime.movement.status();
+            if (movement.activeOrder && String(movement.activeOrder.owner || '') === 'farm-intelligence-h9') {
+              runtime.movement.cancel('H10_LIVE_TEST_RESET');
+            }
+          } catch (_) {}
+          try { runtime.inventory.resetSafety('H10_LIVE_TEST_RESET'); } catch (_) {}
+          h10StartedH9 = false;
+          const inventory = runtime.inventory.status();
+          const combat = runtime.combat.status();
+          const intelligence = runtime.farmIntelligence.status();
+          h10Baseline = {
+            lootDispatched: inventory.metrics.lootDispatched,
+            lootConfirmed: inventory.metrics.lootConfirmed,
+            lootKnownRejected: inventory.metrics.lootKnownRejected,
+            lootUnknown: inventory.metrics.lootUnknown,
+            attacksConfirmed: combat.metrics.attacksConfirmed,
+            attackUnknown: combat.metrics.attackUnknown,
+            h9Decisions: intelligence.metrics.decisions
+          };
+          h10Before = null;
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.farmIntelligence.stopAutonomy('H10_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try { runtime.farming.stopSession('H10_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try {
+            const movement = runtime.movement.status();
+            if (movement.activeOrder && String(movement.activeOrder.owner || '') === 'farm-intelligence-h9') {
+              runtime.movement.cancel('H10_LIVE_TEST_CLEANUP');
+            }
+          } catch (_) {}
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Live-Inventar, Schutzregeln und Loot-API prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const module = runtime.modules.describe('loot-inventory');
+              assert(module && module.state === 'ACTIVE', 'H10_MODULE_NOT_ACTIVE');
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character && !game.character.rip, 'CHARACTER_UNAVAILABLE');
+              assert(String(game.character.ctype || '').toLowerCase() !== 'merchant', 'H10_LIVE_TEST_NEEDS_FARMER');
+              assert(runtime.actions.available('loot'), 'H10_LOOT_API_UNAVAILABLE');
+
+              const plan = runtime.inventory.plan();
+              assert(plan && plan.state === 'READY', plan && plan.reason || 'H10_INVENTORY_PLAN_UNAVAILABLE');
+              assert(Number.isFinite(Number(plan.inventory.capacity)) && Number(plan.inventory.capacity) > 0,
+                'H10_INVENTORY_CAPACITY_UNAVAILABLE');
+              assert(Array.isArray(plan.items), 'H10_ITEMS_UNAVAILABLE');
+              assert(plan.items.every(row => row && row.disposition && typeof row.protected === 'boolean'),
+                'H10_ITEM_CLASSIFICATION_INCOMPLETE');
+
+              const protectedItems = plan.items
+                .filter(row => row && row.protected === true)
+                .map(row => ({
+                  name: row.name,
+                  level: Number(row.level || 0),
+                  statType: row.statType || null,
+                  quantity: Number(row.quantity || 1),
+                  disposition: row.disposition,
+                  reason: row.reason
+                }));
+              h10Before = {
+                capacity: Number(plan.inventory.capacity),
+                usedSlots: Number(plan.inventory.usedSlots),
+                freeSlots: Number(plan.inventory.freeSlots),
+                protectedItems
+              };
+              return {
+                character: game.character.name,
+                ctype: game.character.ctype,
+                capacity: h10Before.capacity,
+                usedSlots: h10Before.usedSlots,
+                freeSlots: h10Before.freeSlots,
+                protectedCount: protectedItems.length,
+                dispositionCounts: plan.counts,
+                visibleChests: plan.chests.length,
+                reserveFreeSlots: plan.reserveFreeSlots
+              };
+            }
+          },
+          {
+            id: 'autonomous-farming',
+            title: 'H9-Farming starten, damit echter Loot entstehen kann',
+            timeoutMs: 90000,
+            run: async ({ runtime, assert, waitFor }) => {
+              const h9Plan = runtime.farmIntelligence.plan();
+              assert(h9Plan && h9Plan.selected, h9Plan && h9Plan.reason || 'H10_NO_H9_FARM_CANDIDATE');
+
+              const candidates = Array.isArray(h9Plan.candidates)
+                ? h9Plan.candidates.filter(row => row && row.mtype)
+                : [];
+              const visible = candidates.filter(row => Number(row.visibleSafeCount || 0) > 0);
+              const pool = visible.length ? visible : candidates;
+              const probe = pool.slice().sort((a, b) => {
+                const ahp = Number(a.definition && a.definition.hp);
+                const bhp = Number(b.definition && b.definition.hp);
+                const safeAhp = Number.isFinite(ahp) && ahp > 0 ? ahp : Number.POSITIVE_INFINITY;
+                const safeBhp = Number.isFinite(bhp) && bhp > 0 ? bhp : Number.POSITIVE_INFINITY;
+                if (safeAhp !== safeBhp) return safeAhp - safeBhp;
+                const ad = Number(a.averageDistance);
+                const bd = Number(b.averageDistance);
+                const safeAd = Number.isFinite(ad) ? ad : Number.POSITIVE_INFINITY;
+                const safeBd = Number.isFinite(bd) ? bd : Number.POSITIVE_INFINITY;
+                return safeAd - safeBd;
+              })[0] || h9Plan.selected;
+
+              assert(probe && probe.mtype, 'H10_NO_LOOT_PROBE_CANDIDATE');
+              const started = runtime.farmIntelligence.startAutonomy({
+                owner: 'live-test-h10',
+                preferredTypes: [probe.mtype],
+                allowTravel: true
+              });
+              assert(started && started.accepted === true, started && started.reason || 'H10_H9_START_FAILED');
+              h10StartedH9 = true;
+
+              const active = await waitFor(() => {
+                const intelligence = runtime.farmIntelligence.status();
+                if (intelligence.suspended) throw new Error(intelligence.suspendedReason || 'H10_H9_SUSPENDED');
+                const farming = runtime.farming.status();
+                return farming.active && intelligence.currentSelection ? { intelligence, farming } : null;
+              }, { timeoutMs: 85000, pollMs: 200, label: 'h10-farming-start' });
+
+              return {
+                probe: {
+                  mtype: probe.mtype,
+                  hp: probe.definition && probe.definition.hp,
+                  visibleSafeCount: probe.visibleSafeCount,
+                  averageDistance: probe.averageDistance,
+                  source: probe.source
+                },
+                selection: active.intelligence.currentSelection,
+                farmingOwner: active.farming.session && active.farming.session.owner || null
+              };
+            }
+          },
+          {
+            id: 'confirmed-loot',
+            title: 'Echten Farming-Loot bestätigen und Inventardelta erfassen',
+            timeoutMs: 120000,
+            run: async ({ runtime, assert, waitFor }) => {
+              const observed = await waitFor(() => {
+                const inventory = runtime.inventory.status();
+                const intelligence = runtime.farmIntelligence.status();
+                const combat = runtime.combat.status();
+                if (inventory.suspended) throw new Error(inventory.suspendedReason || 'H10_INVENTORY_SUSPENDED');
+                if (inventory.metrics.lootUnknown > h10Baseline.lootUnknown) throw new Error('H10_LOOT_UNKNOWN');
+                if (combat.metrics.attackUnknown > h10Baseline.attackUnknown) throw new Error('H10_ATTACK_UNKNOWN');
+                if (intelligence.suspended) throw new Error(intelligence.suspendedReason || 'H10_H9_SUSPENDED');
+                const confirmed = inventory.metrics.lootConfirmed - h10Baseline.lootConfirmed;
+                return confirmed > 0 ? { inventory, intelligence, combat } : null;
+              }, { timeoutMs: 115000, pollMs: 250, label: 'h10-confirmed-loot' });
+
+              const afterPlan = runtime.inventory.plan();
+              assert(afterPlan && afterPlan.state === 'READY', 'H10_POST_LOOT_INVENTORY_UNAVAILABLE');
+              return {
+                lootDispatched: observed.inventory.metrics.lootDispatched - h10Baseline.lootDispatched,
+                lootConfirmed: observed.inventory.metrics.lootConfirmed - h10Baseline.lootConfirmed,
+                knownSkips: observed.inventory.metrics.lootKnownRejected - h10Baseline.lootKnownRejected,
+                attacksConfirmed: observed.combat.metrics.attacksConfirmed - h10Baseline.attacksConfirmed,
+                decisions: observed.intelligence.metrics.decisions - h10Baseline.h9Decisions,
+                beforeUsedSlots: h10Before && h10Before.usedSlots,
+                afterUsedSlots: afterPlan.inventory.usedSlots,
+                afterFreeSlots: afterPlan.inventory.freeSlots,
+                dispositionCounts: afterPlan.counts
+              };
+            }
+          },
+          {
+            id: 'protection-delta',
+            title: 'Geschützte und reservierte Items gegen Inventarverlust prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              assert(h10Before, 'H10_BEFORE_SNAPSHOT_MISSING');
+              const plan = runtime.inventory.plan();
+              const aggregate = new Map();
+              for (const row of plan.items || []) {
+                const key = String(row.name) + '|' + Number(row.level || 0) + '|' + String(row.statType || '');
+                aggregate.set(key, (aggregate.get(key) || 0) + Number(row.quantity || 1));
+              }
+              for (const row of h10Before.protectedItems) {
+                const key = String(row.name) + '|' + Number(row.level || 0) + '|' + String(row.statType || '');
+                assert((aggregate.get(key) || 0) >= Number(row.quantity || 1),
+                  'H10_PROTECTED_ITEM_LOST:' + row.name + ':' + row.level);
+              }
+              return {
+                checkedProtectedItems: h10Before.protectedItems.length,
+                currentUsedSlots: plan.inventory.usedSlots,
+                currentFreeSlots: plan.inventory.freeSlots,
+                reserveFreeSlots: plan.reserveFreeSlots
+              };
+            }
+          },
+          {
+            id: 'stability-window',
+            title: 'Fünf Sekunden ohne Loot-UNKNOWN oder Inventar-Safety-Verlust beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              await sleep(5000);
+              const inventory = runtime.inventory.status();
+              const plan = runtime.inventory.plan();
+              const combat = runtime.combat.status();
+              assert(inventory.suspended === false, inventory.suspendedReason || 'H10_SUSPENDED_DURING_STABILITY');
+              assert(inventory.metrics.lootUnknown === h10Baseline.lootUnknown, 'H10_LOOT_UNKNOWN_DURING_STABILITY');
+              assert(combat.metrics.attackUnknown === h10Baseline.attackUnknown, 'H10_ATTACK_UNKNOWN_DURING_STABILITY');
+              assert(Number(plan.inventory.freeSlots) >= 0, 'H10_NEGATIVE_FREE_SLOTS');
+              return {
+                lootConfirmed: inventory.metrics.lootConfirmed - h10Baseline.lootConfirmed,
+                knownSkips: inventory.metrics.lootKnownRejected - h10Baseline.lootKnownRejected,
+                lootUnknown: inventory.metrics.lootUnknown - h10Baseline.lootUnknown,
+                freeSlots: plan.inventory.freeSlots,
+                reserveFreeSlots: plan.reserveFreeSlots,
+                dispositionCounts: plan.counts
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'H9-Farming freigeben und H10 ohne Pending Loot hinterlassen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert, waitFor }) => {
+              if (h10StartedH9) runtime.farmIntelligence.stopAutonomy('H10_LIVE_TEST_COMPLETE');
+              try { runtime.farming.stopSession('H10_LIVE_TEST_COMPLETE'); } catch (_) {}
+              const inventory = await waitFor(() => {
+                const current = runtime.inventory.status();
+                return current.pendingLoot == null ? current : null;
+              }, { timeoutMs: 3000, pollMs: 100, label: 'h10-loot-settle' });
+              const intelligence = runtime.farmIntelligence.status();
+              const farming = runtime.farming.status();
+              const combat = runtime.combat.status();
+              const movement = runtime.movement.status();
+              assert(intelligence.active === false, 'H10_H9_SESSION_STILL_ACTIVE');
+              assert(farming.active === false, 'H10_H8_SESSION_STILL_ACTIVE');
+              assert(combat.active === false, 'H10_COMBAT_STILL_ACTIVE');
+              assert(!(movement.activeOrder && String(movement.activeOrder.owner || '') === 'farm-intelligence-h9'),
+                'H10_H9_MOVEMENT_STILL_ACTIVE');
+              assert(inventory.pendingLoot == null, 'H10_LOOT_STILL_PENDING');
+              return {
+                inventoryActive: inventory.moduleActive,
+                inventorySuspended: inventory.suspended,
+                pendingLoot: !!inventory.pendingLoot,
+                h9Active: intelligence.active,
+                farmingActive: farming.active,
+                combatActive: combat.active,
+                movementActive: movement.active
+              };
+            }
+          }
+        ]
+      });
     }
 
     _installErrorCapture() {
@@ -1444,6 +1726,7 @@
         combat: this.combat.status(),
         farming: this.farming.status(),
         farmIntelligence: this.farmIntelligence.status(),
+        inventory: this.inventory.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
         roster,
@@ -1468,6 +1751,7 @@
         combat: this.combat.status(),
         farming: this.farming.status(),
         farmIntelligence: this.farmIntelligence.status(),
+        inventory: this.inventory.status(),
         liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
         logs: this.logger.list(160),
@@ -1491,6 +1775,7 @@
       push('combat-controller', !!this.combat.status() && typeof this.combat.startSession === 'function' && typeof this.combat.stopSession === 'function', this.combat.status());
       push('adaptive-farming-controller', !!this.farming.status() && typeof this.farming.plan === 'function' && typeof this.farming.startSession === 'function', this.farming.status());
       push('farm-intelligence-controller', !!this.farmIntelligence.status() && typeof this.farmIntelligence.plan === 'function' && typeof this.farmIntelligence.startAutonomy === 'function', this.farmIntelligence.status());
+      push('loot-inventory-controller', !!this.inventory.status() && typeof this.inventory.plan === 'function' && typeof this.inventory.tick === 'function', this.inventory.status());
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
       push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);

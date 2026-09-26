@@ -462,43 +462,34 @@ H8 ist vollständig live bestanden und wurde nach grüner finaler CI automatisch
 Merge-Commit:
 `ebfd442bc2f5ffdda24a9745114dbd7b39fb60ad`
 
-## H9 – Farm Intelligence – live bestanden, Merge-Gate offen
+## H9 – Farm Intelligence – live bestanden und gemergt
 
-Aktiver Entwicklungsbranch:
+H9 ist vollständig abgeschlossen.
+
+Finaler Branch:
 `chatgpt/h9-farm-intelligence`
 
 PR:
 `#9 – H9: Farm Intelligence`
 
-H9 ist funktional und im echten Adventure-Land-Livebetrieb vollständig bestanden.
+Finaler Head vor Merge:
+`bc7186b019a5fa671c1fe2158d288708aaa78e9e`
 
-Umgesetzt:
-- eigener `FarmIntelligenceController`;
-- H5-sichere sichtbare Monstercluster + live `G.maps`-Spawnkatalog;
-- erklärbares XP/Gold/Drop/Dichte/Reise/Respawn/Konkurrenz/Safety-Scoring;
-- Gold aus `G.monster_gold` + `G.drops.gold`, Drops aus `G.drops.monsters`;
-- `evasion`, `avoidance` und Character-`damage_type` werden live berücksichtigt;
-- physische Farmer filtern Ziele unter 25 % erwarteter Trefferchance vor H5-Targeting und H9-Farmwahl;
-- H4 Smart Move für Reisen;
-- H8 Adaptive Farming für eigentliche Farming-/Combat-Ausführung;
-- delegierte H9→H8→H5→H4-Movement-Ownership wird korrekt erkannt;
-- echte fremde H4-Ownership bleibt Fail-Closed;
-- fremde Party-Mitglieder blockieren/suspendieren H9 fail-closed;
-- H4 UNKNOWN/FAILED_SAFE -> H9-Suspension ohne Blind-Retry;
-- Mindest-Hold, Switch-Cooldown, Score-Margin, Depletion-Grace und A→B→A Anti-Pingpong;
-- eigener Control-Center-Tab;
-- Headless API `ALBot.farmIntelligence.*`;
-- Ein-Klick-Suite `h9-farm-intelligence`;
-- `docs/H9-LIVE-TEST.md`;
-- Regressionen für Live-Adapter, Gold/Drop-Normalisierung, Depletion, Spot-Aliasing, Foreign Party, Foreign Movement, Movement UNKNOWN, High-Evasion und delegierte H5-Movement-Ownership.
+Merge-Commit auf `main`:
+`49f5175a7d555415e4a5a1e333d0fbe3c5200f44`
 
-Wichtige Live-Funde und Fixes:
-1. erster Live-Test zeigte falschen Preflight-Check bei Remote-`G.maps`-Gewinner -> Test korrigiert;
-2. Live-Gold/Drop-Quellen lagen in `G.monster_gold`/`G.drops.*` -> Adapter korrigiert;
-3. Froggie (`frog`) besitzt `evasion: 99` und wurde vom physischen Warrior fälschlich wegen hoher nomineller XP gewählt -> Trefferwahrscheinlichkeitsfilter eingebaut;
-4. `combat-h5-approach` wurde während einer H9-eigenen H8-Session fälschlich als fremde H4-Ownership behandelt -> transitive/delegierte Ownership korrigiert.
+Finale CI:
+- Run `#199`
+- completed
+- success
+- 109/109 Tests grün
+- `behind_by=0`
+- `mergeable=true`
+- keine offenen Review-Threads
+- kein `CHANGES_REQUESTED`
+- Merge ausschließlich mit Methode `merge` und exaktem `expected_head_sha`
 
-Finale Live-Evidence vom 2026-09-26:
+Live-Evidence vom 2026-09-26:
 - AL Bot `0.9.0-h9`;
 - Suite `h9-farm-intelligence`: **PASSED / ALL_STEPS_PASSED**;
 - alle sechs Schritte PASSED;
@@ -516,13 +507,87 @@ Finale Live-Evidence vom 2026-09-26:
 - Runtime STOPPED;
 - Scheduler 0 Ressourcen.
 
-Aktuell noch offen:
-- exakten finalen PR-Head gegen `main` prüfen;
-- exakte finale CI muss completed + success/skipped/neutral sein;
-- keine offenen Review-Threads / kein `CHANGES_REQUESTED`;
-- `behind_by=0`, `mergeable=true`;
-- danach PR #9 ausschließlich mit Methode `merge` und exaktem aktuellen `expected_head_sha` mergen;
-- danach H10 – Loot & Inventar auf frischem Branch vom neuen `main` starten.
+Wichtiger finaler CI-Fix:
+- Foreign-Party-Planung liefert im aktiven H9-Lauf bewusst `SUSPENDED`, nicht nur `BLOCKED`;
+- Regressionstest wurde an diese Fail-Safe-Semantik angepasst;
+- keine Gameplay-Semantik wurde dafür aufgeweicht.
+
+## H10 – Loot & Inventar – live bestanden, finaler Merge-Gate läuft
+
+Offizieller Entwicklungsbranch:
+`chatgpt/h10-loot-inventory`
+
+PR:
+`#10 – H10: Loot & Inventory`
+
+Basis:
+`main` bei H9-Merge-Commit `49f5175a7d555415e4a5a1e333d0fbe3c5200f44`
+
+Implementiert:
+- AL Bot Version `0.10.0-h10`;
+- eigener `LootInventoryController`;
+- Live-Inventar- und Chest-Normalisierung im Game Adapter;
+- `loot` als zentrale ActionBoundary-Aktion;
+- konservative Dispositionen `PROTECT / RESERVE / KEEP / BANK / EXCHANGE / SELL`;
+- unbekannte Items -> `BANK`, nicht `SELL`;
+- locked/gelevelt/Quest/Gear/Goal-Items geschützt bzw. reserviert;
+- normalisiertes `definition.quest === true` wird als Questschutz berücksichtigt;
+- 2 Slots Standardreserve;
+- `nothing_to_loot` / `safety` als Known Skip;
+- synchrones/asynchrones Loot-UNKNOWN -> Suspension ohne Blind-Retry;
+- niemals settlender Loot-Promise besitzt eine bounded Outcome-Deadline und wird danach `H10_LOOT_OUTCOME_TIMEOUT`;
+- expliziter Safety-Reset;
+- Runtime-Modul `loot-inventory`;
+- Headless API `ALBot.inventory.*`;
+- Game APIs `inventory()`, `chests()`, `itemDefinition()`;
+- eigener GUI-Tab **Loot & Inventar**;
+- H10-Ein-Klick-Suite `h10-loot-inventory`;
+- `docs/H10-LIVE-TEST.md`;
+- Regressionen einschließlich Pending-Loot-Timeout und normalisiertem Quest-Flag.
+
+H10 führt bewusst **keine** echten Sell-/Bank-/Exchange-Aktionen aus. Diese bleiben späteren Economy-Stufen vorbehalten.
+
+Finale Live-Evidence:
+- Suite `h10-loot-inventory`: **PASSED / ALL_STEPS_PASSED**;
+- Runtime `AL Bot 0.10.0-h10`;
+- Preflight: 42 Slots, 4 benutzt, 38 frei, `protectedCount=4`;
+- Dispositionen: KEEP=2, BANK=1, EXCHANGE=1;
+- sichere H9-Goo-Probe autonom gestartet;
+- Confirmed Loot: `lootDispatched=1`, `lootConfirmed=1`, `knownSkips=0`, `attacksConfirmed=1`;
+- Protection Delta: **PASSED**, `checkedProtectedItems=4`;
+- Stability: `lootConfirmed=2`, `lootUnknown=0`, 38 freie Slots;
+- Cleanup: `pendingLoot=false`, H9/H8/H5/H4 inaktiv;
+- Cleanup `ok=true`;
+- Runtime danach wieder STOPPED;
+- Scheduler danach `totalResources=0`.
+
+Post-Live Review-Härtung:
+- P2: hängender `loot()`-Promise kann H10 nicht mehr dauerhaft wedgen;
+- P2: normalisiertes Quest-Flag wird bei der Schutzklassifizierung berücksichtigt;
+- beide Fälle regressionsgetestet;
+- CI Run #210 auf Head `a86e83938ca92fa2da0f5b7330433e797510bbbf`: SUCCESS;
+- beide P2-Review-Threads resolved.
+
+Die Post-Live-Fixes verändern den live bestätigten normalen Loot-Happy-Path nicht: der Timeout greift nur bei ausbleibendem Outcome, der Quest-Fix erweitert nur die konservative Schutzklassifizierung.
+
+Aktuell:
+- Live-Abnahme abgeschlossen;
+- H10 in ROADMAP auf BESTANDEN gesetzt;
+- Evidence-Dokumentation aktualisiert;
+- durch diese Dokumentationscommits ist ein neuer Head entstanden;
+- jetzt ausschließlich den **neuen exakten Head** für CI und Merge-Gate verwenden.
+
+Nächste Aktion:
+1. aktuellen PR-Head frisch lesen;
+2. `main...chatgpt/h10-loot-inventory` prüfen, `behind_by=0`;
+3. alle Workflow-Runs des exakten Heads müssen completed und success/skipped/neutral sein;
+4. keine offenen Review-Threads;
+5. kein `CHANGES_REQUESTED`;
+6. Commit-Status ohne echte pending/failure-Kontexte;
+7. `mergeable=true`;
+8. dann PR #10 ausschließlich mit Methode `merge` und exaktem `expected_head_sha` mergen;
+9. Merge auf `main` verifizieren;
+10. H11 – Merchant-Grundbetrieb auf frischem Branch vom neuen `main` beginnen.
 
 ## H2 Architekturregel für spätere Module
 
@@ -617,4 +682,4 @@ Bei Fehler:
 
 ## Nächster Schritt
 
-H7 nach final grüner CI und vollständigen Merge-Sicherheitschecks automatisch mergen. Danach **H8 – AoE & adaptives Farming** auf einem frischen Branch vom neuen `main` starten.
+H10 finalen Exact-Head-CI-/Merge-Gate abschließen und PR #10 bei vollständig grünem Gate automatisch mergen. Danach **H11 – Merchant-Grundbetrieb** auf einem frischen Branch vom neuen `main` starten.

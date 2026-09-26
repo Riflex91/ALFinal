@@ -14,7 +14,8 @@
     use_skill: Object.freeze({ publicName: 'use_skill', family: 'skill' }),
     attack: Object.freeze({ publicName: 'attack', family: 'combat' }),
     heal: Object.freeze({ publicName: 'heal', family: 'party-heal' }),
-    change_target: Object.freeze({ publicName: 'change_target', family: 'combat-target' })
+    change_target: Object.freeze({ publicName: 'change_target', family: 'combat-target' }),
+    loot: Object.freeze({ publicName: 'loot', family: 'loot' })
   });
 
   function errorDetails(error) {
