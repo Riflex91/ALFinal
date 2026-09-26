@@ -270,3 +270,17 @@ test('H9 source is integrated into runtime build and public API', () => {
   assert.match(adapter, /farmSpotCatalog\(options = \{\}\)/);
   assert.match(adapter, /visiblePlayers\(options = \{\}\)/);
 });
+
+test('H9 control center and one-click live suite are wired', () => {
+  const ui = fs.readFileSync(path.resolve(here, '../src/ui.js'), 'utf8');
+  const runtime = fs.readFileSync(path.resolve(here, '../src/runtime.js'), 'utf8');
+  const entry = fs.readFileSync(path.resolve(here, '../src/entry.js'), 'utf8');
+  const build = fs.readFileSync(path.resolve(here, '../scripts/build.mjs'), 'utf8');
+  assert.match(ui, /data-tab="farm-intelligence"/);
+  assert.match(ui, /H9 Farm Intelligence/);
+  assert.match(runtime, /id: 'h9-farm-intelligence'/);
+  assert.match(runtime, /H9_FARM_TARGET_PINGPONG/);
+  assert.match(entry, /0\.9\.0-h9/);
+  assert.match(entry, /farmIntelligence:/);
+  assert.match(build, /AL Bot 0\.9\.0-h9/);
+});
