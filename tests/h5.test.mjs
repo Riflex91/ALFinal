@@ -330,3 +330,47 @@ test('global STOP shuts down combat, movement and all scheduler resources', asyn
   assert.equal(status.combat.active, false);
   assert.equal(status.movement.active, false);
 });
+
+
+test('H5 one-click live test adapts retreat threshold to current HP and weak monster danger', async t => {
+  const { ctx, monster } = combatContext({
+    character: {
+      name: 'CombatTester',
+      ctype: 'warrior',
+      level: 28,
+      hp: 200,
+      max_hp: 1000,
+      mp: 300,
+      max_mp: 300,
+      map: 'main',
+      real_x: 0,
+      real_y: 0,
+      range: 30,
+      speed: 50,
+      frequency: 1,
+      moving: false,
+      rip: false,
+      target: null
+    },
+    damage: 40,
+    cooldownMs: 80
+  });
+  monster.attack = 5;
+  monster.real_x = 40;
+  t.after(async () => {
+    try { ctx.ALBot && ctx.ALBot.combat && ctx.ALBot.combat.stop('TEST_CLEANUP'); } catch (_) {}
+    try { ctx.ALBot && await ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {}
+  });
+
+  vm.runInNewContext(bundle, ctx);
+  const result = await ctx.ALBot.liveTests.startRecommended();
+
+  assert.equal(result.state, 'PASSED');
+  assert.equal(result.steps[0].state, 'PASSED');
+  assert.ok(result.steps[0].result.retreatHpRatio < 0.2);
+  assert.ok(result.steps[0].result.retreatHp >= 100);
+  assert.equal(result.steps[1].state, 'PASSED');
+  assert.equal(result.steps[2].state, 'PASSED');
+  assert.equal(result.steps[3].state, 'PASSED');
+  assert.equal(result.steps[4].state, 'PASSED');
+});
