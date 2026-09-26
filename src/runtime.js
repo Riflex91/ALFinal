@@ -1750,6 +1750,7 @@
                 const status = runtime.merchant.status();
                 if (status.suspended) throw new Error(status.suspendedReason || 'H11_SUSPENDED');
                 if (status.metrics.mluckUnknown > baseline.mluckUnknown) throw new Error('H11_MLUCK_UNKNOWN');
+                if (status.metrics.mluckConfirmed <= baseline.mluckConfirmed) return null;
                 const condition = runtime.game.playerCondition(testPlan.targetName, 'mluck');
                 return condition && condition.active ? { status, condition } : null;
               }, { timeoutMs: 40000, pollMs: 150, label: 'h11-mluck-confirmed' });
