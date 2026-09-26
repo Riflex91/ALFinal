@@ -234,6 +234,20 @@ test('H7 fail-closes coordination when a foreign party member is present', async
   assert.ok(party.metrics.foreignPartyBlocks >= 1);
 });
 
+test('H7 detects true A-B-A focus pingpong but not sequential unique targets', () => {
+  const { ctx } = makePartyContext();
+  vm.runInNewContext(bundle, ctx);
+  const party = ctx.ALBot.__runtime.party;
+
+  party._recordFocusTarget('m1', 'test', 1000);
+  party._recordFocusTarget('m2', 'test', 2000);
+  party._recordFocusTarget('m3', 'test', 3000);
+  assert.equal(party.status().metrics.focusPingPongs, 0);
+
+  party._recordFocusTarget('m2', 'test', 3500);
+  assert.equal(party.status().metrics.focusPingPongs, 1);
+});
+
 test('H7 party focus follows owned tank target and H5 combat converges onto it', async t => {
   const { ctx } = makePartyContext();
   vm.runInNewContext(bundle, ctx);
@@ -260,6 +274,7 @@ test('H7 party focus follows owned tank target and H5 combat converges onto it',
 
   assert.ok(converged, 'party/combat focus did not converge before target lifecycle changed');
   assert.match(converged.party.focus.source, /^tank:/);
+  assert.equal(converged.party.metrics.focusPingPongs, 0);
   const safe = ctx.ALBot.combat.candidates({ maxAttack: 20, minMpRatio: 0, partyAssist: true });
   assert.ok(safe.some(row => row.id === 'm1'), 'owned-party target must remain a safe H5 combat candidate');
 });
