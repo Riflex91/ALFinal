@@ -376,3 +376,56 @@ test('H3 target lookup also accepts Adventure Land entity collection keys', () =
   assert.equal(snap.target.mtype, 'frog');
   assert.equal(snap.target.distance, 5);
 });
+
+
+test('H3 target lookup merges runner and parent entity collections', () => {
+  const sharedHost = {
+    document: {},
+    entities: {
+      '5891957': {
+        id: '5891957',
+        name: 'Parent Frog',
+        type: 'monster',
+        mtype: 'frog',
+        real_x: 16,
+        real_y: 510,
+        hp: 45,
+        max_hp: 60
+      }
+    }
+  };
+  const { context: ctx } = runtimeContext({
+    parent: sharedHost,
+    character: {
+      name: 'FarmerA',
+      ctype: 'ranger',
+      map: 'main',
+      hp: 100,
+      max_hp: 100,
+      mp: 50,
+      max_mp: 50,
+      real_x: 13,
+      real_y: 506,
+      target: '5891957'
+    },
+    entities: {
+      localOnly: {
+        id: 'localOnly',
+        name: 'Other Entity',
+        type: 'monster',
+        mtype: 'goo',
+        real_x: 1,
+        real_y: 1
+      }
+    }
+  });
+  vm.runInNewContext(bundle, ctx);
+
+  const snap = ctx.ALBot.game.snapshot();
+  assert.equal(snap.target.id, '5891957');
+  assert.equal(snap.target.name, 'Parent Frog');
+  assert.equal(snap.target.mtype, 'frog');
+  assert.equal(snap.targetResolution.resolved, true);
+  assert.equal(snap.targetResolution.entitySourceCount, 2);
+  assert.equal(snap.targetResolution.mergedEntityCount, 2);
+});
