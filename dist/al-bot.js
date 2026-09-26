@@ -1,4 +1,5 @@
-/* AL Bot 0.7.0-h7 | generated file | do not edit dist directly */\n(function (root) {
+/* AL Bot 0.8.0-h8 | generated file | do not edit dist directly */
+(function (root) {
   'use strict';
 
   const ns = root.__ALBOT_INTERNALS__ = root.__ALBOT_INTERNALS__ || {};
@@ -401,7 +402,9 @@
   ns.CharacterRosterService = CharacterRosterService;
   ns.helpers = { clone, cleanText, nowIso, onlineFlag, COMBAT_CLASSES, ACTIVE_STATES };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
-\n\n(function (root) {
+
+
+(function (root) {
   'use strict';
 
   const ns = root.__ALBOT_INTERNALS__;
@@ -943,7 +946,9 @@
   ns.Scheduler = Scheduler;
   ns.ModuleRegistry = StableModuleRegistry;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
-\n\n(function (root) {
+
+
+(function (root) {
   'use strict';
 
   const ns = root.__ALBOT_INTERNALS__;
@@ -1542,7 +1547,9 @@
 
   ns.AdventureLandGameAdapter = AdventureLandGameAdapter;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
-\n\n(function (root) {
+
+
+(function (root) {
   'use strict';
 
   const ns = root.__ALBOT_INTERNALS__;
@@ -2070,7 +2077,9 @@
     validateNormalizedSnapshot
   };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
-\n\n(function (root) {
+
+
+(function (root) {
   'use strict';
 
   const ns = root.__ALBOT_INTERNALS__;
@@ -2242,7 +2251,9 @@
 
   ns.GameActionBoundary = GameActionBoundary;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
-\n\n(function (root) {
+
+
+(function (root) {
   'use strict';
 
   const ns = root.__ALBOT_INTERNALS__;
@@ -2924,7 +2935,9 @@
 
   ns.MovementController = MovementController;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
-\n\n(function (root) {
+
+
+(function (root) {
   'use strict';
 
   const ns = root.__ALBOT_INTERNALS__;
@@ -3576,7 +3589,9 @@
 
   ns.ClassSkillController = ClassSkillController;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
-\n\n(function (root) {
+
+
+(function (root) {
   'use strict';
 
   const ns = root.__ALBOT_INTERNALS__;
@@ -4090,7 +4105,9 @@
 
   ns.PartyCoordinator = PartyCoordinator;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
-\n\n(function (root) {
+
+
+(function (root) {
   'use strict';
 
   const ns = root.__ALBOT_INTERNALS__;
@@ -4729,7 +4746,9 @@
 
   ns.AdaptiveFarmingController = AdaptiveFarmingController;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
-\n\n(function (root) {
+
+
+(function (root) {
   'use strict';
 
   const ns = root.__ALBOT_INTERNALS__;
@@ -5558,7 +5577,9 @@
 
   ns.CombatController = CombatController;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
-\n\n(function (root) {
+
+
+(function (root) {
   'use strict';
 
   const ns = root.__ALBOT_INTERNALS__;
@@ -5889,14 +5910,16 @@
 
   ns.LiveTestRunner = LiveTestRunner;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
-\n\n(function (root) {
+
+
+(function (root) {
   'use strict';
   const ns = root.__ALBOT_INTERNALS__;
   if (!ns || !ns.Scheduler) throw new Error('ALBOT_SCHEDULER_MISSING');
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.7.0-h7';
+      this.version = options.version || '0.8.0-h8';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -6055,6 +6078,8 @@
       let h6Plan = null;
       let h7Baseline = null;
       let h7Plan = null;
+      let h8Baseline = null;
+      let h8Plan = null;
       this.liveTests.register({
         id: 'h5-combat',
         title: 'H5 – Einfacher Kampf',
@@ -6702,6 +6727,227 @@
           }
         ]
       });
+
+      this.liveTests.register({
+        id: 'h8-adaptive-farming',
+        title: 'H8 – AoE & adaptives Farming',
+        description: 'Ein-Klick-Live-Test für sichere Pack-Planung, live-bereite Klassen-AoE, adaptives Risiko, UNKNOWN-Safety und Cleanup.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.farming.stopSession('H8_LIVE_TEST_RESET'); } catch (_) {}
+          try { runtime.combat.stopSession('H8_LIVE_TEST_RESET'); } catch (_) {}
+          h8Plan = null;
+          const farming = runtime.farming.status();
+          const combat = runtime.combat.status();
+          const party = runtime.party.status();
+          h8Baseline = {
+            aoeConfirmed: farming.metrics.aoeConfirmed,
+            aoeUnknown: farming.metrics.aoeUnknown,
+            attackUnknown: combat.metrics.attackUnknown,
+            focusPingPongs: party.metrics.focusPingPongs
+          };
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.farming.stopSession('H8_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try { runtime.combat.stopSession('H8_LIVE_TEST_CLEANUP'); } catch (_) {}
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Klasse, Live-AoE und mindestens ein sicheres Pack prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const module = runtime.modules.describe('adaptive-farming');
+              assert(module && module.state === 'ACTIVE', 'H8_MODULE_NOT_ACTIVE');
+
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character && !game.character.rip, 'CHARACTER_UNAVAILABLE');
+              const ctype = String(game.character.ctype || '').toLowerCase();
+              assert(ctype !== 'merchant', 'H8_NEEDS_COMBAT_CLASS_NOT_MERCHANT');
+
+              const party = runtime.party.status();
+              const foreign = party.party && party.party.foreignMemberNames || [];
+              assert(foreign.length === 0, 'H8_FOREIGN_PARTY_MEMBER_BLOCK:' + foreign.join(','));
+
+              const supported = runtime.farming.supportedAoeSkills(ctype);
+              assert(supported.length > 0, 'H8_CLASS_HAS_NO_AOE_POLICY:' + ctype);
+
+              const ready = supported.map(id => ({
+                id,
+                definition: runtime.game.skillDefinition(id),
+                readiness: runtime.game.skillReadiness(id, null)
+              })).filter(row => row.definition && row.readiness && row.readiness.allowed === true);
+              assert(ready.length > 0,
+                'H8_NEEDS_LIVE_READY_AOE_SKILL:' + ctype + ':' + supported.join(','));
+
+              const currentHp = Number(game.character.hp);
+              const maxHp = Number(game.character.maxHp);
+              assert(Number.isFinite(currentHp) && currentHp > 0, 'CHARACTER_HP_UNAVAILABLE');
+              assert(Number.isFinite(maxHp) && maxHp > 0, 'CHARACTER_MAX_HP_UNAVAILABLE');
+              assert(currentHp / maxHp >= runtime.farming.config.aoeHpRatio,
+                'H8_HP_BELOW_AOE_THRESHOLD');
+
+              const candidates = runtime.combat.safeCandidates({
+                maxAcquireDistance: runtime.farming.config.maxAcquireDistance,
+                maxAttackToHpRatio: 0.08,
+                allowContested: false,
+                allowUnknownAttack: false,
+                partyAssist: true
+              });
+              assert(candidates.length >= 2, 'H8_NEEDS_AT_LEAST_2_SAFE_VISIBLE_MONSTERS');
+
+              const groups = new Map();
+              for (const monster of candidates) {
+                const key = String(monster.mtype || '');
+                if (!groups.has(key)) groups.set(key, []);
+                groups.get(key).push(monster);
+              }
+              const thresholds = { '3shot': 2, '5shot': 4, cleave: 3, stomp: 3, cburst: 2, fanofknives: 3 };
+              let selected = null;
+              for (const row of ready) {
+                const minimum = thresholds[row.id] || 2;
+                for (const [monsterType, rows] of groups.entries()) {
+                  if (rows.length >= minimum) {
+                    selected = { skillId: row.id, minimum, monsterType: monsterType || null, candidates: rows };
+                    break;
+                  }
+                }
+                if (selected) break;
+              }
+              assert(selected, 'H8_NO_SAFE_SAME_TYPE_PACK_FOR_READY_AOE');
+
+              h8Plan = {
+                ctype,
+                skillId: selected.skillId,
+                minimumTargets: selected.minimum,
+                monsterType: selected.monsterType,
+                safeVisible: selected.candidates.length
+              };
+              return {
+                character: game.character.name,
+                ctype,
+                skillId: selected.skillId,
+                minimumTargets: selected.minimum,
+                monsterType: selected.monsterType,
+                safeVisible: selected.candidates.length
+              };
+            }
+          },
+          {
+            id: 'adaptive-pack',
+            title: 'H8-Session starten und sicheren AoE-Packplan erreichen',
+            timeoutMs: 15000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(h8Plan, 'H8_LIVE_TEST_PLAN_MISSING');
+              const started = runtime.farming.startSession({
+                owner: 'live-test-h8',
+                monsterType: h8Plan.monsterType || undefined,
+                partyAssist: true,
+                maxAcquireDistance: runtime.farming.config.maxAcquireDistance,
+                maxAttackToHpRatio: 0.08,
+                retreatHpRatio: runtime.farming.config.retreatHpRatio,
+                minMpRatio: 0.08
+              });
+              assert(started && started.accepted === true, started && started.reason || 'H8_SESSION_START_FAILED');
+
+              const planned = await waitFor(() => {
+                const combat = runtime.combat.status();
+                if (combat.lastSession && ['FAILED_SAFE', 'UNKNOWN'].includes(combat.lastSession.state)) {
+                  throw new Error(combat.lastSession.reason || combat.lastSession.state);
+                }
+                const farming = runtime.farming.status();
+                if (farming.suspended) throw new Error(farming.suspendedReason || 'H8_AOE_SUSPENDED');
+                const plan = runtime.farming.plan();
+                return plan && plan.state === 'AOE_READY' ? plan : null;
+              }, { timeoutMs: 12000, pollMs: 150, label: 'h8-aoe-pack-plan' });
+
+              assert(planned.aoe && planned.aoe.packSize >= h8Plan.minimumTargets,
+                'H8_PACK_BELOW_SKILL_THRESHOLD');
+              return {
+                state: planned.state,
+                skillId: planned.aoe.skillId,
+                packSize: planned.aoe.packSize,
+                capacity: planned.capacity,
+                aggregateAttack: planned.aggregateAttack
+              };
+            }
+          },
+          {
+            id: 'confirmed-aoe',
+            title: 'Mindestens einen AoE-Skill serverbestätigt ausführen',
+            timeoutMs: 25000,
+            run: async ({ runtime, waitFor }) => {
+              const confirmed = await waitFor(() => {
+                const farming = runtime.farming.status();
+                if (farming.suspended) throw new Error(farming.suspendedReason || 'H8_AOE_SUSPENDED');
+                if (farming.metrics.aoeUnknown > h8Baseline.aoeUnknown) throw new Error('H8_AOE_UNKNOWN');
+                if (farming.metrics.aoeConfirmed <= h8Baseline.aoeConfirmed) return null;
+                return farming;
+              }, { timeoutMs: 22000, pollMs: 150, label: 'h8-confirmed-aoe' });
+
+              return {
+                aoeConfirmed: confirmed.metrics.aoeConfirmed - h8Baseline.aoeConfirmed,
+                lastUse: confirmed.lastUse
+              };
+            }
+          },
+          {
+            id: 'stability-window',
+            title: 'Fünf Sekunden ohne UNKNOWN, Overpull oder Focus-Pingpong beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              await sleep(5000);
+              const farming = runtime.farming.status();
+              const combat = runtime.combat.status();
+              const party = runtime.party.status();
+              assert(farming.suspended === false, 'H8_AOE_SUSPENDED_DURING_STABILITY');
+              assert(farming.metrics.aoeUnknown === h8Baseline.aoeUnknown, 'H8_AOE_UNKNOWN_DURING_STABILITY');
+              assert(combat.metrics.attackUnknown === h8Baseline.attackUnknown, 'ATTACK_UNKNOWN_DURING_H8_STABILITY');
+              assert(party.metrics.focusPingPongs === h8Baseline.focusPingPongs, 'PARTY_FOCUS_PINGPONG_DURING_H8');
+              const lastPlan = farming.lastPlan;
+              if (lastPlan && Array.isArray(lastPlan.pack)) {
+                assert(lastPlan.pack.length <= Number(lastPlan.capacity || 1), 'H8_PACK_EXCEEDS_CAPACITY');
+                assert(Number(lastPlan.aggregateAttack || 0)
+                  <= Number(runtime.game.snapshot().character.maxHp || 0) * farming.config.maxAggregateAttackToHpRatio + 0.001,
+                  'H8_AGGREGATE_ATTACK_BUDGET_EXCEEDED');
+              }
+              return {
+                aoeConfirmed: farming.metrics.aoeConfirmed - h8Baseline.aoeConfirmed,
+                aoeUnknown: farming.metrics.aoeUnknown - h8Baseline.aoeUnknown,
+                attackUnknown: combat.metrics.attackUnknown - h8Baseline.attackUnknown,
+                focusPingPongs: party.metrics.focusPingPongs - h8Baseline.focusPingPongs,
+                maxPackObserved: farming.metrics.maxPackObserved,
+                lastPlan
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'Adaptive Farming, Combat und Movement sauber freigeben',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.farming.stopSession('H8_LIVE_TEST_COMPLETE');
+              const farming = runtime.farming.status();
+              const combat = runtime.combat.status();
+              const movement = runtime.movement.status();
+              assert(farming.active === false, 'H8_SESSION_STILL_ACTIVE');
+              assert(farming.pending == null, 'H8_AOE_STILL_PENDING');
+              assert(combat.active === false, 'H8_COMBAT_STILL_ACTIVE');
+              assert(!(movement.activeOrder && String(movement.activeOrder.owner || '').startsWith('combat-h5')),
+                'H8_COMBAT_MOVEMENT_STILL_ACTIVE');
+              return {
+                farmingActive: farming.active,
+                pending: !!farming.pending,
+                combatActive: combat.active,
+                movementActive: movement.active
+              };
+            }
+          }
+        ]
+      });
     }
 
     _installErrorCapture() {
@@ -6989,7 +7235,9 @@
 
   ns.ALBotRuntime = ALBotRuntime;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
-\n\n(function (root) {
+
+
+(function (root) {
   'use strict';
   const ns = root.__ALBOT_INTERNALS__;
   if (!ns) throw new Error('ALBOT_INTERNALS_MISSING');
@@ -7016,6 +7264,7 @@
       this.devResult = null;
       this.navigationResult = null;
       this.combatResult = null;
+      this.farmingResult = null;
       this.liveTestClipboard = null;
       this._offLog = null;
       this._dragCleanup = null;
@@ -7072,7 +7321,7 @@
 </style>
 <div class="albot-head" id="albot-drag-handle"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-minimize" class="albot-window-btn" title="Fenster minimieren" aria-label="Fenster minimieren">—</button><button id="albot-emergency" class="albot-stop">STOP</button></div>
 <div class="albot-tabs">
-<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
+<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
 </div>
 <div class="albot-body">
 <section id="albot-panel-overview" class="albot-panel active"></section>
@@ -7080,6 +7329,7 @@
 <section id="albot-panel-navigation" class="albot-panel"></section>
 <section id="albot-panel-combat" class="albot-panel"></section>
 <section id="albot-panel-party" class="albot-panel"></section>
+<section id="albot-panel-farming" class="albot-panel"></section>
 <section id="albot-panel-live-test" class="albot-panel"></section>
 <section id="albot-panel-knowledge" class="albot-panel"></section>
 <section id="albot-panel-logs" class="albot-panel"></section>
@@ -7234,6 +7484,7 @@
       this.renderNavigation(status);
       this.renderCombat(status);
       this.renderParty(status);
+      this.renderFarming(status);
       this.renderLiveTest(status);
       this.renderKnowledge(status);
       this.renderLogs();
@@ -7384,7 +7635,7 @@
       const resultText = this.combatResult ? JSON.stringify(this.combatResult, null, 2) : 'Noch keine manuelle H6-Combat-Session.';
 
       panel.innerHTML = `<div class="albot-card"><b>H5/H6 Combat & Klassenlogik</b>
-<div class="albot-small">H5 stellt Targeting, Movement und Basisangriff bereit. H6 ergänzt klassenspezifische Skills mit Live-Readiness, MP-Reserve, Cooldown-Prüfung und Anti-Spam. Party- und AoE-Logik folgen erst in H7/H8.</div>
+<div class="albot-small">H5 stellt Targeting, Movement und Basisangriff bereit. H6 ergänzt klassenspezifische Skills. H7 liefert Party-Focus; H8 kann sichere Multi-Target-Aktionen ergänzen, ohne die H5/H6/H7-Safety zu umgehen.</div>
 <div class="albot-grid" style="margin-top:8px">
 <div><span class="albot-k">Modul</span><div class="albot-v">${combat.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
 <div><span class="albot-k">Combat</span><div class="albot-v">${esc(combat.state || 'IDLE')}</div></div>
@@ -7439,6 +7690,74 @@
       };
       const stop = panel.querySelector('#albot-combat-stop');
       if (stop) stop.onclick = () => run(() => this.runtime.combat.stopSession('GUI_COMBAT_STOP'));
+    }
+
+    renderFarming(status) {
+      const panel = this.host.querySelector('#albot-panel-farming');
+      if (!panel) return;
+      const farming = status.farming || {};
+      const metrics = farming.metrics || {};
+      const session = farming.session || null;
+      const lastPlan = farming.lastPlan || null;
+      const lastUse = farming.lastUse || null;
+      const liveSkills = Array.isArray(farming.liveAoeSkills)
+        ? farming.liveAoeSkills.filter(row => row && row.definition).map(row => row.id)
+        : [];
+      const pack = lastPlan && Array.isArray(lastPlan.pack) ? lastPlan.pack : [];
+      const resultText = this.farmingResult ? JSON.stringify(this.farmingResult, null, 2) : 'Noch keine manuelle H8-Aktion.';
+
+      panel.innerHTML = `<div class="albot-card"><b>H8 AoE & adaptives Farming</b>
+<div class="albot-small">H8 plant Packs ausschließlich aus H5-sicheren Kandidaten. HP, aggregierter Monster-Angriff, Party-Safety und live-bereite Klassen-AoE begrenzen die Gegnerzahl. UNKNOWN suspendiert AoE ohne Blind-Retry.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${farming.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Session</span><div class="albot-v">${farming.active ? 'ACTIVE' : 'IDLE'}</div></div>
+<div><span class="albot-k">Klasse</span><div class="albot-v">${esc(farming.currentClass || '-')}</div></div>
+<div><span class="albot-k">Live AoE</span><div class="albot-v">${liveSkills.length ? liveSkills.map(esc).join(', ') : 'keine live-bereiten Definitionen'}</div></div>
+<div><span class="albot-k">Combat owned</span><div class="albot-v">${farming.combatOwned ? 'JA' : 'NEIN'}</div></div>
+<div><span class="albot-k">Suspendiert</span><div class="albot-v">${farming.suspended ? 'JA · '+esc(farming.suspendedReason || '-') : 'NEIN'}</div></div>
+<div><span class="albot-k">AoE bestätigt</span><div class="albot-v">${esc(metrics.aoeConfirmed || 0)}</div></div>
+<div><span class="albot-k">AoE UNKNOWN</span><div class="albot-v">${esc(metrics.aoeUnknown || 0)}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Aktueller adaptiver Plan</b>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Zustand</span><div class="albot-v">${esc(lastPlan && lastPlan.state || '-')}</div></div>
+<div><span class="albot-k">Grund</span><div class="albot-v">${esc(lastPlan && lastPlan.reason || '-')}</div></div>
+<div><span class="albot-k">Pack</span><div class="albot-v">${esc(pack.length)} / ${esc(lastPlan && lastPlan.capacity != null ? lastPlan.capacity : '-')}</div></div>
+<div><span class="albot-k">Aggregate Attack</span><div class="albot-v">${esc(lastPlan && lastPlan.aggregateAttack != null ? Math.round(lastPlan.aggregateAttack) : '-')}</div></div>
+<div><span class="albot-k">AoE Skill</span><div class="albot-v">${esc(lastPlan && lastPlan.aoe && lastPlan.aoe.skillId || '-')}</div></div>
+<div><span class="albot-k">Letzter Outcome</span><div class="albot-v">${lastUse ? esc(lastUse.skillId)+' · '+esc(lastUse.state) : '-'}</div></div>
+</div>
+<div class="albot-small" style="margin-top:8px">Pack: ${pack.length ? pack.map(row => esc(row.mtype || row.id)+'['+esc(row.id)+']').join(', ') : 'keins'}</div>
+</div>
+
+<div class="albot-card"><b>Manuelle H8-Session</b>
+<div class="albot-row"><input id="albot-farming-type" placeholder="Monster-Typ optional, z.B. goo"></div>
+<div class="albot-row"><button id="albot-farming-plan" class="albot-btn">Plan prüfen</button><button id="albot-farming-start" class="albot-btn" ${farming.active || (status.combat && status.combat.active) ? 'disabled' : ''}>Farming starten</button><button id="albot-farming-stop" class="albot-btn warn" ${farming.active ? '' : 'disabled'}>Farming stoppen</button></div>
+<div class="albot-small">Globaler STOP und Runtime-Stop bleiben jederzeit vorrangig.</div>
+</div>
+
+<div class="albot-card"><b>H8 Metriken</b><div class="albot-small">Plans: ${esc(metrics.plans || 0)} · Packs: ${esc(metrics.packsPlanned || 0)} · Single: ${esc(metrics.singleTargetPlans || 0)} · Retreat: ${esc(metrics.retreatPlans || 0)} · Max Pack: ${esc(metrics.maxPackObserved || 0)} · Rejected: ${esc(metrics.aoeRejected || 0)}</div></div>
+<div class="albot-card"><b>Letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.farmingResult = fn(); }
+        catch (error) { this.farmingResult = { accepted: false, reason: String(error && error.message || error) }; }
+        this.renderFarming(this.runtime.status());
+      };
+      const plan = panel.querySelector('#albot-farming-plan');
+      if (plan) plan.onclick = () => run(() => this.runtime.farming.plan());
+      const start = panel.querySelector('#albot-farming-start');
+      if (start) start.onclick = () => {
+        const type = panel.querySelector('#albot-farming-type').value.trim();
+        run(() => this.runtime.farming.startSession({
+          owner: 'gui-h8-farming',
+          monsterType: type || undefined,
+          partyAssist: true
+        }));
+      };
+      const stop = panel.querySelector('#albot-farming-stop');
+      if (stop) stop.onclick = () => run(() => this.runtime.farming.stopSession('GUI_H8_STOP'));
     }
 
     renderParty(status) {
@@ -7649,7 +7968,9 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   ns.ControlCenter = ControlCenter;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
-\n\n(function (root) {
+
+
+(function (root) {
   'use strict';
   const ns = root.__ALBOT_INTERNALS__;
   if (!ns || !ns.ALBotRuntime) throw new Error('ALBOT_RUNTIME_MISSING');
@@ -7701,7 +8022,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.7.0-h7',
+    version: '0.8.0-h8',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -7861,11 +8182,11 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
     };
   } catch (_) {}
 
-  runtime.logger.info('AL Bot H7 geladen', {
+  runtime.logger.info('AL Bot H8 geladen', {
     version: api.version,
     bootCount,
     hotReload: !!previous,
     sharedHost: sharedHost !== root
   });
 })(typeof globalThis !== 'undefined' ? globalThis : this);
-\n
+
