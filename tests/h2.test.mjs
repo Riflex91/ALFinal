@@ -40,7 +40,7 @@ function runtimeContext() {
 test('H2 exposes central scheduler and lifecycle API', () => {
   const ctx = runtimeContext();
   vm.runInNewContext(bundle, ctx, { filename: 'al-bot.js' });
-  assert.equal(ctx.ALBot.version, '0.2.0-h2');
+  assert.equal(ctx.ALBot.version, '0.3.0-h3');
   assert.equal(typeof ctx.ALBot.scheduler.status, 'function');
   assert.equal(typeof ctx.ALBot.modules.restart, 'function');
   assert.equal(typeof ctx.ALBot.dev.stabilityProbe, 'function');
