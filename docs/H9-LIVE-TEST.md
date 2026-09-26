@@ -15,7 +15,7 @@ H9 bewertet aktuelle Farmkandidaten aus zwei Live-Quellen:
 1. H5-sichere sichtbare Monstercluster der aktuellen Map;
 2. Spawnpunkte der aktuellen Map aus dem live geladenen Adventure-Land-`G.maps`.
 
-Monsterwerte stammen aus dem live geladenen `G.monsters`.
+Monster-Kampfwerte stammen aus dem live geladenen `G.monsters`. Basisgold wird aus `G.monster_gold` plus den live geladenen `G.drops.gold`-Regeln abgeleitet; Monster-Drops kommen aus `G.drops.monsters`.
 
 Bewertet werden:
 
@@ -79,8 +79,10 @@ Automatisch geprüft:
 - lebender Combat-Charakter;
 - kein Merchant;
 - keine fremden Party-Mitglieder;
-- mindestens ein sichtbarer H5-sicherer Cluster;
-- H9 erzeugt einen erklärbaren Score mit Safety-Komponente.
+- mindestens ein sichtbarer H5-sicherer Cluster als Live-Sicherheitsbeweis;
+- mindestens zwei aktuelle Farmkandidaten;
+- H9 darf trotzdem einen nicht sichtbaren, bekannten `G.maps`-Spawn als besseren Gesamt-Score wählen;
+- H9 erzeugt einen erklärbaren Score mit Safety-, XP-, Gold-, Drop-, Dichte-, Reise-, Respawn- und Konkurrenzanteilen.
 
 ### 2. Autonomous Start
 
@@ -89,7 +91,9 @@ H9 startet seine Autonomie.
 Erwartung:
 
 - H9 wählt selbst ein Farmziel;
-- H8-Session wird mit Owner `farm-intelligence-h9` gestartet;
+- liegt das Ziel entfernt, übernimmt H4 die Reise vollständig;
+- die Suite wartet auch auf reale Smart-Move-Reisezeit statt einen sichtbaren Startcluster zu erzwingen;
+- H8-Session wird am gewählten Ziel mit Owner `farm-intelligence-h9` gestartet;
 - keine manuelle Target-/Monsterwahl nötig.
 
 ### 3. Confirmed Farming
@@ -101,23 +105,24 @@ Mindestens eine echte Farming-Aktion muss live bestätigt werden:
 
 Neue H8-/H5-`UNKNOWN` führen zum Fail.
 
-### 4. Adaptive Switch
+### 4. Adaptive Entscheidung / Switch
 
-Die Suite beobachtet einen **natürlichen** Farmspot-Wechsel.
+Die Suite beobachtet mehrere echte H9-Entscheidungszyklen unter Live-Bedingungen.
 
-Typischer Auslöser:
+Ein Farmspot-Wechsel ist **kein künstliches Muss**: Bleibt der aktuelle Spot nach Score und Hold-Regeln weiterhin die beste Wahl, ist stabiles Halten korrekt. Wird ein anderer Kandidat besser und die Switch-Regeln erlauben den Wechsel, darf H9 natürlich wechseln.
 
-- aktueller sicherer Cluster wird abgefarmt;
-- ein anderer Cluster/Spawn wird besser;
-- H9 wechselt aufgrund der neuen Live-Lage.
+Geprüft werden:
 
-Der Test prüft die H9-History auf A→B→A-Pingpong.
+- mehrere fortlaufende H9-Entscheidungen;
+- weiterhin mindestens zwei Farmkandidaten;
+- ein echter Wechsel wird erfasst, falls die Live-Lage ihn auslöst;
+- die komplette H9-History bleibt frei von A→B→A-Pingpong.
 
-Für diesen Test sollte der Charakter in einem Gebiet mit mehreren nahen Farmclustern bzw. ausreichend vielen schwachen Monstern stehen.
+Der deterministische Switch-, Depletion- und Anti-Pingpong-Pfad ist zusätzlich durch H9-Regressionstests abgedeckt.
 
 ### 5. Stability
 
-Fünf Sekunden nach dem Wechsel:
+Fünf Sekunden nach der adaptiven Beobachtung:
 
 - H9 nicht suspendiert;
 - kein neues H8-AoE-`UNKNOWN`;
