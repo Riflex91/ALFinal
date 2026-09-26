@@ -1357,6 +1357,12 @@
         range: finite(raw.range),
         frequency: finite(raw.frequency),
         respawn: finite(raw.respawn),
+        damageType: raw.damage_type == null ? null : cleanText(raw.damage_type, 60).toLowerCase(),
+        armor: finite(raw.armor),
+        resistance: finite(raw.resistance),
+        evasion: finite(raw.evasion),
+        avoidance: finite(raw.avoidance),
+        reflection: finite(raw.reflection),
         drops,
         dropSignal,
         boss: safeBoolean(raw.boss),
@@ -1678,6 +1684,7 @@
           range: finite(character.range),
           speed: finite(character.speed),
           frequency: finite(character.frequency),
+          damageType: character.damage_type == null ? null : cleanText(character.damage_type, 60).toLowerCase(),
           moving: safeBoolean(character.moving),
           rip: safeBoolean(character.rip),
           targetId
@@ -4981,7 +4988,8 @@
         kiteTriggerRatio: Math.max(0.05, Math.min(0.8, Number(options.kiteTriggerRatio) || 0.30)),
         kiteStep: Math.max(10, Math.min(120, Number(options.kiteStep) || 35)),
         maxAcquireDistance: Math.max(50, Math.min(1200, Number(options.maxAcquireDistance) || 450)),
-        maxAttackToHpRatio: Math.max(0.01, Math.min(0.5, Number(options.maxAttackToHpRatio) || 0.08))
+        maxAttackToHpRatio: Math.max(0.01, Math.min(0.5, Number(options.maxAttackToHpRatio) || 0.08)),
+        minExpectedHitChance: Math.max(0.05, Math.min(0.95, Number(options.minExpectedHitChance) || 0.25))
       };
 
       this.moduleActive = false;
@@ -5038,6 +5046,8 @@
         maxAttack: finite(options.maxAttack),
         maxAttackToHpRatio: Math.max(0.01, Math.min(0.5, Number(options.maxAttackToHpRatio) || this.config.maxAttackToHpRatio)),
         maxAcquireDistance: Math.max(50, Math.min(1200, Number(options.maxAcquireDistance) || this.config.maxAcquireDistance)),
+        minExpectedHitChance: Math.max(0.05, Math.min(0.95,
+          options.minExpectedHitChance == null ? this.config.minExpectedHitChance : Number(options.minExpectedHitChance))),
         allowContested: options.allowContested === true,
         allowUnknownAttack: options.allowUnknownAttack === true,
         partyAssist: options.partyAssist !== false,
@@ -5216,6 +5226,30 @@
       return Math.max(20, maxHp * policy.maxAttackToHpRatio);
     }
 
+    _damageType(character) {
+      const live = cleanText(character && (character.damageType || character.damage_type) || '', 60).toLowerCase();
+      if (live) return live;
+      const ctype = cleanText(character && character.ctype || '', 60).toLowerCase();
+      if (ctype === 'mage' || ctype === 'priest') return 'magical';
+      if (['warrior', 'ranger', 'rogue', 'paladin'].includes(ctype)) return 'physical';
+      return null;
+    }
+
+    _expectedHitChance(character, monster) {
+      const definition = this.game && typeof this.game.monsterDefinition === 'function' && monster && monster.mtype
+        ? this.game.monsterDefinition(monster.mtype)
+        : null;
+      if (!definition) return 1;
+      const damageType = this._damageType(character);
+      const avoidance = Math.max(0, Math.min(100, finite(definition.avoidance) || 0));
+      let chance = 1 - avoidance / 100;
+      if (damageType === 'physical') {
+        const evasion = Math.max(0, Math.min(100, finite(definition.evasion) || 0));
+        chance *= 1 - evasion / 100;
+      }
+      return Math.max(0, Math.min(1, chance));
+    }
+
     safeCandidates(options = {}) {
       const game = this.game && this.game.snapshot ? this.game.snapshot() : null;
       const character = game && game.character;
@@ -5227,6 +5261,9 @@
         if (monster.distance == null || monster.distance > policy.maxAcquireDistance) return false;
         if (maxAttack != null && monster.attack == null && !policy.allowUnknownAttack) return false;
         if (maxAttack != null && monster.attack != null && monster.attack > maxAttack) return false;
+        const expectedHitChance = this._expectedHitChance(character, monster);
+        if (expectedHitChance < policy.minExpectedHitChance) return false;
+        monster.expectedHitChance = expectedHitChance;
         if (!policy.allowContested && monster.targetId && monster.targetId !== character.name) {
           const ownedPartyTarget = policy.partyAssist
             && this.party
@@ -5296,7 +5333,8 @@
         targetId: this.session.targetId,
         targetType: this.session.targetType,
         distance: target.distance,
-        attack: target.attack
+        attack: target.attack,
+        expectedHitChance: target.expectedHitChance == null ? null : target.expectedHitChance
       };
       return target;
     }
@@ -5809,7 +5847,8 @@
         arrivalRadius: Math.max(20, Math.min(200, Number(options.arrivalRadius) || 70)),
         visibleAcquireDistance: Math.max(150, Math.min(900, Number(options.visibleAcquireDistance) || 500)),
         densityTarget: Math.max(2, Math.min(20, Number(options.densityTarget) || 6)),
-        depletionGraceMs: Math.max(1000, Math.min(30000, Number(options.depletionGraceMs) || 5000))
+        depletionGraceMs: Math.max(1000, Math.min(30000, Number(options.depletionGraceMs) || 5000)),
+        minExpectedHitChance: Math.max(0.05, Math.min(0.95, Number(options.minExpectedHitChance) || 0.25))
       };
 
       this.moduleActive = false;
@@ -6062,11 +6101,35 @@
       }
     }
 
+    _damageType(character) {
+      const live = cleanText(character && (character.damageType || character.damage_type) || '', 60).toLowerCase();
+      if (live) return live;
+      const ctype = cleanText(character && character.ctype || '', 60).toLowerCase();
+      if (ctype === 'mage' || ctype === 'priest') return 'magical';
+      if (['warrior', 'ranger', 'rogue', 'paladin'].includes(ctype)) return 'physical';
+      return null;
+    }
+
+    _expectedHitChance(character, candidate) {
+      const definition = candidate && candidate.definition || {};
+      const damageType = this._damageType(character);
+      const avoidance = Math.max(0, Math.min(100, finite(definition.avoidance) || 0));
+      let chance = 1 - avoidance / 100;
+      if (damageType === 'physical') {
+        const evasion = Math.max(0, Math.min(100, finite(definition.evasion) || 0));
+        chance *= 1 - evasion / 100;
+      }
+      return clamp(chance);
+    }
+
     _rawMetrics(character, candidate) {
       const definition = candidate.definition || {};
       const attack = Math.max(1, finite(character.attack) || 1);
       const frequency = Math.max(0.1, finite(character.frequency) || 1);
-      const dps = attack * frequency;
+      const expectedHitChance = candidate.expectedHitChance == null
+        ? this._expectedHitChance(character, candidate)
+        : clamp(candidate.expectedHitChance);
+      const dps = attack * frequency * expectedHitChance;
       const hp = finite(definition.hp);
       const killSeconds = hp != null && hp > 0 ? Math.max(0.25, hp / dps) : null;
       const xp = Math.max(0, finite(definition.xp) || 0);
@@ -6089,6 +6152,7 @@
         xpPerSecond: killSeconds == null ? 0 : xp / killSeconds,
         goldPerSecond: killSeconds == null ? 0 : gold / killSeconds,
         dropSignal,
+        expectedHitChance,
         density,
         travelSeconds: travelSeconds == null ? 999 : travelSeconds,
         respawnSignal,
@@ -6132,12 +6196,15 @@
       return rows;
     }
 
-    _filteredCandidates(rows) {
+    _filteredCandidates(rows, character) {
       const preferred = new Set(this.session && this.session.preferredTypes || []);
       const excluded = new Set(this.session && this.session.excludedTypes || []);
       return rows.filter(row => {
         if (excluded.has(row.mtype)) return false;
         if (preferred.size && !preferred.has(row.mtype)) return false;
+        const expectedHitChance = this._expectedHitChance(character, row);
+        row.expectedHitChance = expectedHitChance;
+        if (expectedHitChance < this.config.minExpectedHitChance) return false;
         return true;
       });
     }
@@ -6170,7 +6237,7 @@
 
       const live = this._clusterSafeVisible(character);
       const catalog = this._catalogCandidates(character, live);
-      let candidates = this._filteredCandidates([...live, ...catalog]);
+      let candidates = this._filteredCandidates([...live, ...catalog], character);
       this._observeCandidates(candidates);
       candidates = this._scoreCandidates(character, candidates);
       this.metrics.candidateRows += candidates.length;
@@ -6294,6 +6361,12 @@
       return !!(order && String(order.owner || '') === 'farm-intelligence-h9');
     }
 
+    _delegatedCombatMovement(status = this._movementStatus(), farmStatus = this._farmingStatus()) {
+      const order = status && status.activeOrder;
+      if (!order || !this._ownedFarming(farmStatus)) return false;
+      return String(order.owner || '').startsWith('combat-h5');
+    }
+
     _ownedFarming(status = this._farmingStatus()) {
       const session = status && status.session;
       return !!(status && status.active && session && String(session.owner || '') === 'farm-intelligence-h9');
@@ -6375,6 +6448,15 @@
       }
       if (this._ownedMovement(movement)) {
         return { state: 'TRAVELLING', reason: 'H9_TRAVEL_IN_PROGRESS', order: clone(movement.activeOrder) };
+      }
+      const farmDuringMovement = this._farmingStatus();
+      if (this._delegatedCombatMovement(movement, farmDuringMovement)) {
+        return {
+          state: 'FARMING',
+          reason: 'H9_DELEGATED_COMBAT_MOVEMENT',
+          order: clone(movement.activeOrder),
+          monsterType: farmDuringMovement.session && farmDuringMovement.session.monsterType || null
+        };
       }
       if (movement && movement.activeOrder) {
         this.metrics.ownershipBlocks += 1;
