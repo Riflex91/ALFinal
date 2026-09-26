@@ -563,6 +563,9 @@
     _apply(plan) {
       if (!this.session || !this.session.enabled) return { state: 'IDLE', reason: 'H9_AUTONOMY_NOT_ACTIVE' };
       if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason };
+      if (plan && plan.state === 'BLOCKED') {
+        return this._suspend(plan.reason || 'H9_PLAN_BLOCKED');
+      }
       if (!plan || !plan.selected) return { state: plan && plan.state || 'BLOCKED', reason: plan && plan.reason || 'H9_PLAN_UNAVAILABLE' };
 
       const game = this.game.snapshot();
@@ -577,6 +580,10 @@
       }
       if (this._ownedMovement(movement)) {
         return { state: 'TRAVELLING', reason: 'H9_TRAVEL_IN_PROGRESS', order: clone(movement.activeOrder) };
+      }
+      if (movement && movement.activeOrder) {
+        this.metrics.ownershipBlocks += 1;
+        return this._suspend('H9_FOREIGN_MOVEMENT_OWNERSHIP');
       }
 
       const candidate = plan.selected;
