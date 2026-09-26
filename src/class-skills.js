@@ -382,6 +382,24 @@
       return null;
     }
 
+    preview(targetId) {
+      const game = this.game && typeof this.game.snapshot === 'function' ? this.game.snapshot() : null;
+      if (!game || !game.character) return null;
+      const targets = this.game && typeof this.game.visibleMonsters === 'function' ? this.game.visibleMonsters() : [];
+      const target = targetId == null
+        ? (game.target || targets[0] || null)
+        : targets.find(row => String(row.id) === String(targetId)) || (game.target && String(game.target.id) === String(targetId) ? game.target : null);
+      if (!target) return null;
+      const decision = this._choose(game, target);
+      return decision ? clone({
+        skillId: decision.id,
+        targetId: decision.targetId,
+        kind: decision.kind,
+        reason: decision.reason,
+        recastMs: decision.recastMs
+      }) : null;
+    }
+
     _knownRejection(reason) {
       const value = String(reason || '').toLowerCase();
       if (!value) return false;
