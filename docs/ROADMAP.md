@@ -282,7 +282,7 @@ Nach H9 existiert ein echter autonomer Farming-Bot.
 
 ## H10 – Loot & Inventar
 
-**🟦 BAU – vorbereitet, wartet auf H9-Merge**
+**🟦 BAU – implementiert, finale CI/Live-Abnahme offen**
 - eigener `LootInventoryController`
 - Live-Inventar aus `character.items` + Empty-Slot-Signal aus `character.esize`
 - Live-Chests aus `get_chests()` / `chests`
@@ -310,7 +310,7 @@ Nach H9 existiert ein echter autonomer Farming-Bot.
 - geschützte/reservierte Baseline-Items dürfen nicht verschwinden
 - 5-Sekunden-Stabilität ohne Loot-/Attack-UNKNOWN
 - Cleanup von H9/H8/H5/H4 + kein Pending Loot
-- echter Adventure-Land-Live-Test erst nach H9-Merge und finaler H10-CI
+- echter Adventure-Land-Live-Test nach grüner finaler H10-CI
 
 ---
 
