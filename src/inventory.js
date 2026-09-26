@@ -214,21 +214,22 @@
       }
 
       const response = pending.response;
+      const responseReason = cleanText(response && response.reason || '', 240);
       if (response && response.failed === true) {
         this.metrics.lootKnownRejected += 1;
         this.lastAction = {
           at: new Date().toISOString(),
           type: 'LOOT_REJECTED',
-          reason: cleanText(response.reason || 'H10_LOOT_REJECTED', 240)
+          reason: responseReason || 'H10_LOOT_REJECTED'
         };
         return true;
       }
-      if (response && response.success === false) {
+      if (response && (response.success === false || ['nothing_to_loot', 'safety'].includes(responseReason))) {
         this.metrics.lootKnownRejected += 1;
         this.lastAction = {
           at: new Date().toISOString(),
           type: 'LOOT_SKIPPED',
-          reason: cleanText(response.reason || 'H10_LOOT_SKIPPED', 240)
+          reason: responseReason || 'H10_LOOT_SKIPPED'
         };
         return true;
       }
