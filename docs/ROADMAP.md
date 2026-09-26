@@ -231,11 +231,13 @@ Live-Ergebnis:
 
 ## H9 – Farm Intelligence
 
-**🟦 BAU – aktuell**
+**🟩 BESTANDEN – 2026-09-26**
 - eigener `FarmIntelligenceController`
 - H5-sichere sichtbare Monstercluster als primäre Live-Kandidaten
 - aktuelle Spawnpunkte aus live `G.maps`
 - Kampfwerte aus live `G.monsters`, Gold aus `G.monster_gold`/`G.drops.gold`, Drops aus `G.drops.monsters`
+- `evasion`/`avoidance` + Character-`damage_type` fließen in Trefferwahrscheinlichkeit und Kandidatenfilter ein
+- physische Farmer schließen near-unhittable Ziele unter 25 % erwarteter Trefferchance vor Targeting/Farmwahl aus
 - erklärbares Scoring:
   - XP-Effizienz
   - Gold-Effizienz
@@ -247,6 +249,7 @@ Live-Ergebnis:
   - Sicherheitskonfidenz
 - H4 Smart Move für Spot-Reisen
 - H8 Adaptive Farming für Combat/Farming-Ausführung
+- delegierte H9→H8→H5→H4-Movement-Ownership wird korrekt erkannt
 - keine direkten H9-Gameplay-Dispatches
 - Ownership-Schutz für H4/H8
 - Movement UNKNOWN/FAILED_SAFE -> Suspension ohne Blind-Retry
@@ -257,16 +260,20 @@ Live-Ergebnis:
 - Headless API `ALBot.farmIntelligence.*`
 - `docs/H9-LIVE-TEST.md`
 
-**🟧 LIVE-TEST**
-- Ein-Klick-Test über **Test starten**
-- H9 wählt selbst ein erklärbares Farmziel; sichtbare Safe-Cluster und bekannte `G.maps`-Spawns konkurrieren im Score
-- H8 übernimmt das gewählte Monsterziel
-- echte H8-AoE- oder H5-Aktion muss bestätigt werden
-- mehrere adaptive Live-Entscheidungszyklen; natürlicher Farmspot-Wechsel wird erfasst, wenn die Lage ihn auslöst
-- stabiler Hold ist bei unverändert bestem Spot korrekt; kein erzwungener Testwechsel
-- kein A→B→A-Pingpong
-- kein H8/H5 UNKNOWN und kein Ownership-Verlust
-- Cleanup + Diagnosekopie automatisch
+**🟩 LIVE-TEST BESTANDEN**
+- Ein-Klick-Suite: `PASSED / ALL_STEPS_PASSED`
+- Preflight, Autonomous Start, Confirmed Farming, Adaptive Entscheidung, Stability und Cleanup jeweils PASSED
+- initiale Auswahl: Goo-Spawn; spätere Live-Auswahl: Squigtoad
+- mindestens ein echter H5-Basisangriff bestätigt
+- adaptive Beobachtung: 63 Entscheidungen, 22 Holds, 2 Switches, 3 Travel Orders
+- 6 Anti-Pingpong-Blocks ohne A→B→A-Verstoß
+- H8 `aoeUnknown=0`
+- H5 `attackUnknown=0`
+- H7 `focusPingPongs=0`
+- H9 `ownershipBlocks=0`
+- H9 `movementUnknown=0`
+- Cleanup vollständig: H9/H8/H5/H4 inaktiv
+- Runtime STOPPED, Scheduler 0 Ressourcen
 
 ### 🟩 Meilenstein 1
 Nach H9 existiert ein echter autonomer Farming-Bot.
