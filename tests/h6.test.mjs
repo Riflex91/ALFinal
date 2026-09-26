@@ -197,10 +197,10 @@ test('H6 exposes class skill API, module and recommended live suite', async t =>
   const { ctx } = await startController({ ctype: 'warrior', level: 28, mp: 300, maxMp: 300, range: 23 });
   t.after(async () => { try { await ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {} });
 
-  assert.equal(ctx.ALBot.version, '0.8.0-h8');
+  assert.equal(ctx.ALBot.version, '0.9.0-h9');
   assert.equal(typeof ctx.ALBot.classSkills.status, 'function');
   assert.equal(typeof ctx.ALBot.classSkills.preview, 'function');
-  assert.equal(ctx.ALBot.liveTests.status().recommendedId, 'h8-adaptive-farming');
+  assert.equal(ctx.ALBot.liveTests.status().recommendedId, 'h9-farm-intelligence');
 
   const module = ctx.ALBot.modules.list().find(row => row.id === 'class-skills');
   assert.equal(module.state, 'ACTIVE');
