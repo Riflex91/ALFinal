@@ -69,6 +69,15 @@
       });
       this.combat.party = this.party;
       this.combat.farming = this.farming;
+      this.farmIntelligence = new ns.FarmIntelligenceController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        combat: this.combat,
+        farming: this.farming,
+        movement: this.movement,
+        party: this.party
+      });
       this.liveTests = new ns.LiveTestRunner({
         runtime: this,
         logger: this.logger,
@@ -154,6 +163,15 @@
         start: context => this.farming.start(context),
         stop: reason => this.farming.stop(reason),
         status: () => this.farming.status()
+      });
+
+      this.modules.register({
+        id: 'farm-intelligence',
+        title: 'Farm Intelligence',
+        version: '0.9.0',
+        start: context => this.farmIntelligence.start(context),
+        stop: reason => this.farmIntelligence.stop(reason),
+        status: () => this.farmIntelligence.status()
       });
     }
 
@@ -1181,6 +1199,7 @@
         party: this.party.status(),
         combat: this.combat.status(),
         farming: this.farming.status(),
+        farmIntelligence: this.farmIntelligence.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
         roster,
@@ -1204,6 +1223,7 @@
         party: this.party.status(),
         combat: this.combat.status(),
         farming: this.farming.status(),
+        farmIntelligence: this.farmIntelligence.status(),
         liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
         logs: this.logger.list(160),
