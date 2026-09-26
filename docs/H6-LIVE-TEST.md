@@ -183,3 +183,39 @@ Nicht nötig:
 - einzelne Testschritte wiederholen.
 
 Bei Fehler den automatisch kopierten Bericht direkt in ChatGPT einfügen.
+
+
+---
+
+## Live-Ergebnis 2026-09-26
+
+**BESTANDEN**
+
+Der H6-Ein-Klick-Live-Test wurde im echten Adventure-Land-Client erfolgreich abgeschlossen.
+
+Live bestätigt:
+- Version `0.6.0-h6`;
+- aktuelle Klasse wurde als Ranger erkannt;
+- Live-`G.skills` für `huntersmark` und `supershot` wurden korrekt gelesen;
+- `preflight` = PASSED;
+- `start-combat` = PASSED;
+- `class-skill` = PASSED;
+- `anti-spam-window` = PASSED;
+- `cleanup` = PASSED;
+- Endstatus = `PASSED / ALL_STEPS_PASSED`;
+- mindestens ein klassenspezifischer Skill wurde serverbestätigt eingesetzt;
+- Hunter's Mark wurde als Support-Skill bestätigt;
+- Supershot wurde als Damage-Skill bestätigt;
+- Class-Skill-Metrik: dispatched = 2, confirmed = 2, rejected = 0, unknown = 0;
+- kein Class-Skill-UNKNOWN;
+- kein H5-Attack-UNKNOWN;
+- Anti-Spam-/Recast-Verhalten blieb aktiv und diagnostizierbar;
+- eine Range-Annäherung lief kontrolliert über H4 Movement;
+- Combat-Cleanup setzte Combat inaktiv;
+- Class-Skill-Pending wurde geleert;
+- Class-Skill-Session-Ownership wurde freigegeben;
+- Movement wurde freigegeben;
+- die für den Test automatisch gestartete Runtime wurde anschließend wieder auf STOPPED zurückgesetzt;
+- Scheduler nach Abschluss = 0 Ressourcen.
+
+H6 ist damit live vollständig bestanden.
