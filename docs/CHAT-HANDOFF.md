@@ -512,27 +512,30 @@ Wichtiger finaler CI-Fix:
 - Regressionstest wurde an diese Fail-Safe-Semantik angepasst;
 - keine Gameplay-Semantik wurde dafür aufgeweicht.
 
-## H10 – Loot & Inventar – Implementierung fertig, CI/Live-Abnahme offen
+## H10 – Loot & Inventar – live bestanden, finaler Merge-Gate läuft
 
 Offizieller Entwicklungsbranch:
 `chatgpt/h10-loot-inventory`
 
-Basis:
-`main` bei Merge-Commit `49f5175a7d555415e4a5a1e333d0fbe3c5200f44`
+PR:
+`#10 – H10: Loot & Inventory`
 
-Der frühere Prep-Branch `chatgpt/h10-loot-inventory-prep` ist nur historische Vorbereitung und darf nicht gemergt werden.
+Basis:
+`main` bei H9-Merge-Commit `49f5175a7d555415e4a5a1e333d0fbe3c5200f44`
 
 Implementiert:
 - AL Bot Version `0.10.0-h10`;
-- neuer `LootInventoryController`;
+- eigener `LootInventoryController`;
 - Live-Inventar- und Chest-Normalisierung im Game Adapter;
 - `loot` als zentrale ActionBoundary-Aktion;
 - konservative Dispositionen `PROTECT / RESERVE / KEEP / BANK / EXCHANGE / SELL`;
 - unbekannte Items -> `BANK`, nicht `SELL`;
-- locked/gelevelt/Quest/Gear/Goal-Items werden geschützt bzw. reserviert;
+- locked/gelevelt/Quest/Gear/Goal-Items geschützt bzw. reserviert;
+- normalisiertes `definition.quest === true` wird als Questschutz berücksichtigt;
 - 2 Slots Standardreserve;
-- bekannte Adventure-Land-Loot-Races `nothing_to_loot` / `safety` werden als Known Skip behandelt;
-- Loot-UNKNOWN -> H10-Suspension ohne Blind-Retry;
+- `nothing_to_loot` / `safety` als Known Skip;
+- synchrones/asynchrones Loot-UNKNOWN -> Suspension ohne Blind-Retry;
+- niemals settlender Loot-Promise besitzt eine bounded Outcome-Deadline und wird danach `H10_LOOT_OUTCOME_TIMEOUT`;
 - expliziter Safety-Reset;
 - Runtime-Modul `loot-inventory`;
 - Headless API `ALBot.inventory.*`;
@@ -540,24 +543,51 @@ Implementiert:
 - eigener GUI-Tab **Loot & Inventar**;
 - H10-Ein-Klick-Suite `h10-loot-inventory`;
 - `docs/H10-LIVE-TEST.md`;
-- `tests/h10.test.mjs` plus angepasste Ressourcen-/Versionsassertions älterer Suites.
+- Regressionen einschließlich Pending-Loot-Timeout und normalisiertem Quest-Flag.
 
-H10 führt bewusst **keine** echten Sell-/Bank-/Exchange-Aktionen aus. Diese späteren Economy-Aktionen bleiben ihren Roadmap-Stufen vorbehalten.
+H10 führt bewusst **keine** echten Sell-/Bank-/Exchange-Aktionen aus. Diese bleiben späteren Economy-Stufen vorbehalten.
 
-Direkte Smoke-Evidence:
-- Source-/Runtime-/UI-Syntax grün;
-- Runtime startet mit 6 zentral verwalteten Ressourcen;
-- H10-Modul ACTIVE mit genau 1 eigener Scheduler-Ressource;
-- simuliertes Chest-Loot: 1 Dispatch, 1 Confirmed, 0 UNKNOWN;
-- neu gelootetes unbekanntes Item -> `BANK` + geschützt;
-- Promise-Rejection: exakt 1 Loot-Dispatch, danach Suspension, kein Blind-Retry;
-- Runtime-Stop -> 0 Ressourcen, H10 inaktiv.
+Finale Live-Evidence:
+- Suite `h10-loot-inventory`: **PASSED / ALL_STEPS_PASSED**;
+- Runtime `AL Bot 0.10.0-h10`;
+- Preflight: 42 Slots, 4 benutzt, 38 frei, `protectedCount=4`;
+- Dispositionen: KEEP=2, BANK=1, EXCHANGE=1;
+- sichere H9-Goo-Probe autonom gestartet;
+- Confirmed Loot: `lootDispatched=1`, `lootConfirmed=1`, `knownSkips=0`, `attacksConfirmed=1`;
+- Protection Delta: **PASSED**, `checkedProtectedItems=4`;
+- Stability: `lootConfirmed=2`, `lootUnknown=0`, 38 freie Slots;
+- Cleanup: `pendingLoot=false`, H9/H8/H5/H4 inaktiv;
+- Cleanup `ok=true`;
+- Runtime danach wieder STOPPED;
+- Scheduler danach `totalResources=0`.
 
-Noch offen:
-- vollständige GitHub-CI auf dem offiziellen H10-Branch;
-- Review-Gates;
-- danach echter Adventure-Land-Ein-Klick-Live-Test;
-- erst nach echter Live-Evidence H10 als bestanden markieren und mergen.
+Post-Live Review-Härtung:
+- P2: hängender `loot()`-Promise kann H10 nicht mehr dauerhaft wedgen;
+- P2: normalisiertes Quest-Flag wird bei der Schutzklassifizierung berücksichtigt;
+- beide Fälle regressionsgetestet;
+- CI Run #210 auf Head `a86e83938ca92fa2da0f5b7330433e797510bbbf`: SUCCESS;
+- beide P2-Review-Threads resolved.
+
+Die Post-Live-Fixes verändern den live bestätigten normalen Loot-Happy-Path nicht: der Timeout greift nur bei ausbleibendem Outcome, der Quest-Fix erweitert nur die konservative Schutzklassifizierung.
+
+Aktuell:
+- Live-Abnahme abgeschlossen;
+- H10 in ROADMAP auf BESTANDEN gesetzt;
+- Evidence-Dokumentation aktualisiert;
+- durch diese Dokumentationscommits ist ein neuer Head entstanden;
+- jetzt ausschließlich den **neuen exakten Head** für CI und Merge-Gate verwenden.
+
+Nächste Aktion:
+1. aktuellen PR-Head frisch lesen;
+2. `main...chatgpt/h10-loot-inventory` prüfen, `behind_by=0`;
+3. alle Workflow-Runs des exakten Heads müssen completed und success/skipped/neutral sein;
+4. keine offenen Review-Threads;
+5. kein `CHANGES_REQUESTED`;
+6. Commit-Status ohne echte pending/failure-Kontexte;
+7. `mergeable=true`;
+8. dann PR #10 ausschließlich mit Methode `merge` und exaktem `expected_head_sha` mergen;
+9. Merge auf `main` verifizieren;
+10. H11 – Merchant-Grundbetrieb auf frischem Branch vom neuen `main` beginnen.
 
 ## H2 Architekturregel für spätere Module
 
@@ -652,4 +682,4 @@ Bei Fehler:
 
 ## Nächster Schritt
 
-H9 bleibt live vollständig bestanden, darf aber erst nach grüner exakter Head-CI und allen Merge-Gates gemerged werden. Danach **H10 – Loot & Inventar** auf einem frischen Branch vom neuen `main` erstellen und die geprüften Prep-Änderungen portieren. Anschließend finale H10-CI und echter Ein-Klick-Live-Test.
+H10 finalen Exact-Head-CI-/Merge-Gate abschließen und PR #10 bei vollständig grünem Gate automatisch mergen. Danach **H11 – Merchant-Grundbetrieb** auf einem frischen Branch vom neuen `main` starten.
