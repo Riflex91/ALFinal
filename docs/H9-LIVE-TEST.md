@@ -60,6 +60,8 @@ H9:
 - stiehlt keine fremde H8-Farming-Session;
 - stiehlt keine fremde H4-Movement-Order;
 - stoppt nur eigene H8/H4-Ownership;
+- tritt nach Session-Start ein fremdes Party-Mitglied bei, stoppt H9 seine eigene H8/H4-Arbeit sofort und suspendiert;
+- erscheint während H9 eine fremde aktive H4-Movement-Order, suspendiert H9 statt dagegen anzulaufen;
 - suspendiert bei H4-`UNKNOWN` oder `FAILED_SAFE`;
 - führt danach keinen Blind-Retry aus;
 - respektiert H8/H5/Party-Safety vollständig;
