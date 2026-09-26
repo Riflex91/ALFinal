@@ -258,3 +258,53 @@ test('H10 source remains non-destructive: only loot is dispatched by the control
   assert.doesNotMatch(inventorySource, /dispatch\('bank_store'/);
   assert.doesNotMatch(inventorySource, /dispatch\('exchange'/);
 });
+
+
+test('H10 explicit safety reset is required before loot resumes after UNKNOWN', async () => {
+  const f = controllerFixture({ rejectPromise: true });
+  assert.equal(f.controller.tick().state, 'LOOT_PENDING');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(f.controller.tick().state, 'SUSPENDED');
+  assert.equal(f.dispatches.length, 1);
+
+  f.controller.resetSafety('TEST_RESET');
+  f.setChests([]);
+  const after = f.controller.tick();
+  assert.equal(after.state, 'READY');
+  assert.equal(f.controller.status().suspended, false);
+  assert.equal(f.controller.status().lastAction.type, 'RESET');
+  assert.equal(f.dispatches.length, 1);
+});
+
+test('H10 runtime, public API, UI and one-click live suite are wired', () => {
+  const runtime = fs.readFileSync(path.resolve(here, '../src/runtime.js'), 'utf8');
+  const entry = fs.readFileSync(path.resolve(here, '../src/entry.js'), 'utf8');
+  const build = fs.readFileSync(path.resolve(here, '../scripts/build.mjs'), 'utf8');
+  const ui = fs.readFileSync(path.resolve(here, '../src/ui.js'), 'utf8');
+  const boundary = fs.readFileSync(path.resolve(here, '../src/action-boundary.js'), 'utf8');
+  const pkg = JSON.parse(fs.readFileSync(path.resolve(here, '../package.json'), 'utf8'));
+
+  assert.match(runtime, /new ns\.LootInventoryController/);
+  assert.match(runtime, /id: 'loot-inventory'/);
+  assert.match(runtime, /id: 'h10-loot-inventory'/);
+  assert.match(runtime, /H10_PROTECTED_ITEM_LOST/);
+  assert.match(runtime, /h10-confirmed-loot/);
+  assert.match(entry, /0\.10\.0-h10/);
+  assert.match(entry, /inventory:/);
+  assert.match(entry, /reset: reason => runtime\.inventory\.resetSafety/);
+  assert.match(build, /src\/inventory\.js/);
+  assert.match(build, /AL Bot 0\.10\.0-h10/);
+  assert.match(ui, /data-tab="inventory"/);
+  assert.match(ui, /H10 Loot & Inventar/);
+  assert.match(boundary, /loot: Object\.freeze\(\{ publicName: 'loot'/);
+  assert.equal(pkg.version, '0.10.0');
+});
+
+test('H10 source keeps destructive economy actions outside the controller', () => {
+  const boundary = fs.readFileSync(path.resolve(here, '../src/action-boundary.js'), 'utf8');
+  assert.match(boundary, /publicName: 'loot'/);
+  assert.doesNotMatch(inventorySource, /dispatch\('sell'/);
+  assert.doesNotMatch(inventorySource, /dispatch\('bank_store'/);
+  assert.doesNotMatch(inventorySource, /dispatch\('exchange'/);
+  assert.match(inventorySource, /SAFE_DEFAULT_UNKNOWN_VALUE/);
+});
