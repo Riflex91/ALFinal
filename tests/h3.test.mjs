@@ -266,7 +266,7 @@ test('Knowledge refresh failure preserves Last Known Good and runtime stability'
 });
 
 test('Bridge outage without any LKG is diagnosable but does not crash core', async () => {
-  const { context: ctx } = runtimeContext({ fetch: async () => response('{}', 404) });
+  const { context: ctx } = runtimeContext({ fetch: async () => response('{}', 503) });
   vm.runInNewContext(bundle, ctx);
   await ctx.ALBot.start();
 
@@ -314,4 +314,19 @@ test('H3 control center exposes Knowledge and normalized live game status', () =
   assert.match(ui, /Last Known Good/);
   assert.match(ui, /Scheduler Starts/);
   assert.match(ui, /Runtime Starts/);
+});
+
+
+test('missing bridge snapshot is reported as waiting instead of runtime failure', async () => {
+  const { context: ctx } = runtimeContext({ fetch: async () => response('{}', 404) });
+  vm.runInNewContext(bundle, ctx);
+  await ctx.ALBot.start();
+
+  const status = await ctx.ALBot.knowledge.refresh();
+  assert.equal(status.provider.state, 'WAITING_FOR_BRIDGE');
+  assert.equal(status.lastRefreshError, 'BRIDGE_SNAPSHOT_NOT_AVAILABLE');
+  assert.equal(status.lastKnownGood, null);
+  assert.equal(ctx.ALBot.status().running, true);
+
+  await ctx.ALBot.stop('DONE');
 });
