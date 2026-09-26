@@ -186,20 +186,35 @@ Live-Ergebnis:
 
 ## H8 – AoE & adaptives Farming
 
-**🟦 BAU**
-- AoE
-- Pull Limits
-- Mob-Dichte
-- Risiko
-- dynamische Gegnerzahl
-- Retreat
-- verbessertes Kiting
+**🟦 BAU – technisch implementiert, Live-Test ausstehend**
+- eigener `AdaptiveFarmingController`
+- Pack-/Pull-Planung ausschließlich aus H5-`safeCandidates`
+- dynamische Pack-Kapazität nach Klasse und HP-Reserve
+- zusätzliches aggregiertes Monster-Angriffsbudget
+- gleiche Monsterart innerhalb eines geplanten Packs
+- Warrior: `cleave`, `stomp`
+- Ranger: `3shot`, `5shot`
+- Mage: `cburst`
+- Rogue: `fanofknives`
+- live Skill-Readiness statt fest angenommener Verfügbarkeit
+- untargeted AoE fail-closed bei unsicherer Wirkzone
+- H6-Pending/Support/Defensive bleibt vor H8 priorisiert
+- bekannte Ablehnung -> Backoff
+- UNKNOWN -> H8-Suspension ohne Blind-Retry
+- Retreat/Single-Target-Fallback bei sinkender Sicherheitsreserve
+- eigener Farming-Tab im Control Center
+- Headless API `ALBot.farming.*`
+- `docs/H8-LIVE-TEST.md`
 
 **🟧 LIVE-TEST**
-- größere Gruppen kontrolliert farmen
-- kein Überziehen
-- kein Pingpong
-- sinnvoller Rückzug
+- Ein-Klick-Test über **Test starten**
+- live-bereiten H8-AoE-Skill automatisch erkennen
+- ausreichend großes H5-sicheres Pack gleicher Monsterart erkennen
+- H8-Packplan innerhalb Kapazität/Risikobudget
+- mindestens ein serverbestätigter AoE-Skill
+- 5-Sekunden-Fenster ohne H8 UNKNOWN, H5 Attack-UNKNOWN oder H7 Focus-Pingpong
+- Cleanup + Diagnosekopie automatisch
+- Runtime danach wieder STOPPED, Scheduler 0 Ressourcen
 
 ---
 
