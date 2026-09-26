@@ -3867,6 +3867,7 @@
 
     _registerLiveTests() {
       let baseline = null;
+      let livePlan = null;
       this.liveTests.register({
         id: 'h5-combat',
         title: 'H5 – Einfacher Kampf',
@@ -3877,6 +3878,7 @@
         restoreRuntimeState: true,
         prepare: async ({ runtime }) => {
           try { runtime.combat.stopSession('H5_LIVE_TEST_RESET'); } catch (_) {}
+          livePlan = null;
           const metrics = runtime.combat.status().metrics;
           baseline = {
             targetsAcquired: metrics.targetsAcquired,
@@ -3902,18 +3904,54 @@
               assert(runtime.actions.available('change_target'), 'CHANGE_TARGET_API_UNAVAILABLE');
               const combatModule = runtime.modules.describe('combat');
               assert(combatModule && combatModule.state === 'ACTIVE', 'COMBAT_MODULE_NOT_ACTIVE');
+              const currentHp = Number(game.character.hp);
+              const maxHp = Number(game.character.maxHp);
+              assert(Number.isFinite(currentHp) && currentHp > 0, 'CHARACTER_HP_UNAVAILABLE');
+              assert(Number.isFinite(maxHp) && maxHp > 0, 'CHARACTER_MAX_HP_UNAVAILABLE');
+
+              const attackBudget = Math.max(5, Math.min(maxHp * 0.08, currentHp * 0.08));
               const candidates = runtime.combat.safeCandidates({
                 maxAcquireDistance: 450,
-                maxAttackToHpRatio: 0.08
+                maxAttack: attackBudget
               });
-              assert(candidates.length > 0, 'NO_SAFE_VISIBLE_MONSTER');
+              assert(candidates.length > 0, 'NO_SAFE_VISIBLE_MONSTER_FOR_CURRENT_HP');
               const target = candidates[0];
+              const targetAttack = Number(target.attack);
+              assert(Number.isFinite(targetAttack) && targetAttack >= 0, 'TARGET_ATTACK_UNAVAILABLE');
+
+              const absoluteRetreatHp = Math.max(100, targetAttack * 20);
+              const minimumStartHp = Math.max(150, targetAttack * 25);
+              assert(currentHp >= minimumStartHp,
+                'HP_TOO_LOW_FOR_SAFE_H5_TEST:' + Math.round(currentHp) + '<' + Math.round(minimumStartHp));
+
+              const retreatHpRatio = Math.max(0.05, Math.min(0.35, absoluteRetreatHp / maxHp));
+              const resumeHpRatio = Math.max(
+                retreatHpRatio + 0.05,
+                Math.min(0.65, retreatHpRatio * 1.75)
+              );
+
+              livePlan = {
+                monsterType: target.mtype || null,
+                maxAttack: attackBudget,
+                retreatHpRatio,
+                resumeHpRatio,
+                targetId: target.id,
+                targetAttack,
+                startingHp: currentHp,
+                maxHp
+              };
+
               return {
                 character: game.character.name,
+                hp: currentHp,
+                maxHp,
                 target: target.name || target.mtype || target.id,
                 mtype: target.mtype,
                 distance: target.distance,
-                attack: target.attack
+                attack: target.attack,
+                attackBudget,
+                retreatHp: Math.round(maxHp * retreatHpRatio),
+                retreatHpRatio
               };
             }
           },
@@ -3922,12 +3960,14 @@
             title: 'Autonome Combat-Session starten und Target bestätigen',
             timeoutMs: 10000,
             run: async ({ runtime, assert, waitFor }) => {
+              assert(livePlan, 'H5_LIVE_TEST_PLAN_MISSING');
               const result = runtime.combat.startSession({
                 owner: 'live-test-h5',
+                monsterType: livePlan.monsterType || undefined,
                 maxAcquireDistance: 450,
-                maxAttackToHpRatio: 0.08,
-                retreatHpRatio: 0.35,
-                resumeHpRatio: 0.65,
+                maxAttack: livePlan.maxAttack,
+                retreatHpRatio: livePlan.retreatHpRatio,
+                resumeHpRatio: livePlan.resumeHpRatio,
                 minMpRatio: 0,
                 kiting: false
               });
