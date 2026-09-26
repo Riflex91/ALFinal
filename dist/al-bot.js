@@ -2092,6 +2092,7 @@
       const now = this.now();
       this._trimHistory(now);
       const key = this._destinationKey(destination);
+      if (options.safety === true) return { ok: true, key };
       const last = this.destinationHistory[this.destinationHistory.length - 1] || null;
 
       if (last && last.key !== key && !options.retarget && now - last.atMs < this.config.rapidSwitchMs) {
@@ -2564,13 +2565,15 @@
         if (can !== false) {
           return this._startOrder('local', this.safePoint, {
             ...options,
-            owner: options.owner || 'safe-return'
+            owner: options.owner || 'safe-return',
+            safety: true
           });
         }
       }
       return this._startOrder('smart', this.safePoint, {
         ...options,
-        owner: options.owner || 'safe-return'
+        owner: options.owner || 'safe-return',
+        safety: true
       });
     }
 
