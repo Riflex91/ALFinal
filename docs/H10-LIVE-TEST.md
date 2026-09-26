@@ -74,7 +74,7 @@ Wenn ein Loot-Aufruf synchron oder asynchron unklar endet:
 
 Adventure-Land-Antworten wie `nothing_to_loot` oder `safety` sind dagegen bekannte Skips und werden nicht als UNKNOWN behandelt.
 
-## H10 Live-Test – geplanter Ein-Klick-Ablauf
+## H10 Live-Test – implementierter Ein-Klick-Ablauf
 
 ### 1. Preflight
 
@@ -110,7 +110,7 @@ Wenn eine passende Chest vorhanden ist:
 - bestätigte/known-skip Antwort abwarten;
 - UNKNOWN führt sofort zum Fail/Suspend.
 
-Wenn keine Chest vorhanden ist, darf der Test einen Farmzyklus beobachten, bis ein echter Loot-Event entsteht.
+Wenn keine passende Chest vorhanden ist, startet die Suite H9-Farming selbstständig und wartet auf mindestens einen echten bestätigten Loot.
 
 ### 4. Inventory Delta
 
@@ -132,12 +132,7 @@ Mehrere Farmzyklen beobachten:
 
 ### 6. Cleanup
 
-H10 stoppt sauber:
-
-- kein Pending Loot;
-- Modul inaktiv;
-- keine eigenen Scheduler-Ressourcen;
-- Runtime wird bei Auto-Start wieder STOPPED.
+Die Suite gibt H9/H8/H5/H4 sauber frei und wartet, bis kein H10-Loot mehr pending ist. Wenn die Runtime für den Test automatisch gestartet wurde, stellt der Live-Test-Runner danach den vorherigen STOPPED-Zustand wieder her; anschließend besitzt H10 keine Scheduler-Ressourcen mehr.
 
 ## Regressionen
 
