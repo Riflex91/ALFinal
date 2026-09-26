@@ -31,6 +31,8 @@ Für einen echten H7-Live-Test müssen mindestens **zwei eigene, lebende Charakt
 
 H7 startet oder stoppt in diesem Schritt bewusst keine anderen Charaktere und verändert die Party-Mitgliedschaft nicht automatisch. Character-Lifecycle folgt später in H19.
 
+**Merchant / LOGISTICS:** Ein Merchant gehört zur Party-Koordination, wird im H7-Live-Test aber bewusst nur beobachtend getestet. Adventure Land lehnt Merchant-Angriffe serverseitig ab; H7 startet deshalb auf einem LOGISTICS-Charakter keinen Combat-Loop und sendet keinen Angriff. Rollen, Party-Sicht, Focus-Stabilität und Cleanup werden trotzdem geprüft.
+
 Sind weniger als zwei eigene Party-Mitglieder vorhanden, endet der Ein-Klick-Test sofort und verständlich mit:
 
 `H7_NEEDS_ACTIVE_PARTY_OF_AT_LEAST_2`
@@ -122,9 +124,10 @@ Es werden keine unbekannten oder nicht live verifizierten Aura-Semantiken gerate
 - sicherer sichtbarer Gegner vorhanden.
 
 ### 2. Focus Fire
-- Combat-Session automatisch starten;
+- auf Combat-Rollen: Combat-Session automatisch starten;
 - Party-Focus ableiten;
-- Combat-Target und Party-Focus müssen konvergieren.
+- Combat-Target und Party-Focus müssen konvergieren;
+- auf LOGISTICS/Merchant: Observer-only, kein Combat-Start und kein Angriff.
 
 ### 3. Party Health
 - Party-Health-/Downed-Sicht prüfen;
