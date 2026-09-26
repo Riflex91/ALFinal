@@ -1004,9 +1004,37 @@
       return this._read('character');
     }
 
+    _entitySources() {
+      const sources = [];
+      const add = value => {
+        if (value && typeof value === 'object' && !sources.includes(value)) sources.push(value);
+      };
+      for (const candidate of this._roots()) {
+        try { add(candidate && candidate.entities); } catch (_) {}
+        try { add(candidate && candidate.parent && candidate.parent.entities); } catch (_) {}
+      }
+      return sources;
+    }
+
+    _entityEntries() {
+      const rows = [];
+      const seen = new Set();
+      for (const source of this._entitySources()) {
+        for (const [key, entity] of Object.entries(source)) {
+          if (!entity || typeof entity !== 'object') continue;
+          const stableId = String(entity.id != null ? entity.id : key);
+          if (seen.has(stableId)) continue;
+          seen.add(stableId);
+          rows.push({ key: String(key), entity, stableId });
+        }
+      }
+      return rows;
+    }
+
     _entities() {
-      const value = this._read('entities');
-      return value && typeof value === 'object' ? value : {};
+      const merged = {};
+      for (const row of this._entityEntries()) merged[row.stableId] = row.entity;
+      return merged;
     }
 
     _gameData() {
@@ -1031,9 +1059,11 @@
     _entityByIdOrName(id) {
       if (id == null) return null;
       const wanted = String(id);
-      for (const [key, entity] of Object.entries(this._entities())) {
-        if (!entity) continue;
+      for (const row of this._entityEntries()) {
+        const key = row.key;
+        const entity = row.entity;
         if (String(key) === wanted
+          || String(row.stableId) === wanted
           || String(entity.id || '') === wanted
           || String(entity.name || '') === wanted) {
           return { key: String(key), entity };
@@ -1103,7 +1133,8 @@
         target.distance = null;
       }
 
-      const entities = Object.values(this._entities()).filter(Boolean);
+      const entityEntries = this._entityEntries();
+      const entities = entityEntries.map(row => row.entity);
       let monsterCount = 0;
       let playerCount = 0;
       let npcCount = 0;
@@ -1140,6 +1171,12 @@
           targetId
         },
         target,
+        targetResolution: {
+          requestedId: targetId,
+          resolved: !!target,
+          entitySourceCount: this._entitySources().length,
+          mergedEntityCount: entityEntries.length
+        },
         server: this._server(),
         world: {
           entityCount: entities.length,
