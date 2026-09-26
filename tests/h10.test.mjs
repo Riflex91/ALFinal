@@ -86,6 +86,7 @@ function controllerFixture(options = {}) {
       dispatches.push({ name, args: [...args] });
       if (options.syncUnknown) return { state: 'UNKNOWN', error: { message: 'NETWORK_UNCERTAIN' } };
       if (options.rejectPromise) return { state: 'DISPATCHED', value: Promise.reject(new Error('NETWORK_UNCERTAIN')) };
+      if (options.neverResolvePromise) return { state: 'DISPATCHED', value: new Promise(() => {}) };
       return { state: 'DISPATCHED', value: Promise.resolve(options.lootResponse || { success: true }) };
     }
   };
@@ -143,6 +144,26 @@ test('H10 protects locked, leveled, gear and quest items with safe BANK fallback
   assert.equal(shell.protected, true);
   assert.equal(junk.disposition, 'BANK');
   assert.equal(junk.protected, true);
+});
+
+test('H10 honors the normalized quest flag even when item type is not quest', () => {
+  const f = controllerFixture({
+    inventory: {
+      available: true,
+      capacity: 8,
+      usedSlots: 1,
+      freeSlots: 7,
+      reportedEmptySlots: 7,
+      items: [
+        { slot: 0, name: 'quest_material', quantity: 1, level: 0, locked: false, definition: { type: 'material', quest: true } }
+      ]
+    },
+    chests: { available: true, chests: [] }
+  });
+  const item = f.controller.plan().items[0];
+  assert.equal(item.disposition, 'RESERVE');
+  assert.equal(item.reason, 'QUEST_ITEM');
+  assert.equal(item.protected, true);
 });
 
 test('H10 collection goals reserve matching items without hardcoded names', () => {
@@ -239,6 +260,23 @@ test('H10 rejected loot promise becomes UNKNOWN and is never blindly retried', a
   f.controller.tick();
   assert.equal(f.dispatches.length, 1);
   assert.equal(f.controller.status().metrics.lootUnknown, 1);
+});
+
+test('H10 pending loot timeout becomes UNKNOWN and requires explicit recovery', () => {
+  const f = controllerFixture({ neverResolvePromise: true });
+  const first = f.controller.tick();
+  assert.equal(first.state, 'LOOT_PENDING');
+  assert.equal(f.dispatches.length, 1);
+
+  f.controller.pendingLoot.deadlineAtMs = Date.now() - 1;
+  const second = f.controller.tick();
+  assert.equal(second.state, 'SUSPENDED');
+  assert.equal(second.reason, 'H10_LOOT_OUTCOME_TIMEOUT');
+  assert.equal(f.controller.status().metrics.lootUnknown, 1);
+  assert.equal(f.controller.status().pendingLoot, null);
+
+  f.controller.tick();
+  assert.equal(f.dispatches.length, 1);
 });
 
 test('H10 synchronous ActionBoundary UNKNOWN suspends immediately without retry', () => {
