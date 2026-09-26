@@ -339,3 +339,40 @@ test('character position is displayed with exactly two decimals', () => {
   assert.match(ui, /formatPosition\(gameCharacter\.x\)/);
   assert.match(ui, /formatPosition\(gameCharacter\.y\)/);
 });
+
+
+test('H3 target lookup also accepts Adventure Land entity collection keys', () => {
+  const { context: ctx } = runtimeContext({
+    character: {
+      name: 'FarmerA',
+      ctype: 'ranger',
+      map: 'main',
+      hp: 100,
+      max_hp: 100,
+      mp: 50,
+      max_mp: 50,
+      real_x: 10,
+      real_y: 20,
+      target: '5887406'
+    },
+    entities: {
+      '5887406': {
+        name: 'Keyed Frog',
+        type: 'monster',
+        mtype: 'frog',
+        real_x: 13,
+        real_y: 24,
+        hp: 40,
+        max_hp: 50
+      }
+    }
+  });
+  vm.runInNewContext(bundle, ctx);
+
+  const snap = ctx.ALBot.game.snapshot();
+  assert.equal(snap.character.targetId, '5887406');
+  assert.equal(snap.target.id, '5887406');
+  assert.equal(snap.target.name, 'Keyed Frog');
+  assert.equal(snap.target.mtype, 'frog');
+  assert.equal(snap.target.distance, 5);
+});
