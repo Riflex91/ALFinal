@@ -287,6 +287,9 @@ test('H9 source is integrated into runtime build and public API', () => {
   assert.match(runtime, /id: 'farm-intelligence'/);
   assert.match(runtime, /new ns\.FarmIntelligenceController/);
   assert.match(entry, /farmIntelligence:/);
+  assert.match(entry, /visiblePlayers:/);
+  assert.match(entry, /monsterDefinition:/);
+  assert.match(entry, /farmSpots:/);
   assert.match(build, /src\/farm-intelligence\.js/);
   assert.match(adapter, /monsterDefinition\(mtype\)/);
   assert.match(adapter, /farmSpotCatalog\(options = \{\}\)/);
