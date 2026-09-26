@@ -3635,6 +3635,7 @@
       this.config = {
         tickMs: Math.max(100, Math.min(2000, Number(options.tickMs) || 250)),
         focusHoldMs: Math.max(250, Math.min(10000, Number(options.focusHoldMs) || 1200)),
+        focusPingPongWindowMs: Math.max(1000, Math.min(30000, Number(options.focusPingPongWindowMs) || 6000)),
         healHpRatio: Math.max(0.25, Math.min(0.95, Number(options.healHpRatio) || 0.70)),
         partyHealHpRatio: Math.max(0.25, Math.min(0.95, Number(options.partyHealHpRatio) || 0.68)),
         partyHealMinMembers: Math.max(2, Math.min(8, Number(options.partyHealMinMembers) || 2)),
@@ -3650,6 +3651,7 @@
       this.focusSinceMs = 0;
       this.pendingFocusId = null;
       this.pendingFocusSinceMs = 0;
+      this.focusHistory = [];
       this.pendingSupport = null;
       this.supportGeneration = 0;
       this.supportSuspended = false;
@@ -3662,6 +3664,7 @@
         partySnapshots: 0,
         focusUpdates: 0,
         focusChanges: 0,
+        focusPingPongs: 0,
         assistTargetsObserved: 0,
         healsDispatched: 0,
         partyHealsDispatched: 0,
@@ -3676,6 +3679,7 @@
 
     start(context) {
       this.active = true;
+      this.focusHistory = [];
       this.scope = context && context.scope || null;
       this.heartbeat = context && typeof context.heartbeat === 'function' ? context.heartbeat : null;
       if (!this.scope) throw new Error('PARTY_SCOPE_REQUIRED');
@@ -3767,6 +3771,43 @@
       return best ? { id: best.id, source: 'majority:' + best.count } : null;
     }
 
+    _recordFocusTarget(targetId, source, atMs = this.now()) {
+      const id = targetId == null ? null : String(targetId);
+      if (!id) return false;
+      const cutoff = atMs - this.config.focusPingPongWindowMs;
+      this.focusHistory = this.focusHistory.filter(row => row && row.atMs >= cutoff);
+
+      const last = this.focusHistory.length ? this.focusHistory[this.focusHistory.length - 1] : null;
+      if (last && last.targetId === id) return false;
+
+      let pingPong = false;
+      if (last && last.targetId !== id) {
+        for (let i = this.focusHistory.length - 2; i >= 0; i -= 1) {
+          if (this.focusHistory[i].targetId === id) {
+            pingPong = true;
+            break;
+          }
+        }
+      }
+
+      this.focusHistory.push({
+        targetId: id,
+        source: cleanText(source || '', 160) || null,
+        atMs
+      });
+      if (this.focusHistory.length > 24) this.focusHistory.splice(0, this.focusHistory.length - 24);
+
+      if (pingPong) {
+        this.metrics.focusPingPongs += 1;
+        if (this.logger) this.logger.warn('Party Focus Pingpong erkannt', {
+          targetId: id,
+          previousTargetId: last && last.targetId || null,
+          windowMs: this.config.focusPingPongWindowMs
+        });
+      }
+      return pingPong;
+    }
+
     _updateFocus(snapshot) {
       const proposed = this._proposedFocus(snapshot);
       const now = this.now();
@@ -3798,6 +3839,7 @@
       }
 
       if (now - this.pendingFocusSinceMs < this.config.focusHoldMs) return;
+      this._recordFocusTarget(proposed.id, proposed.source, now);
       this.focusTargetId = proposed.id;
       this.focusSource = proposed.source;
       this.focusSinceMs = now;
@@ -4021,7 +4063,8 @@
           targetId: this.focusTargetId,
           source: this.focusSource,
           sinceMs: this.focusSinceMs || null,
-          pendingTargetId: this.pendingFocusId
+          pendingTargetId: this.pendingFocusId,
+          recentHistory: clone(this.focusHistory)
         },
         support: {
           pending: clone(this.pendingSupport),
@@ -5745,6 +5788,7 @@
           const combat = runtime.combat.status();
           h7Baseline = {
             focusChanges: party.metrics.focusChanges,
+            focusPingPongs: party.metrics.focusPingPongs,
             supportUnknown: party.metrics.supportUnknown,
             supportConfirmed: party.metrics.supportConfirmed,
             attackUnknown: combat.metrics.attackUnknown,
@@ -5887,11 +5931,13 @@
               assert(combat.metrics.attackUnknown === h7Baseline.attackUnknown, 'ATTACK_UNKNOWN_DURING_H7_STABILITY_WINDOW');
               assert(party.party.coordinationEnabled === true, 'H7_COORDINATION_LOST_DURING_STABILITY_WINDOW');
               const focusChanges = party.metrics.focusChanges - h7Baseline.focusChanges;
-              assert(focusChanges <= 6, 'PARTY_FOCUS_PINGPONG_GUARD_EXCEEDED:' + focusChanges);
+              const focusPingPongs = party.metrics.focusPingPongs - h7Baseline.focusPingPongs;
+              assert(focusPingPongs === 0, 'PARTY_FOCUS_PINGPONG_DETECTED:' + focusPingPongs);
               return {
                 focusTargetId: party.focus.targetId,
                 focusSource: party.focus.source,
                 focusChanges,
+                focusPingPongs,
                 attacksConfirmed: combat.metrics.attacksConfirmed - h7Baseline.attacksConfirmed,
                 supportConfirmed: party.metrics.supportConfirmed - h7Baseline.supportConfirmed,
                 supportUnknown: party.metrics.supportUnknown - h7Baseline.supportUnknown
@@ -6686,7 +6732,7 @@ ${members.length ? members.map(member => '<div class="albot-small"><b>'+esc(memb
 </div>
 <div class="albot-card"><b>Support / Recovery</b>
 <div class="albot-small">Party-Buffs/Auras aus Live-Skills: ${partyStatus.partyBuffSkills && partyStatus.partyBuffSkills.length ? partyStatus.partyBuffSkills.map(esc).join(', ') : 'keine für lokale Klasse erkannt'}</div>
-<div class="albot-small">Heal Dispatches: ${esc(metrics.healsDispatched || 0)} · Party Heal: ${esc(metrics.partyHealsDispatched || 0)} · Revive: ${esc(metrics.revivesDispatched || 0)} · UNKNOWN: ${esc(metrics.supportUnknown || 0)}</div>
+<div class="albot-small">Heal Dispatches: ${esc(metrics.healsDispatched || 0)} · Party Heal: ${esc(metrics.partyHealsDispatched || 0)} · Revive: ${esc(metrics.revivesDispatched || 0)} · UNKNOWN: ${esc(metrics.supportUnknown || 0)} · Focus-Pingpong: ${esc(metrics.focusPingPongs || 0)}</div>
 ${party.foreignMemberNames && party.foreignMemberNames.length ? '<div class="albot-small albot-bad">Fremde Party-Mitglieder blockieren automatische Koordination: '+party.foreignMemberNames.map(esc).join(', ')+'</div>' : ''}
 ${support.suspended ? '<div class="albot-small albot-bad">Support suspendiert: '+esc(support.suspendedReason || '-')+'</div>' : ''}
 </div>`;
