@@ -151,7 +151,7 @@ test('H5 exposes combat API, module and recommended one-click live suite', async
   });
   vm.runInNewContext(bundle, ctx);
 
-  assert.equal(ctx.ALBot.version, '0.5.0-h5');
+  assert.equal(ctx.ALBot.version, '0.6.0-h6');
   assert.equal(typeof ctx.ALBot.combat.start, 'function');
   assert.equal(typeof ctx.ALBot.combat.stop, 'function');
   assert.equal(typeof ctx.ALBot.combat.candidates, 'function');
