@@ -8083,7 +8083,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.10.0-h10';
+      this.version = options.version || '0.11.0-h11';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -8163,6 +8163,15 @@
         actions: this.actions,
         goals: this.goals
       });
+      this.merchant = new ns.MerchantController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        roster: this.roster,
+        movement: this.movement,
+        inventory: this.inventory
+      });
       this.liveTests = new ns.LiveTestRunner({
         runtime: this,
         logger: this.logger,
@@ -8173,6 +8182,7 @@
       this._destroyed = false;
       this._registerCoreModules();
       this._registerLiveTests();
+      this._registerH11LiveTest();
       this._installErrorCapture();
       this.logger.info('AL Bot Runtime erstellt', {
         version: this.version,
@@ -8266,6 +8276,15 @@
         start: context => this.inventory.start(context),
         stop: reason => this.inventory.stop(reason),
         status: () => this.inventory.status()
+      });
+
+      this.modules.register({
+        id: 'merchant',
+        title: 'Merchant',
+        version: '0.11.0',
+        start: context => this.merchant.start(context),
+        stop: reason => this.merchant.stop(reason),
+        status: () => this.merchant.status()
       });
     }
 
@@ -9658,6 +9677,213 @@
       });
     }
 
+    _registerH11LiveTest() {
+      let baseline = null;
+      let testPlan = null;
+      this.liveTests.register({
+        id: 'h11-merchant',
+        title: 'H11 – Merchant-Grundbetrieb',
+        description: 'Ein-Klick-Live-Test für eigene Farmer, sichere Item-Delivery, MLuck-Service, Inventory Pressure und Anti-Pingpong.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.merchant.resetSafety('H11_LIVE_TEST_RESET'); } catch (_) {}
+          try { runtime.merchant.cancelDelivery('H11_LIVE_TEST_RESET'); } catch (_) {}
+          try {
+            const movement = runtime.movement.status();
+            if (movement.activeOrder && String(movement.activeOrder.owner || '') === 'merchant-h11') {
+              runtime.movement.cancel('H11_LIVE_TEST_RESET');
+            }
+          } catch (_) {}
+          const metrics = runtime.merchant.status().metrics;
+          baseline = {
+            transfersDispatched: metrics.transfersDispatched,
+            transfersConfirmed: metrics.transfersConfirmed,
+            transfersUnknown: metrics.transfersUnknown,
+            mluckDispatched: metrics.mluckDispatched,
+            mluckConfirmed: metrics.mluckConfirmed,
+            mluckUnknown: metrics.mluckUnknown,
+            pingPongBlocks: metrics.pingPongBlocks
+          };
+          testPlan = null;
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.merchant.cancelDelivery('H11_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try {
+            const movement = runtime.movement.status();
+            if (movement.activeOrder && String(movement.activeOrder.owner || '') === 'merchant-h11') {
+              runtime.movement.cancel('H11_LIVE_TEST_CLEANUP');
+            }
+          } catch (_) {}
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Merchant, eigener sichtbarer Farmer, MLuck und sichere Delivery prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(String(game.character.ctype || '').toLowerCase() === 'merchant', 'H11_LIVE_TEST_REQUIRES_MERCHANT');
+              assert(game.character.rip !== true, 'CHARACTER_DEAD');
+              const roster = runtime.roster.status();
+              assert(roster && roster.merchant && String(roster.merchant.name) === String(game.character.name),
+                'H11_LOCAL_MERCHANT_NOT_OWNED_ROSTER_MERCHANT');
+              assert(runtime.actions.available('send_item'), 'SEND_ITEM_API_UNAVAILABLE');
+              assert(runtime.actions.available('use_skill'), 'USE_SKILL_API_UNAVAILABLE');
+              const merchantModule = runtime.modules.describe('merchant');
+              assert(merchantModule && merchantModule.state === 'ACTIVE', 'H11_MODULE_NOT_ACTIVE');
+
+              const plan = runtime.merchant.plan();
+              assert(plan && plan.role === 'MERCHANT', 'H11_ROLE_NOT_MERCHANT');
+              assert(Array.isArray(plan.visibleOwnedFarmers) && plan.visibleOwnedFarmers.length > 0,
+                'H11_NEEDS_VISIBLE_OWN_FARMER');
+
+              const inventory = runtime.inventory.plan();
+              const safeRows = (inventory.items || []).filter(row => runtime.merchant._transferSafe(row, { allowUtility: true }));
+              assert(safeRows.length > 0, 'H11_NEEDS_SAFE_TRANSFER_ITEM');
+              const utility = safeRows.find(row => {
+                const type = String(row && row.definition && row.definition.type || '').toLowerCase();
+                return row.disposition === 'KEEP' && ['pot', 'elixir', 'food', 'scroll', 'booster'].includes(type);
+              });
+              const row = utility || safeRows[0];
+              const target = plan.visibleOwnedFarmers.slice().sort((a, b) =>
+                Number(a.distance == null ? Infinity : a.distance) - Number(b.distance == null ? Infinity : b.distance))[0];
+
+              const readiness = runtime.game.skillReadiness('mluck', target.name);
+              assert(readiness && readiness.available === true, 'H11_MLUCK_SKILL_UNAVAILABLE');
+
+              testPlan = {
+                targetName: target.name,
+                itemName: row.name,
+                slot: row.slot,
+                beforeQuantity: Number(row.quantity) || 1,
+                quantity: 1
+              };
+              return {
+                merchant: game.character.name,
+                target: target.name,
+                distance: target.distance,
+                itemName: row.name,
+                itemDisposition: row.disposition,
+                itemQuantity: row.quantity,
+                pressure: plan.pressure,
+                mluckReady: readiness.allowed,
+                mluckReasons: readiness.reasons || []
+              };
+            }
+          },
+          {
+            id: 'delivery',
+            title: 'Genau ein sicheres Item an eigenen Farmer liefern und Delta bestätigen',
+            timeoutMs: 45000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(testPlan, 'H11_LIVE_TEST_PLAN_MISSING');
+              const queued = runtime.merchant.queueDelivery(testPlan.targetName, testPlan.itemName, testPlan.quantity);
+              assert(queued && queued.accepted === true, queued && queued.reason || 'H11_DELIVERY_QUEUE_FAILED');
+              const confirmed = await waitFor(() => {
+                const status = runtime.merchant.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H11_SUSPENDED');
+                if (status.metrics.transfersUnknown > baseline.transfersUnknown) throw new Error('H11_TRANSFER_UNKNOWN');
+                return status.metrics.transfersConfirmed > baseline.transfersConfirmed ? status : null;
+              }, { timeoutMs: 40000, pollMs: 150, label: 'h11-delivery-confirmed' });
+
+              const after = runtime.game.inventorySnapshot();
+              const sameSlot = (after.items || []).find(row =>
+                Number(row.slot) === Number(testPlan.slot) && String(row.name || '') === String(testPlan.itemName));
+              const afterQuantity = sameSlot ? Number(sameSlot.quantity) || 0 : 0;
+              assert(testPlan.beforeQuantity - afterQuantity >= testPlan.quantity,
+                'H11_DELIVERY_LOCAL_DELTA_NOT_CONFIRMED');
+              return {
+                target: testPlan.targetName,
+                itemName: testPlan.itemName,
+                quantity: testPlan.quantity,
+                transfersDispatched: confirmed.metrics.transfersDispatched - baseline.transfersDispatched,
+                transfersConfirmed: confirmed.metrics.transfersConfirmed - baseline.transfersConfirmed,
+                beforeQuantity: testPlan.beforeQuantity,
+                afterQuantity
+              };
+            }
+          },
+          {
+            id: 'mluck',
+            title: 'MLuck für eigenen Farmer sicherstellen ohne Spam',
+            timeoutMs: 45000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(testPlan, 'H11_LIVE_TEST_PLAN_MISSING');
+              const before = runtime.game.playerCondition(testPlan.targetName, 'mluck');
+              if (before && before.active
+                && (before.remainingMs == null || before.remainingMs > runtime.merchant.config.mluckRefreshMs)) {
+                return {
+                  target: testPlan.targetName,
+                  alreadyHealthy: true,
+                  source: before.source,
+                  remainingMs: before.remainingMs,
+                  mluckDispatched: runtime.merchant.status().metrics.mluckDispatched - baseline.mluckDispatched
+                };
+              }
+              const confirmed = await waitFor(() => {
+                const status = runtime.merchant.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H11_SUSPENDED');
+                if (status.metrics.mluckUnknown > baseline.mluckUnknown) throw new Error('H11_MLUCK_UNKNOWN');
+                const condition = runtime.game.playerCondition(testPlan.targetName, 'mluck');
+                return condition && condition.active ? { status, condition } : null;
+              }, { timeoutMs: 40000, pollMs: 150, label: 'h11-mluck-confirmed' });
+              return {
+                target: testPlan.targetName,
+                alreadyHealthy: false,
+                source: confirmed.condition.source,
+                remainingMs: confirmed.condition.remainingMs,
+                mluckDispatched: confirmed.status.metrics.mluckDispatched - baseline.mluckDispatched,
+                mluckConfirmed: confirmed.status.metrics.mluckConfirmed - baseline.mluckConfirmed
+              };
+            }
+          },
+          {
+            id: 'stability',
+            title: 'Fünf Sekunden ohne UNKNOWN oder Service-Pingpong beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              await sleep(5000);
+              const status = runtime.merchant.status();
+              assert(status.suspended === false, status.suspendedReason || 'H11_SUSPENDED');
+              assert(status.metrics.transfersUnknown === baseline.transfersUnknown, 'H11_TRANSFER_UNKNOWN_DURING_STABILITY');
+              assert(status.metrics.mluckUnknown === baseline.mluckUnknown, 'H11_MLUCK_UNKNOWN_DURING_STABILITY');
+              assert(status.metrics.pingPongBlocks === baseline.pingPongBlocks, 'H11_SERVICE_PINGPONG');
+              return {
+                transfersConfirmed: status.metrics.transfersConfirmed - baseline.transfersConfirmed,
+                mluckConfirmed: status.metrics.mluckConfirmed - baseline.mluckConfirmed,
+                transferUnknown: status.metrics.transfersUnknown - baseline.transfersUnknown,
+                mluckUnknown: status.metrics.mluckUnknown - baseline.mluckUnknown,
+                pingPongBlocks: status.metrics.pingPongBlocks - baseline.pingPongBlocks
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'H11 Delivery und H11-eigene Bewegung vollständig freigeben',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.merchant.cancelDelivery('H11_LIVE_TEST_COMPLETE');
+              const merchant = runtime.merchant.status();
+              const movement = runtime.movement.status();
+              assert(merchant.pending == null, 'H11_PENDING_ACTION_REMAINS');
+              assert(merchant.delivery == null, 'H11_DELIVERY_REMAINS');
+              assert(!(movement.activeOrder && String(movement.activeOrder.owner || '') === 'merchant-h11'),
+                'H11_MOVEMENT_REMAINS');
+              return {
+                pending: !!merchant.pending,
+                delivery: !!merchant.delivery,
+                movementActive: !!movement.activeOrder
+              };
+            }
+          }
+        ]
+      });
+    }
+
     _installErrorCapture() {
       if (!this.root || typeof this.root.addEventListener !== 'function') return;
       this._errorHandler = event => {
@@ -9805,6 +10031,7 @@
         farming: this.farming.status(),
         farmIntelligence: this.farmIntelligence.status(),
         inventory: this.inventory.status(),
+        merchant: this.merchant.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
         roster,
@@ -9830,6 +10057,7 @@
         farming: this.farming.status(),
         farmIntelligence: this.farmIntelligence.status(),
         inventory: this.inventory.status(),
+        merchant: this.merchant.status(),
         liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
         logs: this.logger.list(160),
@@ -9981,6 +10209,7 @@
       this.farmingResult = null;
       this.farmIntelligenceResult = null;
       this.inventoryResult = null;
+      this.merchantResult = null;
       this.liveTestClipboard = null;
       this._offLog = null;
       this._dragCleanup = null;
@@ -10037,7 +10266,7 @@
 </style>
 <div class="albot-head" id="albot-drag-handle"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-minimize" class="albot-window-btn" title="Fenster minimieren" aria-label="Fenster minimieren">—</button><button id="albot-emergency" class="albot-stop">STOP</button></div>
 <div class="albot-tabs">
-<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
+<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="merchant">Merchant</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
 </div>
 <div class="albot-body">
 <section id="albot-panel-overview" class="albot-panel active"></section>
@@ -10048,6 +10277,7 @@
 <section id="albot-panel-farming" class="albot-panel"></section>
 <section id="albot-panel-farm-intelligence" class="albot-panel"></section>
 <section id="albot-panel-inventory" class="albot-panel"></section>
+<section id="albot-panel-merchant" class="albot-panel"></section>
 <section id="albot-panel-live-test" class="albot-panel"></section>
 <section id="albot-panel-knowledge" class="albot-panel"></section>
 <section id="albot-panel-logs" class="albot-panel"></section>
@@ -10187,6 +10417,7 @@
       }
       if (this.activeTab === 'party') this.renderParty(status);
       if (this.activeTab === 'inventory') this.renderInventory(status);
+      if (this.activeTab === 'merchant') this.renderMerchant(status);
       if (this.activeTab === 'live-test') this.renderLiveTest(status);
       if (this.activeTab === 'knowledge') this.renderKnowledge(status);
       if (this.activeTab === 'logs') this.renderLogs();
@@ -10206,6 +10437,7 @@
       this.renderFarming(status);
       this.renderFarmIntelligence(status);
       this.renderInventory(status);
+      this.renderMerchant(status);
       this.renderLiveTest(status);
       this.renderKnowledge(status);
       this.renderLogs();
@@ -10634,6 +10866,85 @@ ${items.length ? items.slice(0, 24).map(row => '<div class="albot-small">#'+esc(
       if (resetButton) resetButton.onclick = () => run(() => this.runtime.inventory.resetSafety('GUI_H10_RESET'));
     }
 
+    renderMerchant(status) {
+      const panel = this.host.querySelector('#albot-panel-merchant');
+      if (!panel) return;
+      const merchant = status.merchant || {};
+      const metrics = merchant.metrics || {};
+      const plan = merchant.lastPlan || null;
+      const pressure = plan && plan.pressure || {};
+      const service = plan && plan.service || {};
+      const farmers = plan && Array.isArray(plan.visibleOwnedFarmers) ? plan.visibleOwnedFarmers : [];
+      const candidates = plan && Array.isArray(plan.handoffCandidates) ? plan.handoffCandidates : [];
+      const pending = merchant.pending || null;
+      const delivery = merchant.delivery || null;
+      const target = merchant.serviceTarget || null;
+      const resultText = this.merchantResult
+        ? JSON.stringify(this.merchantResult, null, 2)
+        : 'Noch keine manuelle H11-Aktion.';
+
+      const farmerOptions = farmers.length
+        ? farmers.map(row => '<option value="'+esc(row.name)+'">'+esc(row.name)+' · '+esc(row.ctype || '-')+'</option>').join('')
+        : '<option value="">kein eigener Farmer sichtbar</option>';
+      const itemOptions = candidates.length
+        ? candidates.map(row => '<option value="'+esc(row.name)+'">'+esc(row.name)+' x'+esc(row.quantity || 1)+' · '+esc(row.disposition || '-')+'</option>').join('')
+        : '<option value="">kein sicheres Transfer-Item</option>';
+
+      panel.innerHTML = `<div class="albot-card"><b>H11 Merchant-Grundbetrieb</b>
+<div class="albot-small">Eigene Farmer↔Merchant-Logistik, MLuck, Inventory Pressure und Service-Anti-Pingpong. Alle Item-Transfers laufen über die zentrale ActionBoundary. Gold, Bank und Markt bleiben in H11 geschlossen.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${merchant.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Rolle</span><div class="albot-v">${esc(plan && plan.role || '-')}</div></div>
+<div><span class="albot-k">Druck</span><div class="albot-v">${esc(pressure.state || '-')} · frei ${esc(pressure.freeSlots == null ? '-' : pressure.freeSlots)}</div></div>
+<div><span class="albot-k">Service</span><div class="albot-v">${esc(service.type || '-')} · ${esc(service.reason || '-')}</div></div>
+<div><span class="albot-k">Ziel</span><div class="albot-v">${esc(target && target.name || service.targetName || '-')}</div></div>
+<div><span class="albot-k">Suspendiert</span><div class="albot-v">${merchant.suspended ? 'JA · '+esc(merchant.suspendedReason || '-') : 'NEIN'}</div></div>
+<div><span class="albot-k">Transfers bestätigt</span><div class="albot-v">${esc(metrics.transfersConfirmed || 0)}</div></div>
+<div><span class="albot-k">MLuck bestätigt</span><div class="albot-v">${esc(metrics.mluckConfirmed || 0)}</div></div>
+<div><span class="albot-k">Transfer UNKNOWN</span><div class="albot-v">${esc(metrics.transfersUnknown || 0)}</div></div>
+<div><span class="albot-k">MLuck UNKNOWN</span><div class="albot-v">${esc(metrics.mluckUnknown || 0)}</div></div>
+<div><span class="albot-k">Pingpong-Blocks</span><div class="albot-v">${esc(metrics.pingPongBlocks || 0)}</div></div>
+<div><span class="albot-k">Movement-Requests</span><div class="albot-v">${esc(metrics.movementRequests || 0)}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Aktueller Service</b>
+<div class="albot-small">Pending: ${pending ? esc(pending.kind)+' → '+esc(pending.targetName || '-') : 'nein'} · Delivery: ${delivery ? esc(delivery.itemName)+' x'+esc(delivery.quantity)+' → '+esc(delivery.targetName) : 'keine'}</div>
+<div class="albot-small">Eigene sichtbare Farmer: ${farmers.length ? farmers.map(row => esc(row.name)+' ('+esc(row.distance == null ? '?' : Math.round(row.distance))+'u)').join(' · ') : 'keine'}</div>
+</div>
+
+<div class="albot-card"><b>Kontrollierte Delivery</b>
+<div class="albot-row"><select id="albot-h11-target">${farmerOptions}</select></div>
+<div class="albot-row"><select id="albot-h11-item">${itemOptions}</select><input id="albot-h11-quantity" type="number" min="1" step="1" value="1" style="max-width:90px"><button id="albot-h11-deliver" class="albot-btn">Delivery planen</button></div>
+<div class="albot-small">Nur eigene Farmer und konservativ transferierbare Items. Gear, Quest-/Goal-Reserve, gelevelte/gelockte und unbekannt riskante Items sind ausgeschlossen.</div>
+</div>
+
+<div class="albot-card"><b>Steuerung</b>
+<div class="albot-row"><button id="albot-h11-plan" class="albot-btn">Service neu bewerten</button><button id="albot-h11-tick" class="albot-btn">Service-Tick</button><button id="albot-h11-reset" class="albot-btn warn" ${merchant.suspended ? '' : 'disabled'}>Safety zurücksetzen</button></div>
+</div>
+
+<div class="albot-card"><b>Letzte Aktion</b><div class="albot-small">${esc(merchant.lastAction && merchant.lastAction.type || '-')} · ${esc(merchant.lastAction && (merchant.lastAction.reason || merchant.lastAction.target) || '-')}</div></div>
+<div class="albot-card"><b>Letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.merchantResult = fn(); }
+        catch (error) { this.merchantResult = { ok: false, reason: String(error && error.message || error) }; }
+        this.renderMerchant(this.runtime.status());
+      };
+      const planButton = panel.querySelector('#albot-h11-plan');
+      if (planButton) planButton.onclick = () => run(() => this.runtime.merchant.plan());
+      const tickButton = panel.querySelector('#albot-h11-tick');
+      if (tickButton) tickButton.onclick = () => run(() => this.runtime.merchant.tick());
+      const resetButton = panel.querySelector('#albot-h11-reset');
+      if (resetButton) resetButton.onclick = () => run(() => this.runtime.merchant.resetSafety('GUI_H11_RESET'));
+      const deliverButton = panel.querySelector('#albot-h11-deliver');
+      if (deliverButton) deliverButton.onclick = () => {
+        const targetName = panel.querySelector('#albot-h11-target').value;
+        const itemName = panel.querySelector('#albot-h11-item').value;
+        const quantity = Number(panel.querySelector('#albot-h11-quantity').value) || 1;
+        run(() => this.runtime.merchant.queueDelivery(targetName, itemName, quantity));
+      };
+    }
+
     async runRecommendedLiveTest() {
       const state = this.runtime.status();
       if (state.emergencyStop && state.emergencyStop.latched) {
@@ -10864,7 +11175,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.10.0-h10',
+    version: '0.11.0-h11',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -10982,6 +11293,15 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
       rules: rules => rules == null ? runtime.inventory.ruleSnapshot() : runtime.inventory.setRules(rules)
     },
 
+    merchant: {
+      status: () => runtime.merchant.status(),
+      plan: () => runtime.merchant.plan(),
+      tick: () => runtime.merchant.tick(),
+      reset: reason => runtime.merchant.resetSafety(reason || 'API_H11_RESET'),
+      deliver: (targetName, itemName, quantity) => runtime.merchant.queueDelivery(targetName, itemName, quantity),
+      cancelDelivery: reason => runtime.merchant.cancelDelivery(reason || 'API_H11_DELIVERY_CANCEL')
+    },
+
     liveTests: {
       status: () => runtime.liveTests.status(),
       list: () => runtime.liveTests.list(),
@@ -11032,6 +11352,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
   Object.freeze(api.farming);
   Object.freeze(api.farmIntelligence);
   Object.freeze(api.inventory);
+  Object.freeze(api.merchant);
   Object.freeze(api.liveTests);
   Object.freeze(api.knowledge);
   Object.freeze(api.roster);
