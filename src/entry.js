@@ -116,6 +116,14 @@
       safeReturn: options => runtime.movement.safeReturn(options || {})
     },
 
+    liveTests: {
+      status: () => runtime.liveTests.status(),
+      list: () => runtime.liveTests.list(),
+      start: id => runtime.liveTests.start(id),
+      startRecommended: () => runtime.liveTests.startRecommended(),
+      cancel: reason => runtime.liveTests.cancel(reason || 'API_LIVE_TEST_CANCEL')
+    },
+
     knowledge: {
       setProvider: provider => runtime.knowledge.setProvider(provider),
       refresh: () => runtime.knowledge.refresh(),
@@ -152,6 +160,7 @@
   Object.freeze(api.modules);
   Object.freeze(api.game);
   Object.freeze(api.movement);
+  Object.freeze(api.liveTests);
   Object.freeze(api.knowledge);
   Object.freeze(api.roster);
   Object.freeze(api.actions);
