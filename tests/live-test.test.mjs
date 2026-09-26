@@ -140,8 +140,10 @@ test('latched emergency stop blocks one-click live tests without resetting safet
 test('control center contains single-click test start and automatic clipboard completion UX', () => {
   const ui = fs.readFileSync(path.resolve(here, '../src/ui.js'), 'utf8');
   assert.match(ui, /data-tab="live-test"/);
+  assert.match(ui, /id="albot-test-start-main"/);
   assert.match(ui, /Ein-Klick-Live-Test/);
   assert.match(ui, />Test starten</);
+  assert.match(ui, /runRecommendedLiveTest/);
   assert.match(ui, /TEST BEENDET – BESTANDEN/);
   assert.match(ui, /automatisch in die Zwischenablage kopiert/);
   assert.match(ui, /await this\.runtime\.liveTests\.startRecommended\(\)/);
