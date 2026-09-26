@@ -1597,8 +1597,37 @@
   const ns = root.__ALBOT_INTERNALS__;
   if (!ns || !ns.ALBotRuntime) throw new Error('ALBOT_RUNTIME_MISSING');
 
-  const previous = root.ALBot && root.ALBot.__runtime || null;
-  const previousBootCount = Number(previous && previous.bootCount)
+  function resolveSharedHost(start) {
+    let current = start;
+    let best = start;
+    for (let depth = 0; depth < 8 && current; depth += 1) {
+      let parentWindow = null;
+      try {
+        parentWindow = current.parent && current.parent !== current ? current.parent : null;
+        if (parentWindow) void parentWindow.document;
+      } catch (_) {
+        parentWindow = null;
+      }
+      if (!parentWindow) break;
+      best = parentWindow;
+      current = parentWindow;
+    }
+    return best || start;
+  }
+
+  const sharedHost = resolveSharedHost(root);
+  let sharedState = null;
+  try {
+    sharedState = sharedHost.__ALBOT_SHARED_RUNTIME__ && typeof sharedHost.__ALBOT_SHARED_RUNTIME__ === 'object'
+      ? sharedHost.__ALBOT_SHARED_RUNTIME__
+      : null;
+  } catch (_) {}
+
+  const localPrevious = root.ALBot && root.ALBot.__runtime || null;
+  const previous = localPrevious || sharedState && sharedState.runtime || null;
+  const previousBootCount = Number(sharedState && sharedState.bootCount)
+    || Number(previous && previous.bootCount)
+    || Number(sharedHost && sharedHost.__ALBOT_BOOT_COUNT__)
     || Number(root.__ALBOT_BOOT_COUNT__)
     || 0;
 
@@ -1611,6 +1640,7 @@
 
   const bootCount = previousBootCount + 1;
   root.__ALBOT_BOOT_COUNT__ = bootCount;
+  try { sharedHost.__ALBOT_BOOT_COUNT__ = bootCount; } catch (_) {}
 
   const runtime = new ns.ALBotRuntime({
     root,
@@ -1703,10 +1733,20 @@
   Object.freeze(api.ui);
 
   root.ALBot = api;
+  try {
+    sharedHost.__ALBOT_SHARED_RUNTIME__ = {
+      runtime,
+      bootCount,
+      runnerRoot: root,
+      loadedAt: runtime.loadedAt
+    };
+  } catch (_) {}
+
   runtime.logger.info('AL Bot H2 geladen', {
     version: api.version,
     bootCount,
-    hotReload: !!previous
+    hotReload: !!previous,
+    sharedHost: sharedHost !== root
   });
 })(typeof globalThis !== 'undefined' ? globalThis : this);
 
