@@ -2735,6 +2735,7 @@
   const cleanText = ns.helpers.cleanText;
 
   function finite(value) {
+    if (value == null || value === '') return null;
     const number = Number(value);
     return Number.isFinite(number) ? number : null;
   }
