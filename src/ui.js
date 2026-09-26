@@ -27,6 +27,7 @@
       this.combatResult = null;
       this.farmingResult = null;
       this.farmIntelligenceResult = null;
+      this.inventoryResult = null;
       this.liveTestClipboard = null;
       this._offLog = null;
       this._dragCleanup = null;
@@ -83,7 +84,7 @@
 </style>
 <div class="albot-head" id="albot-drag-handle"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-minimize" class="albot-window-btn" title="Fenster minimieren" aria-label="Fenster minimieren">—</button><button id="albot-emergency" class="albot-stop">STOP</button></div>
 <div class="albot-tabs">
-<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
+<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
 </div>
 <div class="albot-body">
 <section id="albot-panel-overview" class="albot-panel active"></section>
@@ -93,6 +94,7 @@
 <section id="albot-panel-party" class="albot-panel"></section>
 <section id="albot-panel-farming" class="albot-panel"></section>
 <section id="albot-panel-farm-intelligence" class="albot-panel"></section>
+<section id="albot-panel-inventory" class="albot-panel"></section>
 <section id="albot-panel-live-test" class="albot-panel"></section>
 <section id="albot-panel-knowledge" class="albot-panel"></section>
 <section id="albot-panel-logs" class="albot-panel"></section>
@@ -231,6 +233,7 @@
         if (!focused) this.renderCombat(status);
       }
       if (this.activeTab === 'party') this.renderParty(status);
+      if (this.activeTab === 'inventory') this.renderInventory(status);
       if (this.activeTab === 'live-test') this.renderLiveTest(status);
       if (this.activeTab === 'knowledge') this.renderKnowledge(status);
       if (this.activeTab === 'logs') this.renderLogs();
@@ -249,6 +252,7 @@
       this.renderParty(status);
       this.renderFarming(status);
       this.renderFarmIntelligence(status);
+      this.renderInventory(status);
       this.renderLiveTest(status);
       this.renderKnowledge(status);
       this.renderLogs();
@@ -621,6 +625,60 @@ ${candidates.length ? candidates.slice(0, 8).map((row, index) => {
       };
       const stopButton = panel.querySelector('#albot-h9-stop');
       if (stopButton) stopButton.onclick = () => run(() => this.runtime.farmIntelligence.stopAutonomy('GUI_H9_STOP'));
+    }
+
+    renderInventory(status) {
+      const panel = this.host.querySelector('#albot-panel-inventory');
+      if (!panel) return;
+      const inventory = status.inventory || {};
+      const metrics = inventory.metrics || {};
+      const plan = inventory.lastPlan || null;
+      const items = plan && Array.isArray(plan.items) ? plan.items : [];
+      const counts = plan && plan.counts || {};
+      const slots = plan && plan.inventory || {};
+      const action = inventory.lastAction || null;
+      const resultText = this.inventoryResult
+        ? JSON.stringify(this.inventoryResult, null, 2)
+        : 'Noch keine manuelle H10-Aktion.';
+
+      panel.innerHTML = `<div class="albot-card"><b>H10 Loot & Inventar</b>
+<div class="albot-small">H10 lootet nur über die zentrale ActionBoundary und klassifiziert Items konservativ. Unbekannter Wert wird niemals automatisch zu SELL. Sell/Bank/Exchange werden in H10 nicht ausgeführt.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${inventory.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Suspendiert</span><div class="albot-v">${inventory.suspended ? 'JA · '+esc(inventory.suspendedReason || '-') : 'NEIN'}</div></div>
+<div><span class="albot-k">Slots</span><div class="albot-v">${esc(slots.usedSlots == null ? '-' : slots.usedSlots)} / ${esc(slots.capacity == null ? '-' : slots.capacity)}</div></div>
+<div><span class="albot-k">Frei</span><div class="albot-v">${esc(slots.freeSlots == null ? '-' : slots.freeSlots)} · Reserve ${esc(plan && plan.reserveFreeSlots != null ? plan.reserveFreeSlots : '-')}</div></div>
+<div><span class="albot-k">Chests sichtbar</span><div class="albot-v">${esc(plan && plan.chests ? plan.chests.length : 0)}</div></div>
+<div><span class="albot-k">Chests lootbar</span><div class="albot-v">${esc(plan && plan.lootableChestIds ? plan.lootableChestIds.length : 0)}</div></div>
+<div><span class="albot-k">Loot bestätigt</span><div class="albot-v">${esc(metrics.lootConfirmed || 0)}</div></div>
+<div><span class="albot-k">Loot UNKNOWN</span><div class="albot-v">${esc(metrics.lootUnknown || 0)}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Dispositionen</b><div class="albot-small">
+PROTECT ${esc(counts.PROTECT || 0)} · RESERVE ${esc(counts.RESERVE || 0)} · KEEP ${esc(counts.KEEP || 0)} · BANK ${esc(counts.BANK || 0)} · EXCHANGE ${esc(counts.EXCHANGE || 0)} · SELL ${esc(counts.SELL || 0)}
+</div></div>
+
+<div class="albot-card"><b>Inventar</b>
+${items.length ? items.slice(0, 24).map(row => '<div class="albot-small">#'+esc(row.slot)+' · <b>'+esc(row.name)+'</b> x'+esc(row.quantity || 1)+' · L'+esc(row.level || 0)+' · '+esc(row.disposition || '-')+' · '+esc(row.reason || '-')+'</div>').join('') : '<div class="albot-small">Noch kein H10-Inventarplan vorhanden.</div>'}
+</div>
+
+<div class="albot-card"><b>Steuerung</b>
+<div class="albot-row"><button id="albot-h10-plan" class="albot-btn">Inventar neu bewerten</button><button id="albot-h10-reset" class="albot-btn warn" ${inventory.suspended ? '' : 'disabled'}>Safety zurücksetzen</button></div>
+<div class="albot-small">Ein Safety-Reset ist explizit. UNKNOWN wird niemals automatisch zurückgesetzt.</div>
+</div>
+
+<div class="albot-card"><b>Letzte Aktion</b><div class="albot-small">${esc(action && action.type || '-')} · ${esc(action && (action.reason || action.chestId) || '-')}</div></div>
+<div class="albot-card"><b>Letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.inventoryResult = fn(); }
+        catch (error) { this.inventoryResult = { ok: false, reason: String(error && error.message || error) }; }
+        this.renderInventory(this.runtime.status());
+      };
+      const planButton = panel.querySelector('#albot-h10-plan');
+      if (planButton) planButton.onclick = () => run(() => this.runtime.inventory.plan());
+      const resetButton = panel.querySelector('#albot-h10-reset');
+      if (resetButton) resetButton.onclick = () => run(() => this.runtime.inventory.resetSafety('GUI_H10_RESET'));
     }
 
     async runRecommendedLiveTest() {

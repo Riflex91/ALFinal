@@ -354,6 +354,98 @@
       return clone(rows);
     }
 
+    itemDefinition(name) {
+      const id = cleanText(name || '', 160);
+      if (!id) return null;
+      const G = this._gameData();
+      const raw = G && G.items && G.items[id];
+      if (!raw || typeof raw !== 'object') return null;
+      return {
+        id,
+        name: raw.name == null ? id : cleanText(raw.name, 200),
+        type: raw.type == null ? null : cleanText(raw.type, 80).toLowerCase(),
+        g: finite(raw.g),
+        e: finite(raw.e),
+        upgrade: safeBoolean(raw.upgrade),
+        compound: safeBoolean(raw.compound),
+        cash: safeBoolean(raw.cash),
+        quest: safeBoolean(raw.quest) || String(raw.type || '').toLowerCase() === 'quest',
+        skin: raw.skin == null ? null : cleanText(raw.skin, 120)
+      };
+    }
+
+    inventorySnapshot() {
+      const character = this._character();
+      if (!character || !character.name) {
+        return {
+          schemaVersion: 1,
+          available: false,
+          reason: 'CHARACTER_UNAVAILABLE',
+          capacity: 0,
+          usedSlots: 0,
+          freeSlots: 0,
+          reportedEmptySlots: null,
+          items: []
+        };
+      }
+
+      const rawItems = Array.isArray(character.items) ? character.items : [];
+      const items = [];
+      for (let slot = 0; slot < rawItems.length; slot += 1) {
+        const item = rawItems[slot];
+        if (!item || !item.name) continue;
+        const name = cleanText(item.name, 160);
+        items.push({
+          slot,
+          name,
+          quantity: Math.max(1, finite(item.q) || 1),
+          level: Math.max(0, finite(item.level) || 0),
+          statType: item.stat_type == null ? null : cleanText(item.stat_type, 80),
+          locked: !!item.l,
+          giveaway: !!item.giveaway,
+          gift: !!item.gift,
+          property: item.p == null ? null : clone(item.p),
+          expiresAt: item.expires == null ? null : item.expires,
+          definition: this.itemDefinition(name)
+        });
+      }
+
+      const reportedEmptySlots = finite(character.esize);
+      const capacity = rawItems.length;
+      const usedSlots = items.length;
+      return {
+        schemaVersion: 1,
+        available: true,
+        reason: null,
+        capacity,
+        usedSlots,
+        freeSlots: Math.max(0, capacity - usedSlots),
+        reportedEmptySlots,
+        items
+      };
+    }
+
+    chestSnapshot() {
+      let raw = null;
+      const getChests = this._resolveFunction('get_chests');
+      try {
+        if (getChests) raw = getChests.fn.call(getChests.owner);
+      } catch (_) {}
+      if (!raw || typeof raw !== 'object') raw = this._read('chests');
+      if (!raw || typeof raw !== 'object') raw = {};
+      const chests = Object.entries(raw).map(([id, chest]) => ({
+        id: String(id),
+        items: chest && finite(chest.items),
+        lastLootAt: chest && chest.last_loot ? String(chest.last_loot) : null
+      }));
+      return {
+        schemaVersion: 1,
+        available: true,
+        count: chests.length,
+        chests
+      };
+    }
+
     monsterDefinition(mtype) {
       const id = cleanText(mtype || '', 120);
       if (!id) return null;

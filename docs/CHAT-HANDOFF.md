@@ -524,6 +524,46 @@ Aktuell noch offen:
 - danach PR #9 ausschließlich mit Methode `merge` und exaktem aktuellen `expected_head_sha` mergen;
 - danach H10 – Loot & Inventar auf frischem Branch vom neuen `main` starten.
 
+## H10 – Prep-Stand während H9-CI
+
+Temporärer Vorbereitungsbranch:
+`chatgpt/h10-loot-inventory-prep`
+
+WICHTIG: Dieser Branch basiert auf dem aktuellen H9-Head und dient nur zur Vorentwicklung. Nach erfolgreichem H9-Merge muss H10 gemäß Parallel-Chat-Regel auf einem **frischen Branch vom neuen `main`** fortgeführt werden. Den Prep-Branch nicht als finalen H10-Branch mergen.
+
+Bereits vorbereitet:
+- AL Bot Version `0.10.0-h10`;
+- neuer `LootInventoryController`;
+- Live-Inventar- und Chest-Normalisierung im Game Adapter;
+- `loot` als zentrale ActionBoundary-Aktion;
+- konservative Dispositionen `PROTECT / RESERVE / KEEP / BANK / EXCHANGE / SELL`;
+- unbekannte Items -> `BANK`, nicht `SELL`;
+- locked/gelevelt/Quest/Gear/Goal-Items werden geschützt bzw. reserviert;
+- 2 Slots Standardreserve;
+- bekannte Adventure-Land-Loot-Races `nothing_to_loot` / `safety` werden als Known Skip behandelt;
+- Loot-UNKNOWN -> H10-Suspension ohne Blind-Retry;
+- expliziter Safety-Reset;
+- Runtime-Modul `loot-inventory`;
+- Headless API `ALBot.inventory.*`;
+- Game APIs `inventory()`, `chests()`, `itemDefinition()`;
+- eigener GUI-Tab **Loot & Inventar**;
+- H10-Ein-Klick-Suite `h10-loot-inventory`;
+- `docs/H10-LIVE-TEST.md`;
+- `tests/h10.test.mjs` plus angepasste Ressourcen-/Versionsassertions älterer Suites.
+
+H10 führt bewusst **keine** echten Sell-/Bank-/Exchange-Aktionen aus. Diese späteren Economy-Aktionen bleiben ihren Roadmap-Stufen vorbehalten.
+
+Direkte Smoke-Evidence im Prep-Stand:
+- Source-/Runtime-/UI-Syntax grün;
+- Runtime startet mit 6 zentral verwalteten Ressourcen;
+- H10-Modul ACTIVE mit genau 1 eigener Scheduler-Ressource;
+- simuliertes echtes Chest-Loot: 1 Dispatch, 1 Confirmed, 0 UNKNOWN;
+- neu gelootetes unbekanntes Item -> `BANK` + geschützt;
+- Promise-Rejection: exakt 1 Loot-Dispatch, danach Suspension, kein Blind-Retry;
+- Runtime-Stop -> 0 Ressourcen, H10 inaktiv.
+
+Ein vollständiger lokaler `npm test`-Run war im Container nicht möglich, weil `github.com` dort per DNS nicht auflösbar war. Das ist keine grüne CI-Evidence. Finale H10-CI muss nach dem H9-Merge auf dem frischen H10-Branch laufen.
+
 ## H2 Architekturregel für spätere Module
 
 Spätere Gameplay-Module sollen eigene Timer/Listener nicht unkontrolliert direkt verwalten.
@@ -617,4 +657,4 @@ Bei Fehler:
 
 ## Nächster Schritt
 
-H7 nach final grüner CI und vollständigen Merge-Sicherheitschecks automatisch mergen. Danach **H8 – AoE & adaptives Farming** auf einem frischen Branch vom neuen `main` starten.
+H9 bleibt live vollständig bestanden, darf aber erst nach grüner exakter Head-CI und allen Merge-Gates gemerged werden. Danach **H10 – Loot & Inventar** auf einem frischen Branch vom neuen `main` erstellen und die geprüften Prep-Änderungen portieren. Anschließend finale H10-CI und echter Ein-Klick-Live-Test.
