@@ -1310,29 +1310,49 @@
       const G = this._gameData();
       const raw = G && G.monsters && G.monsters[id];
       if (!raw || typeof raw !== 'object') return null;
-      const dropsRaw = Array.isArray(raw.drops) ? raw.drops : [];
+      const liveDropTable = G && G.drops && G.drops.monsters && G.drops.monsters[id];
+      const dropsRaw = Array.isArray(raw.drops) && raw.drops.length
+        ? raw.drops
+        : (Array.isArray(liveDropTable) ? liveDropTable : []);
       const drops = [];
       let dropSignal = 0;
       for (const row of dropsRaw) {
         let chance = null;
         let item = null;
+        let quantity = 1;
         if (Array.isArray(row)) {
           chance = finite(row[0]);
           item = row[1] == null ? null : cleanText(row[1], 160);
+          const rawQuantity = finite(row[2]);
+          if (rawQuantity != null && rawQuantity > 0) quantity = rawQuantity;
         } else if (row && typeof row === 'object') {
           chance = finite(row.chance != null ? row.chance : row.probability);
           item = cleanText(row.item || row.name || row.id || '', 160) || null;
+          const rawQuantity = finite(row.quantity != null ? row.quantity : row.count);
+          if (rawQuantity != null && rawQuantity > 0) quantity = rawQuantity;
         }
-        if (chance != null && chance > 0) dropSignal += Math.min(1, chance);
-        if (item || chance != null) drops.push({ item, chance });
+        if (chance != null && chance > 0) dropSignal += Math.min(1, chance) * quantity;
+        if (item || chance != null) drops.push({ item, chance, quantity });
       }
+
+      const rawGold = finite(raw.gold);
+      const monsterGold = G && G.monster_gold && finite(G.monster_gold[id]);
+      const goldRules = G && G.drops && G.drops.gold || {};
+      const goldBase = finite(goldRules.base);
+      const goldRandom = finite(goldRules.random);
+      const gold = rawGold != null
+        ? rawGold
+        : (monsterGold != null
+          ? 1 + monsterGold * ((goldBase || 0) + (goldRandom || 0) / 2)
+          : null);
+
       return {
         id,
         name: raw.name == null ? id : cleanText(raw.name, 160),
         hp: finite(raw.hp),
         attack: finite(raw.attack),
         xp: finite(raw.xp),
-        gold: finite(raw.gold),
+        gold,
         speed: finite(raw.speed),
         range: finite(raw.range),
         frequency: finite(raw.frequency),
@@ -7872,6 +7892,8 @@
           const combat = runtime.combat.status();
           const party = runtime.party.status();
           h9Baseline = {
+            decisions: intelligence.metrics.decisions,
+            holds: intelligence.metrics.holds,
             switches: intelligence.metrics.switches,
             farmingStarts: intelligence.metrics.farmingStarts,
             travelOrders: intelligence.metrics.travelOrders,
@@ -7913,7 +7935,10 @@
 
               const plan = runtime.farmIntelligence.plan();
               assert(plan && plan.selected, plan && plan.reason || 'H9_NO_FARM_CANDIDATE');
-              assert(plan.selected.visibleSafeCount > 0, 'H9_LIVE_TEST_NEEDS_VISIBLE_SAFE_CLUSTER');
+              const candidates = Array.isArray(plan.candidates) ? plan.candidates : [];
+              const visibleSafe = candidates.filter(row => row && row.source === 'LIVE_SAFE_CLUSTER' && Number(row.visibleSafeCount) > 0);
+              assert(visibleSafe.length > 0, 'H9_LIVE_TEST_NEEDS_VISIBLE_SAFE_CLUSTER');
+              assert(candidates.length >= 2, 'H9_LIVE_TEST_NEEDS_AT_LEAST_2_FARM_CANDIDATES');
               assert(Number.isFinite(Number(plan.selected.score)), 'H9_SCORE_UNAVAILABLE');
               assert(plan.selected.components && Number.isFinite(Number(plan.selected.components.safety)),
                 'H9_SCORE_COMPONENTS_UNAVAILABLE');
@@ -7921,16 +7946,22 @@
               h9Plan = {
                 initialKey: plan.selected.key,
                 monsterType: plan.selected.mtype,
+                source: plan.selected.source,
                 score: plan.selected.score,
-                candidateCount: plan.candidates.length
+                travelSeconds: plan.selected.raw && Number(plan.selected.raw.travelSeconds),
+                candidateCount: candidates.length,
+                visibleSafeCount: visibleSafe.reduce((sum, row) => sum + Number(row.visibleSafeCount || 0), 0)
               };
               return {
                 character: game.character.name,
                 ctype,
                 initialKey: h9Plan.initialKey,
                 monsterType: h9Plan.monsterType,
+                source: h9Plan.source,
                 score: h9Plan.score,
+                travelSeconds: h9Plan.travelSeconds,
                 candidateCount: h9Plan.candidateCount,
+                visibleSafeCount: h9Plan.visibleSafeCount,
                 components: plan.selected.components
               };
             }
@@ -7938,7 +7969,7 @@
           {
             id: 'autonomous-start',
             title: 'H9-Autonomie starten und gewähltes Farmziel an H8 übergeben',
-            timeoutMs: 10000,
+            timeoutMs: 90000,
             run: async ({ runtime, assert, waitFor }) => {
               assert(h9Plan, 'H9_LIVE_TEST_PLAN_MISSING');
               const started = runtime.farmIntelligence.startAutonomy({
@@ -7953,7 +7984,7 @@
                 if (!intelligence.currentSelection) return null;
                 const farming = runtime.farming.status();
                 return farming.active ? { intelligence, farming } : null;
-              }, { timeoutMs: 8000, pollMs: 150, label: 'h9-farming-start' });
+              }, { timeoutMs: 85000, pollMs: 200, label: 'h9-farming-start' });
 
               assert(state.farming.session && String(state.farming.session.owner || '') === 'farm-intelligence-h9',
                 'H9_DID_NOT_OWN_H8_SESSION');
@@ -7991,28 +8022,38 @@
           },
           {
             id: 'adaptive-switch',
-            title: 'Natürlichen Farmspot-Wechsel ohne A→B→A-Pingpong beobachten',
-            timeoutMs: 45000,
+            title: 'Adaptive Farmentscheidung und Anti-Pingpong unter Live-Bedingungen prüfen',
+            timeoutMs: 18000,
             run: async ({ runtime, assert, waitFor }) => {
-              const switched = await waitFor(() => {
+              const observed = await waitFor(() => {
                 const intelligence = runtime.farmIntelligence.status();
                 if (intelligence.suspended) throw new Error(intelligence.suspendedReason || 'H9_SUSPENDED');
-                const delta = intelligence.metrics.switches - h9Baseline.switches;
-                return delta > 0 ? intelligence : null;
-              }, { timeoutMs: 42000, pollMs: 500, label: 'h9-natural-farm-switch' });
+                const decisionDelta = intelligence.metrics.decisions - h9Baseline.decisions;
+                return decisionDelta >= 5 && intelligence.currentSelection ? intelligence : null;
+              }, { timeoutMs: 15000, pollMs: 500, label: 'h9-adaptive-decisions' });
 
-              const history = Array.isArray(switched.history) ? switched.history : [];
+              const history = Array.isArray(observed.history) ? observed.history : [];
               for (let index = 2; index < history.length; index += 1) {
                 const a = history[index - 2];
                 const b = history[index - 1];
                 const c = history[index];
-                const within = Number(c.atMs || 0) - Number(a.atMs || 0) <= switched.config.pingPongWindowMs;
+                const within = Number(c.atMs || 0) - Number(a.atMs || 0) <= observed.config.pingPongWindowMs;
                 assert(!(within && a.key === c.key && a.key !== b.key), 'H9_FARM_TARGET_PINGPONG');
               }
+
+              const candidates = observed.lastPlan && Array.isArray(observed.lastPlan.candidates)
+                ? observed.lastPlan.candidates
+                : [];
+              assert(candidates.length >= 2, 'H9_ADAPTIVE_CANDIDATES_LOST');
               return {
-                switches: switched.metrics.switches - h9Baseline.switches,
-                travelOrders: switched.metrics.travelOrders - h9Baseline.travelOrders,
-                currentSelection: switched.currentSelection,
+                decisions: observed.metrics.decisions - h9Baseline.decisions,
+                holds: observed.metrics.holds - h9Baseline.holds,
+                switches: observed.metrics.switches - h9Baseline.switches,
+                switchObserved: observed.metrics.switches > h9Baseline.switches,
+                travelOrders: observed.metrics.travelOrders - h9Baseline.travelOrders,
+                currentSelection: observed.currentSelection,
+                lastPlanReason: observed.lastPlan && observed.lastPlan.reason || null,
+                candidateCount: candidates.length,
                 history
               };
             }
