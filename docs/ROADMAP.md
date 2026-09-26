@@ -282,7 +282,7 @@ Nach H9 existiert ein echter autonomer Farming-Bot.
 
 ## H10 – Loot & Inventar
 
-**🟦 BAU – implementiert, finale CI/Live-Abnahme offen**
+**🟩 BESTANDEN – 2026-09-27**
 - eigener `LootInventoryController`
 - Live-Inventar aus `character.items` + Empty-Slot-Signal aus `character.esize`
 - Live-Chests aus `get_chests()` / `chests`
@@ -290,27 +290,30 @@ Nach H9 existiert ein echter autonomer Farming-Bot.
 - 2 freie Slots als konservative Standardreserve
 - Itemklassifizierung: `PROTECT / RESERVE / KEEP / BANK / EXCHANGE / SELL`
 - locked, Giveaway, auslaufende, gelevelte, Gear-/Upgrade-/Compound- und Questitems geschützt
+- normalisiertes `definition.quest === true` wird ebenfalls als Questschutz berücksichtigt
 - aktive `COLLECT_ITEM`-Goals reservieren passende Items dynamisch
 - unbekannter Wert defaultet zu `BANK`, niemals automatisch zu `SELL`
 - `SELL` nur explizit per Regel freigebbar
 - `nothing_to_loot` / `safety` als bekannte Skips
 - Loot-`UNKNOWN` -> Suspension ohne Blind-Retry
+- niemals settlender Loot-Promise -> bounded Outcome-Timeout -> `UNKNOWN` + Suspension
 - expliziter Safety-Reset erforderlich
 - Headless API `ALBot.inventory.*`
 - eigener Control-Center-Tab **Loot & Inventar**
 - keine destruktiven Sell/Bank/Exchange-Dispatches in H10
 - `docs/H10-LIVE-TEST.md`
 
-**🟧 LIVE-TEST – Suite implementiert**
-- Ein-Klick-Suite `h10-loot-inventory`
-- Preflight: Live-Inventar, Schutzregeln und Loot-API
-- H9 startet selbstständig Farming, damit echter Loot entsteht
-- mindestens ein bestätigter realer Loot
-- Inventardelta nach Loot erklären und neu klassifizieren
-- geschützte/reservierte Baseline-Items dürfen nicht verschwinden
-- 5-Sekunden-Stabilität ohne Loot-/Attack-UNKNOWN
-- Cleanup von H9/H8/H5/H4 + kein Pending Loot
-- echter Adventure-Land-Live-Test nach grüner finaler H10-CI
+**🟩 LIVE-TEST BESTANDEN**
+- Ein-Klick-Suite `h10-loot-inventory`: `PASSED / ALL_STEPS_PASSED`
+- Preflight: 42 Slots, 4 benutzt, 38 frei, 4 geschützte Items
+- H9 startete selbstständig sichere Goo-Farming-Probe
+- bestätigter realer Loot: `lootDispatched=1`, `lootConfirmed=1`, `attacksConfirmed=1`
+- Protection Delta: `checkedProtectedItems=4` und PASSED
+- Stabilitätsfenster: `lootConfirmed=2`, `lootUnknown=0`, 38 freie Slots
+- Cleanup: kein Pending Loot; H9/H8/H5/H4 inaktiv
+- Runtime wieder STOPPED, Scheduler 0 Ressourcen
+- nach dem Live-Test zwei P2-Review-Härtungen regressionsgetestet; Exact-Head-CI Run #210 `completed / success`
+- beide P2-Review-Threads resolved
 
 ---
 
