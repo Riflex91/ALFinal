@@ -225,7 +225,7 @@ PR #5 wurde am 2026-09-26 automatisch gemerged.
 Merge-Commit:
 `9e35ef678eefe8c476e7d6ac1fd7d90213d33195`
 
-## H6 – live bestanden, Auto-Merge freigegeben
+## H6 – abgeschlossen und gemerged
 
 Aktiver Entwicklungsbranch:
 `chatgpt/h6-class-logic`
@@ -286,7 +286,66 @@ Live bestätigt:
 - Runtime nach automatisch gestartetem Test wieder STOPPED;
 - Scheduler nach Abschluss 0 Ressourcen.
 
-H6 ist damit vollständig live bestanden. PR #6 wird nach finalen Merge-Sicherheitschecks automatisch gemerged.
+H6 ist damit vollständig live bestanden.
+
+PR #6 wurde am 2026-09-26 automatisch gemerged.
+
+Merge-Commit:
+`69d620c502c4f45a03d998c44491aaf8166f4d52`
+
+## H7 – aktuell in Arbeit
+
+Aktiver Entwicklungsbranch:
+`chatgpt/h7-party`
+
+Ziel: **Party-Koordination** über dem live bestätigten H4–H6-Core.
+
+Bereits umgesetzt:
+- normalisierter Live-Party-Snapshot aus `get_party()`, `party_list` und sichtbaren Player-Entities;
+- dynamische Owned-/Foreign-Erkennung gegen die zentrale Roster-Schicht;
+- fail-closed Koordination bei fremden Party-Mitgliedern;
+- Rollen ohne hartcodierte Namen:
+  - Warrior TANK
+  - Priest HEALER
+  - Paladin TANK/SUPPORT
+  - Ranger/Mage/Rogue DPS
+  - Merchant LOGISTICS;
+- stabiler Party-Focus mit Tank → Leader → Mehrheits-Target;
+- Focus-Hold gegen Target-Pingpong;
+- H5 Combat bevorzugt einen weiterhin sicheren H7-Party-Focus;
+- direkter Priest-Heal über zentrale ActionBoundary;
+- Party Heal und Revive über `use_skill`;
+- Healing-/Revive-Live-Readiness;
+- höchstens ein Party-Support-Command gleichzeitig;
+- bekannte Support-Ablehnung → Backoff;
+- unklarer Support-Ausgang → UNKNOWN + Support-Suspension ohne Blind-Retry;
+- Party-Buff-/Aura-Sicht auf Basis live vorhandener Skilldefinitionen;
+- Party-Status im Control Center;
+- Headless API `ALBot.party.*`;
+- H7-Ein-Klick-Live-Suite;
+- `docs/H7-LIVE-TEST.md`.
+
+Bewusste Abgrenzung:
+- H7 verändert Party-Mitgliedschaft noch nicht automatisch;
+- H7 startet/stoppt keine anderen Charaktere; Character Lifecycle bleibt H19;
+- AoE-/Pull-Logik bleibt H8;
+- Party-Logistik/Supplies bleibt H18.
+
+H7 Live-Test:
+- Voraussetzung: mindestens zwei eigene lebende Charaktere befinden sich bereits in derselben Adventure-Land-Party;
+- danach nur **Test starten**;
+- Preflight;
+- Rollen;
+- Focus-Fire-Konvergenz;
+- Party-Health-/Recovery-Sicht;
+- 5-Sekunden-Stabilitätsfenster;
+- Cleanup;
+- Diagnose automatisch in Zwischenablage.
+
+Noch ausstehend:
+- vollständige H1–H7-CI auf finalem PR-Head;
+- echter H7-Ein-Klick-Live-Test;
+- danach Auto-Merge gemäß Sicherheitsregeln.
 
 ## H2 Architekturregel für spätere Module
 
@@ -381,4 +440,4 @@ Bei Fehler:
 
 ## Nächster Schritt
 
-PR #6 nach den vollständigen Merge-Sicherheitschecks automatisch mit Methode `merge` mergen. Danach **H7 – Party** auf einem frischen Branch vom neuen `main` starten. Die Ein-Klick-Live-Test-Regel bleibt Standard.
+H7-CI vollständig grün bekommen und PR öffnen. Danach mit mindestens zwei eigenen Charakteren in derselben Party nur **Test starten** drücken. Bei bestandenem Live-Test wird H7 automatisch gemerged; danach startet **H8 – AoE & adaptives Farming** auf einem frischen Branch.
