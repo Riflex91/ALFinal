@@ -208,6 +208,23 @@ test('H10 blocks loot when free-slot reserve is reached', () => {
   assert.equal(f.controller.status().metrics.inventoryFullBlocks, 1);
 });
 
+test('H10 treats Adventure Land nothing_to_loot and safety responses as known skips', async () => {
+  for (const reason of ['nothing_to_loot', 'safety']) {
+    const f = controllerFixture({ lootResponse: { reason } });
+    const first = f.controller.tick();
+    assert.equal(first.state, 'LOOT_PENDING');
+
+    await Promise.resolve();
+    f.setChests([]);
+    const second = f.controller.tick();
+    assert.notEqual(second.state, 'SUSPENDED');
+    assert.equal(f.controller.status().metrics.lootKnownRejected, 1);
+    assert.equal(f.controller.status().metrics.lootConfirmed, 0);
+    assert.equal(f.controller.status().metrics.lootUnknown, 0);
+    assert.equal(f.dispatches.length, 1);
+  }
+});
+
 test('H10 rejected loot promise becomes UNKNOWN and is never blindly retried', async () => {
   const f = controllerFixture({ rejectPromise: true });
   const first = f.controller.tick();
