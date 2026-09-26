@@ -4385,7 +4385,7 @@
 <section id="albot-panel-logs" class="albot-panel"></section>
 <section id="albot-panel-dev" class="albot-panel"></section>
 </div>
-<div class="albot-footer"><button id="albot-start" class="albot-btn">Start</button><button id="albot-reset-stop-main" class="albot-btn danger" style="display:none">STOP zurücksetzen</button><button id="albot-stop-normal" class="albot-btn warn">Stop</button><button id="albot-copy" class="albot-btn">Fehlerbericht kopieren</button><button id="albot-hide" class="albot-btn">Ausblenden</button></div>`;
+<div class="albot-footer"><button id="albot-test-start-main" class="albot-btn">Test starten</button><button id="albot-start" class="albot-btn">Start</button><button id="albot-reset-stop-main" class="albot-btn danger" style="display:none">STOP zurücksetzen</button><button id="albot-stop-normal" class="albot-btn warn">Stop</button><button id="albot-copy" class="albot-btn">Fehlerbericht kopieren</button><button id="albot-hide" class="albot-btn">Ausblenden</button></div>`;
     }
 
     _bind() {
@@ -4393,6 +4393,7 @@
       this.host.querySelector('#albot-emergency').addEventListener('click', async () => { await this.runtime.emergencyStop('GUI_EMERGENCY_STOP'); this.render(); });
       this.host.querySelector('#albot-minimize').addEventListener('click', (event) => { event.stopPropagation(); this.toggleMinimized(); });
       this._installDrag();
+      this.host.querySelector('#albot-test-start-main').addEventListener('click', () => this.runRecommendedLiveTest());
       this.host.querySelector('#albot-start').addEventListener('click', async () => { try { await this.runtime.start(); } catch (e) { this.runtime.logger.error('Start fehlgeschlagen', { error: e.message }); } this.render(); });
       this.host.querySelector('#albot-reset-stop-main').addEventListener('click', () => { this.runtime.resetEmergencyStop(); this.render(); });
       this.host.querySelector('#albot-stop-normal').addEventListener('click', async () => { await this.runtime.stop('GUI_MODULE_STOP'); this.render(); });
@@ -4480,10 +4481,22 @@
       state.textContent = status.emergencyStop.latched ? 'EMERGENCY STOP' : status.running ? 'RUNNING' : 'STOPPED';
       state.className = 'albot-state ' + (status.emergencyStop.latched ? 'albot-bad' : status.running ? 'albot-ok' : '');
       const startButton = this.host.querySelector('#albot-start');
+      const testButton = this.host.querySelector('#albot-test-start-main');
       const resetButton = this.host.querySelector('#albot-reset-stop-main');
       if (startButton) {
         startButton.disabled = status.emergencyStop.latched === true;
         startButton.title = status.emergencyStop.latched ? 'Start ist blockiert, bis der globale STOP manuell zurückgesetzt wurde.' : '';
+      }
+      if (testButton) {
+        const liveTests = status.liveTests || {};
+        testButton.disabled = status.emergencyStop.latched === true || liveTests.running === true || !liveTests.recommended;
+        testButton.title = status.emergencyStop.latched
+          ? 'Live-Test ist blockiert, bis der globale STOP manuell zurückgesetzt wurde.'
+          : liveTests.running
+            ? 'Live-Test läuft bereits.'
+            : !liveTests.recommended
+              ? 'Noch keine empfohlene Live-Testsuite registriert.'
+              : 'Empfohlenen Live-Test automatisch ausführen.';
       }
       if (resetButton) resetButton.style.display = status.emergencyStop.latched ? '' : 'none';
     }
@@ -4708,6 +4721,31 @@
       if (stop) stop.onclick = () => run(() => this.runtime.combat.stopSession('GUI_COMBAT_STOP'));
     }
 
+    async runRecommendedLiveTest() {
+      const state = this.runtime.status();
+      if (state.emergencyStop && state.emergencyStop.latched) {
+        this.runtime.logger.warn('Live-Test durch globalen STOP blockiert');
+        this.activeTab = 'live-test';
+        this._selectTab();
+        this.renderLiveTest(state);
+        return null;
+      }
+      this.activeTab = 'live-test';
+      this._selectTab();
+      this.liveTestClipboard = { pending: true, copied: false, error: null };
+      this.render();
+      let result = null;
+      try {
+        result = await this.runtime.liveTests.startRecommended();
+      } catch (error) {
+        this.runtime.logger.error('Live-Test konnte nicht gestartet werden', { error: String(error && error.message || error) });
+      }
+      const copy = await this.copyDiagnostics();
+      this.liveTestClipboard = { pending: false, copied: copy.copied === true, error: copy.error || null };
+      this.render();
+      return result;
+    }
+
     renderLiveTest(status) {
       const panel = this.host.querySelector('#albot-panel-live-test');
       if (!panel) return;
@@ -4757,18 +4795,7 @@ ${run ? `<div class="albot-card"><b>Letztes Testergebnis</b>
 </div>` : ''}`;
 
       const start = panel.querySelector('#albot-live-test-start');
-      if (start) start.onclick = async () => {
-        this.liveTestClipboard = { pending: true, copied: false, error: null };
-        this.renderLiveTest(this.runtime.status());
-        try {
-          await this.runtime.liveTests.startRecommended();
-        } catch (error) {
-          this.runtime.logger.error('Live-Test konnte nicht gestartet werden', { error: String(error && error.message || error) });
-        }
-        const copy = await this.copyDiagnostics();
-        this.liveTestClipboard = { pending: false, copied: copy.copied === true, error: copy.error || null };
-        this.renderLiveTest(this.runtime.status());
-      };
+      if (start) start.onclick = () => this.runRecommendedLiveTest();
     }
 
     renderKnowledge(status) {
