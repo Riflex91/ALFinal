@@ -73,6 +73,17 @@
       return { stopped: true };
     }
 
+    resetSafety(reason = 'H10_EXPLICIT_RESET') {
+      this.pendingLoot = null;
+      this.suspendedReason = null;
+      this.lastAction = {
+        at: new Date().toISOString(),
+        type: 'RESET',
+        reason: cleanText(reason, 240)
+      };
+      return this.status();
+    }
+
     setRules(rules = {}) {
       for (const key of Object.keys(this.rules)) {
         if (!Array.isArray(rules[key])) continue;
