@@ -78,6 +78,13 @@
         movement: this.movement,
         party: this.party
       });
+      this.inventory = new ns.LootInventoryController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        goals: this.goals
+      });
       this.liveTests = new ns.LiveTestRunner({
         runtime: this,
         logger: this.logger,
@@ -172,6 +179,15 @@
         start: context => this.farmIntelligence.start(context),
         stop: reason => this.farmIntelligence.stop(reason),
         status: () => this.farmIntelligence.status()
+      });
+
+      this.modules.register({
+        id: 'loot-inventory',
+        title: 'Loot & Inventory',
+        version: '0.10.0',
+        start: context => this.inventory.start(context),
+        stop: reason => this.inventory.stop(reason),
+        status: () => this.inventory.status()
       });
     }
 
@@ -1444,6 +1460,7 @@
         combat: this.combat.status(),
         farming: this.farming.status(),
         farmIntelligence: this.farmIntelligence.status(),
+        inventory: this.inventory.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
         roster,
@@ -1468,6 +1485,7 @@
         combat: this.combat.status(),
         farming: this.farming.status(),
         farmIntelligence: this.farmIntelligence.status(),
+        inventory: this.inventory.status(),
         liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
         logs: this.logger.list(160),
@@ -1491,6 +1509,7 @@
       push('combat-controller', !!this.combat.status() && typeof this.combat.startSession === 'function' && typeof this.combat.stopSession === 'function', this.combat.status());
       push('adaptive-farming-controller', !!this.farming.status() && typeof this.farming.plan === 'function' && typeof this.farming.startSession === 'function', this.farming.status());
       push('farm-intelligence-controller', !!this.farmIntelligence.status() && typeof this.farmIntelligence.plan === 'function' && typeof this.farmIntelligence.startAutonomy === 'function', this.farmIntelligence.status());
+      push('loot-inventory-controller', !!this.inventory.status() && typeof this.inventory.plan === 'function' && typeof this.inventory.tick === 'function', this.inventory.status());
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
       push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);
