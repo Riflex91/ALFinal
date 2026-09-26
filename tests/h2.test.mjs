@@ -40,7 +40,7 @@ function runtimeContext() {
 test('H2 exposes central scheduler and lifecycle API', () => {
   const ctx = runtimeContext();
   vm.runInNewContext(bundle, ctx, { filename: 'al-bot.js' });
-  assert.equal(ctx.ALBot.version, '0.4.0-h4');
+  assert.equal(ctx.ALBot.version, '0.5.0-h5');
   assert.equal(typeof ctx.ALBot.scheduler.status, 'function');
   assert.equal(typeof ctx.ALBot.modules.restart, 'function');
   assert.equal(typeof ctx.ALBot.dev.stabilityProbe, 'function');
@@ -198,7 +198,7 @@ test('hot reload is shared across separate same-origin runner contexts', async (
   await first.ALBot.start();
 
   const previousRuntime = first.ALBot.__runtime;
-  assert.equal(previousRuntime.status().scheduler.totalResources, 2);
+  assert.equal(previousRuntime.status().scheduler.totalResources, 3);
   assert.equal(first.ALBot.status().bootCount, 1);
 
   const second = runtimeContext();
@@ -216,6 +216,6 @@ test('hot reload is shared across separate same-origin runner contexts', async (
   assert.ok(oldStatus.modules.every(row => row.state === 'STOPPED'));
 
   await second.ALBot.start();
-  assert.equal(second.ALBot.scheduler.status().totalResources, 2);
+  assert.equal(second.ALBot.scheduler.status().totalResources, 3);
   await second.ALBot.stop('DONE');
 });
