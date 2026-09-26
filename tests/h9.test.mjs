@@ -86,7 +86,10 @@ function makeFixture(options = {}) {
     }))
   };
   const combat = { safeCandidates: () => safe.map(row => ({ ...row })) };
-  const party = { status: () => ({ party: { ownedMemberNames: ['Farmer'] } }) };
+  const party = { status: () => ({ party: {
+    ownedMemberNames: ['Farmer'],
+    foreignMemberNames: options.foreignParty ? ['Stranger'] : []
+  } }) };
 
   const ctx = {
     console,
@@ -184,7 +187,11 @@ test('H9 switches after hold and cooldown when improvement is material', () => {
 });
 
 test('H9 anti-pingpong blocks a quick return to the previous spot without a decisive advantage', () => {
-  const f = makeFixture({ safe: cluster('goo', 4), switchImprovementRatio: 0.18 });
+  const equal = {
+    goo: { id: 'goo', hp: 500, attack: 10, xp: 300, gold: 60, dropSignal: 0.4 },
+    bee: { id: 'bee', hp: 500, attack: 10, xp: 300, gold: 60, dropSignal: 0.4 }
+  };
+  const f = makeFixture({ safe: cluster('goo', 4), switchImprovementRatio: 0.18, definitions: equal });
   assert.equal(f.controller.startAutonomy().accepted, true);
 
   f.advance(6000);
@@ -227,6 +234,21 @@ test('H9 suspends after owned movement becomes UNKNOWN and does not blindly rest
   assert.match(tick.reason, /H9_MOVEMENT_UNKNOWN/);
   assert.equal(f.movementCalls.filter(row => row.type === 'smart').length, 1);
   assert.equal(f.controller.status().suspended, true);
+});
+
+test('H9 foreign party blocks planning before any H4 travel or H8 farming action', () => {
+  const f = makeFixture({
+    foreignParty: true,
+    safe: [],
+    catalog: [{ key: 'main:bee:0', map: 'main', mtype: 'bee', x: 600, y: 0, count: 6, respawn: 10 }]
+  });
+  const started = f.controller.startAutonomy();
+  assert.equal(started.accepted, true);
+  assert.equal(started.tick.state, 'BLOCKED');
+  assert.equal(started.tick.reason, 'H9_FOREIGN_PARTY_BLOCK');
+  assert.equal(f.movementCalls.length, 0);
+  assert.equal(f.farmingCalls.length, 0);
+  assert.equal(f.controller.status().metrics.foreignPartyBlocks, 1);
 });
 
 test('H9 refuses to steal an H8 session owned by another client', () => {
