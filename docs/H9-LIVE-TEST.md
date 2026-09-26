@@ -38,6 +38,18 @@ Ein bekannter Spawn darf H9 zur Reise veranlassen. H8-Combat startet dort aber e
 
 Unbekannte Remote-Spieler/Konkurrenz werden nicht als beobachtete Live-Wahrheit ausgegeben.
 
+### Trefferwahrscheinlichkeit / Monstermechaniken
+
+H9 und H5 lesen die Live-Monsterwerte `evasion` und `avoidance` aus `G.monsters` sowie den tatsächlichen `damage_type` des Charakters.
+
+- Physische Klassen berücksichtigen Monster-Evasion.
+- Magische Klassen werden nicht allein wegen physischer Evasion ausgeschlossen.
+- `avoidance` reduziert die erwartete Trefferwahrscheinlichkeit unabhängig vom physischen Evasion-Sonderfall.
+- Kandidaten unter der konservativen Mindest-Trefferwahrscheinlichkeit von 25 % werden vor Targeting und Farming-Auswahl ausgeschlossen.
+- Bei verbleibenden Kandidaten reduziert die erwartete Trefferwahrscheinlichkeit den geschätzten DPS und damit XP-/Gold-Effizienz.
+
+Damit kann z. B. ein Monster mit `evasion: 99` nicht mehr wegen hoher nomineller XP einen physischen Farmer anlocken.
+
 ## Anti-Pingpong
 
 H9 wechselt nicht bei jedem kleinen Score-Unterschied.
@@ -59,6 +71,7 @@ H9:
 
 - stiehlt keine fremde H8-Farming-Session;
 - stiehlt keine fremde H4-Movement-Order;
+- erkennt H5-Approach/Kite/Retreat-Movement als delegierte Ownership, solange die zugehörige H8-Session H9 gehört;
 - stoppt nur eigene H8/H4-Ownership;
 - tritt nach Session-Start ein fremdes Party-Mitglied bei, stoppt H9 seine eigene H8/H4-Arbeit sofort und suspendiert;
 - erscheint während H9 eine fremde aktive H4-Movement-Order, suspendiert H9 statt dagegen anzulaufen;
