@@ -73,11 +73,12 @@
 </style>
 <div class="albot-head" id="albot-drag-handle"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-minimize" class="albot-window-btn" title="Fenster minimieren" aria-label="Fenster minimieren">—</button><button id="albot-emergency" class="albot-stop">STOP</button></div>
 <div class="albot-tabs">
-<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
+<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
 </div>
 <div class="albot-body">
 <section id="albot-panel-overview" class="albot-panel active"></section>
 <section id="albot-panel-priorities" class="albot-panel"></section>
+<section id="albot-panel-knowledge" class="albot-panel"></section>
 <section id="albot-panel-logs" class="albot-panel"></section>
 <section id="albot-panel-dev" class="albot-panel"></section>
 </div>
@@ -190,6 +191,7 @@
       const status = this.runtime.status();
       this._updateHeader(status);
       if (this.activeTab === 'overview') this.renderOverview(status);
+      if (this.activeTab === 'knowledge') this.renderKnowledge(status);
       if (this.activeTab === 'logs') this.renderLogs();
       if (this.activeTab === 'dev') this.renderDev(status);
     }
@@ -201,6 +203,7 @@
       this._updateHeader(status);
       this.renderOverview(status);
       this.renderPriorities(status);
+      this.renderKnowledge(status);
       this.renderLogs();
       this.renderDev(status);
     }
@@ -209,16 +212,26 @@
       const panel = this.host.querySelector('#albot-panel-overview');
       const roster = status.roster || { farmers: [], characters: [] };
       const knowledge = status.knowledge || {};
+      const game = status.game || { available: false, character: null, target: null };
+      const gameCharacter = game.character || {};
       const scheduler = status.scheduler || { enabled: false, totalResources: 0, generation: 0 };
       panel.innerHTML = `${status.emergencyStop.latched ? '<div class="albot-stop-warning">GLOBALER STOP IST AKTIV. Start ist absichtlich blockiert. Zum Fortfahren unten auf „STOP zurücksetzen“ klicken.</div>' : ''}<div class="albot-card"><b>System</b><div class="albot-grid" style="margin-top:6px">
 <div><span class="albot-k">Version</span><div class="albot-v">${esc(status.version)}</div></div>
 <div><span class="albot-k">Runtime</span><div class="albot-v">${status.running ? 'RUNNING' : 'STOPPED'}</div></div>
 <div><span class="albot-k">STOP</span><div class="albot-v">${status.emergencyStop.latched ? 'AKTIV' : 'bereit'}</div></div>
-<div><span class="albot-k">Knowledge</span><div class="albot-v">${knowledge.configured ? 'Provider verbunden' : 'noch nicht konfiguriert'}</div></div>
+<div><span class="albot-k">Knowledge</span><div class="albot-v">${knowledge.provider ? esc(knowledge.provider.state || 'IDLE') : 'nicht konfiguriert'}${knowledge.lastKnownGood ? ' · LKG Gen. '+esc(knowledge.lastKnownGood.generation) : ''}</div></div>
 <div><span class="albot-k">Scheduler</span><div class="albot-v">${scheduler.enabled ? 'ACTIVE' : 'STOPPED'} · ${esc(scheduler.totalResources)} Ressourcen</div></div>
-<div><span class="albot-k">Scheduler Gen.</span><div class="albot-v">${esc(scheduler.generation)}</div></div>
+<div><span class="albot-k">Scheduler Starts</span><div class="albot-v">${esc(scheduler.generation)}</div></div>
 <div><span class="albot-k">Boot / Reload</span><div class="albot-v">#${esc(status.bootCount || 1)}${status.replacedPrevious ? ' · Hot Reload' : ''}</div></div>
-<div><span class="albot-k">Run Epoch</span><div class="albot-v">${esc(status.runEpoch || 0)}</div></div>
+<div><span class="albot-k">Runtime Starts</span><div class="albot-v">${esc(status.runEpoch || 0)}</div></div>
+</div></div>
+<div class="albot-card"><b>Live Game Adapter</b><div class="albot-grid" style="margin-top:6px">
+<div><span class="albot-k">Character</span><div class="albot-v">${game.available ? esc(gameCharacter.name || '-')+' ('+esc(gameCharacter.ctype || '-')+')' : 'nicht verfügbar'}</div></div>
+<div><span class="albot-k">Map</span><div class="albot-v">${esc(gameCharacter.map || '-')}</div></div>
+<div><span class="albot-k">HP / MP</span><div class="albot-v">${esc(gameCharacter.hp)} / ${esc(gameCharacter.maxHp)} · ${esc(gameCharacter.mp)} / ${esc(gameCharacter.maxMp)}</div></div>
+<div><span class="albot-k">Position</span><div class="albot-v">x=${esc(gameCharacter.x)} · y=${esc(gameCharacter.y)}</div></div>
+<div><span class="albot-k">Target</span><div class="albot-v">${game.target ? esc(game.target.name || game.target.id || '-') : 'keins'}</div></div>
+<div><span class="albot-k">Entities</span><div class="albot-v">${esc(game.world && game.world.entityCount != null ? game.world.entityCount : 0)}</div></div>
 </div></div>
 <div class="albot-card"><b>Dynamisch erkannte Charaktere</b><div class="albot-small">Quelle: ${esc(roster.source || 'unbekannt')} · keine hartcodierten Namen</div>
 <div style="margin-top:6px"><span class="albot-k">Farmer:</span> <span class="albot-v">${roster.farmers && roster.farmers.length ? roster.farmers.map(x => esc(x.name)+' ('+esc(x.ctype)+')').join(', ') : 'keine erkannt'}</span></div>
@@ -249,6 +262,43 @@
       panel.querySelectorAll('[data-priority-name]').forEach(sel => sel.onchange = () => { try { this.runtime.goals.setPriority(sel.dataset.priorityName, sel.value); } catch (e) { this.runtime.logger.error('Priorität konnte nicht geändert werden', { error: e.message }); } this.render(); });
     }
 
+    renderKnowledge(status) {
+      const panel = this.host.querySelector('#albot-panel-knowledge');
+      if (!panel) return;
+      const knowledge = status.knowledge || {};
+      const provider = knowledge.provider || {};
+      const lkg = knowledge.lastKnownGood || null;
+      const error = knowledge.lastRefreshError || provider.lastError || null;
+      panel.innerHTML = `<div class="albot-card"><b>Windows Bridge Knowledge</b>
+<div class="albot-grid" style="margin-top:6px">
+<div><span class="albot-k">Provider</span><div class="albot-v">${esc(provider.name || 'nicht konfiguriert')}</div></div>
+<div><span class="albot-k">Status</span><div class="albot-v">${esc(provider.state || 'IDLE')}</div></div>
+<div><span class="albot-k">Modus</span><div class="albot-v">${esc(provider.mode || '-')}</div></div>
+<div><span class="albot-k">Read-only</span><div class="albot-v">${provider.readOnly === true ? 'JA' : 'unbekannt'}</div></div>
+<div><span class="albot-k">Bridge-Handoff</span><div class="albot-v">${provider.handoffAvailable ? 'verfügbar' : 'nicht verfügbar'}</div></div>
+<div><span class="albot-k">Mirror</span><div class="albot-v">${esc(provider.repository || '-')} · ${esc(provider.ref || '-')}</div></div>
+</div>
+<div class="albot-row"><button id="albot-knowledge-refresh" class="albot-btn">Knowledge aktualisieren</button></div>
+${error ? '<div class="albot-small albot-bad">Letzter Refresh: '+esc(error)+'</div>' : '<div class="albot-small">Kein Knowledge-Fehler gemeldet.</div>'}
+</div>
+<div class="albot-card"><b>Last Known Good</b>
+${lkg ? `<div class="albot-grid" style="margin-top:6px">
+<div><span class="albot-k">Generation</span><div class="albot-v">${esc(lkg.generation)}</div></div>
+<div><span class="albot-k">Quelle</span><div class="albot-v">${esc(lkg.source || '-')}</div></div>
+<div><span class="albot-k">Fakten</span><div class="albot-v">${esc(lkg.factCount == null ? 0 : lkg.factCount)}</div></div>
+<div><span class="albot-k">Alter</span><div class="albot-v">${lkg.ageMs == null ? '-' : esc(Math.round(lkg.ageMs / 1000))+' s'}</div></div>
+</div><div class="albot-small" style="margin-top:6px">Snapshot: ${esc(lkg.snapshotSha256 || '-')}</div>` : '<div class="albot-small">Noch kein validierter Snapshot gespeichert. Das ist zulässig, solange die Bridge bzw. ihr GitHub-Spiegel noch keinen Snapshot bereitstellt.</div>'}
+</div>`;
+
+      const refresh = panel.querySelector('#albot-knowledge-refresh');
+      if (refresh) refresh.onclick = async () => {
+        refresh.disabled = true;
+        refresh.textContent = 'Aktualisiere ...';
+        await this.runtime.knowledge.refresh();
+        this.renderKnowledge(this.runtime.status());
+      };
+    }
+
     renderLogs() {
       if (!this.host) return;
       const panel = this.host.querySelector('#albot-panel-logs');
@@ -259,7 +309,7 @@
     renderDev(status) {
       const panel = this.host.querySelector('#albot-panel-dev');
       const scheduler = status.scheduler || {};
-      const resultText = this.devResult ? JSON.stringify(this.devResult, null, 2) : 'H2 Runtime Stability · ' + status.version;
+      const resultText = this.devResult ? JSON.stringify(this.devResult, null, 2) : 'H3 Game Adapter & Knowledge · ' + status.version;
       panel.innerHTML = `<div class="albot-card"><b>Entwicklung</b>
 <div class="albot-row"><button id="albot-selftest" class="albot-btn">Selftest</button><button id="albot-stability-test" class="albot-btn">H2 Runtime-Test</button><button id="albot-reset-stop" class="albot-btn danger">STOP zurücksetzen</button><button id="albot-show" class="albot-btn">GUI anzeigen</button></div>
 <div class="albot-small">Scheduler: ${scheduler.enabled ? 'ACTIVE' : 'STOPPED'} · Ressourcen: ${esc(scheduler.totalResources || 0)} · Generation: ${esc(scheduler.generation || 0)} · Boot: #${esc(status.bootCount || 1)}</div>
