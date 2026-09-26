@@ -244,3 +244,30 @@ test('H8 stop only releases its owned H5 combat session', () => {
   assert.equal(f.getStopped(), 1);
   assert.equal(f.combat.status().active, false);
 });
+
+test('H8 control center exposes adaptive farming surface', () => {
+  const ui = fs.readFileSync(path.resolve(here, '../src/ui.js'), 'utf8');
+  assert.match(ui, /data-tab="farming"/);
+  assert.match(ui, /albot-panel-farming/);
+  assert.match(ui, /H8 AoE & adaptives Farming/);
+  assert.match(ui, /Plan prüfen/);
+  assert.match(ui, /AoE UNKNOWN/);
+});
+
+test('H8 runtime registers one-click suite and diagnostics surface', () => {
+  const runtime = fs.readFileSync(path.resolve(here, '../src/runtime.js'), 'utf8');
+  assert.match(runtime, /id: 'h8-adaptive-farming'/);
+  assert.match(runtime, /title: 'H8 – AoE & adaptives Farming'/);
+  assert.match(runtime, /runtime\.farming\.startSession/);
+  assert.match(runtime, /H8_AOE_UNKNOWN_DURING_STABILITY/);
+  assert.match(runtime, /farming: this\.farming\.status\(\)/);
+});
+
+test('H8 bundle version and build pipeline include farming core', () => {
+  const entry = fs.readFileSync(path.resolve(here, '../src/entry.js'), 'utf8');
+  const build = fs.readFileSync(path.resolve(here, '../scripts/build.mjs'), 'utf8');
+  assert.match(entry, /0\.8\.0-h8/);
+  assert.match(entry, /farming:/);
+  assert.match(build, /src\/farming\.js/);
+  assert.match(build, /AL Bot 0\.8\.0-h8/);
+});
