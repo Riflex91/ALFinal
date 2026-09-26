@@ -427,6 +427,25 @@
         ? candidates.find(row => row.key === this.currentSelection.key)
         : null;
 
+      if (!current && this.currentSelection) {
+        const observation = this.observations.get(this.currentSelection.key);
+        const depletedAtMs = observation && finite(observation.depletedAtMs);
+        const depletionAgeMs = depletedAtMs == null ? null : Math.max(0, now - depletedAtMs);
+        if (depletionAgeMs != null && depletionAgeMs < this.config.depletionGraceMs) {
+          this.metrics.holds += 1;
+          return this._rememberPlan({
+            state: 'WAITING_RESPAWN',
+            reason: 'H9_DEPLETION_GRACE',
+            selected: null,
+            candidates: candidates.slice(0, 12),
+            switchAllowed: false,
+            currentKey: this.currentSelection.key,
+            depletionAgeMs,
+            depletionGraceMs: this.config.depletionGraceMs
+          });
+        }
+      }
+
       if (current && selected.key !== current.key) {
         const heldMs = Math.max(0, now - Number(this.currentSelection.selectedAtMs || 0));
         const sinceSwitch = Math.max(0, now - Number(this.currentSelection.lastSwitchAtMs || this.currentSelection.selectedAtMs || 0));
