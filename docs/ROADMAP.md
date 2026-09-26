@@ -93,6 +93,8 @@ Stand: 2026-09-26
 
 ## H5 – Einfacher Kampf
 
+**🟩 BESTANDEN – 2026-09-26**
+
 **🟦 BAU**
 - Targeting
 - Attack Loop
@@ -108,6 +110,12 @@ Stand: 2026-09-26
 - Targeting, Range, Cooldown, bestätigte Attack-Evidence und Cleanup laufen automatisch
 - Ergebnis wird sichtbar abgeschlossen und Diagnose automatisch in die Zwischenablage kopiert
 - anschließend einfache Monsterart stabil autonom farmen
+
+Live-Ergebnis:
+- Ein-Klick-Suite vollständig PASSED
+- 3 Targets, 3 bestätigte Angriffe, 3 bestätigte Kills
+- kein `UNKNOWN`
+- Cleanup vollständig
 
 ---
 
