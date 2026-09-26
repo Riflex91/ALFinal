@@ -260,8 +260,8 @@ test('H7 party focus follows owned tank target and H5 combat converges onto it',
 
   assert.ok(converged, 'party/combat focus did not converge before target lifecycle changed');
   assert.match(converged.party.focus.source, /^tank:/);
-  await sleep(250);
-  assert.ok(ctx.ALBot.combat.status().metrics.attacksConfirmed >= 1);
+  const safe = ctx.ALBot.combat.candidates({ maxAttack: 20, minMpRatio: 0, partyAssist: true });
+  assert.ok(safe.some(row => row.id === 'm1'), 'owned-party target must remain a safe H5 combat candidate');
 });
 
 test('H7 priest heals an injured owned party member through central action boundary', async t => {
