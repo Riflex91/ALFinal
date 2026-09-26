@@ -200,7 +200,7 @@ test('H6 exposes class skill API, module and recommended live suite', async t =>
   assert.equal(ctx.ALBot.version, '0.7.0-h7');
   assert.equal(typeof ctx.ALBot.classSkills.status, 'function');
   assert.equal(typeof ctx.ALBot.classSkills.preview, 'function');
-  assert.equal(ctx.ALBot.liveTests.status().recommendedId, 'h6-class-logic');
+  assert.equal(ctx.ALBot.liveTests.status().recommendedId, 'h7-party');
 
   const module = ctx.ALBot.modules.list().find(row => row.id === 'class-skills');
   assert.equal(module.state, 'ACTIVE');
@@ -306,7 +306,7 @@ test('H6 one-click live suite passes on a level-28 warrior and restores runtime 
   });
   vm.runInNewContext(bundle, ctx);
 
-  const result = await ctx.ALBot.liveTests.startRecommended();
+  const result = await ctx.ALBot.liveTests.start('h6-class-logic');
 
   assert.equal(result.state, 'PASSED');
   assert.equal(result.reason, 'ALL_STEPS_PASSED');
