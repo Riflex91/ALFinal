@@ -173,6 +173,26 @@ test('H9 hold window prevents score-chasing target switches', () => {
   assert.equal(f.controller.status().metrics.holds, 1);
 });
 
+test('H9 gives a depleted current cluster a bounded respawn grace before switching', () => {
+  const f = makeFixture({ safe: cluster('goo', 3) });
+  assert.equal(f.controller.startAutonomy().accepted, true);
+  assert.equal(f.controller.status().currentSelection.mtype, 'goo');
+
+  f.advance(1000);
+  f.setSafe(cluster('bee', 5, 30, 30));
+  const grace = f.controller.tick();
+  assert.equal(grace.state, 'WAITING_RESPAWN');
+  assert.equal(grace.reason, 'H9_DEPLETION_GRACE');
+  assert.equal(f.controller.status().currentSelection.mtype, 'goo');
+  assert.equal(f.farmState().session.monsterType, 'goo');
+
+  f.advance(5001);
+  const switched = f.controller.tick();
+  assert.equal(switched.state, 'FARMING');
+  assert.equal(f.controller.status().currentSelection.mtype, 'bee');
+  assert.equal(f.farmState().session.monsterType, 'bee');
+});
+
 test('H9 switches after hold and cooldown when improvement is material', () => {
   const f = makeFixture({ safe: cluster('goo', 3) });
   assert.equal(f.controller.startAutonomy().accepted, true);
