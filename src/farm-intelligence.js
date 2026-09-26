@@ -444,6 +444,33 @@
             depletionGraceMs: this.config.depletionGraceMs
           });
         }
+
+        const recentPrevious = this.history.length >= 2 ? this.history[this.history.length - 2] : null;
+        const returnPingPong = recentPrevious
+          && recentPrevious.key === selected.key
+          && now - Number(recentPrevious.atMs || 0) <= this.config.pingPongWindowMs;
+        if (returnPingPong) {
+          const baselineScore = Number(this.currentSelection.score || 0);
+          const improvement = (Number(selected.score || 0) - baselineScore) / Math.max(1, baselineScore);
+          if (improvement < this.config.switchImprovementRatio * 2) {
+            const alternative = candidates.find(row => row.key !== recentPrevious.key);
+            this.metrics.pingPongBlocks += 1;
+            this.metrics.holds += 1;
+            if (alternative) {
+              selected = alternative;
+              reason = 'H9_ANTI_PINGPONG_REROUTE';
+            } else {
+              return this._rememberPlan({
+                state: 'WAITING_RESPAWN',
+                reason: 'H9_ANTI_PINGPONG',
+                selected: null,
+                candidates: candidates.slice(0, 12),
+                switchAllowed: false,
+                currentKey: this.currentSelection.key
+              });
+            }
+          }
+        }
       }
 
       if (current && selected.key !== current.key) {
