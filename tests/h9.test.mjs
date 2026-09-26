@@ -23,6 +23,7 @@ function makeFixture(options = {}) {
     attack: 200,
     frequency: 1,
     speed: 50,
+    damageType: options.damageType || 'physical',
     rip: false
   };
 
@@ -136,6 +137,18 @@ function makeFixture(options = {}) {
       const last = movementState.activeOrder;
       movementState = { active: false, activeOrder: null, lastOrder: last ? { ...last, state: 'COMPLETED' } : null };
     },
+    setActiveMovementOwner: owner => {
+      movementState = {
+        active: true,
+        activeOrder: {
+          id: 'move-delegated',
+          owner,
+          state: 'ACTIVE',
+          destination: { map: 'main', x: 80, y: 0 }
+        },
+        lastOrder: null
+      };
+    },
     farmState: () => JSON.parse(JSON.stringify(farmState))
   };
 }
@@ -164,6 +177,54 @@ test('H9 scores live-safe clusters and starts H8 with the best monster type', ()
   assert.equal(f.farmState().session.owner, 'farm-intelligence-h9');
   assert.equal(f.farmState().session.monsterType, 'bee');
   assert.equal(status.metrics.farmingStarts, 1);
+});
+
+test('H9 excludes near-unhittable high-evasion farm targets for physical classes', () => {
+  const f = makeFixture({
+    damageType: 'physical',
+    safe: [...cluster('frog', 2, 15, 15), ...cluster('goo', 2, 40, 40)],
+    definitions: {
+      frog: { id: 'frog', hp: 600, attack: 24, xp: 7200, gold: 313, dropSignal: 0.16, evasion: 99 }
+    },
+    catalog: [{ key: 'main:frog:0', map: 'main', mtype: 'frog', x: 500, y: 0, count: 2, respawn: 960 }]
+  });
+
+  const plan = f.controller.plan();
+  assert.ok(plan.candidates.length > 0);
+  assert.equal(plan.candidates.some(row => row.mtype === 'frog'), false);
+  assert.equal(plan.selected.mtype, 'goo');
+});
+
+test('H9 keeps high physical-evasion targets eligible for magical classes', () => {
+  const f = makeFixture({
+    damageType: 'magical',
+    safe: [...cluster('frog', 2, 15, 15), ...cluster('goo', 1, 80, 80)],
+    definitions: {
+      frog: { id: 'frog', hp: 600, attack: 24, xp: 7200, gold: 313, dropSignal: 0.16, evasion: 99 }
+    }
+  });
+
+  const plan = f.controller.plan();
+  const frog = plan.candidates.find(row => row.mtype === 'frog');
+  assert.ok(frog);
+  assert.equal(frog.expectedHitChance, 1);
+  assert.equal(plan.selected.mtype, 'frog');
+});
+
+test('H9 treats H5 approach movement as delegated ownership while its H8 farm is active', () => {
+  const f = makeFixture({ safe: cluster('goo', 3) });
+  assert.equal(f.controller.startAutonomy().accepted, true);
+  assert.equal(f.farmState().active, true);
+  assert.equal(f.farmState().session.owner, 'farm-intelligence-h9');
+
+  f.setActiveMovementOwner('combat-h5-approach');
+  const tick = f.controller.tick();
+
+  assert.equal(tick.state, 'FARMING');
+  assert.equal(tick.reason, 'H9_DELEGATED_COMBAT_MOVEMENT');
+  assert.equal(f.controller.status().metrics.ownershipBlocks, 0);
+  assert.equal(f.controller.status().suspended, false);
+  assert.equal(f.farmState().active, true);
 });
 
 test('H9 hold window prevents score-chasing target switches', () => {
