@@ -361,3 +361,64 @@ test('H9 control center and one-click live suite are wired', () => {
   assert.match(entry, /farmIntelligence:/);
   assert.match(build, /AL Bot 0\.9\.0-h9/);
 });
+
+test('H9 game adapter normalizes live farm data for scoring', () => {
+  const adapterSource = fs.readFileSync(path.resolve(here, '../src/game-adapter.js'), 'utf8');
+  const root = {
+    character: {
+      name: 'Farmer', id: 'Farmer', ctype: 'ranger', map: 'main',
+      x: 10, y: 20, hp: 1000, max_hp: 1000, mp: 500, max_mp: 500,
+      attack: 200, range: 120, speed: 50, frequency: 1
+    },
+    entities: {
+      p1: { id: 'p1', name: 'Other', type: 'character', ctype: 'mage', map: 'main', x: 50, y: 60, hp: 500, max_hp: 500, visible: true },
+      m1: { id: 'm1', type: 'monster', mtype: 'goo', map: 'main', x: 30, y: 40, hp: 100, max_hp: 100, attack: 5, visible: true }
+    },
+    G: {
+      monsters: {
+        goo: { name: 'Goo', hp: 100, attack: 5, xp: 50, gold: 10, respawn: 2, drops: [[0.5, 'slime'], [0.01, 'rare']] }
+      },
+      maps: {
+        main: {
+          monsters: [
+            { type: 'goo', boundary: [0, 0, 100, 200], count: 8, respawn: 2 },
+            { type: 'goo', boundary: { x1: 300, y1: 300, x2: 500, y2: 500 }, count: 4 }
+          ]
+        }
+      },
+      skills: {}
+    }
+  };
+  const ctx = {
+    console, Date, Math, JSON, Map, Set, Promise, Object, Array, String, Number, Boolean, Error,
+    character: root.character,
+    entities: root.entities,
+    G: root.G,
+    __ALBOT_INTERNALS__: {
+      helpers: {
+        clone: value => value == null ? value : JSON.parse(JSON.stringify(value)),
+        cleanText: (value, max = 1000) => String(value == null ? '' : value).slice(0, max)
+      }
+    }
+  };
+  ctx.globalThis = ctx;
+  vm.runInNewContext(adapterSource, ctx, { filename: 'game-adapter.js' });
+  const Adapter = ctx.__ALBOT_INTERNALS__.AdventureLandGameAdapter;
+  const adapter = new Adapter({ root: ctx });
+
+  const players = adapter.visiblePlayers();
+  assert.equal(players.length, 1);
+  assert.equal(players[0].name, 'Other');
+
+  const monster = adapter.monsterDefinition('goo');
+  assert.equal(monster.xp, 50);
+  assert.equal(monster.gold, 10);
+  assert.equal(monster.dropSignal, 0.51);
+
+  const spots = adapter.farmSpotCatalog({ map: 'main', currentOnly: true });
+  assert.equal(spots.length, 2);
+  assert.deepEqual(
+    spots.map(row => [row.mtype, row.x, row.y, row.count]),
+    [['goo', 50, 100, 8], ['goo', 400, 400, 4]]
+  );
+});
