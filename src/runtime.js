@@ -1416,8 +1416,29 @@
             run: async ({ runtime, assert, waitFor }) => {
               const h9Plan = runtime.farmIntelligence.plan();
               assert(h9Plan && h9Plan.selected, h9Plan && h9Plan.reason || 'H10_NO_H9_FARM_CANDIDATE');
+
+              const candidates = Array.isArray(h9Plan.candidates)
+                ? h9Plan.candidates.filter(row => row && row.mtype)
+                : [];
+              const visible = candidates.filter(row => Number(row.visibleSafeCount || 0) > 0);
+              const pool = visible.length ? visible : candidates;
+              const probe = pool.slice().sort((a, b) => {
+                const ahp = Number(a.definition && a.definition.hp);
+                const bhp = Number(b.definition && b.definition.hp);
+                const safeAhp = Number.isFinite(ahp) && ahp > 0 ? ahp : Number.POSITIVE_INFINITY;
+                const safeBhp = Number.isFinite(bhp) && bhp > 0 ? bhp : Number.POSITIVE_INFINITY;
+                if (safeAhp !== safeBhp) return safeAhp - safeBhp;
+                const ad = Number(a.averageDistance);
+                const bd = Number(b.averageDistance);
+                const safeAd = Number.isFinite(ad) ? ad : Number.POSITIVE_INFINITY;
+                const safeBd = Number.isFinite(bd) ? bd : Number.POSITIVE_INFINITY;
+                return safeAd - safeBd;
+              })[0] || h9Plan.selected;
+
+              assert(probe && probe.mtype, 'H10_NO_LOOT_PROBE_CANDIDATE');
               const started = runtime.farmIntelligence.startAutonomy({
                 owner: 'live-test-h10',
+                preferredTypes: [probe.mtype],
                 allowTravel: true
               });
               assert(started && started.accepted === true, started && started.reason || 'H10_H9_START_FAILED');
@@ -1431,6 +1452,13 @@
               }, { timeoutMs: 85000, pollMs: 200, label: 'h10-farming-start' });
 
               return {
+                probe: {
+                  mtype: probe.mtype,
+                  hp: probe.definition && probe.definition.hp,
+                  visibleSafeCount: probe.visibleSafeCount,
+                  averageDistance: probe.averageDistance,
+                  source: probe.source
+                },
                 selection: active.intelligence.currentSelection,
                 farmingOwner: active.farming.session && active.farming.session.owner || null
               };
