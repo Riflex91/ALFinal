@@ -231,6 +231,33 @@ test('H9 anti-pingpong blocks a quick return to the previous spot without a deci
   assert.equal(f.controller.status().metrics.pingPongBlocks, 1);
 });
 
+test('H9 depletion cannot force an A-B-A return inside the pingpong window', () => {
+  const equal = {
+    goo: { id: 'goo', hp: 500, attack: 10, xp: 300, gold: 60, dropSignal: 0.4 },
+    bee: { id: 'bee', hp: 500, attack: 10, xp: 300, gold: 60, dropSignal: 0.4 }
+  };
+  const f = makeFixture({ safe: cluster('goo', 4), switchImprovementRatio: 0.18, definitions: equal });
+  assert.equal(f.controller.startAutonomy().accepted, true);
+
+  f.advance(6000);
+  f.setSafe([...cluster('goo', 1), ...cluster('bee', 6, 25, 25)]);
+  f.controller.tick();
+  assert.equal(f.controller.status().currentSelection.mtype, 'bee');
+
+  f.advance(1000);
+  f.setSafe(cluster('goo', 4));
+  const grace = f.controller.tick();
+  assert.equal(grace.state, 'WAITING_RESPAWN');
+  assert.equal(grace.reason, 'H9_DEPLETION_GRACE');
+
+  f.advance(5001);
+  const blocked = f.controller.tick();
+  assert.equal(blocked.state, 'WAITING_RESPAWN');
+  assert.equal(blocked.reason, 'H9_ANTI_PINGPONG');
+  assert.equal(f.controller.status().currentSelection.mtype, 'bee');
+  assert.equal(f.controller.status().metrics.pingPongBlocks, 1);
+});
+
 test('H9 uses H4 smart movement for a known current-map spawn with no live-safe targets', () => {
   const f = makeFixture({
     safe: [],
