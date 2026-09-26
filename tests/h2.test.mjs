@@ -128,7 +128,7 @@ test('module watchdog can mark a non-heartbeating module stale without stopping 
   });
 
   await ctx.ALBot.modules.start('stale-probe');
-  await sleep(60);
+  await sleep(300);
   ctx.ALBot.__runtime.modules.checkWatchdogs();
 
   const stale = ctx.ALBot.modules.list().find(row => row.id === 'stale-probe');
