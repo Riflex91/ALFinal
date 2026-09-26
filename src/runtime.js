@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.4.0-h4';
+      this.version = options.version || '0.5.0-h5';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -33,14 +33,27 @@
         game: this.game,
         actions: this.actions
       });
+      this.combat = new ns.CombatController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        movement: this.movement
+      });
       this.knowledge = new ns.KnowledgeService({ logger: this.logger, storage: this.storage });
       this.knowledgeProvider = new ns.WindowsBridgeKnowledgeProvider({ root: this.root, logger: this.logger });
       this.knowledge.setProvider(this.knowledgeProvider);
       this.roster = new ns.CharacterRosterService({ root: this.root, logger: this.logger });
+      this.liveTests = new ns.LiveTestRunner({
+        runtime: this,
+        logger: this.logger,
+        bus: this.bus
+      });
       this.ui = null;
       this.lastError = null;
       this._destroyed = false;
       this._registerCoreModules();
+      this._registerLiveTests();
       this._installErrorCapture();
       this.logger.info('AL Bot Runtime erstellt', {
         version: this.version,
@@ -54,7 +67,7 @@
       this.modules.register({
         id: 'runtime-health',
         title: 'Runtime Health',
-        version: '0.4.0',
+        version: '0.5.0',
         watchdogMs: 4000,
         start: context => {
           context.scope.interval('heartbeat', () => {
@@ -76,10 +89,206 @@
       this.modules.register({
         id: 'movement',
         title: 'Movement',
-        version: '0.4.0',
+        version: '0.5.0',
         start: context => this.movement.start(context),
         stop: reason => this.movement.stop(reason),
         status: () => this.movement.status()
+      });
+
+      this.modules.register({
+        id: 'combat',
+        title: 'Combat',
+        version: '0.5.0',
+        start: context => this.combat.start(context),
+        stop: reason => this.combat.stop(reason),
+        status: () => this.combat.status()
+      });
+    }
+
+    _registerLiveTests() {
+      let baseline = null;
+      let livePlan = null;
+      this.liveTests.register({
+        id: 'h5-combat',
+        title: 'H5 – Einfacher Kampf',
+        description: 'Ein-Klick-Live-Test für Targeting, Range, Cooldown, bestätigte Angriffe, Cleanup und Fail-Safe.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.combat.stopSession('H5_LIVE_TEST_RESET'); } catch (_) {}
+          livePlan = null;
+          const metrics = runtime.combat.status().metrics;
+          baseline = {
+            targetsAcquired: metrics.targetsAcquired,
+            attacksDispatched: metrics.attacksDispatched,
+            attacksConfirmed: metrics.attacksConfirmed,
+            attackUnknown: metrics.attackUnknown,
+            killsObserved: metrics.killsObserved
+          };
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.combat.stopSession('H5_LIVE_TEST_CLEANUP'); } catch (_) {}
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Combat-Sicherheit und sichtbares Ziel prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(game.character.rip !== true, 'CHARACTER_DEAD');
+              assert(runtime.actions.available('attack'), 'ATTACK_API_UNAVAILABLE');
+              assert(runtime.actions.available('change_target'), 'CHANGE_TARGET_API_UNAVAILABLE');
+              const combatModule = runtime.modules.describe('combat');
+              assert(combatModule && combatModule.state === 'ACTIVE', 'COMBAT_MODULE_NOT_ACTIVE');
+              const currentHp = Number(game.character.hp);
+              const maxHp = Number(game.character.maxHp);
+              assert(Number.isFinite(currentHp) && currentHp > 0, 'CHARACTER_HP_UNAVAILABLE');
+              assert(Number.isFinite(maxHp) && maxHp > 0, 'CHARACTER_MAX_HP_UNAVAILABLE');
+
+              const attackBudget = Math.max(5, Math.min(maxHp * 0.08, currentHp * 0.08));
+              const candidates = runtime.combat.safeCandidates({
+                maxAcquireDistance: 450,
+                maxAttack: attackBudget
+              });
+              assert(candidates.length > 0, 'NO_SAFE_VISIBLE_MONSTER_FOR_CURRENT_HP');
+              const target = candidates[0];
+              const targetAttack = Number(target.attack);
+              assert(Number.isFinite(targetAttack) && targetAttack >= 0, 'TARGET_ATTACK_UNAVAILABLE');
+
+              const absoluteRetreatHp = Math.max(100, targetAttack * 20);
+              const minimumStartHp = Math.max(150, targetAttack * 25);
+              assert(currentHp >= minimumStartHp,
+                'HP_TOO_LOW_FOR_SAFE_H5_TEST:' + Math.round(currentHp) + '<' + Math.round(minimumStartHp));
+
+              const retreatHpRatio = Math.max(0.05, Math.min(0.35, absoluteRetreatHp / maxHp));
+              const resumeHpRatio = Math.max(
+                retreatHpRatio + 0.05,
+                Math.min(0.65, retreatHpRatio * 1.75)
+              );
+
+              livePlan = {
+                monsterType: target.mtype || null,
+                maxAttack: attackBudget,
+                retreatHpRatio,
+                resumeHpRatio,
+                targetId: target.id,
+                targetAttack,
+                startingHp: currentHp,
+                maxHp
+              };
+
+              return {
+                character: game.character.name,
+                hp: currentHp,
+                maxHp,
+                target: target.name || target.mtype || target.id,
+                mtype: target.mtype,
+                distance: target.distance,
+                attack: target.attack,
+                attackBudget,
+                retreatHp: Math.round(maxHp * retreatHpRatio),
+                retreatHpRatio
+              };
+            }
+          },
+          {
+            id: 'start-combat',
+            title: 'Autonome Combat-Session starten und Target bestätigen',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(livePlan, 'H5_LIVE_TEST_PLAN_MISSING');
+              const result = runtime.combat.startSession({
+                owner: 'live-test-h5',
+                monsterType: livePlan.monsterType || undefined,
+                maxAcquireDistance: 450,
+                maxAttack: livePlan.maxAttack,
+                retreatHpRatio: livePlan.retreatHpRatio,
+                resumeHpRatio: livePlan.resumeHpRatio,
+                minMpRatio: 0,
+                kiting: false
+              });
+              assert(result && result.accepted === true, result && result.reason || 'COMBAT_SESSION_START_FAILED');
+              const status = await waitFor(() => {
+                const current = runtime.combat.status();
+                if (current.lastSession && ['FAILED_SAFE', 'UNKNOWN'].includes(current.lastSession.state)) {
+                  throw new Error(current.lastSession.reason || current.lastSession.state);
+                }
+                return current.session && current.session.targetId ? current : null;
+              }, { timeoutMs: 8000, pollMs: 100, label: 'target-acquisition' });
+              return {
+                sessionId: status.session.id,
+                targetId: status.session.targetId,
+                targetType: status.session.targetType
+              };
+            }
+          },
+          {
+            id: 'confirmed-attack',
+            title: 'Mindestens einen Angriff durch Live-Evidence bestätigen',
+            timeoutMs: 35000,
+            run: async ({ runtime, assert, waitFor }) => {
+              const result = await waitFor(() => {
+                const current = runtime.combat.status();
+                if (current.lastSession && ['FAILED_SAFE', 'UNKNOWN'].includes(current.lastSession.state)) {
+                  throw new Error(current.lastSession.reason || current.lastSession.state);
+                }
+                const confirmed = current.metrics.attacksConfirmed - baseline.attacksConfirmed;
+                const killed = current.metrics.killsObserved - baseline.killsObserved;
+                return confirmed > 0 || killed > 0 ? current : null;
+              }, { timeoutMs: 30000, pollMs: 125, label: 'confirmed-attack' });
+              assert(result.metrics.attackUnknown === baseline.attackUnknown, 'ATTACK_UNKNOWN_DURING_TEST');
+              return {
+                targetsAcquired: result.metrics.targetsAcquired - baseline.targetsAcquired,
+                attacksDispatched: result.metrics.attacksDispatched - baseline.attacksDispatched,
+                attacksConfirmed: result.metrics.attacksConfirmed - baseline.attacksConfirmed,
+                killsObserved: result.metrics.killsObserved - baseline.killsObserved
+              };
+            }
+          },
+          {
+            id: 'stability-window',
+            title: 'Combat fünf Sekunden ohne UNKNOWN/Fail-Safe beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              await sleep(5000);
+              const current = runtime.combat.status();
+              assert(current.metrics.attackUnknown === baseline.attackUnknown, 'ATTACK_UNKNOWN_DURING_STABILITY_WINDOW');
+              assert(!(current.lastSession && ['FAILED_SAFE', 'UNKNOWN'].includes(current.lastSession.state)), current.lastSession && current.lastSession.reason || 'COMBAT_FAILED');
+              return {
+                active: current.active,
+                state: current.state,
+                attacksConfirmed: current.metrics.attacksConfirmed - baseline.attacksConfirmed,
+                killsObserved: current.metrics.killsObserved - baseline.killsObserved,
+                approaches: current.metrics.approaches
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'Combat sauber stoppen und Ownership freigeben',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.combat.stopSession('H5_LIVE_TEST_COMPLETE');
+              const combat = runtime.combat.status();
+              const movement = runtime.movement.status();
+              assert(combat.active === false, 'COMBAT_STILL_ACTIVE_AFTER_STOP');
+              assert(!(movement.activeOrder && String(movement.activeOrder.owner || '').startsWith('combat-h5')), 'COMBAT_MOVEMENT_STILL_ACTIVE');
+              return {
+                combatActive: combat.active,
+                movementActive: movement.active,
+                lastSession: combat.lastSession && {
+                  state: combat.lastSession.state,
+                  reason: combat.lastSession.reason,
+                  counters: combat.lastSession.counters
+                }
+              };
+            }
+          }
+        ]
       });
     }
 
@@ -158,6 +367,7 @@
     async emergencyStop(reason = 'MANUAL_EMERGENCY_STOP') {
       const stop = this.stopLatch.latch(reason);
       this.running = false;
+      try { this.liveTests.cancel('EMERGENCY_STOP'); } catch (_) {}
 
       // Die Notbremse stoppt zuerst zentral alle Timer/Listener. Modul-Stop-Hooks
       // laufen danach nur noch zur fachlichen Bereinigung.
@@ -223,6 +433,8 @@
         game: this.game.status(),
         actions: this.actions.status(),
         movement: this.movement.status(),
+        combat: this.combat.status(),
+        liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
         roster,
         goals: this.goals.list(),
@@ -241,6 +453,8 @@
         character: game && game.character ? ns.helpers.clone(game.character) : null,
         actionBoundary: this.actions.status(),
         movement: this.movement.status(),
+        combat: this.combat.status(),
+        liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
         logs: this.logger.list(160),
         userAgent: this.root && this.root.navigator && this.root.navigator.userAgent || null
@@ -258,6 +472,8 @@
       push('game-adapter', !!this.game.status() && typeof this.game.snapshot === 'function', this.game.status());
       push('action-boundary', !!this.actions.status() && this.actions.status().supportedActions.includes('move') && this.actions.status().supportedActions.includes('smart_move'), this.actions.status());
       push('movement-controller', !!this.movement.status() && typeof this.movement.moveLocal === 'function' && typeof this.movement.smartMove === 'function', this.movement.status());
+      push('combat-controller', !!this.combat.status() && typeof this.combat.startSession === 'function' && typeof this.combat.stopSession === 'function', this.combat.status());
+      push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
       push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);
       push('dynamic-roster-no-hardcoded-names', roster.hardcodedNamesRequired === false, {
@@ -331,6 +547,7 @@
     prepareHotReload(reason = 'HOT_RELOAD') {
       if (this._destroyed) return;
       this.running = false;
+      try { this.liveTests.cancel(reason); } catch (_) {}
 
       // Zuerst alle zentral verwalteten Ressourcen synchron stoppen. Dadurch kann
       // ein neu geladenes Bundle niemals alte Timer/Listener weiterlaufen lassen.

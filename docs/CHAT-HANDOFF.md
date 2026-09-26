@@ -119,7 +119,7 @@ PR #3 wurde am 2026-09-26 nach bestandenem Live-Test gemerged.
 Merge-Commit:
 `241947f27f4471849dd1da340a312e8818361d51`
 
-## H4 – live bestanden, automatischer Merge freigegeben
+## H4 – abgeschlossen und gemerged
 
 Aktiver Entwicklungsbranch:
 `chatgpt/h4-movement`
@@ -159,7 +159,66 @@ Bestätigt:
 - keine Callback-/Overlap-Fehler;
 - H1–H4 Regressionen grün.
 
+PR #4 wurde am 2026-09-26 nach bestandenem Live-Test automatisch gemerged.
+
+Merge-Commit:
+`fcf5ac31b3d8526ffe2068ba33f6eed33f661b36`
+
 User hat ab H4 eine dauerhafte Auto-Merge-Regel festgelegt: Nach vollständig bestandenem Schritt und allen Sicherheitschecks automatisch mergen.
+
+## H5 – live bestanden, Auto-Merge freigegeben
+
+Aktiver Entwicklungsbranch:
+`chatgpt/h5-combat`
+
+Ziel: **einfacher, bounded Combat-Core** auf Basis der H3-Live-Wahrheit und H4-Movement-Schicht.
+
+Bereits umgesetzt:
+- `attack` und `change_target` über die zentrale `GameActionBoundary`;
+- frische sichtbare Monster-Sicht aus dem Game Adapter;
+- Adventure-Land-`can_attack` / `is_in_range` / `is_on_cooldown` als bevorzugte Readiness-Wahrheit;
+- eigener Combat-Owner und Combat-Modul;
+- konservative automatische Targetwahl;
+- unbekannter Monster-Attack-Wert wird fail-closed nicht automatisch gewählt;
+- Range-Annäherung über H4 Movement;
+- Attack-Outcome muss durch frische Gameplay-Evidence bestätigt werden;
+- Promise-/Command-Erfolg allein ist kein Trefferbeweis;
+- `UNKNOWN` führt nicht zu Blind-Retry;
+- Low-HP Safe Retreat;
+- MP-Mindestregel;
+- Kiting-Grundlage;
+- globaler STOP räumt Combat + Movement auf;
+- Combat-Tab im Control Center;
+- wiederverwendbarer `LiveTestRunner`;
+- neuer **Live-Test**-Tab mit genau einem primären Button **„Test starten“**;
+- H5-Live-Suite führt Preflight, Targeting, Combat, Evidence, Stabilitätsfenster und Cleanup automatisch aus;
+- nach Testende wird der Diagnosebericht automatisch in die Zwischenablage kopiert; sichtbarer Fallback bei Browser-Blockade;
+- `docs/H5-LIVE-TEST.md`.
+
+Neue verbindliche Live-Test-Regel ab H5:
+- der User soll keine Testschritt-Kette mehr manuell abarbeiten;
+- pro Entwicklungsblock wird eine Ein-Klick-Live-Suite gebaut;
+- sichtbarer Endstatus `TEST BEENDET – BESTANDEN/FAILED/CANCELLED`;
+- Diagnose automatisch kopieren;
+- roter STOP bleibt immer vorrangig und wird nie automatisch zurückgesetzt.
+
+Live-Test im echten Adventure-Land-Client: **BESTANDEN**.
+
+Bestätigt:
+- Ein-Klick-Runner startet Runtime automatisch und stellt den vorherigen STOPPED-Zustand danach wieder her;
+- Preflight, Targeting, bestätigter Angriff, 5-Sekunden-Stabilitätsfenster und Cleanup jeweils PASSED;
+- health-aware Sicherheitsplanung mit aktuellem HP und realer Monster-Attacke;
+- 3 Targets automatisch übernommen;
+- 3 Angriffe bestätigt;
+- 3 Kills bestätigt;
+- `attackUnknown = 0`;
+- 3 Range-Annäherungen über H4 Movement;
+- Combat und Movement nach Cleanup inaktiv;
+- Scheduler nach Abschluss 0 Ressourcen;
+- autoritative Adventure-Land-`game_response`-Attack-Evidence korrekt verarbeitet;
+- kein Blind-Retry nach UNKNOWN bleibt erhalten.
+
+H5 ist damit vollständig live bestanden. Nach finalen Merge-Sicherheitschecks wird PR #5 automatisch gemerged.
 
 ## H2 Architekturregel für spätere Module
 
@@ -254,4 +313,4 @@ Bei Fehler:
 
 ## Nächster Schritt
 
-PR #4 nach vollständigen Merge-Checks mit Methode `merge` automatisch mergen. Danach **H5 – Combat** auf einem frischen Branch vom neuen `main` starten. Für kommende Schritte gilt dieselbe Auto-Merge-Regel.
+PR #5 nach vollständigen Merge-Sicherheitschecks automatisch mit Methode `merge` mergen. Danach **H6 – Klassenlogik** auf einem frischen Branch vom neuen `main` starten. Die Ein-Klick-Live-Test-Regel bleibt Standard.

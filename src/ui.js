@@ -24,6 +24,8 @@
       this.minimized = false;
       this.devResult = null;
       this.navigationResult = null;
+      this.combatResult = null;
+      this.liveTestClipboard = null;
       this._offLog = null;
       this._dragCleanup = null;
     }
@@ -79,17 +81,19 @@
 </style>
 <div class="albot-head" id="albot-drag-handle"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-minimize" class="albot-window-btn" title="Fenster minimieren" aria-label="Fenster minimieren">—</button><button id="albot-emergency" class="albot-stop">STOP</button></div>
 <div class="albot-tabs">
-<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
+<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
 </div>
 <div class="albot-body">
 <section id="albot-panel-overview" class="albot-panel active"></section>
 <section id="albot-panel-priorities" class="albot-panel"></section>
 <section id="albot-panel-navigation" class="albot-panel"></section>
+<section id="albot-panel-combat" class="albot-panel"></section>
+<section id="albot-panel-live-test" class="albot-panel"></section>
 <section id="albot-panel-knowledge" class="albot-panel"></section>
 <section id="albot-panel-logs" class="albot-panel"></section>
 <section id="albot-panel-dev" class="albot-panel"></section>
 </div>
-<div class="albot-footer"><button id="albot-start" class="albot-btn">Start</button><button id="albot-reset-stop-main" class="albot-btn danger" style="display:none">STOP zurücksetzen</button><button id="albot-stop-normal" class="albot-btn warn">Stop</button><button id="albot-copy" class="albot-btn">Fehlerbericht kopieren</button><button id="albot-hide" class="albot-btn">Ausblenden</button></div>`;
+<div class="albot-footer"><button id="albot-test-start-main" class="albot-btn">Test starten</button><button id="albot-start" class="albot-btn">Start</button><button id="albot-reset-stop-main" class="albot-btn danger" style="display:none">STOP zurücksetzen</button><button id="albot-stop-normal" class="albot-btn warn">Stop</button><button id="albot-copy" class="albot-btn">Fehlerbericht kopieren</button><button id="albot-hide" class="albot-btn">Ausblenden</button></div>`;
     }
 
     _bind() {
@@ -97,6 +101,7 @@
       this.host.querySelector('#albot-emergency').addEventListener('click', async () => { await this.runtime.emergencyStop('GUI_EMERGENCY_STOP'); this.render(); });
       this.host.querySelector('#albot-minimize').addEventListener('click', (event) => { event.stopPropagation(); this.toggleMinimized(); });
       this._installDrag();
+      this.host.querySelector('#albot-test-start-main').addEventListener('click', () => this.runRecommendedLiveTest());
       this.host.querySelector('#albot-start').addEventListener('click', async () => { try { await this.runtime.start(); } catch (e) { this.runtime.logger.error('Start fehlgeschlagen', { error: e.message }); } this.render(); });
       this.host.querySelector('#albot-reset-stop-main').addEventListener('click', () => { this.runtime.resetEmergencyStop(); this.render(); });
       this.host.querySelector('#albot-stop-normal').addEventListener('click', async () => { await this.runtime.stop('GUI_MODULE_STOP'); this.render(); });
@@ -184,10 +189,22 @@
       state.textContent = status.emergencyStop.latched ? 'EMERGENCY STOP' : status.running ? 'RUNNING' : 'STOPPED';
       state.className = 'albot-state ' + (status.emergencyStop.latched ? 'albot-bad' : status.running ? 'albot-ok' : '');
       const startButton = this.host.querySelector('#albot-start');
+      const testButton = this.host.querySelector('#albot-test-start-main');
       const resetButton = this.host.querySelector('#albot-reset-stop-main');
       if (startButton) {
         startButton.disabled = status.emergencyStop.latched === true;
         startButton.title = status.emergencyStop.latched ? 'Start ist blockiert, bis der globale STOP manuell zurückgesetzt wurde.' : '';
+      }
+      if (testButton) {
+        const liveTests = status.liveTests || {};
+        testButton.disabled = status.emergencyStop.latched === true || liveTests.running === true || !liveTests.recommended;
+        testButton.title = status.emergencyStop.latched
+          ? 'Live-Test ist blockiert, bis der globale STOP manuell zurückgesetzt wurde.'
+          : liveTests.running
+            ? 'Live-Test läuft bereits.'
+            : !liveTests.recommended
+              ? 'Noch keine empfohlene Live-Testsuite registriert.'
+              : 'Empfohlenen Live-Test automatisch ausführen.';
       }
       if (resetButton) resetButton.style.display = status.emergencyStop.latched ? '' : 'none';
     }
@@ -203,6 +220,12 @@
         const focused = panel && this.doc && this.doc.activeElement && panel.contains(this.doc.activeElement);
         if (!focused) this.renderNavigation(status);
       }
+      if (this.activeTab === 'combat') {
+        const panel = this.host.querySelector('#albot-panel-combat');
+        const focused = panel && this.doc && this.doc.activeElement && panel.contains(this.doc.activeElement);
+        if (!focused) this.renderCombat(status);
+      }
+      if (this.activeTab === 'live-test') this.renderLiveTest(status);
       if (this.activeTab === 'knowledge') this.renderKnowledge(status);
       if (this.activeTab === 'logs') this.renderLogs();
       if (this.activeTab === 'dev') this.renderDev(status);
@@ -216,6 +239,8 @@
       this.renderOverview(status);
       this.renderPriorities(status);
       this.renderNavigation(status);
+      this.renderCombat(status);
+      this.renderLiveTest(status);
       this.renderKnowledge(status);
       this.renderLogs();
       this.renderDev(status);
@@ -350,6 +375,137 @@
       panel.querySelector('#albot-nav-safe-return').onclick = () => run(() => this.runtime.movement.safeReturn({ owner: 'gui-h4-safe-return' }));
     }
 
+    renderCombat(status) {
+      const panel = this.host.querySelector('#albot-panel-combat');
+      if (!panel) return;
+      const combat = status.combat || {};
+      const session = combat.session || null;
+      const metrics = combat.metrics || {};
+      const pending = combat.pendingAttack || null;
+      const candidates = Array.isArray(combat.safeCandidates) ? combat.safeCandidates : [];
+      const resultText = this.combatResult ? JSON.stringify(this.combatResult, null, 2) : 'Noch keine manuelle H5-Combat-Session.';
+
+      panel.innerHTML = `<div class="albot-card"><b>H5 Einfacher Kampf</b>
+<div class="albot-small">H5 verwendet nur den normalen Angriff. Klassenspezifische Skills folgen in H6. Targets werden pro Tick aus der frischen sichtbaren Entity-Sicht bestätigt.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${combat.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Combat</span><div class="albot-v">${esc(combat.state || 'IDLE')}</div></div>
+<div><span class="albot-k">Target</span><div class="albot-v">${session && session.targetId ? esc(session.targetType || session.targetId) : 'keins'}</div></div>
+<div><span class="albot-k">Attack Outcome</span><div class="albot-v">${pending ? esc(pending.commandSettlement || 'PENDING') : 'kein offener Angriff'}</div></div>
+<div><span class="albot-k">Angriffe bestätigt</span><div class="albot-v">${esc(metrics.attacksConfirmed || 0)}</div></div>
+<div><span class="albot-k">UNKNOWN</span><div class="albot-v">${esc(metrics.attackUnknown || 0)}</div></div>
+<div><span class="albot-k">Approaches</span><div class="albot-v">${esc(metrics.approaches || 0)}</div></div>
+<div><span class="albot-k">Retreats</span><div class="albot-v">${esc(metrics.retreats || 0)}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Manuelle H5-Session</b>
+<div class="albot-row"><input id="albot-combat-type" placeholder="Monster-Typ optional, z.B. goo"><input id="albot-combat-maxattack" type="number" min="0" step="1" placeholder="Max. Monster-Angriff optional"></div>
+<div class="albot-row"><label class="albot-small"><input id="albot-combat-kiting" type="checkbox"> Kiting-Grundlage aktivieren</label></div>
+<div class="albot-row"><button id="albot-combat-start" class="albot-btn" ${combat.active ? 'disabled' : ''}>Combat starten</button><button id="albot-combat-stop" class="albot-btn warn" ${combat.active ? '' : 'disabled'}>Combat stoppen</button></div>
+<div class="albot-small">Sichere sichtbare Kandidaten: ${candidates.length ? candidates.map(row => esc(row.mtype || row.name || row.id)+' ('+esc(row.distance == null ? '?' : Math.round(row.distance))+')').join(', ') : 'keine'}</div>
+</div>
+
+<div class="albot-card"><b>Letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.combatResult = fn(); }
+        catch (error) { this.combatResult = { accepted: false, reason: String(error && error.message || error) }; }
+        this.renderCombat(this.runtime.status());
+      };
+
+      const start = panel.querySelector('#albot-combat-start');
+      if (start) start.onclick = () => {
+        const type = panel.querySelector('#albot-combat-type').value.trim();
+        const maxRaw = panel.querySelector('#albot-combat-maxattack').value;
+        const kiting = panel.querySelector('#albot-combat-kiting').checked;
+        run(() => this.runtime.combat.startSession({
+          owner: 'gui-h5-combat',
+          monsterType: type || undefined,
+          maxAttack: maxRaw === '' ? undefined : Number(maxRaw),
+          kiting
+        }));
+      };
+      const stop = panel.querySelector('#albot-combat-stop');
+      if (stop) stop.onclick = () => run(() => this.runtime.combat.stopSession('GUI_COMBAT_STOP'));
+    }
+
+    async runRecommendedLiveTest() {
+      const state = this.runtime.status();
+      if (state.emergencyStop && state.emergencyStop.latched) {
+        this.runtime.logger.warn('Live-Test durch globalen STOP blockiert');
+        this.activeTab = 'live-test';
+        this._selectTab();
+        this.renderLiveTest(state);
+        return null;
+      }
+      this.activeTab = 'live-test';
+      this._selectTab();
+      this.liveTestClipboard = { pending: true, copied: false, error: null };
+      this.render();
+      let result = null;
+      try {
+        result = await this.runtime.liveTests.startRecommended();
+      } catch (error) {
+        this.runtime.logger.error('Live-Test konnte nicht gestartet werden', { error: String(error && error.message || error) });
+      }
+      const copy = await this.copyDiagnostics();
+      this.liveTestClipboard = { pending: false, copied: copy.copied === true, error: copy.error || null };
+      this.render();
+      return result;
+    }
+
+    renderLiveTest(status) {
+      const panel = this.host.querySelector('#albot-panel-live-test');
+      if (!panel) return;
+      const tests = status.liveTests || {};
+      const recommended = tests.recommended || null;
+      const run = tests.current || tests.lastRun || null;
+      const running = tests.running === true;
+      const state = run ? run.state : 'BEREIT';
+      const stateClass = state === 'PASSED' ? 'albot-ok' : (state === 'FAILED' || state === 'CANCELLED' ? 'albot-bad' : '');
+      const clipboard = this.liveTestClipboard;
+      const clipboardText = clipboard == null
+        ? 'Nach Testende wird der vollständige Fehlerbericht automatisch in die Zwischenablage kopiert.'
+        : clipboard.copied
+          ? 'Test beendet · Fehlerbericht automatisch in die Zwischenablage kopiert.'
+          : clipboard.pending
+            ? 'Test läuft · Bericht wird nach Abschluss automatisch kopiert.'
+            : 'Test beendet · automatische Zwischenablage-Kopie fehlgeschlagen: ' + esc(clipboard.error || 'unbekannt');
+
+      const steps = run && Array.isArray(run.steps) ? run.steps : recommended && Array.isArray(recommended.steps)
+        ? recommended.steps.map(step => ({ ...step, state: 'PENDING' }))
+        : [];
+
+      panel.innerHTML = `<div class="albot-card"><b>Ein-Klick-Live-Test</b>
+<div class="albot-small">Ab H5 laufen Live-Tests automatisch als definierte Schrittfolge. Du musst nur „Test starten“ drücken. Bei einem Fehler wird fail-safe abgebrochen; der globale rote STOP bleibt jederzeit verfügbar.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Testsuite</span><div class="albot-v">${recommended ? esc(recommended.title) : 'noch nicht registriert'}</div></div>
+<div><span class="albot-k">Status</span><div class="albot-v ${stateClass}">${esc(state)}</div></div>
+<div><span class="albot-k">Aktueller Schritt</span><div class="albot-v">${run && run.currentStepId ? esc(run.currentStepId) : '-'}</div></div>
+<div><span class="albot-k">Runtime</span><div class="albot-v">${status.running ? 'RUNNING' : 'STOPPED'}</div></div>
+</div>
+<div class="albot-row"><button id="albot-live-test-start" class="albot-btn" ${running || !recommended ? 'disabled' : ''}>Test starten</button>${running ? '<span class="albot-small">Test läuft automatisch …</span>' : ''}</div>
+<div class="albot-small ${clipboard && clipboard.copied ? 'albot-ok' : clipboard && !clipboard.pending ? 'albot-bad' : ''}">${clipboardText}</div>
+</div>
+
+<div class="albot-card"><b>Testschritte</b>
+${steps.length ? steps.map((step, index) => {
+  const stepClass = step.state === 'PASSED' ? 'albot-ok' : (step.state === 'FAILED' || step.state === 'CANCELLED' ? 'albot-bad' : 'albot-muted');
+  const details = step.error ? ' · '+esc(step.error.message || step.error) : step.result != null ? ' · '+esc(JSON.stringify(step.result)) : '';
+  return '<div class="'+stepClass+'">'+esc(index + 1)+'. '+esc(step.title || step.id)+' — '+esc(step.state || 'PENDING')+details+'</div>';
+}).join('') : '<div class="albot-small">Für den aktuellen Entwicklungsstand ist noch keine Live-Testsuite registriert.</div>'}
+</div>
+
+${run ? `<div class="albot-card"><b>Letztes Testergebnis</b>
+<div class="${stateClass}"><b>${state === 'PASSED' ? 'TEST BEENDET – BESTANDEN' : state === 'RUNNING' ? 'TEST LÄUFT' : 'TEST BEENDET – '+esc(state)}</b></div>
+<div class="albot-small">Grund: ${esc(run.reason || '-')}</div>
+<div class="albot-small">Start: ${esc(run.startedAt || '-')} · Ende: ${esc(run.finishedAt || '-')}</div>
+</div>` : ''}`;
+
+      const start = panel.querySelector('#albot-live-test-start');
+      if (start) start.onclick = () => this.runRecommendedLiveTest();
+    }
+
     renderKnowledge(status) {
       const panel = this.host.querySelector('#albot-panel-knowledge');
       if (!panel) return;
@@ -397,7 +553,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
     renderDev(status) {
       const panel = this.host.querySelector('#albot-panel-dev');
       const scheduler = status.scheduler || {};
-      const resultText = this.devResult ? JSON.stringify(this.devResult, null, 2) : 'H4 Movement · ' + status.version;
+      const resultText = this.devResult ? JSON.stringify(this.devResult, null, 2) : 'H5 Combat · ' + status.version;
       panel.innerHTML = `<div class="albot-card"><b>Entwicklung</b>
 <div class="albot-row"><button id="albot-selftest" class="albot-btn">Selftest</button><button id="albot-stability-test" class="albot-btn">H2 Runtime-Test</button><button id="albot-reset-stop" class="albot-btn danger">STOP zurücksetzen</button><button id="albot-show" class="albot-btn">GUI anzeigen</button></div>
 <div class="albot-small">Scheduler: ${scheduler.enabled ? 'ACTIVE' : 'STOPPED'} · Ressourcen: ${esc(scheduler.totalResources || 0)} · Generation: ${esc(scheduler.generation || 0)} · Boot: #${esc(status.bootCount || 1)}</div>
@@ -426,9 +582,13 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
           const area = this.doc.createElement('textarea'); area.value = text; area.style.position='fixed'; area.style.opacity='0'; this.doc.body.appendChild(area); area.select(); this.doc.execCommand('copy'); area.remove();
         }
         this.runtime.logger.info('Fehlerbericht in Zwischenablage kopiert');
-      } catch (e) { this.runtime.logger.error('Clipboard-Kopie fehlgeschlagen', { error: e.message }); }
-      this.renderLogs();
-      return text;
+        this.renderLogs();
+        return { copied: true, text, error: null };
+      } catch (e) {
+        this.runtime.logger.error('Clipboard-Kopie fehlgeschlagen', { error: e.message });
+        this.renderLogs();
+        return { copied: false, text, error: String(e && e.message || e) };
+      }
     }
 
     show() { if (this.host) this.host.style.display = 'block'; }

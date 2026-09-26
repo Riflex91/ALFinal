@@ -11,7 +11,9 @@
     move: Object.freeze({ publicName: 'move', family: 'movement' }),
     smart_move: Object.freeze({ publicName: 'smart_move', family: 'movement' }),
     stop: Object.freeze({ publicName: 'stop', family: 'movement-cleanup' }),
-    use_skill: Object.freeze({ publicName: 'use_skill', family: 'skill' })
+    use_skill: Object.freeze({ publicName: 'use_skill', family: 'skill' }),
+    attack: Object.freeze({ publicName: 'attack', family: 'combat' }),
+    change_target: Object.freeze({ publicName: 'change_target', family: 'combat-target' })
   });
 
   function errorDetails(error) {
@@ -87,8 +89,11 @@
       if (!Array.isArray(args)) throw new Error('ALBOT_ACTION_ARGS_INVALID:' + action);
 
       const cleanup = options.cleanup === true;
-      if (cleanup && action !== 'stop' && action !== 'use_skill') {
+      if (cleanup && action !== 'stop' && action !== 'use_skill' && action !== 'change_target') {
         throw new Error('ALBOT_CLEANUP_ACTION_NOT_ALLOWED:' + action);
+      }
+      if (cleanup && action === 'change_target' && args[0] != null) {
+        throw new Error('ALBOT_CLEANUP_TARGET_MUST_CLEAR');
       }
 
       this.metrics.attempted += 1;

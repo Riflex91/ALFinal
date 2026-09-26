@@ -93,6 +93,8 @@ Stand: 2026-09-26
 
 ## H5 – Einfacher Kampf
 
+**🟩 BESTANDEN – 2026-09-26**
+
 **🟦 BAU**
 - Targeting
 - Attack Loop
@@ -103,7 +105,17 @@ Stand: 2026-09-26
 - Kiting-Grundlage
 
 **🟧 LIVE-TEST**
-- eine einfache Monsterart über längere Zeit stabil autonom farmen
+- Ein-Klick-Test über das Control Center
+- Bot wählt selbst ein konservativ sicheres sichtbares Monster
+- Targeting, Range, Cooldown, bestätigte Attack-Evidence und Cleanup laufen automatisch
+- Ergebnis wird sichtbar abgeschlossen und Diagnose automatisch in die Zwischenablage kopiert
+- anschließend einfache Monsterart stabil autonom farmen
+
+Live-Ergebnis:
+- Ein-Klick-Suite vollständig PASSED
+- 3 Targets, 3 bestätigte Angriffe, 3 bestätigte Kills
+- kein `UNKNOWN`
+- Cleanup vollständig
 
 ---
 
@@ -488,22 +500,30 @@ Bevorzugt:
 2. H10–H17 Merchant/Economy.
 3. Strategic Brain erst dann, wenn schnelle deterministische Systeme stabil arbeiten.
 
-## Standard-Live-Testablauf
+## Standard-Live-Testablauf ab H5
+
+Live-Tests werden als wiederverwendbare Ein-Klick-Suites gebaut.
 
 ```text
 Code
-→ automatische Kurztests
-→ 🟧 echter Live-Test
+→ automatische CI/Kurztests
+→ 🟧 Control Center: „Test starten“
+→ Bot führt alle definierten Live-Schritte automatisch aus
+→ sichtbarer Endstatus BESTANDEN / FAILED / CANCELLED
+→ Diagnosebericht wird automatisch in die Zwischenablage kopiert
 → 🟩 bestanden
 → nächstes Häppchen
 ```
 
+Der globale rote STOP bleibt jederzeit vorrangig. Sicherheitskritische Preconditions wie ein gelatchter STOP werden niemals automatisch aufgehoben.
+
 Bei Fehler:
 
 ```text
-🟥 STOP
-→ Fehlerbericht kopieren
-→ Bericht + kurze Beobachtung an ChatGPT
+Test bricht fail-safe ab
+→ sichtbarer fehlgeschlagener Schritt
+→ automatisch kopierten Bericht in ChatGPT einfügen
+→ falls Browser Clipboard blockiert: einmal „Fehlerbericht kopieren“
 → Korrektur
-→ erneuter Live-Test
+→ erneut nur „Test starten“
 ```

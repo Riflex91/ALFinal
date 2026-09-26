@@ -1,4 +1,4 @@
-/* AL Bot 0.4.0-h4 | generated file | do not edit dist directly */
+/* AL Bot 0.5.0-h5 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -1000,6 +1000,22 @@
       return null;
     }
 
+    _resolveFunction(name) {
+      for (const candidate of this._roots()) {
+        try {
+          if (candidate && typeof candidate[name] === 'function') {
+            return { owner: candidate, fn: candidate[name] };
+          }
+        } catch (_) {}
+        try {
+          if (candidate && candidate.parent && typeof candidate.parent[name] === 'function') {
+            return { owner: candidate.parent, fn: candidate.parent[name] };
+          }
+        } catch (_) {}
+      }
+      return null;
+    }
+
     _character() {
       return this._read('character');
     }
@@ -1105,8 +1121,106 @@
         y: pos.y,
         hp: finite(entity.hp),
         maxHp: finite(entity.max_hp),
+        xp: finite(entity.xp),
+        attack: finite(entity.attack),
+        range: finite(entity.range),
+        frequency: finite(entity.frequency),
+        visible: entity.visible !== false,
         targetId: entity.target == null ? null : String(entity.target),
         dead: safeBoolean(entity.dead) || safeBoolean(entity.rip)
+      };
+    }
+
+    entityReference(id) {
+      const match = this._entityByIdOrName(id);
+      if (match && match.entity && match.entity.visible !== false && !match.entity.dead && !match.entity.rip) {
+        return match.entity;
+      }
+      const current = this._currentTarget();
+      if (current && current.entity) {
+        const currentId = current.entity.id == null ? null : String(current.entity.id);
+        if (id == null || currentId === String(id)) return current.entity;
+      }
+      return null;
+    }
+
+    visibleMonsters(options = {}) {
+      const character = this._character();
+      if (!character || !character.name) return [];
+      const charPos = this._position(character);
+      const type = cleanText(options.type || options.mtype || '', 120) || null;
+      const rows = [];
+      for (const row of this._entityEntries()) {
+        const entity = row.entity;
+        if (!entity || entity.visible === false || entity.dead === true || entity.rip === true) continue;
+        if (!(entity.type === 'monster' || entity.mtype)) continue;
+        if (type && String(entity.mtype || '') !== type) continue;
+        if (entity.map && character.map && String(entity.map) !== String(character.map)) continue;
+        const normalized = this._normalizeEntity({ key: row.key, entity }, character.map || null);
+        if (!normalized || normalized.dead || normalized.visible === false) continue;
+        if (charPos.x != null && charPos.y != null && normalized.x != null && normalized.y != null) {
+          normalized.distance = Math.hypot(charPos.x - normalized.x, charPos.y - normalized.y);
+        } else {
+          normalized.distance = null;
+        }
+        rows.push(normalized);
+      }
+      rows.sort((a, b) => {
+        const ad = a.distance == null ? Number.POSITIVE_INFINITY : a.distance;
+        const bd = b.distance == null ? Number.POSITIVE_INFINITY : b.distance;
+        return ad - bd;
+      });
+      return clone(rows);
+    }
+
+    combatReadiness(targetId) {
+      const character = this._character();
+      const raw = this.entityReference(targetId);
+      if (!character || !raw) {
+        return {
+          available: false,
+          targetAvailable: !!raw,
+          canAttack: false,
+          inRange: false,
+          cooldown: null,
+          source: 'unavailable'
+        };
+      }
+
+      const canAttackFn = this._resolveFunction('can_attack');
+      const inRangeFn = this._resolveFunction('is_in_range');
+      const cooldownFn = this._resolveFunction('is_on_cooldown');
+
+      let canAttack = null;
+      let inRange = null;
+      let cooldown = null;
+
+      try { if (canAttackFn) canAttack = canAttackFn.fn.call(canAttackFn.owner, raw) === true; } catch (_) {}
+      try { if (inRangeFn) inRange = inRangeFn.fn.call(inRangeFn.owner, raw, 'attack') === true; } catch (_) {}
+      try { if (cooldownFn) cooldown = cooldownFn.fn.call(cooldownFn.owner, 'attack') === true; } catch (_) {}
+
+      if (inRange == null) {
+        const cp = this._position(character);
+        const tp = this._position(raw);
+        const range = finite(character.range);
+        if (cp.x != null && cp.y != null && tp.x != null && tp.y != null && range != null) {
+          inRange = Math.hypot(cp.x - tp.x, cp.y - tp.y) <= range;
+        } else {
+          inRange = false;
+        }
+      }
+      if (cooldown == null) cooldown = false;
+      if (canAttack == null) {
+        canAttack = !safeBoolean(character.rip) && inRange && !cooldown;
+      }
+
+      return {
+        available: true,
+        targetAvailable: true,
+        canAttack,
+        inRange,
+        cooldown,
+        source: canAttackFn || inRangeFn || cooldownFn ? 'adventure-land-api' : 'adapter-fallback'
       };
     }
 
@@ -1767,7 +1881,9 @@
     move: Object.freeze({ publicName: 'move', family: 'movement' }),
     smart_move: Object.freeze({ publicName: 'smart_move', family: 'movement' }),
     stop: Object.freeze({ publicName: 'stop', family: 'movement-cleanup' }),
-    use_skill: Object.freeze({ publicName: 'use_skill', family: 'skill' })
+    use_skill: Object.freeze({ publicName: 'use_skill', family: 'skill' }),
+    attack: Object.freeze({ publicName: 'attack', family: 'combat' }),
+    change_target: Object.freeze({ publicName: 'change_target', family: 'combat-target' })
   });
 
   function errorDetails(error) {
@@ -1843,8 +1959,11 @@
       if (!Array.isArray(args)) throw new Error('ALBOT_ACTION_ARGS_INVALID:' + action);
 
       const cleanup = options.cleanup === true;
-      if (cleanup && action !== 'stop' && action !== 'use_skill') {
+      if (cleanup && action !== 'stop' && action !== 'use_skill' && action !== 'change_target') {
         throw new Error('ALBOT_CLEANUP_ACTION_NOT_ALLOWED:' + action);
+      }
+      if (cleanup && action === 'change_target' && args[0] != null) {
+        throw new Error('ALBOT_CLEANUP_TARGET_MUST_CLEAR');
       }
 
       this.metrics.attempted += 1;
@@ -2608,12 +2727,1084 @@
 
 (function (root) {
   'use strict';
+
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns) throw new Error('ALBOT_INTERNALS_MISSING');
+
+  const clone = ns.helpers.clone;
+  const cleanText = ns.helpers.cleanText;
+
+  function finite(value) {
+    if (value == null || value === '') return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function ratio(value, max) {
+    const current = finite(value);
+    const total = finite(max);
+    if (current == null || total == null || total <= 0) return null;
+    return Math.max(0, Math.min(1, current / total));
+  }
+
+  function errorReason(value, fallback = 'COMBAT_UNKNOWN') {
+    if (value && typeof value === 'object') {
+      const raw = value.reason || value.code || value.message;
+      if (raw) return cleanText(raw, 240);
+    }
+    const text = cleanText(value, 240);
+    return text || fallback;
+  }
+
+  class CombatController {
+    constructor(options = {}) {
+      this.root = options.root || root;
+      this.logger = options.logger || null;
+      this.game = options.game;
+      this.actions = options.actions;
+      this.movement = options.movement;
+      this.now = typeof options.now === 'function' ? options.now : () => Date.now();
+
+      this.config = {
+        tickMs: Math.max(75, Math.min(1000, Number(options.tickMs) || 125)),
+        attackOutcomeTimeoutMs: Math.max(750, Math.min(10000, Number(options.attackOutcomeTimeoutMs) || 3000)),
+        targetConfirmTimeoutMs: Math.max(500, Math.min(10000, Number(options.targetConfirmTimeoutMs) || 2000)),
+        retreatHpRatio: Math.max(0.05, Math.min(0.9, Number(options.retreatHpRatio) || 0.35)),
+        resumeHpRatio: Math.max(0.1, Math.min(1, Number(options.resumeHpRatio) || 0.65)),
+        minMpRatio: Math.max(0, Math.min(0.9, Number(options.minMpRatio) || 0.05)),
+        preferredRangeRatio: Math.max(0.25, Math.min(0.95, Number(options.preferredRangeRatio) || 0.78)),
+        kiteTriggerRatio: Math.max(0.05, Math.min(0.8, Number(options.kiteTriggerRatio) || 0.30)),
+        kiteStep: Math.max(10, Math.min(120, Number(options.kiteStep) || 35)),
+        maxAcquireDistance: Math.max(50, Math.min(1200, Number(options.maxAcquireDistance) || 450)),
+        maxAttackToHpRatio: Math.max(0.01, Math.min(0.5, Number(options.maxAttackToHpRatio) || 0.08))
+      };
+
+      this.moduleActive = false;
+      this.scope = null;
+      this.heartbeat = null;
+      this.session = null;
+      this.lastSession = null;
+      this.sequence = 0;
+      this.pendingAttack = null;
+      this.targetConfirmDeadlineMs = null;
+      this.metrics = {
+        sessions: 0,
+        targetsAcquired: 0,
+        targetChanges: 0,
+        attacksDispatched: 0,
+        attacksConfirmed: 0,
+        attackUnknown: 0,
+        killsObserved: 0,
+        approaches: 0,
+        kites: 0,
+        retreats: 0,
+        blockedByMovement: 0,
+        lowMpWaits: 0,
+        rejected: 0
+      };
+    }
+
+    start(context) {
+      this.moduleActive = true;
+      this.scope = context && context.scope || null;
+      this.heartbeat = context && typeof context.heartbeat === 'function' ? context.heartbeat : null;
+      if (!this.scope) throw new Error('COMBAT_SCOPE_REQUIRED');
+      this.scope.interval('combat-loop', () => this._tick(), this.config.tickMs, { immediate: false });
+      if (this.heartbeat) this.heartbeat({ phase: 'combat-module-start', session: false });
+      return this.status();
+    }
+
+    stop(reason = 'COMBAT_MODULE_STOP') {
+      this.moduleActive = false;
+      this.stopSession(reason);
+      this.scope = null;
+      this.heartbeat = null;
+      return this.status();
+    }
+
+    _publicSession(session) {
+      if (!session) return null;
+      return clone(session);
+    }
+
+    _policy(options = {}) {
+      return {
+        monsterType: cleanText(options.monsterType || options.type || '', 120) || null,
+        maxAttack: finite(options.maxAttack),
+        maxAttackToHpRatio: Math.max(0.01, Math.min(0.5, Number(options.maxAttackToHpRatio) || this.config.maxAttackToHpRatio)),
+        maxAcquireDistance: Math.max(50, Math.min(1200, Number(options.maxAcquireDistance) || this.config.maxAcquireDistance)),
+        allowContested: options.allowContested === true,
+        allowUnknownAttack: options.allowUnknownAttack === true,
+        kiting: options.kiting === true,
+        preferredRangeRatio: Math.max(0.25, Math.min(0.95, Number(options.preferredRangeRatio) || this.config.preferredRangeRatio)),
+        retreatHpRatio: Math.max(0.05, Math.min(0.9, Number(options.retreatHpRatio) || this.config.retreatHpRatio)),
+        resumeHpRatio: Math.max(0.1, Math.min(1, Number(options.resumeHpRatio) || this.config.resumeHpRatio)),
+        minMpRatio: Math.max(0, Math.min(0.9, options.minMpRatio == null ? this.config.minMpRatio : Number(options.minMpRatio)))
+      };
+    }
+
+    startSession(options = {}) {
+      if (!this.moduleActive) {
+        this.metrics.rejected += 1;
+        return { accepted: false, reason: 'COMBAT_MODULE_NOT_ACTIVE', status: this.status() };
+      }
+      if (this.session && this.session.enabled) {
+        this.metrics.rejected += 1;
+        return { accepted: false, reason: 'COMBAT_SESSION_ALREADY_ACTIVE', status: this.status() };
+      }
+
+      const game = this.game && this.game.snapshot ? this.game.snapshot() : null;
+      if (!game || !game.available || !game.character) {
+        this.metrics.rejected += 1;
+        return { accepted: false, reason: 'CHARACTER_UNAVAILABLE', status: this.status() };
+      }
+      if (game.character.rip === true) {
+        this.metrics.rejected += 1;
+        return { accepted: false, reason: 'CHARACTER_DEAD', status: this.status() };
+      }
+
+      const id = 'combat-' + (++this.sequence);
+      this.session = {
+        id,
+        enabled: true,
+        owner: cleanText(options.owner || 'manual', 80) || 'manual',
+        state: 'ACQUIRING',
+        reason: null,
+        startedAt: new Date().toISOString(),
+        startedAtMs: this.now(),
+        stoppedAt: null,
+        targetId: null,
+        targetType: null,
+        targetAcquiredAt: null,
+        policy: this._policy(options),
+        counters: {
+          ticks: 0,
+          targetsAcquired: 0,
+          attacksDispatched: 0,
+          attacksConfirmed: 0,
+          killsObserved: 0,
+          approaches: 0,
+          kites: 0,
+          retreats: 0
+        },
+        lastDecision: null,
+        lastError: null
+      };
+      this.pendingAttack = null;
+      this.targetConfirmDeadlineMs = null;
+      this.metrics.sessions += 1;
+      if (this.logger) this.logger.warn('Combat-Session gestartet', {
+        id,
+        owner: this.session.owner,
+        policy: this.session.policy
+      });
+      return { accepted: true, session: this._publicSession(this.session) };
+    }
+
+    _combatMovementActive() {
+      const movement = this.movement && this.movement.status ? this.movement.status() : null;
+      const order = movement && movement.activeOrder;
+      return !!(order && String(order.owner || '').startsWith('combat-h5'));
+    }
+
+    _foreignMovementActive() {
+      const movement = this.movement && this.movement.status ? this.movement.status() : null;
+      const order = movement && movement.activeOrder;
+      return !!(order && !String(order.owner || '').startsWith('combat-h5'));
+    }
+
+    _cancelCombatMovement(reason) {
+      if (!this._combatMovementActive()) return false;
+      try {
+        this.movement.cancel(reason || 'COMBAT_MOVEMENT_CANCEL');
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    _clearGameTarget(reason = 'COMBAT_CLEAR_TARGET') {
+      try {
+        if (this.actions && this.actions.available('change_target')) {
+          this.actions.dispatch('change_target', [null], { cleanup: true });
+        }
+      } catch (_) {}
+      if (this.session) {
+        this.session.targetId = null;
+        this.session.targetType = null;
+        this.session.targetAcquiredAt = null;
+        this.targetConfirmDeadlineMs = null;
+        this.session.lastDecision = { at: new Date().toISOString(), type: 'TARGET_CLEAR', reason };
+      }
+    }
+
+    stopSession(reason = 'COMBAT_SESSION_STOP') {
+      if (!this.session) {
+        this._cancelCombatMovement(reason);
+        this.pendingAttack = null;
+        return { stopped: false, reason: 'NO_COMBAT_SESSION' };
+      }
+
+      const session = this.session;
+      session.enabled = false;
+      session.state = 'STOPPED';
+      session.reason = cleanText(reason, 240);
+      session.stoppedAt = new Date().toISOString();
+      this._cancelCombatMovement(reason);
+      this._clearGameTarget(reason);
+      this.pendingAttack = null;
+      this.lastSession = this._publicSession(session);
+      this.session = null;
+
+      if (this.logger) this.logger.warn('Combat-Session beendet', {
+        id: session.id,
+        reason: session.reason,
+        counters: session.counters
+      });
+      return { stopped: true, session: clone(this.lastSession) };
+    }
+
+    _fail(state, reason, details) {
+      if (!this.session) return;
+      this.session.enabled = false;
+      this.session.state = state;
+      this.session.reason = cleanText(reason, 240);
+      this.session.lastError = details ? clone(details) : null;
+      this.session.stoppedAt = new Date().toISOString();
+      this._cancelCombatMovement(reason);
+      this._clearGameTarget(reason);
+      this.pendingAttack = null;
+      this.lastSession = this._publicSession(this.session);
+      if (this.logger) this.logger.error('Combat fail-safe beendet', {
+        id: this.session.id,
+        state,
+        reason,
+        details: details || null
+      });
+      this.session = null;
+    }
+
+    _safeMaxAttack(character, policy) {
+      if (policy.maxAttack != null) return policy.maxAttack;
+      const maxHp = finite(character && character.maxHp);
+      if (maxHp == null) return null;
+      return Math.max(20, maxHp * policy.maxAttackToHpRatio);
+    }
+
+    safeCandidates(options = {}) {
+      const game = this.game && this.game.snapshot ? this.game.snapshot() : null;
+      const character = game && game.character;
+      if (!character) return [];
+      const policy = this._policy(options);
+      const maxAttack = this._safeMaxAttack(character, policy);
+      return this.game.visibleMonsters({ type: policy.monsterType }).filter(monster => {
+        if (!monster || monster.dead || monster.visible === false) return false;
+        if (monster.distance == null || monster.distance > policy.maxAcquireDistance) return false;
+        if (maxAttack != null && monster.attack == null && !policy.allowUnknownAttack) return false;
+        if (maxAttack != null && monster.attack != null && monster.attack > maxAttack) return false;
+        if (!policy.allowContested && monster.targetId && monster.targetId !== character.name) return false;
+        return true;
+      });
+    }
+
+    _freshTarget() {
+      if (!this.session || !this.session.targetId) return null;
+      const monsters = this.game.visibleMonsters({ type: this.session.policy.monsterType });
+      return monsters.find(monster => String(monster.id) === String(this.session.targetId)) || null;
+    }
+
+    _selectTarget(game) {
+      const candidates = this.safeCandidates(this.session.policy);
+      if (!candidates.length) {
+        this.session.state = 'NO_TARGET';
+        this.session.lastDecision = {
+          at: new Date().toISOString(),
+          type: 'NO_TARGET',
+          visibleMonsters: this.game.visibleMonsters().length
+        };
+        return null;
+      }
+
+      const target = candidates[0];
+      const raw = this.game.entityReference(target.id);
+      if (!raw) {
+        this.session.state = 'ACQUIRING';
+        return null;
+      }
+
+      let dispatch;
+      try {
+        dispatch = this.actions.dispatch('change_target', [raw]);
+      } catch (error) {
+        this._fail('FAILED_SAFE', errorReason(error, 'COMBAT_CHANGE_TARGET_BLOCKED'));
+        return null;
+      }
+      if (!dispatch || dispatch.state !== 'DISPATCHED') {
+        this._fail(dispatch && dispatch.state === 'UNKNOWN' ? 'UNKNOWN' : 'FAILED_SAFE',
+          dispatch && dispatch.error ? errorReason(dispatch.error) : 'COMBAT_CHANGE_TARGET_FAILED',
+          dispatch || null);
+        return null;
+      }
+
+      this.session.targetId = String(target.id);
+      this.session.targetType = target.mtype || null;
+      this.session.targetAcquiredAt = new Date().toISOString();
+      this.targetConfirmDeadlineMs = this.now() + this.config.targetConfirmTimeoutMs;
+      this.session.state = 'TARGETING';
+      this.session.counters.targetsAcquired += 1;
+      this.metrics.targetsAcquired += 1;
+      this.metrics.targetChanges += 1;
+      this.session.lastDecision = {
+        at: new Date().toISOString(),
+        type: 'TARGET_SELECTED',
+        targetId: this.session.targetId,
+        targetType: this.session.targetType,
+        distance: target.distance,
+        attack: target.attack
+      };
+      return target;
+    }
+
+    _targetConfirmed(game) {
+      if (!this.session || !this.session.targetId) return false;
+      if (game && game.target && String(game.target.id) === String(this.session.targetId)) return true;
+      return false;
+    }
+
+    _watchAttackPromise(sessionId, attackId, value) {
+      if (!value || typeof value.then !== 'function') {
+        if (this.pendingAttack && this.pendingAttack.attackId === attackId) {
+          this.pendingAttack.commandSettlement = 'RETURNED';
+        }
+        return;
+      }
+      Promise.resolve(value).then(response => {
+        if (!this.session || this.session.id !== sessionId) return;
+        if (!this.pendingAttack || this.pendingAttack.attackId !== attackId) return;
+        if (response && response.failed === true) {
+          this.pendingAttack.commandSettlement = 'REJECTED';
+          this.pendingAttack.commandError = errorReason(response.reason || response, 'ATTACK_COMMAND_FAILED');
+          return;
+        }
+        this.pendingAttack.commandSettlement = 'RESOLVED';
+        this.pendingAttack.commandResponse = response == null ? null : clone(response);
+      }, error => {
+        if (!this.session || this.session.id !== sessionId) return;
+        if (!this.pendingAttack || this.pendingAttack.attackId !== attackId) return;
+        this.pendingAttack.commandSettlement = 'REJECTED';
+        this.pendingAttack.commandError = errorReason(error, 'ATTACK_COMMAND_REJECTED');
+      }).catch(() => {});
+    }
+
+    _serverAttackEvidence(pending) {
+      if (!pending || pending.commandSettlement !== 'RESOLVED') return null;
+      const response = pending.commandResponse;
+      if (!response || typeof response !== 'object') return null;
+      if (response.failed === true || response.success !== true) return null;
+      if (String(response.place || '') !== 'attack') return null;
+      if (response.target == null || String(response.target) !== String(pending.targetId)) return null;
+      const damage = finite(response.damage);
+      if (damage == null || damage <= 0) return null;
+      return {
+        source: 'attack-game-response',
+        damage,
+        lethal: pending.baselineHp != null && damage >= pending.baselineHp,
+        response: clone(response)
+      };
+    }
+
+    _observePendingAttack() {
+      const pending = this.pendingAttack;
+      if (!pending || !this.session) return false;
+
+      if (pending.commandSettlement === 'REJECTED') {
+        this.metrics.attackUnknown += 1;
+        this._fail('UNKNOWN', pending.commandError || 'ATTACK_COMMAND_REJECTED', clone(pending));
+        return true;
+      }
+
+      const serverEvidence = this._serverAttackEvidence(pending);
+      if (serverEvidence) {
+        this.metrics.attacksConfirmed += 1;
+        this.session.counters.attacksConfirmed += 1;
+        if (serverEvidence.lethal) {
+          this.metrics.killsObserved += 1;
+          this.session.counters.killsObserved += 1;
+        }
+        this.pendingAttack = null;
+        this.session.state = serverEvidence.lethal ? 'ACQUIRING' : 'ENGAGED';
+        this.session.lastDecision = {
+          at: new Date().toISOString(),
+          type: serverEvidence.lethal ? 'KILL_CONFIRMED_SERVER' : 'ATTACK_CONFIRMED_SERVER',
+          targetId: pending.targetId,
+          hpBefore: pending.baselineHp,
+          damage: serverEvidence.damage,
+          source: serverEvidence.source
+        };
+        if (serverEvidence.lethal) this._clearGameTarget('TARGET_LETHAL_SERVER_EVIDENCE');
+        return true;
+      }
+
+      const target = this._freshTarget();
+      if (!target) {
+        const snap = this.game.snapshot();
+        const observed = snap && snap.target && String(snap.target.id) === String(pending.targetId) ? snap.target : null;
+        if (observed && observed.dead === true) {
+          this.metrics.attacksConfirmed += 1;
+          this.metrics.killsObserved += 1;
+          this.session.counters.attacksConfirmed += 1;
+          this.session.counters.killsObserved += 1;
+          this.pendingAttack = null;
+          this._clearGameTarget('TARGET_DEAD_AFTER_ATTACK');
+          this.session.state = 'ACQUIRING';
+          return true;
+        }
+        if (this.now() >= pending.deadlineAtMs) {
+          this.metrics.attackUnknown += 1;
+          this._fail('UNKNOWN', 'ATTACK_TARGET_LOST_WITHOUT_DEATH_EVIDENCE', clone(pending));
+          return true;
+        }
+        this.session.state = 'WAITING_ATTACK_OUTCOME';
+        return true;
+      }
+
+      if (pending.baselineHp != null && target.hp != null && target.hp < pending.baselineHp) {
+        this.metrics.attacksConfirmed += 1;
+        this.session.counters.attacksConfirmed += 1;
+        this.pendingAttack = null;
+        this.session.state = 'ENGAGED';
+        this.session.lastDecision = {
+          at: new Date().toISOString(),
+          type: 'ATTACK_CONFIRMED',
+          targetId: target.id,
+          hpBefore: pending.baselineHp,
+          hpAfter: target.hp
+        };
+        return true;
+      }
+
+      if (this.now() >= pending.deadlineAtMs) {
+        this.metrics.attackUnknown += 1;
+        this._fail('UNKNOWN', 'ATTACK_OUTCOME_UNCONFIRMED', clone(pending));
+        return true;
+      }
+
+      this.session.state = 'WAITING_ATTACK_OUTCOME';
+      return true;
+    }
+
+    _beginAttack(target) {
+      const raw = this.game.entityReference(target.id);
+      if (!raw) return false;
+
+      let dispatch;
+      try {
+        dispatch = this.actions.dispatch('attack', [raw]);
+      } catch (error) {
+        this._fail('FAILED_SAFE', errorReason(error, 'ATTACK_BLOCKED'));
+        return true;
+      }
+
+      if (!dispatch || dispatch.state !== 'DISPATCHED') {
+        this.metrics.attackUnknown += 1;
+        this._fail(dispatch && dispatch.state === 'UNKNOWN' ? 'UNKNOWN' : 'FAILED_SAFE',
+          dispatch && dispatch.error ? errorReason(dispatch.error) : 'ATTACK_DISPATCH_FAILED',
+          dispatch || null);
+        return true;
+      }
+
+      this.metrics.attacksDispatched += 1;
+      this.session.counters.attacksDispatched += 1;
+      this.pendingAttack = {
+        attackId: dispatch.id,
+        targetId: String(target.id),
+        baselineHp: finite(target.hp),
+        dispatchedAt: new Date().toISOString(),
+        dispatchedAtMs: this.now(),
+        deadlineAtMs: this.now() + this.config.attackOutcomeTimeoutMs,
+        commandSettlement: 'DISPATCHED',
+        commandResponse: null,
+        commandError: null
+      };
+      this.session.state = 'ATTACKING';
+      this.session.lastDecision = {
+        at: new Date().toISOString(),
+        type: 'ATTACK_DISPATCHED',
+        attackId: dispatch.id,
+        targetId: String(target.id),
+        targetHp: finite(target.hp)
+      };
+      this._watchAttackPromise(this.session.id, dispatch.id, dispatch.value);
+      return true;
+    }
+
+    _approach(game, target) {
+      if (this._foreignMovementActive()) {
+        this.metrics.blockedByMovement += 1;
+        this.session.state = 'BLOCKED_MOVEMENT';
+        this.session.lastDecision = {
+          at: new Date().toISOString(),
+          type: 'MOVEMENT_BUSY',
+          targetId: target.id
+        };
+        return true;
+      }
+      if (this._combatMovementActive()) {
+        this.session.state = 'APPROACHING';
+        return true;
+      }
+
+      const preferred = Math.max(10, (finite(game.character.range) || 40) * this.session.policy.preferredRangeRatio);
+      const result = this.movement.approachCurrentTarget({
+        owner: 'combat-h5-approach',
+        distance: preferred
+      });
+      if (result && result.accepted) {
+        this.metrics.approaches += 1;
+        this.session.counters.approaches += 1;
+        this.session.state = result.completed ? 'ENGAGED' : 'APPROACHING';
+        this.session.lastDecision = {
+          at: new Date().toISOString(),
+          type: 'APPROACH',
+          targetId: target.id,
+          preferredDistance: preferred,
+          result: clone(result)
+        };
+      } else {
+        this.session.state = 'WAITING_RANGE';
+        this.session.lastDecision = {
+          at: new Date().toISOString(),
+          type: 'APPROACH_REJECTED',
+          targetId: target.id,
+          reason: result && result.reason || 'UNKNOWN'
+        };
+      }
+      return true;
+    }
+
+    _kite(game, target) {
+      if (!this.session.policy.kiting) return false;
+      const range = finite(game.character.range);
+      const distance = finite(target.distance);
+      if (range == null || distance == null) return false;
+      if (distance > range * this.config.kiteTriggerRatio) return false;
+      if (this._foreignMovementActive() || this._combatMovementActive()) return false;
+
+      const cx = finite(game.character.x), cy = finite(game.character.y);
+      const tx = finite(target.x), ty = finite(target.y);
+      if (cx == null || cy == null || tx == null || ty == null) return false;
+      const dx = cx - tx;
+      const dy = cy - ty;
+      const length = Math.hypot(dx, dy);
+      if (length <= 0) return false;
+      const x = cx + (dx / length) * this.config.kiteStep;
+      const y = cy + (dy / length) * this.config.kiteStep;
+      const result = this.movement.moveLocal(x, y, {
+        owner: 'combat-h5-kite',
+        arrivalRadius: 8
+      });
+      if (result && result.accepted) {
+        this.metrics.kites += 1;
+        this.session.counters.kites += 1;
+        this.session.state = 'KITING';
+        this.session.lastDecision = {
+          at: new Date().toISOString(),
+          type: 'KITE',
+          targetId: target.id,
+          destination: { x, y }
+        };
+        return true;
+      }
+      return false;
+    }
+
+    _retreat(game, hpRatio) {
+      if (!this.session) return;
+      if (this.session.state === 'RETREATING' || this.session.state === 'WAITING_RECOVERY') {
+        if (this._combatMovementActive()) {
+          this.session.state = 'RETREATING';
+          return;
+        }
+        if (hpRatio != null && hpRatio >= this.session.policy.resumeHpRatio) {
+          this.session.state = 'ACQUIRING';
+          this.session.reason = null;
+          return;
+        }
+        this.session.state = 'WAITING_RECOVERY';
+        return;
+      }
+
+      this.metrics.retreats += 1;
+      this.session.counters.retreats += 1;
+      this.session.state = 'RETREATING';
+      this.session.reason = 'LOW_HP';
+      this.pendingAttack = null;
+      this._cancelCombatMovement('COMBAT_LOW_HP_RETREAT');
+      this._clearGameTarget('COMBAT_LOW_HP_RETREAT');
+      const result = this.movement.safeReturn({ owner: 'combat-h5-retreat' });
+      this.session.lastDecision = {
+        at: new Date().toISOString(),
+        type: 'RETREAT',
+        hpRatio,
+        result: clone(result)
+      };
+      if (!result || result.accepted !== true) {
+        this._fail('FAILED_SAFE', result && result.reason || 'COMBAT_RETREAT_UNAVAILABLE', result || null);
+      }
+    }
+
+    _tick() {
+      if (this.heartbeat) {
+        this.heartbeat({
+          phase: this.session && this.session.enabled ? 'combat-active' : 'combat-idle',
+          sessionId: this.session && this.session.id || null,
+          state: this.session && this.session.state || 'IDLE'
+        });
+      }
+      if (!this.moduleActive || !this.session || !this.session.enabled) return;
+
+      this.session.counters.ticks += 1;
+      const game = this.game.snapshot();
+      const character = game && game.character;
+      if (!game || !game.available || !character) {
+        this._fail('FAILED_SAFE', 'CHARACTER_UNAVAILABLE');
+        return;
+      }
+      if (character.rip === true) {
+        this._fail('FAILED_SAFE', 'CHARACTER_DEAD');
+        return;
+      }
+
+      const hpRatio = ratio(character.hp, character.maxHp);
+      const mpRatio = ratio(character.mp, character.maxMp);
+      if (hpRatio != null && hpRatio <= this.session.policy.retreatHpRatio) {
+        this._retreat(game, hpRatio);
+        return;
+      }
+      if (this.session.state === 'RETREATING' || this.session.state === 'WAITING_RECOVERY') {
+        this._retreat(game, hpRatio);
+        return;
+      }
+      if (mpRatio != null && mpRatio < this.session.policy.minMpRatio) {
+        this.metrics.lowMpWaits += 1;
+        this.session.state = 'WAITING_MP';
+        this.session.lastDecision = {
+          at: new Date().toISOString(),
+          type: 'LOW_MP_WAIT',
+          mpRatio
+        };
+        return;
+      }
+
+      if (this._observePendingAttack()) return;
+
+      let target = this._freshTarget();
+      if (!target) {
+        if (this.session.targetId) {
+          this._clearGameTarget('TARGET_LOST');
+        }
+        target = this._selectTarget(game);
+        if (!target) return;
+      }
+
+      if (!this._targetConfirmed(game)) {
+        if (this.targetConfirmDeadlineMs != null && this.now() >= this.targetConfirmDeadlineMs) {
+          this._fail('FAILED_SAFE', 'TARGET_CONFIRM_TIMEOUT', { targetId: this.session.targetId });
+          return;
+        }
+        this.session.state = 'TARGETING';
+        return;
+      }
+
+      const readiness = this.game.combatReadiness(target.id);
+      if (!readiness.targetAvailable) {
+        this._clearGameTarget('TARGET_NOT_FRESH');
+        this.session.state = 'ACQUIRING';
+        return;
+      }
+
+      if (!readiness.inRange) {
+        this._approach(game, target);
+        return;
+      }
+
+      if (this._kite(game, target)) return;
+
+      if (readiness.cooldown || !readiness.canAttack) {
+        this.session.state = readiness.cooldown ? 'WAITING_COOLDOWN' : 'WAITING_ATTACK_READY';
+        this.session.lastDecision = {
+          at: new Date().toISOString(),
+          type: 'ATTACK_NOT_READY',
+          targetId: target.id,
+          readiness: clone(readiness)
+        };
+        return;
+      }
+
+      this._beginAttack(target);
+    }
+
+    status() {
+      return {
+        schemaVersion: 1,
+        moduleActive: this.moduleActive,
+        state: this.session && this.session.enabled ? this.session.state : 'IDLE',
+        active: !!(this.session && this.session.enabled),
+        session: this._publicSession(this.session),
+        lastSession: clone(this.lastSession),
+        pendingAttack: clone(this.pendingAttack),
+        config: clone(this.config),
+        metrics: clone(this.metrics),
+        safeCandidates: this.moduleActive && this.game ? this.safeCandidates().slice(0, 5) : []
+      };
+    }
+  }
+
+  ns.CombatController = CombatController;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+
+(function (root) {
+  'use strict';
+
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns) throw new Error('ALBOT_INTERNALS_MISSING');
+
+  const clone = ns.helpers.clone;
+  const cleanText = ns.helpers.cleanText;
+
+  function errorDetails(error) {
+    return {
+      name: cleanText(error && error.name || 'Error', 80),
+      message: cleanText(error && error.message || error || 'Unknown error', 600),
+      stack: error && error.stack ? String(error.stack).slice(0, 4000) : null
+    };
+  }
+
+  class LiveTestRunner {
+    constructor(options = {}) {
+      this.runtime = options.runtime || null;
+      this.logger = options.logger || null;
+      this.bus = options.bus || null;
+      this.suites = new Map();
+      this.recommendedId = null;
+      this.sequence = 0;
+      this.current = null;
+      this.lastRun = null;
+      this.cancelRequested = false;
+    }
+
+    register(definition) {
+      if (!definition || typeof definition !== 'object') throw new Error('LIVE_TEST_DEFINITION_REQUIRED');
+      const id = cleanText(definition.id, 100);
+      if (!id) throw new Error('LIVE_TEST_ID_REQUIRED');
+      if (this.suites.has(id)) throw new Error('LIVE_TEST_DUPLICATE:' + id);
+      const steps = Array.isArray(definition.steps) ? definition.steps : [];
+      if (!steps.length) throw new Error('LIVE_TEST_STEPS_REQUIRED:' + id);
+      for (const step of steps) {
+        if (!step || typeof step.run !== 'function') throw new Error('LIVE_TEST_STEP_RUN_REQUIRED:' + id);
+      }
+      const suite = {
+        id,
+        title: cleanText(definition.title || id, 160),
+        description: cleanText(definition.description || '', 500),
+        version: cleanText(definition.version || '1', 40),
+        autoStartRuntime: definition.autoStartRuntime !== false,
+        restoreRuntimeState: definition.restoreRuntimeState !== false,
+        prepare: typeof definition.prepare === 'function' ? definition.prepare : null,
+        cleanup: typeof definition.cleanup === 'function' ? definition.cleanup : null,
+        steps: steps.map((step, index) => ({
+          id: cleanText(step.id || ('step-' + (index + 1)), 100),
+          title: cleanText(step.title || step.id || ('Schritt ' + (index + 1)), 180),
+          timeoutMs: Math.max(250, Math.min(10 * 60 * 1000, Number(step.timeoutMs) || 30000)),
+          run: step.run
+        }))
+      };
+      this.suites.set(id, suite);
+      if (definition.recommended === true || !this.recommendedId) this.recommendedId = id;
+      return this.describe(id);
+    }
+
+    setRecommended(id) {
+      if (!this.suites.has(id)) throw new Error('LIVE_TEST_UNKNOWN:' + id);
+      this.recommendedId = id;
+      return this.describe(id);
+    }
+
+    list() {
+      return Array.from(this.suites.values()).map(suite => ({
+        id: suite.id,
+        title: suite.title,
+        description: suite.description,
+        version: suite.version,
+        recommended: suite.id === this.recommendedId,
+        steps: suite.steps.map(step => ({ id: step.id, title: step.title, timeoutMs: step.timeoutMs }))
+      }));
+    }
+
+    describe(id) {
+      const suite = this.suites.get(id);
+      if (!suite) return null;
+      return this.list().find(row => row.id === id) || null;
+    }
+
+    _emit() {
+      if (this.bus) {
+        try { this.bus.emit('live-test', this.status()); } catch (_) {}
+      }
+    }
+
+    _publicRun(run) {
+      if (!run) return null;
+      return clone({
+        id: run.id,
+        suiteId: run.suiteId,
+        title: run.title,
+        state: run.state,
+        reason: run.reason,
+        startedAt: run.startedAt,
+        finishedAt: run.finishedAt,
+        runtimeWasRunning: run.runtimeWasRunning,
+        runtimeAutoStarted: run.runtimeAutoStarted,
+        currentStepId: run.currentStepId,
+        steps: run.steps,
+        cleanup: run.cleanup
+      });
+    }
+
+    _assertNotCancelled() {
+      if (this.cancelRequested) throw new Error('LIVE_TEST_CANCELLED');
+      if (this.runtime && this.runtime.stopLatch && this.runtime.stopLatch.status().latched) {
+        throw new Error('LIVE_TEST_EMERGENCY_STOP_LATCHED');
+      }
+    }
+
+    _context(run, suite) {
+      const sleep = ms => new Promise((resolve, reject) => {
+        const delay = Math.max(0, Number(ms) || 0);
+        const timerRoot = this.runtime && this.runtime.root || root;
+        const set = timerRoot && typeof timerRoot.setTimeout === 'function' ? timerRoot.setTimeout.bind(timerRoot) : setTimeout;
+        set(() => {
+          try {
+            this._assertNotCancelled();
+            resolve();
+          } catch (error) {
+            reject(error);
+          }
+        }, delay);
+      });
+
+      const waitFor = async (predicate, options = {}) => {
+        const timeoutMs = Math.max(100, Math.min(10 * 60 * 1000, Number(options.timeoutMs) || 10000));
+        const pollMs = Math.max(25, Math.min(2000, Number(options.pollMs) || 100));
+        const started = Date.now();
+        let lastValue = null;
+        while (Date.now() - started <= timeoutMs) {
+          this._assertNotCancelled();
+          lastValue = await predicate();
+          if (lastValue) return lastValue;
+          await sleep(pollMs);
+        }
+        const label = cleanText(options.label || 'condition', 120);
+        throw new Error('LIVE_TEST_WAIT_TIMEOUT:' + label);
+      };
+
+      return {
+        runtime: this.runtime,
+        suite: this.describe(suite.id),
+        run: () => this._publicRun(run),
+        assert: (condition, message = 'LIVE_TEST_ASSERTION_FAILED') => {
+          if (!condition) throw new Error(cleanText(message, 300) || 'LIVE_TEST_ASSERTION_FAILED');
+          return true;
+        },
+        assertNotCancelled: () => this._assertNotCancelled(),
+        sleep,
+        waitFor,
+        game: () => this.runtime && this.runtime.game ? this.runtime.game.snapshot() : null,
+        status: () => this.runtime ? this.runtime.status() : null,
+        note: details => {
+          const step = run.steps.find(row => row.id === run.currentStepId);
+          if (step) step.details = clone(details);
+          this._emit();
+        }
+      };
+    }
+
+    async _runStep(run, suite, step, context) {
+      const row = run.steps.find(candidate => candidate.id === step.id);
+      row.state = 'RUNNING';
+      row.startedAt = new Date().toISOString();
+      run.currentStepId = step.id;
+      this._emit();
+
+      let timer = null;
+      const timeoutPromise = new Promise((_, reject) => {
+        const timerRoot = this.runtime && this.runtime.root || root;
+        const set = timerRoot && typeof timerRoot.setTimeout === 'function' ? timerRoot.setTimeout.bind(timerRoot) : setTimeout;
+        timer = set(() => reject(new Error('LIVE_TEST_STEP_TIMEOUT:' + step.id)), step.timeoutMs);
+      });
+
+      try {
+        this._assertNotCancelled();
+        const result = await Promise.race([
+          Promise.resolve().then(() => step.run(context)),
+          timeoutPromise
+        ]);
+        this._assertNotCancelled();
+        row.state = 'PASSED';
+        row.finishedAt = new Date().toISOString();
+        row.result = result == null ? null : clone(result);
+        row.error = null;
+      } catch (error) {
+        row.state = this.cancelRequested ? 'CANCELLED' : 'FAILED';
+        row.finishedAt = new Date().toISOString();
+        row.error = errorDetails(error);
+        throw error;
+      } finally {
+        if (timer != null) {
+          const timerRoot = this.runtime && this.runtime.root || root;
+          const clear = timerRoot && typeof timerRoot.clearTimeout === 'function' ? timerRoot.clearTimeout.bind(timerRoot) : clearTimeout;
+          try { clear(timer); } catch (_) {}
+        }
+        this._emit();
+      }
+    }
+
+    async start(id) {
+      if (this.current && this.current.state === 'RUNNING') throw new Error('LIVE_TEST_ALREADY_RUNNING');
+      const suiteId = id || this.recommendedId;
+      const suite = this.suites.get(suiteId);
+      if (!suite) throw new Error('LIVE_TEST_UNKNOWN:' + cleanText(suiteId, 100));
+      if (!this.runtime) throw new Error('LIVE_TEST_RUNTIME_MISSING');
+      if (this.runtime.stopLatch.status().latched) throw new Error('LIVE_TEST_EMERGENCY_STOP_LATCHED');
+
+      this.cancelRequested = false;
+      const runtimeWasRunning = this.runtime.running === true;
+      const run = {
+        id: 'live-test-' + (++this.sequence),
+        suiteId: suite.id,
+        title: suite.title,
+        state: 'RUNNING',
+        reason: null,
+        startedAt: new Date().toISOString(),
+        finishedAt: null,
+        runtimeWasRunning,
+        runtimeAutoStarted: false,
+        currentStepId: null,
+        cleanup: { attempted: false, ok: null, error: null },
+        steps: suite.steps.map(step => ({
+          id: step.id,
+          title: step.title,
+          state: 'PENDING',
+          startedAt: null,
+          finishedAt: null,
+          details: null,
+          result: null,
+          error: null
+        }))
+      };
+      this.current = run;
+      this._emit();
+      if (this.logger) this.logger.warn('Live-Test gestartet', { id: run.id, suite: suite.id, title: suite.title });
+
+      const context = this._context(run, suite);
+      try {
+        if (!runtimeWasRunning && suite.autoStartRuntime) {
+          await this.runtime.start();
+          run.runtimeAutoStarted = true;
+          this._emit();
+        }
+        this._assertNotCancelled();
+        if (suite.prepare) await suite.prepare(context);
+
+        for (const step of suite.steps) {
+          await this._runStep(run, suite, step, context);
+        }
+
+        run.state = 'PASSED';
+        run.reason = 'ALL_STEPS_PASSED';
+      } catch (error) {
+        run.state = this.cancelRequested ? 'CANCELLED' : 'FAILED';
+        run.reason = cleanText(error && error.message || error || 'LIVE_TEST_FAILED', 300);
+        for (const row of run.steps) {
+          if (row.state === 'PENDING') row.state = 'SKIPPED';
+        }
+      } finally {
+        run.cleanup.attempted = true;
+        try {
+          if (suite.cleanup) await suite.cleanup(context, run.state);
+          if (run.runtimeAutoStarted && suite.restoreRuntimeState && this.runtime.running) {
+            await this.runtime.stop('LIVE_TEST_AUTO_RESTORE');
+          }
+          run.cleanup.ok = true;
+        } catch (cleanupError) {
+          run.cleanup.ok = false;
+          run.cleanup.error = errorDetails(cleanupError);
+          if (run.state === 'PASSED') {
+            run.state = 'FAILED';
+            run.reason = 'LIVE_TEST_CLEANUP_FAILED:' + run.cleanup.error.message;
+          }
+        }
+
+        run.finishedAt = new Date().toISOString();
+        run.currentStepId = null;
+        this.lastRun = this._publicRun(run);
+        this.current = null;
+        this._emit();
+        if (this.logger) {
+          const data = { id: run.id, suite: suite.id, state: run.state, reason: run.reason };
+          if (run.state === 'PASSED') this.logger.info('Live-Test beendet: BESTANDEN', data);
+          else this.logger.error('Live-Test beendet: ' + run.state, data);
+        }
+      }
+
+      return clone(this.lastRun);
+    }
+
+    startRecommended() {
+      return this.start(this.recommendedId);
+    }
+
+    cancel(reason = 'MANUAL_TEST_CANCEL') {
+      if (!this.current || this.current.state !== 'RUNNING') {
+        return { cancelled: false, reason: 'NO_RUNNING_LIVE_TEST' };
+      }
+      this.cancelRequested = true;
+      this.current.reason = cleanText(reason, 200);
+      this._emit();
+      if (this.logger) this.logger.warn('Live-Test Abbruch angefordert', {
+        id: this.current.id,
+        suite: this.current.suiteId,
+        reason: this.current.reason
+      });
+      return { cancelled: true, id: this.current.id, suiteId: this.current.suiteId };
+    }
+
+    status() {
+      return {
+        schemaVersion: 1,
+        recommendedId: this.recommendedId,
+        recommended: this.describe(this.recommendedId),
+        running: !!(this.current && this.current.state === 'RUNNING'),
+        current: this._publicRun(this.current),
+        lastRun: clone(this.lastRun),
+        suites: this.list()
+      };
+    }
+  }
+
+  ns.LiveTestRunner = LiveTestRunner;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+
+(function (root) {
+  'use strict';
   const ns = root.__ALBOT_INTERNALS__;
   if (!ns || !ns.Scheduler) throw new Error('ALBOT_SCHEDULER_MISSING');
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.4.0-h4';
+      this.version = options.version || '0.5.0-h5';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -2641,14 +3832,27 @@
         game: this.game,
         actions: this.actions
       });
+      this.combat = new ns.CombatController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        movement: this.movement
+      });
       this.knowledge = new ns.KnowledgeService({ logger: this.logger, storage: this.storage });
       this.knowledgeProvider = new ns.WindowsBridgeKnowledgeProvider({ root: this.root, logger: this.logger });
       this.knowledge.setProvider(this.knowledgeProvider);
       this.roster = new ns.CharacterRosterService({ root: this.root, logger: this.logger });
+      this.liveTests = new ns.LiveTestRunner({
+        runtime: this,
+        logger: this.logger,
+        bus: this.bus
+      });
       this.ui = null;
       this.lastError = null;
       this._destroyed = false;
       this._registerCoreModules();
+      this._registerLiveTests();
       this._installErrorCapture();
       this.logger.info('AL Bot Runtime erstellt', {
         version: this.version,
@@ -2662,7 +3866,7 @@
       this.modules.register({
         id: 'runtime-health',
         title: 'Runtime Health',
-        version: '0.4.0',
+        version: '0.5.0',
         watchdogMs: 4000,
         start: context => {
           context.scope.interval('heartbeat', () => {
@@ -2684,10 +3888,206 @@
       this.modules.register({
         id: 'movement',
         title: 'Movement',
-        version: '0.4.0',
+        version: '0.5.0',
         start: context => this.movement.start(context),
         stop: reason => this.movement.stop(reason),
         status: () => this.movement.status()
+      });
+
+      this.modules.register({
+        id: 'combat',
+        title: 'Combat',
+        version: '0.5.0',
+        start: context => this.combat.start(context),
+        stop: reason => this.combat.stop(reason),
+        status: () => this.combat.status()
+      });
+    }
+
+    _registerLiveTests() {
+      let baseline = null;
+      let livePlan = null;
+      this.liveTests.register({
+        id: 'h5-combat',
+        title: 'H5 – Einfacher Kampf',
+        description: 'Ein-Klick-Live-Test für Targeting, Range, Cooldown, bestätigte Angriffe, Cleanup und Fail-Safe.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.combat.stopSession('H5_LIVE_TEST_RESET'); } catch (_) {}
+          livePlan = null;
+          const metrics = runtime.combat.status().metrics;
+          baseline = {
+            targetsAcquired: metrics.targetsAcquired,
+            attacksDispatched: metrics.attacksDispatched,
+            attacksConfirmed: metrics.attacksConfirmed,
+            attackUnknown: metrics.attackUnknown,
+            killsObserved: metrics.killsObserved
+          };
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.combat.stopSession('H5_LIVE_TEST_CLEANUP'); } catch (_) {}
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Combat-Sicherheit und sichtbares Ziel prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(game.character.rip !== true, 'CHARACTER_DEAD');
+              assert(runtime.actions.available('attack'), 'ATTACK_API_UNAVAILABLE');
+              assert(runtime.actions.available('change_target'), 'CHANGE_TARGET_API_UNAVAILABLE');
+              const combatModule = runtime.modules.describe('combat');
+              assert(combatModule && combatModule.state === 'ACTIVE', 'COMBAT_MODULE_NOT_ACTIVE');
+              const currentHp = Number(game.character.hp);
+              const maxHp = Number(game.character.maxHp);
+              assert(Number.isFinite(currentHp) && currentHp > 0, 'CHARACTER_HP_UNAVAILABLE');
+              assert(Number.isFinite(maxHp) && maxHp > 0, 'CHARACTER_MAX_HP_UNAVAILABLE');
+
+              const attackBudget = Math.max(5, Math.min(maxHp * 0.08, currentHp * 0.08));
+              const candidates = runtime.combat.safeCandidates({
+                maxAcquireDistance: 450,
+                maxAttack: attackBudget
+              });
+              assert(candidates.length > 0, 'NO_SAFE_VISIBLE_MONSTER_FOR_CURRENT_HP');
+              const target = candidates[0];
+              const targetAttack = Number(target.attack);
+              assert(Number.isFinite(targetAttack) && targetAttack >= 0, 'TARGET_ATTACK_UNAVAILABLE');
+
+              const absoluteRetreatHp = Math.max(100, targetAttack * 20);
+              const minimumStartHp = Math.max(150, targetAttack * 25);
+              assert(currentHp >= minimumStartHp,
+                'HP_TOO_LOW_FOR_SAFE_H5_TEST:' + Math.round(currentHp) + '<' + Math.round(minimumStartHp));
+
+              const retreatHpRatio = Math.max(0.05, Math.min(0.35, absoluteRetreatHp / maxHp));
+              const resumeHpRatio = Math.max(
+                retreatHpRatio + 0.05,
+                Math.min(0.65, retreatHpRatio * 1.75)
+              );
+
+              livePlan = {
+                monsterType: target.mtype || null,
+                maxAttack: attackBudget,
+                retreatHpRatio,
+                resumeHpRatio,
+                targetId: target.id,
+                targetAttack,
+                startingHp: currentHp,
+                maxHp
+              };
+
+              return {
+                character: game.character.name,
+                hp: currentHp,
+                maxHp,
+                target: target.name || target.mtype || target.id,
+                mtype: target.mtype,
+                distance: target.distance,
+                attack: target.attack,
+                attackBudget,
+                retreatHp: Math.round(maxHp * retreatHpRatio),
+                retreatHpRatio
+              };
+            }
+          },
+          {
+            id: 'start-combat',
+            title: 'Autonome Combat-Session starten und Target bestätigen',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(livePlan, 'H5_LIVE_TEST_PLAN_MISSING');
+              const result = runtime.combat.startSession({
+                owner: 'live-test-h5',
+                monsterType: livePlan.monsterType || undefined,
+                maxAcquireDistance: 450,
+                maxAttack: livePlan.maxAttack,
+                retreatHpRatio: livePlan.retreatHpRatio,
+                resumeHpRatio: livePlan.resumeHpRatio,
+                minMpRatio: 0,
+                kiting: false
+              });
+              assert(result && result.accepted === true, result && result.reason || 'COMBAT_SESSION_START_FAILED');
+              const status = await waitFor(() => {
+                const current = runtime.combat.status();
+                if (current.lastSession && ['FAILED_SAFE', 'UNKNOWN'].includes(current.lastSession.state)) {
+                  throw new Error(current.lastSession.reason || current.lastSession.state);
+                }
+                return current.session && current.session.targetId ? current : null;
+              }, { timeoutMs: 8000, pollMs: 100, label: 'target-acquisition' });
+              return {
+                sessionId: status.session.id,
+                targetId: status.session.targetId,
+                targetType: status.session.targetType
+              };
+            }
+          },
+          {
+            id: 'confirmed-attack',
+            title: 'Mindestens einen Angriff durch Live-Evidence bestätigen',
+            timeoutMs: 35000,
+            run: async ({ runtime, assert, waitFor }) => {
+              const result = await waitFor(() => {
+                const current = runtime.combat.status();
+                if (current.lastSession && ['FAILED_SAFE', 'UNKNOWN'].includes(current.lastSession.state)) {
+                  throw new Error(current.lastSession.reason || current.lastSession.state);
+                }
+                const confirmed = current.metrics.attacksConfirmed - baseline.attacksConfirmed;
+                const killed = current.metrics.killsObserved - baseline.killsObserved;
+                return confirmed > 0 || killed > 0 ? current : null;
+              }, { timeoutMs: 30000, pollMs: 125, label: 'confirmed-attack' });
+              assert(result.metrics.attackUnknown === baseline.attackUnknown, 'ATTACK_UNKNOWN_DURING_TEST');
+              return {
+                targetsAcquired: result.metrics.targetsAcquired - baseline.targetsAcquired,
+                attacksDispatched: result.metrics.attacksDispatched - baseline.attacksDispatched,
+                attacksConfirmed: result.metrics.attacksConfirmed - baseline.attacksConfirmed,
+                killsObserved: result.metrics.killsObserved - baseline.killsObserved
+              };
+            }
+          },
+          {
+            id: 'stability-window',
+            title: 'Combat fünf Sekunden ohne UNKNOWN/Fail-Safe beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              await sleep(5000);
+              const current = runtime.combat.status();
+              assert(current.metrics.attackUnknown === baseline.attackUnknown, 'ATTACK_UNKNOWN_DURING_STABILITY_WINDOW');
+              assert(!(current.lastSession && ['FAILED_SAFE', 'UNKNOWN'].includes(current.lastSession.state)), current.lastSession && current.lastSession.reason || 'COMBAT_FAILED');
+              return {
+                active: current.active,
+                state: current.state,
+                attacksConfirmed: current.metrics.attacksConfirmed - baseline.attacksConfirmed,
+                killsObserved: current.metrics.killsObserved - baseline.killsObserved,
+                approaches: current.metrics.approaches
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'Combat sauber stoppen und Ownership freigeben',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.combat.stopSession('H5_LIVE_TEST_COMPLETE');
+              const combat = runtime.combat.status();
+              const movement = runtime.movement.status();
+              assert(combat.active === false, 'COMBAT_STILL_ACTIVE_AFTER_STOP');
+              assert(!(movement.activeOrder && String(movement.activeOrder.owner || '').startsWith('combat-h5')), 'COMBAT_MOVEMENT_STILL_ACTIVE');
+              return {
+                combatActive: combat.active,
+                movementActive: movement.active,
+                lastSession: combat.lastSession && {
+                  state: combat.lastSession.state,
+                  reason: combat.lastSession.reason,
+                  counters: combat.lastSession.counters
+                }
+              };
+            }
+          }
+        ]
       });
     }
 
@@ -2766,6 +4166,7 @@
     async emergencyStop(reason = 'MANUAL_EMERGENCY_STOP') {
       const stop = this.stopLatch.latch(reason);
       this.running = false;
+      try { this.liveTests.cancel('EMERGENCY_STOP'); } catch (_) {}
 
       // Die Notbremse stoppt zuerst zentral alle Timer/Listener. Modul-Stop-Hooks
       // laufen danach nur noch zur fachlichen Bereinigung.
@@ -2831,6 +4232,8 @@
         game: this.game.status(),
         actions: this.actions.status(),
         movement: this.movement.status(),
+        combat: this.combat.status(),
+        liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
         roster,
         goals: this.goals.list(),
@@ -2849,6 +4252,8 @@
         character: game && game.character ? ns.helpers.clone(game.character) : null,
         actionBoundary: this.actions.status(),
         movement: this.movement.status(),
+        combat: this.combat.status(),
+        liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
         logs: this.logger.list(160),
         userAgent: this.root && this.root.navigator && this.root.navigator.userAgent || null
@@ -2866,6 +4271,8 @@
       push('game-adapter', !!this.game.status() && typeof this.game.snapshot === 'function', this.game.status());
       push('action-boundary', !!this.actions.status() && this.actions.status().supportedActions.includes('move') && this.actions.status().supportedActions.includes('smart_move'), this.actions.status());
       push('movement-controller', !!this.movement.status() && typeof this.movement.moveLocal === 'function' && typeof this.movement.smartMove === 'function', this.movement.status());
+      push('combat-controller', !!this.combat.status() && typeof this.combat.startSession === 'function' && typeof this.combat.stopSession === 'function', this.combat.status());
+      push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
       push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);
       push('dynamic-roster-no-hardcoded-names', roster.hardcodedNamesRequired === false, {
@@ -2939,6 +4346,7 @@
     prepareHotReload(reason = 'HOT_RELOAD') {
       if (this._destroyed) return;
       this.running = false;
+      try { this.liveTests.cancel(reason); } catch (_) {}
 
       // Zuerst alle zentral verwalteten Ressourcen synchron stoppen. Dadurch kann
       // ein neu geladenes Bundle niemals alte Timer/Listener weiterlaufen lassen.
@@ -2987,6 +4395,8 @@
       this.minimized = false;
       this.devResult = null;
       this.navigationResult = null;
+      this.combatResult = null;
+      this.liveTestClipboard = null;
       this._offLog = null;
       this._dragCleanup = null;
     }
@@ -3042,17 +4452,19 @@
 </style>
 <div class="albot-head" id="albot-drag-handle"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-minimize" class="albot-window-btn" title="Fenster minimieren" aria-label="Fenster minimieren">—</button><button id="albot-emergency" class="albot-stop">STOP</button></div>
 <div class="albot-tabs">
-<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
+<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
 </div>
 <div class="albot-body">
 <section id="albot-panel-overview" class="albot-panel active"></section>
 <section id="albot-panel-priorities" class="albot-panel"></section>
 <section id="albot-panel-navigation" class="albot-panel"></section>
+<section id="albot-panel-combat" class="albot-panel"></section>
+<section id="albot-panel-live-test" class="albot-panel"></section>
 <section id="albot-panel-knowledge" class="albot-panel"></section>
 <section id="albot-panel-logs" class="albot-panel"></section>
 <section id="albot-panel-dev" class="albot-panel"></section>
 </div>
-<div class="albot-footer"><button id="albot-start" class="albot-btn">Start</button><button id="albot-reset-stop-main" class="albot-btn danger" style="display:none">STOP zurücksetzen</button><button id="albot-stop-normal" class="albot-btn warn">Stop</button><button id="albot-copy" class="albot-btn">Fehlerbericht kopieren</button><button id="albot-hide" class="albot-btn">Ausblenden</button></div>`;
+<div class="albot-footer"><button id="albot-test-start-main" class="albot-btn">Test starten</button><button id="albot-start" class="albot-btn">Start</button><button id="albot-reset-stop-main" class="albot-btn danger" style="display:none">STOP zurücksetzen</button><button id="albot-stop-normal" class="albot-btn warn">Stop</button><button id="albot-copy" class="albot-btn">Fehlerbericht kopieren</button><button id="albot-hide" class="albot-btn">Ausblenden</button></div>`;
     }
 
     _bind() {
@@ -3060,6 +4472,7 @@
       this.host.querySelector('#albot-emergency').addEventListener('click', async () => { await this.runtime.emergencyStop('GUI_EMERGENCY_STOP'); this.render(); });
       this.host.querySelector('#albot-minimize').addEventListener('click', (event) => { event.stopPropagation(); this.toggleMinimized(); });
       this._installDrag();
+      this.host.querySelector('#albot-test-start-main').addEventListener('click', () => this.runRecommendedLiveTest());
       this.host.querySelector('#albot-start').addEventListener('click', async () => { try { await this.runtime.start(); } catch (e) { this.runtime.logger.error('Start fehlgeschlagen', { error: e.message }); } this.render(); });
       this.host.querySelector('#albot-reset-stop-main').addEventListener('click', () => { this.runtime.resetEmergencyStop(); this.render(); });
       this.host.querySelector('#albot-stop-normal').addEventListener('click', async () => { await this.runtime.stop('GUI_MODULE_STOP'); this.render(); });
@@ -3147,10 +4560,22 @@
       state.textContent = status.emergencyStop.latched ? 'EMERGENCY STOP' : status.running ? 'RUNNING' : 'STOPPED';
       state.className = 'albot-state ' + (status.emergencyStop.latched ? 'albot-bad' : status.running ? 'albot-ok' : '');
       const startButton = this.host.querySelector('#albot-start');
+      const testButton = this.host.querySelector('#albot-test-start-main');
       const resetButton = this.host.querySelector('#albot-reset-stop-main');
       if (startButton) {
         startButton.disabled = status.emergencyStop.latched === true;
         startButton.title = status.emergencyStop.latched ? 'Start ist blockiert, bis der globale STOP manuell zurückgesetzt wurde.' : '';
+      }
+      if (testButton) {
+        const liveTests = status.liveTests || {};
+        testButton.disabled = status.emergencyStop.latched === true || liveTests.running === true || !liveTests.recommended;
+        testButton.title = status.emergencyStop.latched
+          ? 'Live-Test ist blockiert, bis der globale STOP manuell zurückgesetzt wurde.'
+          : liveTests.running
+            ? 'Live-Test läuft bereits.'
+            : !liveTests.recommended
+              ? 'Noch keine empfohlene Live-Testsuite registriert.'
+              : 'Empfohlenen Live-Test automatisch ausführen.';
       }
       if (resetButton) resetButton.style.display = status.emergencyStop.latched ? '' : 'none';
     }
@@ -3166,6 +4591,12 @@
         const focused = panel && this.doc && this.doc.activeElement && panel.contains(this.doc.activeElement);
         if (!focused) this.renderNavigation(status);
       }
+      if (this.activeTab === 'combat') {
+        const panel = this.host.querySelector('#albot-panel-combat');
+        const focused = panel && this.doc && this.doc.activeElement && panel.contains(this.doc.activeElement);
+        if (!focused) this.renderCombat(status);
+      }
+      if (this.activeTab === 'live-test') this.renderLiveTest(status);
       if (this.activeTab === 'knowledge') this.renderKnowledge(status);
       if (this.activeTab === 'logs') this.renderLogs();
       if (this.activeTab === 'dev') this.renderDev(status);
@@ -3179,6 +4610,8 @@
       this.renderOverview(status);
       this.renderPriorities(status);
       this.renderNavigation(status);
+      this.renderCombat(status);
+      this.renderLiveTest(status);
       this.renderKnowledge(status);
       this.renderLogs();
       this.renderDev(status);
@@ -3313,6 +4746,137 @@
       panel.querySelector('#albot-nav-safe-return').onclick = () => run(() => this.runtime.movement.safeReturn({ owner: 'gui-h4-safe-return' }));
     }
 
+    renderCombat(status) {
+      const panel = this.host.querySelector('#albot-panel-combat');
+      if (!panel) return;
+      const combat = status.combat || {};
+      const session = combat.session || null;
+      const metrics = combat.metrics || {};
+      const pending = combat.pendingAttack || null;
+      const candidates = Array.isArray(combat.safeCandidates) ? combat.safeCandidates : [];
+      const resultText = this.combatResult ? JSON.stringify(this.combatResult, null, 2) : 'Noch keine manuelle H5-Combat-Session.';
+
+      panel.innerHTML = `<div class="albot-card"><b>H5 Einfacher Kampf</b>
+<div class="albot-small">H5 verwendet nur den normalen Angriff. Klassenspezifische Skills folgen in H6. Targets werden pro Tick aus der frischen sichtbaren Entity-Sicht bestätigt.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${combat.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Combat</span><div class="albot-v">${esc(combat.state || 'IDLE')}</div></div>
+<div><span class="albot-k">Target</span><div class="albot-v">${session && session.targetId ? esc(session.targetType || session.targetId) : 'keins'}</div></div>
+<div><span class="albot-k">Attack Outcome</span><div class="albot-v">${pending ? esc(pending.commandSettlement || 'PENDING') : 'kein offener Angriff'}</div></div>
+<div><span class="albot-k">Angriffe bestätigt</span><div class="albot-v">${esc(metrics.attacksConfirmed || 0)}</div></div>
+<div><span class="albot-k">UNKNOWN</span><div class="albot-v">${esc(metrics.attackUnknown || 0)}</div></div>
+<div><span class="albot-k">Approaches</span><div class="albot-v">${esc(metrics.approaches || 0)}</div></div>
+<div><span class="albot-k">Retreats</span><div class="albot-v">${esc(metrics.retreats || 0)}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Manuelle H5-Session</b>
+<div class="albot-row"><input id="albot-combat-type" placeholder="Monster-Typ optional, z.B. goo"><input id="albot-combat-maxattack" type="number" min="0" step="1" placeholder="Max. Monster-Angriff optional"></div>
+<div class="albot-row"><label class="albot-small"><input id="albot-combat-kiting" type="checkbox"> Kiting-Grundlage aktivieren</label></div>
+<div class="albot-row"><button id="albot-combat-start" class="albot-btn" ${combat.active ? 'disabled' : ''}>Combat starten</button><button id="albot-combat-stop" class="albot-btn warn" ${combat.active ? '' : 'disabled'}>Combat stoppen</button></div>
+<div class="albot-small">Sichere sichtbare Kandidaten: ${candidates.length ? candidates.map(row => esc(row.mtype || row.name || row.id)+' ('+esc(row.distance == null ? '?' : Math.round(row.distance))+')').join(', ') : 'keine'}</div>
+</div>
+
+<div class="albot-card"><b>Letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.combatResult = fn(); }
+        catch (error) { this.combatResult = { accepted: false, reason: String(error && error.message || error) }; }
+        this.renderCombat(this.runtime.status());
+      };
+
+      const start = panel.querySelector('#albot-combat-start');
+      if (start) start.onclick = () => {
+        const type = panel.querySelector('#albot-combat-type').value.trim();
+        const maxRaw = panel.querySelector('#albot-combat-maxattack').value;
+        const kiting = panel.querySelector('#albot-combat-kiting').checked;
+        run(() => this.runtime.combat.startSession({
+          owner: 'gui-h5-combat',
+          monsterType: type || undefined,
+          maxAttack: maxRaw === '' ? undefined : Number(maxRaw),
+          kiting
+        }));
+      };
+      const stop = panel.querySelector('#albot-combat-stop');
+      if (stop) stop.onclick = () => run(() => this.runtime.combat.stopSession('GUI_COMBAT_STOP'));
+    }
+
+    async runRecommendedLiveTest() {
+      const state = this.runtime.status();
+      if (state.emergencyStop && state.emergencyStop.latched) {
+        this.runtime.logger.warn('Live-Test durch globalen STOP blockiert');
+        this.activeTab = 'live-test';
+        this._selectTab();
+        this.renderLiveTest(state);
+        return null;
+      }
+      this.activeTab = 'live-test';
+      this._selectTab();
+      this.liveTestClipboard = { pending: true, copied: false, error: null };
+      this.render();
+      let result = null;
+      try {
+        result = await this.runtime.liveTests.startRecommended();
+      } catch (error) {
+        this.runtime.logger.error('Live-Test konnte nicht gestartet werden', { error: String(error && error.message || error) });
+      }
+      const copy = await this.copyDiagnostics();
+      this.liveTestClipboard = { pending: false, copied: copy.copied === true, error: copy.error || null };
+      this.render();
+      return result;
+    }
+
+    renderLiveTest(status) {
+      const panel = this.host.querySelector('#albot-panel-live-test');
+      if (!panel) return;
+      const tests = status.liveTests || {};
+      const recommended = tests.recommended || null;
+      const run = tests.current || tests.lastRun || null;
+      const running = tests.running === true;
+      const state = run ? run.state : 'BEREIT';
+      const stateClass = state === 'PASSED' ? 'albot-ok' : (state === 'FAILED' || state === 'CANCELLED' ? 'albot-bad' : '');
+      const clipboard = this.liveTestClipboard;
+      const clipboardText = clipboard == null
+        ? 'Nach Testende wird der vollständige Fehlerbericht automatisch in die Zwischenablage kopiert.'
+        : clipboard.copied
+          ? 'Test beendet · Fehlerbericht automatisch in die Zwischenablage kopiert.'
+          : clipboard.pending
+            ? 'Test läuft · Bericht wird nach Abschluss automatisch kopiert.'
+            : 'Test beendet · automatische Zwischenablage-Kopie fehlgeschlagen: ' + esc(clipboard.error || 'unbekannt');
+
+      const steps = run && Array.isArray(run.steps) ? run.steps : recommended && Array.isArray(recommended.steps)
+        ? recommended.steps.map(step => ({ ...step, state: 'PENDING' }))
+        : [];
+
+      panel.innerHTML = `<div class="albot-card"><b>Ein-Klick-Live-Test</b>
+<div class="albot-small">Ab H5 laufen Live-Tests automatisch als definierte Schrittfolge. Du musst nur „Test starten“ drücken. Bei einem Fehler wird fail-safe abgebrochen; der globale rote STOP bleibt jederzeit verfügbar.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Testsuite</span><div class="albot-v">${recommended ? esc(recommended.title) : 'noch nicht registriert'}</div></div>
+<div><span class="albot-k">Status</span><div class="albot-v ${stateClass}">${esc(state)}</div></div>
+<div><span class="albot-k">Aktueller Schritt</span><div class="albot-v">${run && run.currentStepId ? esc(run.currentStepId) : '-'}</div></div>
+<div><span class="albot-k">Runtime</span><div class="albot-v">${status.running ? 'RUNNING' : 'STOPPED'}</div></div>
+</div>
+<div class="albot-row"><button id="albot-live-test-start" class="albot-btn" ${running || !recommended ? 'disabled' : ''}>Test starten</button>${running ? '<span class="albot-small">Test läuft automatisch …</span>' : ''}</div>
+<div class="albot-small ${clipboard && clipboard.copied ? 'albot-ok' : clipboard && !clipboard.pending ? 'albot-bad' : ''}">${clipboardText}</div>
+</div>
+
+<div class="albot-card"><b>Testschritte</b>
+${steps.length ? steps.map((step, index) => {
+  const stepClass = step.state === 'PASSED' ? 'albot-ok' : (step.state === 'FAILED' || step.state === 'CANCELLED' ? 'albot-bad' : 'albot-muted');
+  const details = step.error ? ' · '+esc(step.error.message || step.error) : step.result != null ? ' · '+esc(JSON.stringify(step.result)) : '';
+  return '<div class="'+stepClass+'">'+esc(index + 1)+'. '+esc(step.title || step.id)+' — '+esc(step.state || 'PENDING')+details+'</div>';
+}).join('') : '<div class="albot-small">Für den aktuellen Entwicklungsstand ist noch keine Live-Testsuite registriert.</div>'}
+</div>
+
+${run ? `<div class="albot-card"><b>Letztes Testergebnis</b>
+<div class="${stateClass}"><b>${state === 'PASSED' ? 'TEST BEENDET – BESTANDEN' : state === 'RUNNING' ? 'TEST LÄUFT' : 'TEST BEENDET – '+esc(state)}</b></div>
+<div class="albot-small">Grund: ${esc(run.reason || '-')}</div>
+<div class="albot-small">Start: ${esc(run.startedAt || '-')} · Ende: ${esc(run.finishedAt || '-')}</div>
+</div>` : ''}`;
+
+      const start = panel.querySelector('#albot-live-test-start');
+      if (start) start.onclick = () => this.runRecommendedLiveTest();
+    }
+
     renderKnowledge(status) {
       const panel = this.host.querySelector('#albot-panel-knowledge');
       if (!panel) return;
@@ -3360,7 +4924,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
     renderDev(status) {
       const panel = this.host.querySelector('#albot-panel-dev');
       const scheduler = status.scheduler || {};
-      const resultText = this.devResult ? JSON.stringify(this.devResult, null, 2) : 'H4 Movement · ' + status.version;
+      const resultText = this.devResult ? JSON.stringify(this.devResult, null, 2) : 'H5 Combat · ' + status.version;
       panel.innerHTML = `<div class="albot-card"><b>Entwicklung</b>
 <div class="albot-row"><button id="albot-selftest" class="albot-btn">Selftest</button><button id="albot-stability-test" class="albot-btn">H2 Runtime-Test</button><button id="albot-reset-stop" class="albot-btn danger">STOP zurücksetzen</button><button id="albot-show" class="albot-btn">GUI anzeigen</button></div>
 <div class="albot-small">Scheduler: ${scheduler.enabled ? 'ACTIVE' : 'STOPPED'} · Ressourcen: ${esc(scheduler.totalResources || 0)} · Generation: ${esc(scheduler.generation || 0)} · Boot: #${esc(status.bootCount || 1)}</div>
@@ -3389,9 +4953,13 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
           const area = this.doc.createElement('textarea'); area.value = text; area.style.position='fixed'; area.style.opacity='0'; this.doc.body.appendChild(area); area.select(); this.doc.execCommand('copy'); area.remove();
         }
         this.runtime.logger.info('Fehlerbericht in Zwischenablage kopiert');
-      } catch (e) { this.runtime.logger.error('Clipboard-Kopie fehlgeschlagen', { error: e.message }); }
-      this.renderLogs();
-      return text;
+        this.renderLogs();
+        return { copied: true, text, error: null };
+      } catch (e) {
+        this.runtime.logger.error('Clipboard-Kopie fehlgeschlagen', { error: e.message });
+        this.renderLogs();
+        return { copied: false, text, error: String(e && e.message || e) };
+      }
     }
 
     show() { if (this.host) this.host.style.display = 'block'; }
@@ -3462,7 +5030,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.4.0-h4',
+    version: '0.5.0-h5',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -3528,6 +5096,21 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
       safeReturn: options => runtime.movement.safeReturn(options || {})
     },
 
+    combat: {
+      status: () => runtime.combat.status(),
+      start: options => runtime.combat.startSession(options || {}),
+      stop: reason => runtime.combat.stopSession(reason || 'API_COMBAT_STOP'),
+      candidates: options => runtime.combat.safeCandidates(options || {})
+    },
+
+    liveTests: {
+      status: () => runtime.liveTests.status(),
+      list: () => runtime.liveTests.list(),
+      start: id => runtime.liveTests.start(id),
+      startRecommended: () => runtime.liveTests.startRecommended(),
+      cancel: reason => runtime.liveTests.cancel(reason || 'API_LIVE_TEST_CANCEL')
+    },
+
     knowledge: {
       setProvider: provider => runtime.knowledge.setProvider(provider),
       refresh: () => runtime.knowledge.refresh(),
@@ -3564,6 +5147,8 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
   Object.freeze(api.modules);
   Object.freeze(api.game);
   Object.freeze(api.movement);
+  Object.freeze(api.combat);
+  Object.freeze(api.liveTests);
   Object.freeze(api.knowledge);
   Object.freeze(api.roster);
   Object.freeze(api.actions);
@@ -3580,7 +5165,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
     };
   } catch (_) {}
 
-  runtime.logger.info('AL Bot H4 geladen', {
+  runtime.logger.info('AL Bot H5 geladen', {
     version: api.version,
     bootCount,
     hotReload: !!previous,
