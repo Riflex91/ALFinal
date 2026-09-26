@@ -349,7 +349,7 @@
       };
     }
 
-    skillReadiness(skillId, targetId = null) {
+    skillReadiness(skillId, targetId = null, options = {}) {
       const definition = this.skillDefinition(skillId);
       const character = this._character();
       const normalized = this.snapshot();
@@ -387,7 +387,9 @@
 
       let inRange = targetId == null;
       if (targetId != null) {
-        const rawTarget = this.entityReference(targetId);
+        const rawTarget = options.allowDeadTarget === true
+          ? this.playerReference(targetId, { allowDead: true })
+          : this.entityReference(targetId);
         if (!rawTarget) {
           inRange = false;
           reasons.push('SKILL_TARGET_UNAVAILABLE');
