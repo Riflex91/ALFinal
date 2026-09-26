@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.2.0-h2';
+      this.version = options.version || '0.3.0-h3';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -21,7 +21,10 @@
       this.modules = new ns.ModuleRegistry({ logger: this.logger, scheduler: this.scheduler });
       this.scheduler.setErrorHandler(details => this.modules.handleResourceError(details));
       this.goals = new ns.GoalService({ storage: this.storage, logger: this.logger });
-      this.knowledge = new ns.KnowledgeService({ logger: this.logger });
+      this.game = new ns.AdventureLandGameAdapter({ root: this.root, logger: this.logger });
+      this.knowledge = new ns.KnowledgeService({ logger: this.logger, storage: this.storage });
+      this.knowledgeProvider = new ns.WindowsBridgeKnowledgeProvider({ root: this.root, logger: this.logger });
+      this.knowledge.setProvider(this.knowledgeProvider);
       this.roster = new ns.CharacterRosterService({ root: this.root, logger: this.logger });
       this.ui = null;
       this.lastError = null;
@@ -40,7 +43,7 @@
       this.modules.register({
         id: 'runtime-health',
         title: 'Runtime Health',
-        version: '0.2.0',
+        version: '0.3.0',
         watchdogMs: 4000,
         start: context => {
           context.scope.interval('heartbeat', () => {
@@ -197,6 +200,7 @@
         emergencyStop: this.stopLatch.status(),
         scheduler: this.scheduler.status(),
         modules: this.modules.list(),
+        game: this.game.status(),
         knowledge: this.knowledge.status(),
         roster,
         goals: this.goals.list(),
@@ -206,24 +210,14 @@
     }
 
     diagnostics() {
-      const local = this.root && (this.root.character || this.root.parent && this.root.parent.character) || null;
+      const game = this.game.snapshot();
       return {
-        schemaVersion: 2,
+        schemaVersion: 3,
         createdAt: new Date().toISOString(),
         runtime: this.status(),
-        character: local ? {
-          name: local.name || null,
-          ctype: local.ctype || local.type || null,
-          map: local.map || null,
-          hp: local.hp ?? null,
-          maxHp: local.max_hp ?? null,
-          mp: local.mp ?? null,
-          maxMp: local.max_mp ?? null,
-          gold: local.gold ?? null,
-          x: local.x ?? null,
-          y: local.y ?? null,
-          target: local.target || local.target_id || null
-        } : null,
+        game,
+        character: game && game.character ? ns.helpers.clone(game.character) : null,
+        knowledgeSnapshot: this.knowledge.snapshot(),
         logs: this.logger.list(160),
         userAgent: this.root && this.root.navigator && this.root.navigator.userAgent || null
       };
@@ -237,7 +231,9 @@
       push('runtime-created', !!this.version, { version: this.version });
       push('emergency-stop-api', typeof this.emergencyStop === 'function' && typeof this.resetEmergencyStop === 'function');
       push('goal-service', Array.isArray(this.goals.list()));
+      push('game-adapter', !!this.game.status() && typeof this.game.snapshot === 'function', this.game.status());
       push('knowledge-service', !!this.knowledge.status());
+      push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);
       push('dynamic-roster-no-hardcoded-names', roster.hardcodedNamesRequired === false, {
         source: roster.source,
         farmers: roster.farmers.map(x => ({ name: x.name, ctype: x.ctype }))
