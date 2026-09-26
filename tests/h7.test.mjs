@@ -245,15 +245,23 @@ test('H7 party focus follows owned tank target and H5 combat converges onto it',
 
   const started = ctx.ALBot.combat.start({ owner: 'h7-focus-test', maxAttack: 20, minMpRatio: 0, partyAssist: true });
   assert.equal(started.accepted, true);
-  await sleep(1800);
 
-  const party = ctx.ALBot.party.status();
-  const combat = ctx.ALBot.combat.status();
-  assert.equal(party.focus.targetId, 'm1');
-  assert.match(party.focus.source, /^tank:/);
-  assert.ok(combat.session);
-  assert.equal(combat.session.targetId, 'm1');
-  assert.ok(combat.metrics.attacksConfirmed >= 1);
+  let converged = null;
+  const deadline = Date.now() + 1200;
+  while (Date.now() < deadline) {
+    const party = ctx.ALBot.party.status();
+    const combat = ctx.ALBot.combat.status();
+    if (party.focus.targetId === 'm1' && combat.session && combat.session.targetId === 'm1') {
+      converged = { party, combat };
+      break;
+    }
+    await sleep(40);
+  }
+
+  assert.ok(converged, 'party/combat focus did not converge before target lifecycle changed');
+  assert.match(converged.party.focus.source, /^tank:/);
+  await sleep(250);
+  assert.ok(ctx.ALBot.combat.status().metrics.attacksConfirmed >= 1);
 });
 
 test('H7 priest heals an injured owned party member through central action boundary', async t => {
