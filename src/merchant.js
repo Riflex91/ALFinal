@@ -521,6 +521,13 @@
       const name = cleanText(itemName || '', 160);
       const wanted = Math.max(1, Math.floor(Number(quantity) || 1));
       if (!name) return { accepted: false, reason: 'H11_DELIVERY_ITEM_REQUIRED' };
+      const itemPlan = this._inventoryPlan();
+      const row = (itemPlan && itemPlan.items || []).find(item =>
+        String(item.name || '') === name && this._transferSafe(item, { allowUtility: true }));
+      if (!row) return { accepted: false, reason: 'H11_DELIVERY_ITEM_NOT_SAFE_OR_AVAILABLE' };
+      if ((Math.floor(Number(row.quantity) || 0)) < wanted) {
+        return { accepted: false, reason: 'H11_DELIVERY_QUANTITY_UNAVAILABLE' };
+      }
       this.delivery = {
         id: 'delivery-' + (++this.sequence),
         targetName: target,
