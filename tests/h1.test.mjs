@@ -102,10 +102,19 @@ test('selftest passes', () => {
 
 test('control center source includes large resizable drag and minimize behavior', () => {
   const ui = fs.readFileSync(path.resolve(here, '../src/ui.js'), 'utf8');
-  assert.match(ui, /width:min\(620px/);
+  assert.match(ui, /width:min\(700px/);
   assert.match(ui, /resize:both/);
   assert.match(ui, /_installDrag\(\)/);
   assert.match(ui, /toggleMinimized\(force\)/);
   assert.match(ui, /albot-minimized/);
   assert.match(ui, /id="albot-minimize"/);
+});
+
+
+test('control center mounts into highest reachable same-origin document', () => {
+  const ui = fs.readFileSync(path.resolve(here, '../src/ui.js'), 'utf8');
+  assert.match(ui, /_resolveUiRoot\(start\)/);
+  assert.match(ui, /current\.parent/);
+  assert.match(ui, /this\.uiRoot/);
+  assert.match(ui, /this\.uiRoot\.innerWidth/);
 });
