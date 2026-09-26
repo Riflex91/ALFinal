@@ -386,7 +386,29 @@
         return;
       }
       if (!dispatch || dispatch.state !== 'DISPATCHED') {
-        this.lastDecision = { at: new Date().toISOString(), type: 'SUPPORT_NOT_DISPATCHED', state: dispatch && dispatch.state || null };
+        const state = dispatch && dispatch.state || null;
+        if (state === 'UNKNOWN') {
+          if (decision.kind === 'heal') this.metrics.healsDispatched += 1;
+          if (decision.kind === 'partyheal') this.metrics.partyHealsDispatched += 1;
+          if (decision.kind === 'revive') this.metrics.revivesDispatched += 1;
+
+          const pending = {
+            id: dispatch.id,
+            kind: decision.kind,
+            targetName: decision.target && decision.target.name || null,
+            dispatchedAt: dispatch.at || new Date().toISOString()
+          };
+          this.pendingSupport = pending;
+          this.lastDecision = {
+            at: new Date().toISOString(),
+            type: 'SUPPORT_UNKNOWN',
+            kind: pending.kind,
+            target: pending.targetName
+          };
+          this._settleSupport(pending, 'UNKNOWN', dispatch.error || dispatch);
+          return;
+        }
+        this.lastDecision = { at: new Date().toISOString(), type: 'SUPPORT_NOT_DISPATCHED', state };
         return;
       }
 
