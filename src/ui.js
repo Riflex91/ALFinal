@@ -24,6 +24,7 @@
       this.minimized = false;
       this.devResult = null;
       this.navigationResult = null;
+      this.liveTestClipboard = null;
       this._offLog = null;
       this._dragCleanup = null;
     }
@@ -79,12 +80,13 @@
 </style>
 <div class="albot-head" id="albot-drag-handle"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-minimize" class="albot-window-btn" title="Fenster minimieren" aria-label="Fenster minimieren">—</button><button id="albot-emergency" class="albot-stop">STOP</button></div>
 <div class="albot-tabs">
-<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
+<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
 </div>
 <div class="albot-body">
 <section id="albot-panel-overview" class="albot-panel active"></section>
 <section id="albot-panel-priorities" class="albot-panel"></section>
 <section id="albot-panel-navigation" class="albot-panel"></section>
+<section id="albot-panel-live-test" class="albot-panel"></section>
 <section id="albot-panel-knowledge" class="albot-panel"></section>
 <section id="albot-panel-logs" class="albot-panel"></section>
 <section id="albot-panel-dev" class="albot-panel"></section>
@@ -203,6 +205,7 @@
         const focused = panel && this.doc && this.doc.activeElement && panel.contains(this.doc.activeElement);
         if (!focused) this.renderNavigation(status);
       }
+      if (this.activeTab === 'live-test') this.renderLiveTest(status);
       if (this.activeTab === 'knowledge') this.renderKnowledge(status);
       if (this.activeTab === 'logs') this.renderLogs();
       if (this.activeTab === 'dev') this.renderDev(status);
@@ -216,6 +219,7 @@
       this.renderOverview(status);
       this.renderPriorities(status);
       this.renderNavigation(status);
+      this.renderLiveTest(status);
       this.renderKnowledge(status);
       this.renderLogs();
       this.renderDev(status);
@@ -350,6 +354,69 @@
       panel.querySelector('#albot-nav-safe-return').onclick = () => run(() => this.runtime.movement.safeReturn({ owner: 'gui-h4-safe-return' }));
     }
 
+    renderLiveTest(status) {
+      const panel = this.host.querySelector('#albot-panel-live-test');
+      if (!panel) return;
+      const tests = status.liveTests || {};
+      const recommended = tests.recommended || null;
+      const run = tests.current || tests.lastRun || null;
+      const running = tests.running === true;
+      const state = run ? run.state : 'BEREIT';
+      const stateClass = state === 'PASSED' ? 'albot-ok' : (state === 'FAILED' || state === 'CANCELLED' ? 'albot-bad' : '');
+      const clipboard = this.liveTestClipboard;
+      const clipboardText = clipboard == null
+        ? 'Nach Testende wird der vollständige Fehlerbericht automatisch in die Zwischenablage kopiert.'
+        : clipboard.copied
+          ? 'Test beendet · Fehlerbericht automatisch in die Zwischenablage kopiert.'
+          : clipboard.pending
+            ? 'Test läuft · Bericht wird nach Abschluss automatisch kopiert.'
+            : 'Test beendet · automatische Zwischenablage-Kopie fehlgeschlagen: ' + esc(clipboard.error || 'unbekannt');
+
+      const steps = run && Array.isArray(run.steps) ? run.steps : recommended && Array.isArray(recommended.steps)
+        ? recommended.steps.map(step => ({ ...step, state: 'PENDING' }))
+        : [];
+
+      panel.innerHTML = `<div class="albot-card"><b>Ein-Klick-Live-Test</b>
+<div class="albot-small">Ab H5 laufen Live-Tests automatisch als definierte Schrittfolge. Du musst nur „Test starten“ drücken. Bei einem Fehler wird fail-safe abgebrochen; der globale rote STOP bleibt jederzeit verfügbar.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Testsuite</span><div class="albot-v">${recommended ? esc(recommended.title) : 'noch nicht registriert'}</div></div>
+<div><span class="albot-k">Status</span><div class="albot-v ${stateClass}">${esc(state)}</div></div>
+<div><span class="albot-k">Aktueller Schritt</span><div class="albot-v">${run && run.currentStepId ? esc(run.currentStepId) : '-'}</div></div>
+<div><span class="albot-k">Runtime</span><div class="albot-v">${status.running ? 'RUNNING' : 'STOPPED'}</div></div>
+</div>
+<div class="albot-row"><button id="albot-live-test-start" class="albot-btn" ${running || !recommended ? 'disabled' : ''}>Test starten</button>${running ? '<span class="albot-small">Test läuft automatisch …</span>' : ''}</div>
+<div class="albot-small ${clipboard && clipboard.copied ? 'albot-ok' : clipboard && !clipboard.pending ? 'albot-bad' : ''}">${clipboardText}</div>
+</div>
+
+<div class="albot-card"><b>Testschritte</b>
+${steps.length ? steps.map((step, index) => {
+  const stepClass = step.state === 'PASSED' ? 'albot-ok' : (step.state === 'FAILED' || step.state === 'CANCELLED' ? 'albot-bad' : 'albot-muted');
+  const details = step.error ? ' · '+esc(step.error.message || step.error) : step.result != null ? ' · '+esc(JSON.stringify(step.result)) : '';
+  return '<div class="'+stepClass+'">'+esc(index + 1)+'. '+esc(step.title || step.id)+' — '+esc(step.state || 'PENDING')+details+'</div>';
+}).join('') : '<div class="albot-small">Für den aktuellen Entwicklungsstand ist noch keine Live-Testsuite registriert.</div>'}
+</div>
+
+${run ? `<div class="albot-card"><b>Letztes Testergebnis</b>
+<div class="${stateClass}"><b>${state === 'PASSED' ? 'TEST BEENDET – BESTANDEN' : state === 'RUNNING' ? 'TEST LÄUFT' : 'TEST BEENDET – '+esc(state)}</b></div>
+<div class="albot-small">Grund: ${esc(run.reason || '-')}</div>
+<div class="albot-small">Start: ${esc(run.startedAt || '-')} · Ende: ${esc(run.finishedAt || '-')}</div>
+</div>` : ''}`;
+
+      const start = panel.querySelector('#albot-live-test-start');
+      if (start) start.onclick = async () => {
+        this.liveTestClipboard = { pending: true, copied: false, error: null };
+        this.renderLiveTest(this.runtime.status());
+        try {
+          await this.runtime.liveTests.startRecommended();
+        } catch (error) {
+          this.runtime.logger.error('Live-Test konnte nicht gestartet werden', { error: String(error && error.message || error) });
+        }
+        const copy = await this.copyDiagnostics();
+        this.liveTestClipboard = { pending: false, copied: copy.copied === true, error: copy.error || null };
+        this.renderLiveTest(this.runtime.status());
+      };
+    }
+
     renderKnowledge(status) {
       const panel = this.host.querySelector('#albot-panel-knowledge');
       if (!panel) return;
@@ -426,9 +493,13 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
           const area = this.doc.createElement('textarea'); area.value = text; area.style.position='fixed'; area.style.opacity='0'; this.doc.body.appendChild(area); area.select(); this.doc.execCommand('copy'); area.remove();
         }
         this.runtime.logger.info('Fehlerbericht in Zwischenablage kopiert');
-      } catch (e) { this.runtime.logger.error('Clipboard-Kopie fehlgeschlagen', { error: e.message }); }
-      this.renderLogs();
-      return text;
+        this.renderLogs();
+        return { copied: true, text, error: null };
+      } catch (e) {
+        this.runtime.logger.error('Clipboard-Kopie fehlgeschlagen', { error: e.message });
+        this.renderLogs();
+        return { copied: false, text, error: String(e && e.message || e) };
+      }
     }
 
     show() { if (this.host) this.host.style.display = 'block'; }
