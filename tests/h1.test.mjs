@@ -98,3 +98,14 @@ test('selftest passes', () => {
   assert.equal(result.passed, true);
   assert.ok(result.checks.some(c => c.name === 'dynamic-roster-no-hardcoded-names' && c.ok));
 });
+
+
+test('control center source includes large resizable drag and minimize behavior', () => {
+  const ui = fs.readFileSync(path.resolve(here, '../src/ui.js'), 'utf8');
+  assert.match(ui, /width:min\(620px/);
+  assert.match(ui, /resize:both/);
+  assert.match(ui, /_installDrag\(\)/);
+  assert.match(ui, /toggleMinimized\(force\)/);
+  assert.match(ui, /albot-minimized/);
+  assert.match(ui, /id="albot-minimize"/);
+});
