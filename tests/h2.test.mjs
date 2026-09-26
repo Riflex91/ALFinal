@@ -179,3 +179,11 @@ test('hot reload cleanup removes all runtime scheduler resources synchronously',
   assert.equal(status.scheduler.totalResources, 0);
   assert.ok(status.modules.every(row => row.state === 'STOPPED'));
 });
+
+
+test('latched emergency stop is explicit in the main control center', () => {
+  const ui = fs.readFileSync(path.resolve(here, '../src/ui.js'), 'utf8');
+  assert.match(ui, /GLOBALER STOP IST AKTIV/);
+  assert.match(ui, /id="albot-reset-stop-main"/);
+  assert.match(ui, /startButton\.disabled = status\.emergencyStop\.latched === true/);
+});
