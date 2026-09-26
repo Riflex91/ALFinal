@@ -136,6 +136,15 @@
       focusTarget: () => runtime.party.preferredTargetId()
     },
 
+    farming: {
+      status: () => runtime.farming.status(),
+      start: options => runtime.farming.startSession(options || {}),
+      stop: reason => runtime.farming.stopSession(reason || 'API_H8_STOP'),
+      plan: () => runtime.farming.plan(),
+      supportedAoeSkills: ctype => runtime.farming.supportedAoeSkills(ctype),
+      liveAoeSkills: ctype => runtime.farming.liveAoeSkills(ctype)
+    },
+
     liveTests: {
       status: () => runtime.liveTests.status(),
       list: () => runtime.liveTests.list(),
@@ -183,6 +192,7 @@
   Object.freeze(api.combat);
   Object.freeze(api.classSkills);
   Object.freeze(api.party);
+  Object.freeze(api.farming);
   Object.freeze(api.liveTests);
   Object.freeze(api.knowledge);
   Object.freeze(api.roster);
