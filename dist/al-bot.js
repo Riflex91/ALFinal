@@ -2833,6 +2833,7 @@
         maxAttackToHpRatio: Math.max(0.01, Math.min(0.5, Number(options.maxAttackToHpRatio) || this.config.maxAttackToHpRatio)),
         maxAcquireDistance: Math.max(50, Math.min(1200, Number(options.maxAcquireDistance) || this.config.maxAcquireDistance)),
         allowContested: options.allowContested === true,
+        allowUnknownAttack: options.allowUnknownAttack === true,
         kiting: options.kiting === true,
         preferredRangeRatio: Math.max(0.25, Math.min(0.95, Number(options.preferredRangeRatio) || this.config.preferredRangeRatio)),
         retreatHpRatio: Math.max(0.05, Math.min(0.9, Number(options.retreatHpRatio) || this.config.retreatHpRatio)),
@@ -2998,6 +2999,7 @@
       return this.game.visibleMonsters({ type: policy.monsterType }).filter(monster => {
         if (!monster || monster.dead || monster.visible === false) return false;
         if (monster.distance == null || monster.distance > policy.maxAcquireDistance) return false;
+        if (maxAttack != null && monster.attack == null && !policy.allowUnknownAttack) return false;
         if (maxAttack != null && monster.attack != null && monster.attack > maxAttack) return false;
         if (!policy.allowContested && monster.targetId && monster.targetId !== character.name) return false;
         return true;
