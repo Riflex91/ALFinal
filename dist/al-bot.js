@@ -576,7 +576,9 @@
       this.host = null;
       this.interval = null;
       this.activeTab = 'overview';
+      this.minimized = false;
       this._offLog = null;
+      this._dragCleanup = null;
     }
 
     mount() {
@@ -596,13 +598,15 @@
 
     _shell() {
       return `<style>
-#albot-control-center{position:fixed;right:12px;top:12px;width:430px;max-height:92vh;z-index:2147483647;background:#111827;color:#e5e7eb;border:1px solid #374151;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.45);font:12px/1.35 Arial,sans-serif;overflow:hidden}
+#albot-control-center{position:fixed;right:12px;top:12px;width:min(620px,calc(100vw - 24px));height:min(760px,calc(100vh - 24px));min-width:min(460px,calc(100vw - 24px));min-height:min(360px,calc(100vh - 24px));max-width:calc(100vw - 8px);max-height:calc(100vh - 8px);z-index:2147483647;background:#111827;color:#e5e7eb;border:1px solid #374151;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.45);font:12px/1.35 Arial,sans-serif;overflow:hidden;resize:both;display:flex;flex-direction:column}
 #albot-control-center *{box-sizing:border-box}#albot-control-center button,#albot-control-center input,#albot-control-center select{font:inherit}
-.albot-head{display:flex;align-items:center;gap:8px;padding:10px 12px;background:#0b1220;border-bottom:1px solid #374151}.albot-title{font-weight:800;font-size:15px;flex:1}.albot-state{font-size:11px;padding:3px 7px;border-radius:999px;background:#374151}.albot-stop{background:#b91c1c;color:#fff;border:0;border-radius:8px;padding:8px 14px;font-weight:800;cursor:pointer}.albot-stop:hover{background:#dc2626}
-.albot-tabs{display:flex;gap:2px;padding:6px;background:#0f172a;border-bottom:1px solid #374151;overflow:auto}.albot-tab{background:#1f2937;color:#d1d5db;border:0;border-radius:6px;padding:6px 9px;cursor:pointer;white-space:nowrap}.albot-tab.active{background:#4b5563;color:white}
-.albot-body{padding:10px;overflow:auto;max-height:75vh}.albot-panel{display:none}.albot-panel.active{display:block}.albot-card{background:#1f2937;border:1px solid #374151;border-radius:8px;padding:8px;margin-bottom:8px}.albot-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}.albot-k{color:#9ca3af}.albot-v{font-weight:700;word-break:break-word}.albot-row{display:flex;gap:6px;align-items:center;margin:6px 0}.albot-row>*{min-width:0}.albot-row input,.albot-row select{flex:1;background:#111827;color:#e5e7eb;border:1px solid #4b5563;border-radius:6px;padding:6px}.albot-btn{background:#374151;color:#fff;border:0;border-radius:6px;padding:6px 9px;cursor:pointer}.albot-btn:hover{background:#4b5563}.albot-btn.warn{background:#92400e}.albot-btn.danger{background:#991b1b}.albot-goal{border-left:3px solid #6b7280;padding-left:8px;margin:8px 0}.albot-small{font-size:11px;color:#9ca3af}.albot-log{white-space:pre-wrap;background:#030712;border-radius:6px;padding:8px;max-height:250px;overflow:auto;font-family:Consolas,monospace}.albot-ok{color:#86efac}.albot-bad{color:#fca5a5}.albot-muted{color:#9ca3af}.albot-priority-grid{display:grid;grid-template-columns:1fr 120px;gap:6px;align-items:center}.albot-footer{display:flex;gap:6px;padding:8px 10px;border-top:1px solid #374151;background:#0b1220}
+#albot-control-center.albot-minimized{height:auto!important;min-height:0!important;resize:none}
+#albot-control-center.albot-minimized .albot-tabs,#albot-control-center.albot-minimized .albot-body,#albot-control-center.albot-minimized .albot-footer{display:none}
+.albot-head{display:flex;align-items:center;gap:8px;padding:10px 12px;background:#0b1220;border-bottom:1px solid #374151;cursor:move;user-select:none;flex:none}.albot-title{font-weight:800;font-size:15px;flex:1}.albot-state{font-size:11px;padding:3px 7px;border-radius:999px;background:#374151}.albot-window-btn{background:#374151;color:#fff;border:0;border-radius:7px;padding:6px 9px;font-weight:800;cursor:pointer;line-height:1}.albot-window-btn:hover{background:#4b5563}.albot-stop{background:#b91c1c;color:#fff;border:0;border-radius:8px;padding:8px 14px;font-weight:800;cursor:pointer}.albot-stop:hover{background:#dc2626}
+.albot-tabs{display:flex;gap:2px;padding:6px;background:#0f172a;border-bottom:1px solid #374151;overflow:auto;flex:none}.albot-tab{background:#1f2937;color:#d1d5db;border:0;border-radius:6px;padding:6px 9px;cursor:pointer;white-space:nowrap}.albot-tab.active{background:#4b5563;color:white}
+.albot-body{padding:10px;overflow:auto;flex:1;min-height:0}.albot-panel{display:none}.albot-panel.active{display:block}.albot-card{background:#1f2937;border:1px solid #374151;border-radius:8px;padding:8px;margin-bottom:8px}.albot-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}.albot-k{color:#9ca3af}.albot-v{font-weight:700;word-break:break-word}.albot-row{display:flex;gap:6px;align-items:center;margin:6px 0}.albot-row>*{min-width:0}.albot-row input,.albot-row select{flex:1;background:#111827;color:#e5e7eb;border:1px solid #4b5563;border-radius:6px;padding:6px}.albot-btn{background:#374151;color:#fff;border:0;border-radius:6px;padding:6px 9px;cursor:pointer}.albot-btn:hover{background:#4b5563}.albot-btn.warn{background:#92400e}.albot-btn.danger{background:#991b1b}.albot-goal{border-left:3px solid #6b7280;padding-left:8px;margin:8px 0}.albot-small{font-size:11px;color:#9ca3af}.albot-log{white-space:pre-wrap;background:#030712;border-radius:6px;padding:8px;max-height:250px;overflow:auto;font-family:Consolas,monospace}.albot-ok{color:#86efac}.albot-bad{color:#fca5a5}.albot-muted{color:#9ca3af}.albot-priority-grid{display:grid;grid-template-columns:1fr 120px;gap:6px;align-items:center}.albot-footer{display:flex;gap:6px;padding:8px 10px;border-top:1px solid #374151;background:#0b1220;flex:none}
 </style>
-<div class="albot-head"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-emergency" class="albot-stop">STOP</button></div>
+<div class="albot-head" id="albot-drag-handle"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-minimize" class="albot-window-btn" title="Fenster minimieren" aria-label="Fenster minimieren">—</button><button id="albot-emergency" class="albot-stop">STOP</button></div>
 <div class="albot-tabs">
 <button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
 </div>
@@ -618,10 +622,82 @@
     _bind() {
       this.host.querySelectorAll('[data-tab]').forEach(btn => btn.addEventListener('click', () => { this.activeTab = btn.dataset.tab; this._selectTab(); this.render(); }));
       this.host.querySelector('#albot-emergency').addEventListener('click', async () => { await this.runtime.emergencyStop('GUI_EMERGENCY_STOP'); this.render(); });
+      this.host.querySelector('#albot-minimize').addEventListener('click', (event) => { event.stopPropagation(); this.toggleMinimized(); });
+      this._installDrag();
       this.host.querySelector('#albot-start').addEventListener('click', async () => { try { await this.runtime.start(); } catch (e) { this.runtime.logger.error('Start fehlgeschlagen', { error: e.message }); } this.render(); });
       this.host.querySelector('#albot-stop-normal').addEventListener('click', async () => { await this.runtime.stop('GUI_MODULE_STOP'); this.render(); });
       this.host.querySelector('#albot-copy').addEventListener('click', () => this.copyDiagnostics());
       this.host.querySelector('#albot-hide').addEventListener('click', () => { this.host.style.display = 'none'; });
+    }
+
+    _installDrag() {
+      const handle = this.host && this.host.querySelector('#albot-drag-handle');
+      if (!handle || typeof this.root.addEventListener !== 'function') return;
+
+      let dragging = false;
+      let startX = 0;
+      let startY = 0;
+      let startLeft = 0;
+      let startTop = 0;
+
+      const move = (event) => {
+        if (!dragging || !this.host) return;
+        const viewportW = Math.max(1, Number(this.root.innerWidth) || 1);
+        const viewportH = Math.max(1, Number(this.root.innerHeight) || 1);
+        const rect = this.host.getBoundingClientRect();
+        const maxLeft = Math.max(0, viewportW - Math.min(rect.width, viewportW));
+        const maxTop = Math.max(0, viewportH - Math.min(rect.height, viewportH));
+        const left = Math.max(0, Math.min(maxLeft, startLeft + event.clientX - startX));
+        const top = Math.max(0, Math.min(maxTop, startTop + event.clientY - startY));
+        this.host.style.left = left + 'px';
+        this.host.style.top = top + 'px';
+        this.host.style.right = 'auto';
+      };
+
+      const up = () => {
+        if (!dragging) return;
+        dragging = false;
+        if (this.doc && this.doc.body) this.doc.body.style.userSelect = '';
+      };
+
+      const down = (event) => {
+        if (event.button !== 0 || !this.host) return;
+        if (event.target && event.target.closest && event.target.closest('button,input,select,textarea,a')) return;
+        const rect = this.host.getBoundingClientRect();
+        dragging = true;
+        startX = event.clientX;
+        startY = event.clientY;
+        startLeft = rect.left;
+        startTop = rect.top;
+        this.host.style.left = rect.left + 'px';
+        this.host.style.top = rect.top + 'px';
+        this.host.style.right = 'auto';
+        if (this.doc && this.doc.body) this.doc.body.style.userSelect = 'none';
+        event.preventDefault();
+      };
+
+      handle.addEventListener('mousedown', down);
+      this.root.addEventListener('mousemove', move);
+      this.root.addEventListener('mouseup', up);
+      this._dragCleanup = () => {
+        handle.removeEventListener('mousedown', down);
+        this.root.removeEventListener('mousemove', move);
+        this.root.removeEventListener('mouseup', up);
+        if (this.doc && this.doc.body) this.doc.body.style.userSelect = '';
+      };
+    }
+
+    toggleMinimized(force) {
+      if (!this.host) return false;
+      this.minimized = typeof force === 'boolean' ? force : !this.minimized;
+      this.host.classList.toggle('albot-minimized', this.minimized);
+      const button = this.host.querySelector('#albot-minimize');
+      if (button) {
+        button.textContent = this.minimized ? '□' : '—';
+        button.title = this.minimized ? 'Fenster ausklappen' : 'Fenster minimieren';
+        button.setAttribute('aria-label', button.title);
+      }
+      return this.minimized;
     }
 
     _selectTab() {
@@ -728,6 +804,7 @@
     destroy() {
       if (this.interval != null) { try { this.root.clearInterval(this.interval); } catch (_) {} this.interval = null; }
       if (this._offLog) { try { this._offLog(); } catch (_) {} this._offLog = null; }
+      if (this._dragCleanup) { try { this._dragCleanup(); } catch (_) {} this._dragCleanup = null; }
       const old = this.doc && this.doc.getElementById('albot-control-center');
       if (old) old.remove();
       this.host = null;
