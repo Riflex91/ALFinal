@@ -204,7 +204,7 @@ test('hot reload is shared across separate same-origin runner contexts', async t
   await first.ALBot.start();
 
   const previousRuntime = first.ALBot.__runtime;
-  assert.equal(previousRuntime.status().scheduler.totalResources, 5);
+  assert.equal(previousRuntime.status().scheduler.totalResources, 6);
   assert.equal(first.ALBot.status().bootCount, 1);
 
   second = runtimeContext();
@@ -222,6 +222,6 @@ test('hot reload is shared across separate same-origin runner contexts', async t
   assert.ok(oldStatus.modules.every(row => row.state === 'STOPPED'));
 
   await second.ALBot.start();
-  assert.equal(second.ALBot.scheduler.status().totalResources, 5);
+  assert.equal(second.ALBot.scheduler.status().totalResources, 6);
   await second.ALBot.stop('DONE');
 });
