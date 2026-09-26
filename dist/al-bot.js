@@ -6167,6 +6167,25 @@
         ? candidates.find(row => row.key === this.currentSelection.key)
         : null;
 
+      if (!current && this.currentSelection) {
+        const observation = this.observations.get(this.currentSelection.key);
+        const depletedAtMs = observation && finite(observation.depletedAtMs);
+        const depletionAgeMs = depletedAtMs == null ? null : Math.max(0, now - depletedAtMs);
+        if (depletionAgeMs != null && depletionAgeMs < this.config.depletionGraceMs) {
+          this.metrics.holds += 1;
+          return this._rememberPlan({
+            state: 'WAITING_RESPAWN',
+            reason: 'H9_DEPLETION_GRACE',
+            selected: null,
+            candidates: candidates.slice(0, 12),
+            switchAllowed: false,
+            currentKey: this.currentSelection.key,
+            depletionAgeMs,
+            depletionGraceMs: this.config.depletionGraceMs
+          });
+        }
+      }
+
       if (current && selected.key !== current.key) {
         const heldMs = Math.max(0, now - Number(this.currentSelection.selectedAtMs || 0));
         const sinceSwitch = Math.max(0, now - Number(this.currentSelection.lastSwitchAtMs || this.currentSelection.selectedAtMs || 0));
@@ -7815,6 +7834,7 @@
             farmingStarts: intelligence.metrics.farmingStarts,
             travelOrders: intelligence.metrics.travelOrders,
             pingPongBlocks: intelligence.metrics.pingPongBlocks,
+            ownershipBlocks: intelligence.metrics.ownershipBlocks,
             aoeConfirmed: farming.metrics.aoeConfirmed,
             aoeUnknown: farming.metrics.aoeUnknown,
             attacksConfirmed: combat.metrics.attacksConfirmed,
@@ -7969,7 +7989,8 @@
               assert(farming.metrics.aoeUnknown === h9Baseline.aoeUnknown, 'H9_AOE_UNKNOWN_DURING_STABILITY');
               assert(combat.metrics.attackUnknown === h9Baseline.attackUnknown, 'H9_ATTACK_UNKNOWN_DURING_STABILITY');
               assert(party.metrics.focusPingPongs === h9Baseline.focusPingPongs, 'H9_PARTY_FOCUS_PINGPONG');
-              assert(intelligence.metrics.ownershipBlocks === 0, 'H9_OWNERSHIP_BLOCK_DURING_TEST');
+              assert(intelligence.metrics.ownershipBlocks === h9Baseline.ownershipBlocks,
+                'H9_OWNERSHIP_BLOCK_DURING_TEST');
               return {
                 selection: intelligence.currentSelection,
                 switches: intelligence.metrics.switches - h9Baseline.switches,
