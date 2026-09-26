@@ -76,6 +76,7 @@
         respawnsObserved: 0,
         pingPongBlocks: 0,
         ownershipBlocks: 0,
+        foreignPartyBlocks: 0,
         unsafeBlocks: 0,
         movementUnknown: 0
       };
@@ -389,6 +390,22 @@
       if (character.rip === true) return this._rememberPlan({ state: 'BLOCKED', reason: 'CHARACTER_DEAD', candidates: [] });
       if (String(character.ctype || '').toLowerCase() === 'merchant') {
         return this._rememberPlan({ state: 'OBSERVER_ONLY', reason: 'LOGISTICS_ROLE_NO_FARMING', candidates: [] });
+      }
+
+      if (this.party && typeof this.party.status === 'function') {
+        const party = this.party.status();
+        const foreign = party && party.party && Array.isArray(party.party.foreignMemberNames)
+          ? party.party.foreignMemberNames.slice()
+          : [];
+        if (foreign.length) {
+          this.metrics.foreignPartyBlocks += 1;
+          return this._rememberPlan({
+            state: 'BLOCKED',
+            reason: 'H9_FOREIGN_PARTY_BLOCK',
+            foreign,
+            candidates: []
+          });
+        }
       }
 
       const live = this._clusterSafeVisible(character);
