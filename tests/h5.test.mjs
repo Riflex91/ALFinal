@@ -133,8 +133,12 @@ function combatContext(options = {}) {
   return { ctx, calls, character, monster };
 }
 
-test('H5 exposes combat API, module and recommended one-click live suite', async () => {
+test('H5 exposes combat API, module and recommended one-click live suite', async t => {
   const { ctx } = combatContext();
+  t.after(async () => {
+    try { ctx.ALBot && ctx.ALBot.combat && ctx.ALBot.combat.stop('TEST_CLEANUP'); } catch (_) {}
+    try { ctx.ALBot && await ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {}
+  });
   vm.runInNewContext(bundle, ctx);
 
   assert.equal(ctx.ALBot.version, '0.5.0-h5');
@@ -151,8 +155,12 @@ test('H5 exposes combat API, module and recommended one-click live suite', async
   await ctx.ALBot.stop('DONE');
 });
 
-test('H5 acquires a fresh safe monster and confirms attacks from observed HP/death evidence', async () => {
+test('H5 acquires a fresh safe monster and confirms attacks from observed HP/death evidence', async t => {
   const { ctx, calls } = combatContext();
+  t.after(async () => {
+    try { ctx.ALBot && ctx.ALBot.combat && ctx.ALBot.combat.stop('TEST_CLEANUP'); } catch (_) {}
+    try { ctx.ALBot && await ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {}
+  });
   vm.runInNewContext(bundle, ctx);
   await ctx.ALBot.start();
 
@@ -176,8 +184,12 @@ test('H5 acquires a fresh safe monster and confirms attacks from observed HP/dea
   await ctx.ALBot.stop('DONE');
 });
 
-test('H5 uses live cooldown truth and does not spam attacks', async () => {
+test('H5 uses live cooldown truth and does not spam attacks', async t => {
   const { ctx, calls, monster } = combatContext({ cooldownMs: 220, damage: 1 });
+  t.after(async () => {
+    try { ctx.ALBot && ctx.ALBot.combat && ctx.ALBot.combat.stop('TEST_CLEANUP'); } catch (_) {}
+    try { ctx.ALBot && await ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {}
+  });
   monster.hp = 1000;
   monster.max_hp = 1000;
   vm.runInNewContext(bundle, ctx);
@@ -194,8 +206,12 @@ test('H5 uses live cooldown truth and does not spam attacks', async () => {
   await ctx.ALBot.stop('DONE');
 });
 
-test('H5 approaches an out-of-range target through the H4 movement owner before attacking', async () => {
+test('H5 approaches an out-of-range target through the H4 movement owner before attacking', async t => {
   const { ctx, calls, monster, character } = combatContext({ damage: 10 });
+  t.after(async () => {
+    try { ctx.ALBot && ctx.ALBot.combat && ctx.ALBot.combat.stop('TEST_CLEANUP'); } catch (_) {}
+    try { ctx.ALBot && await ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {}
+  });
   monster.real_x = 240;
   character.range = 70;
   vm.runInNewContext(bundle, ctx);
@@ -214,8 +230,12 @@ test('H5 approaches an out-of-range target through the H4 movement owner before 
   await ctx.ALBot.stop('DONE');
 });
 
-test('H5 low HP triggers safe retreat before any attack', async () => {
+test('H5 low HP triggers safe retreat before any attack', async t => {
   const { ctx, calls, character } = combatContext();
+  t.after(async () => {
+    try { ctx.ALBot && ctx.ALBot.combat && ctx.ALBot.combat.stop('TEST_CLEANUP'); } catch (_) {}
+    try { ctx.ALBot && await ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {}
+  });
   vm.runInNewContext(bundle, ctx);
   await ctx.ALBot.start();
 
@@ -242,8 +262,12 @@ test('H5 low HP triggers safe retreat before any attack', async () => {
   await ctx.ALBot.stop('DONE');
 });
 
-test('H5 attack rejection becomes UNKNOWN and is never blindly retried', async () => {
+test('H5 attack rejection becomes UNKNOWN and is never blindly retried', async t => {
   const { ctx, calls } = combatContext({ rejectAttack: true });
+  t.after(async () => {
+    try { ctx.ALBot && ctx.ALBot.combat && ctx.ALBot.combat.stop('TEST_CLEANUP'); } catch (_) {}
+    try { ctx.ALBot && await ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {}
+  });
   vm.runInNewContext(bundle, ctx);
   await ctx.ALBot.start();
 
@@ -260,8 +284,12 @@ test('H5 attack rejection becomes UNKNOWN and is never blindly retried', async (
   await ctx.ALBot.stop('DONE');
 });
 
-test('H5 kiting foundation can create a bounded local separation move', async () => {
+test('H5 kiting foundation can create a bounded local separation move', async t => {
   const { ctx, calls, monster, character } = combatContext({ damage: 1, cooldownMs: 500 });
+  t.after(async () => {
+    try { ctx.ALBot && ctx.ALBot.combat && ctx.ALBot.combat.stop('TEST_CLEANUP'); } catch (_) {}
+    try { ctx.ALBot && await ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {}
+  });
   monster.real_x = 10;
   character.range = 100;
   vm.runInNewContext(bundle, ctx);
@@ -282,8 +310,12 @@ test('H5 kiting foundation can create a bounded local separation move', async ()
   await ctx.ALBot.stop('DONE');
 });
 
-test('global STOP shuts down combat, movement and all scheduler resources', async () => {
+test('global STOP shuts down combat, movement and all scheduler resources', async t => {
   const { ctx } = combatContext({ damage: 1, cooldownMs: 1000 });
+  t.after(async () => {
+    try { ctx.ALBot && ctx.ALBot.combat && ctx.ALBot.combat.stop('TEST_CLEANUP'); } catch (_) {}
+    try { ctx.ALBot && await ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {}
+  });
   vm.runInNewContext(bundle, ctx);
   await ctx.ALBot.start();
 
