@@ -429,3 +429,49 @@ test('H3 target lookup merges runner and parent entity collections', () => {
   assert.equal(snap.targetResolution.entitySourceCount, 2);
   assert.equal(snap.targetResolution.mergedEntityCount, 2);
 });
+
+
+test('H3 uses Adventure Land parent.ctarget as primary selected monster source', () => {
+  const selected = {
+    id: '5894232',
+    name: 'Selected Frog',
+    type: 'monster',
+    mtype: 'frog',
+    real_x: 16,
+    real_y: 510,
+    hp: 55,
+    max_hp: 60,
+    dead: false
+  };
+  const sharedHost = {
+    document: {},
+    ctarget: selected,
+    entities: {}
+  };
+  const { context: ctx } = runtimeContext({
+    parent: sharedHost,
+    character: {
+      name: 'FarmerA',
+      ctype: 'ranger',
+      map: 'main',
+      hp: 100,
+      max_hp: 100,
+      mp: 50,
+      max_mp: 50,
+      real_x: 13,
+      real_y: 506,
+      target: '5894232'
+    },
+    entities: {}
+  });
+  vm.runInNewContext(bundle, ctx);
+
+  const snap = ctx.ALBot.game.snapshot();
+  assert.equal(snap.character.targetId, '5894232');
+  assert.equal(snap.target.id, '5894232');
+  assert.equal(snap.target.name, 'Selected Frog');
+  assert.equal(snap.target.mtype, 'frog');
+  assert.equal(snap.targetResolution.resolved, true);
+  assert.equal(snap.targetResolution.resolvedFrom, 'parent.ctarget');
+  assert.equal(snap.target.distance, 5);
+});
