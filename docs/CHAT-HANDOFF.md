@@ -357,11 +357,16 @@ Live-Evidence vom 2026-09-26:
 Korrektur nach Live-Evidence:
 - H7 misst jetzt explizit echte A→B→A-Focus-Rückkehr innerhalb eines 6-Sekunden-Fensters;
 - eindeutige Sequenzen A→B→C→D werden nicht mehr als Pingpong gewertet;
-- neue Unit-Coverage prüft beides.
+- neue Unit-Coverage prüft beides;
+- erneuter Live-Test: Warrior, Priest und Rogue vollständig PASSED mit `focusPingPongs=0`;
+- Merchant wurde live korrekt als `LOGISTICS` erkannt, aber der bisherige H7-Test startete fälschlich H5 Combat und Adventure Land lehnte den Attack mit `merchant` ab;
+- H7 hat deshalb nun einen Observer-only-Pfad für LOGISTICS/Merchant ohne Combat-Dispatch;
+- H5 Combat blockiert Merchant jetzt bereits vor dem ersten Attack mit `COMBAT_UNSUPPORTED_CLASS:merchant`;
+- Regressionstest stellt sicher: Merchant-H7-Ein-Klick-Test PASSED und `attacks=0`.
 
 Noch ausstehend:
-- finaler H7-CI-Lauf auf dem korrigierten Head;
-- kurzer echter H7-Retest auf Warrior/Priest;
+- finaler H7-CI-Lauf auf dem Merchant/LOGISTICS-Fix;
+- kurzer echter H7-Retest nur auf Merchant;
 - danach Auto-Merge gemäß Sicherheitsregeln.
 
 ## H2 Architekturregel für spätere Module
