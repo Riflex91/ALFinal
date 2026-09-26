@@ -368,9 +368,13 @@
         this.lastSuccessAt = new Date().toISOString();
         return snapshot;
       } catch (error) {
-        this.state = 'UNAVAILABLE';
+        const rawError = cleanText(error && error.message || error, 500);
+        const waiting = rawError.includes('STATUS_BEFORE:HTTP_404')
+          || rawError === 'KNOWLEDGE_SNAPSHOT_NOT_READY';
+        this.state = waiting ? 'WAITING_FOR_BRIDGE' : 'UNAVAILABLE';
         this.mode = null;
-        this.lastError = cleanText(error && error.message || error, 500);
+        this.lastError = waiting ? 'BRIDGE_SNAPSHOT_NOT_AVAILABLE' : rawError;
+        if (waiting) throw new Error(this.lastError);
         throw error;
       }
     }
