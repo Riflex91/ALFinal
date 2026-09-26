@@ -38,7 +38,7 @@ test('H1 bundle loads and exposes ALBot API', () => {
   const ctx = runtimeContext();
   vm.runInNewContext(bundle, ctx, { filename: 'al-bot.js' });
   assert.equal(ctx.ALBot.product, 'AL Bot');
-  assert.equal(ctx.ALBot.version, '0.2.0-h2');
+  assert.equal(ctx.ALBot.version, '0.3.0-h3');
   assert.equal(ctx.ALBot.status().running, false);
 });
 
@@ -85,7 +85,7 @@ test('knowledge provider failures keep last-known-good snapshot', async () => {
   let fail = false;
   ctx.ALBot.knowledge.setProvider({
     status: () => ({ name: 'test-provider', ready: !fail }),
-    getSnapshot: async () => { if (fail) throw new Error('offline'); return { generation: 7, source: 'TEST' }; }
+    getSnapshot: async () => { if (fail) throw new Error('offline'); return { schemaVersion: 1, generation: 7, source: 'TEST', snapshotSha256: 'a'.repeat(64), factCount: 0, facts: [] }; }
   });
   await ctx.ALBot.knowledge.refresh();
   assert.equal(ctx.ALBot.knowledge.status().lastKnownGood.generation, 7);
