@@ -330,3 +330,12 @@ test('missing bridge snapshot is reported as waiting instead of runtime failure'
 
   await ctx.ALBot.stop('DONE');
 });
+
+
+test('character position is displayed with exactly two decimals', () => {
+  const ui = fs.readFileSync(path.resolve(here, '../src/ui.js'), 'utf8');
+  assert.match(ui, /function formatPosition\(value\)/);
+  assert.match(ui, /number\.toFixed\(2\)/);
+  assert.match(ui, /formatPosition\(gameCharacter\.x\)/);
+  assert.match(ui, /formatPosition\(gameCharacter\.y\)/);
+});
