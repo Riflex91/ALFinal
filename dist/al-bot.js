@@ -2139,6 +2139,15 @@
         if (passable === false) return { ok: false, reason: 'LOCAL_DESTINATION_NOT_WALKABLE' };
       }
 
+      if (kind === 'smart'
+        && normalized.x == null
+        && normalized.y == null
+        && normalized.map
+        && character.map
+        && String(normalized.map) === String(character.map)) {
+        return { ok: false, reason: 'SMART_MOVE_SAME_MAP_NEEDS_COORDINATES' };
+      }
+
       const anti = this._antiPingPong(normalized, options);
       if (!anti.ok) return { ...anti, destination: normalized };
       return { ok: true, character, destination: normalized, key: anti.key };
