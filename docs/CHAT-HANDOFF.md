@@ -159,9 +159,14 @@ Bestätigt:
 - keine Callback-/Overlap-Fehler;
 - H1–H4 Regressionen grün.
 
-PR #4 wurde am 2026-09-26 nach bestandenem Live-Test automatisch gemerged.\n\nMerge-Commit:\n`fcf5ac31b3d8526ffe2068ba33f6eed33f661b36`\n\nUser hat ab H4 eine dauerhafte Auto-Merge-Regel festgelegt: Nach vollständig bestandenem Schritt und allen Sicherheitschecks automatisch mergen.
+PR #4 wurde am 2026-09-26 nach bestandenem Live-Test automatisch gemerged.
 
-## H5 – aktuell in Arbeit
+Merge-Commit:
+`fcf5ac31b3d8526ffe2068ba33f6eed33f661b36`
+
+User hat ab H4 eine dauerhafte Auto-Merge-Regel festgelegt: Nach vollständig bestandenem Schritt und allen Sicherheitschecks automatisch mergen.
+
+## H5 – live bestanden, Auto-Merge freigegeben
 
 Aktiver Entwicklungsbranch:
 `chatgpt/h5-combat`
@@ -197,10 +202,23 @@ Neue verbindliche Live-Test-Regel ab H5:
 - Diagnose automatisch kopieren;
 - roter STOP bleibt immer vorrangig und wird nie automatisch zurückgesetzt.
 
-Noch ausstehend:
-- H5-CI auf dem finalen PR-Head;
-- echter H5-Ein-Klick-Live-Test;
-- bei bestandenem Live-Test automatischer Merge nach allen Sicherheitschecks.
+Live-Test im echten Adventure-Land-Client: **BESTANDEN**.
+
+Bestätigt:
+- Ein-Klick-Runner startet Runtime automatisch und stellt den vorherigen STOPPED-Zustand danach wieder her;
+- Preflight, Targeting, bestätigter Angriff, 5-Sekunden-Stabilitätsfenster und Cleanup jeweils PASSED;
+- health-aware Sicherheitsplanung mit aktuellem HP und realer Monster-Attacke;
+- 3 Targets automatisch übernommen;
+- 3 Angriffe bestätigt;
+- 3 Kills bestätigt;
+- `attackUnknown = 0`;
+- 3 Range-Annäherungen über H4 Movement;
+- Combat und Movement nach Cleanup inaktiv;
+- Scheduler nach Abschluss 0 Ressourcen;
+- autoritative Adventure-Land-`game_response`-Attack-Evidence korrekt verarbeitet;
+- kein Blind-Retry nach UNKNOWN bleibt erhalten.
+
+H5 ist damit vollständig live bestanden. Nach finalen Merge-Sicherheitschecks wird PR #5 automatisch gemerged.
 
 ## H2 Architekturregel für spätere Module
 
@@ -295,4 +313,4 @@ Bei Fehler:
 
 ## Nächster Schritt
 
-H5-CI vollständig grün bekommen und PR öffnen. Danach im echten Adventure-Land-Client nur noch **Live-Test → Test starten** drücken. Bei BESTANDEN wird H5 nach den Sicherheitschecks automatisch gemerged; danach startet **H6 – Klassenlogik** auf einem frischen Branch.
+PR #5 nach vollständigen Merge-Sicherheitschecks automatisch mit Methode `merge` mergen. Danach **H6 – Klassenlogik** auf einem frischen Branch vom neuen `main` starten. Die Ein-Klick-Live-Test-Regel bleibt Standard.
