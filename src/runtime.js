@@ -572,6 +572,7 @@
           const combat = runtime.combat.status();
           h7Baseline = {
             focusChanges: party.metrics.focusChanges,
+            focusPingPongs: party.metrics.focusPingPongs,
             supportUnknown: party.metrics.supportUnknown,
             supportConfirmed: party.metrics.supportConfirmed,
             attackUnknown: combat.metrics.attackUnknown,
@@ -714,11 +715,13 @@
               assert(combat.metrics.attackUnknown === h7Baseline.attackUnknown, 'ATTACK_UNKNOWN_DURING_H7_STABILITY_WINDOW');
               assert(party.party.coordinationEnabled === true, 'H7_COORDINATION_LOST_DURING_STABILITY_WINDOW');
               const focusChanges = party.metrics.focusChanges - h7Baseline.focusChanges;
-              assert(focusChanges <= 6, 'PARTY_FOCUS_PINGPONG_GUARD_EXCEEDED:' + focusChanges);
+              const focusPingPongs = party.metrics.focusPingPongs - h7Baseline.focusPingPongs;
+              assert(focusPingPongs === 0, 'PARTY_FOCUS_PINGPONG_DETECTED:' + focusPingPongs);
               return {
                 focusTargetId: party.focus.targetId,
                 focusSource: party.focus.source,
                 focusChanges,
+                focusPingPongs,
                 attacksConfirmed: combat.metrics.attacksConfirmed - h7Baseline.attacksConfirmed,
                 supportConfirmed: party.metrics.supportConfirmed - h7Baseline.supportConfirmed,
                 supportUnknown: party.metrics.supportUnknown - h7Baseline.supportUnknown
