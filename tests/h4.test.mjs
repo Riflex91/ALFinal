@@ -272,7 +272,7 @@ test('anti-pingpong blocks A-B-A movement thrash', async () => {
   await ctx.ALBot.stop('DONE');
 });
 
-test('safe return uses the runtime-start safe point', async () => {
+test('safe return uses the runtime-start safe point and bypasses normal pingpong blocking', async () => {
   const { context: ctx, character } = runtimeContext();
   vm.runInNewContext(bundle, ctx);
   await ctx.ALBot.start();
@@ -282,8 +282,11 @@ test('safe return uses the runtime-start safe point', async () => {
   assert.equal(safe.x, 0);
   assert.equal(safe.y, 0);
 
-  character.real_x = 80;
-  character.real_y = 90;
+  ctx.ALBot.__runtime.movement.config.rapidSwitchMs = 0;
+  assert.equal(ctx.ALBot.movement.local(0, 0).accepted, true);
+  assert.equal(ctx.ALBot.movement.local(100, 0).accepted, true);
+  assert.equal(character.real_x, 100);
+
   const result = ctx.ALBot.movement.safeReturn();
   assert.equal(result.accepted, true);
   assert.equal(ctx.ALBot.movement.status().lastOrder.state, 'COMPLETED');
