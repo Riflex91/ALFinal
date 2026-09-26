@@ -329,6 +329,39 @@ test('H7 support UNKNOWN suspends further automated support without blind retry'
   assert.equal(calls.skills.filter(row => row.skill === 'partyheal').length, 1);
 });
 
+test('H7 blocks direct merchant combat before any attack dispatch', async t => {
+  const { ctx, calls } = makePartyContext({ localClass: 'merchant' });
+  vm.runInNewContext(bundle, ctx);
+  t.after(async () => { try { await ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {} });
+  await ctx.ALBot.start();
+
+  const started = ctx.ALBot.combat.start({ owner: 'merchant-should-not-fight', maxAttack: 20, minMpRatio: 0 });
+  assert.equal(started.accepted, false);
+  assert.equal(started.reason, 'COMBAT_UNSUPPORTED_CLASS:merchant');
+  await sleep(250);
+  assert.equal(calls.attacks, 0);
+  assert.equal(ctx.ALBot.combat.status().metrics.attackUnknown, 0);
+});
+
+test('H7 one-click live suite keeps logistics merchant observer-only and passes', async () => {
+  const { ctx, calls } = makePartyContext({ localClass: 'merchant' });
+  vm.runInNewContext(bundle, ctx);
+
+  const result = await ctx.ALBot.liveTests.startRecommended();
+
+  assert.equal(result.state, 'PASSED');
+  assert.equal(result.reason, 'ALL_STEPS_PASSED');
+  assert.equal(result.steps.every(step => step.state === 'PASSED'), true);
+  assert.equal(result.steps[0].result.localRole, 'LOGISTICS');
+  assert.equal(result.steps[0].result.observerOnly, true);
+  assert.equal(result.steps[1].result.observerOnly, true);
+  assert.equal(result.steps[1].result.combatState, 'NOT_STARTED');
+  assert.equal(result.steps[3].result.observerOnly, true);
+  assert.equal(calls.attacks, 0);
+  assert.equal(ctx.ALBot.status().running, false);
+  assert.equal(ctx.ALBot.scheduler.status().totalResources, 0);
+});
+
 test('H7 one-click live suite passes for two owned party members and restores runtime state', async () => {
   const { ctx } = makePartyContext();
   vm.runInNewContext(bundle, ctx);
