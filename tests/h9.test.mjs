@@ -404,6 +404,9 @@ test('H9 control center and one-click live suite are wired', () => {
   assert.match(ui, /H9 Farm Intelligence/);
   assert.match(runtime, /id: 'h9-farm-intelligence'/);
   assert.match(runtime, /H9_FARM_TARGET_PINGPONG/);
+  assert.match(runtime, /visibleSafe\.length > 0/);
+  assert.match(runtime, /h9-adaptive-decisions/);
+  assert.match(runtime, /timeoutMs: 85000/);
   assert.match(entry, /0\.9\.0-h9/);
   assert.match(entry, /farmIntelligence:/);
   assert.match(build, /AL Bot 0\.9\.0-h9/);
@@ -423,7 +426,12 @@ test('H9 game adapter normalizes live farm data for scoring', () => {
     },
     G: {
       monsters: {
-        goo: { name: 'Goo', hp: 100, attack: 5, xp: 50, gold: 10, respawn: 2, drops: [[0.5, 'slime'], [0.01, 'rare']] }
+        goo: { name: 'Goo', hp: 100, attack: 5, xp: 50, respawn: 2 }
+      },
+      monster_gold: { goo: 12 },
+      drops: {
+        gold: { base: 0.64, random: 0.8 },
+        monsters: { goo: [[0.5, 'slime'], [0.01, 'rare']] }
       },
       maps: {
         main: {
@@ -459,8 +467,12 @@ test('H9 game adapter normalizes live farm data for scoring', () => {
 
   const monster = adapter.monsterDefinition('goo');
   assert.equal(monster.xp, 50);
-  assert.equal(monster.gold, 10);
+  assert.equal(monster.gold, 13.48);
   assert.equal(monster.dropSignal, 0.51);
+  assert.deepEqual(
+    Array.from(monster.drops, row => [row.item, row.chance, row.quantity]),
+    [['slime', 0.5, 1], ['rare', 0.01, 1]]
+  );
 
   const spots = adapter.farmSpotCatalog({ map: 'main', currentOnly: true });
   assert.equal(spots.length, 2);
