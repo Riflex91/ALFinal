@@ -145,6 +145,14 @@
       liveAoeSkills: ctype => runtime.farming.liveAoeSkills(ctype)
     },
 
+    farmIntelligence: {
+      status: () => runtime.farmIntelligence.status(),
+      start: options => runtime.farmIntelligence.startAutonomy(options || {}),
+      stop: reason => runtime.farmIntelligence.stopAutonomy(reason || 'API_H9_STOP'),
+      plan: () => runtime.farmIntelligence.plan(),
+      tick: () => runtime.farmIntelligence.tick()
+    },
+
     liveTests: {
       status: () => runtime.liveTests.status(),
       list: () => runtime.liveTests.list(),
@@ -193,6 +201,7 @@
   Object.freeze(api.classSkills);
   Object.freeze(api.party);
   Object.freeze(api.farming);
+  Object.freeze(api.farmIntelligence);
   Object.freeze(api.liveTests);
   Object.freeze(api.knowledge);
   Object.freeze(api.roster);
