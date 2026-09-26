@@ -287,7 +287,13 @@
         if (monster.distance == null || monster.distance > policy.maxAcquireDistance) return false;
         if (maxAttack != null && monster.attack == null && !policy.allowUnknownAttack) return false;
         if (maxAttack != null && monster.attack != null && monster.attack > maxAttack) return false;
-        if (!policy.allowContested && monster.targetId && monster.targetId !== character.name) return false;
+        if (!policy.allowContested && monster.targetId && monster.targetId !== character.name) {
+          const ownedPartyTarget = policy.partyAssist
+            && this.party
+            && typeof this.party.isOwnedPartyMember === 'function'
+            && this.party.isOwnedPartyMember(monster.targetId);
+          if (!ownedPartyTarget) return false;
+        }
         return true;
       });
     }
