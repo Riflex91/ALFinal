@@ -189,10 +189,16 @@ test('latched emergency stop is explicit in the main control center', () => {
 });
 
 
-test('hot reload is shared across separate same-origin runner contexts', async () => {
+test('hot reload is shared across separate same-origin runner contexts', async t => {
   const sharedHost = { document: {} };
 
   const first = runtimeContext();
+  let second = null;
+  t.after(async () => {
+    try { if (first.ALBot) await first.ALBot.stop('TEST_CLEANUP'); } catch (_) {}
+    try { if (second && second.ALBot) await second.ALBot.stop('TEST_CLEANUP'); } catch (_) {}
+  });
+
   first.parent = sharedHost;
   vm.runInNewContext(bundle, first);
   await first.ALBot.start();
@@ -201,7 +207,7 @@ test('hot reload is shared across separate same-origin runner contexts', async (
   assert.equal(previousRuntime.status().scheduler.totalResources, 5);
   assert.equal(first.ALBot.status().bootCount, 1);
 
-  const second = runtimeContext();
+  second = runtimeContext();
   second.parent = sharedHost;
   vm.runInNewContext(bundle, second);
 
