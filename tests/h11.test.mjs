@@ -59,6 +59,7 @@ function fixture(options = {}) {
     local: { ...local },
     rows: inventoryRows.map(item => JSON.parse(JSON.stringify(item))),
     conditions: {},
+    inventoryAvailable: options.inventoryAvailable !== false,
     dispatches: [],
     movement: null
   };
@@ -75,11 +76,12 @@ function fixture(options = {}) {
   const game = {
     snapshot: () => ({ available: true, character: { ...state.local } }),
     inventorySnapshot: () => ({
-      available: true,
-      capacity: slots.capacity,
-      usedSlots: state.rows.length,
-      freeSlots: slots.freeSlots,
-      items: state.rows.map(item => JSON.parse(JSON.stringify(item)))
+      available: state.inventoryAvailable,
+      reason: state.inventoryAvailable ? null : 'CHARACTER_UNAVAILABLE',
+      capacity: state.inventoryAvailable ? slots.capacity : 0,
+      usedSlots: state.inventoryAvailable ? state.rows.length : 0,
+      freeSlots: state.inventoryAvailable ? slots.freeSlots : 0,
+      items: state.inventoryAvailable ? state.rows.map(item => JSON.parse(JSON.stringify(item))) : []
     }),
     visiblePlayers: () => {
       const rows = [];
@@ -224,6 +226,25 @@ test('H11 controlled delivery dispatches through send_item and confirms local in
   assert.equal(f.state.rows.find(item => item.name === 'hpot0').quantity, 19);
 });
 
+test('H11 unavailable inventory is never accepted as transfer confirmation', async () => {
+  const f = fixture({ noTransferMutation: true });
+  assert.equal(f.controller.queueDelivery('My_Ranger', 'hpot0', 1).accepted, true);
+  assert.equal(f.controller.tick().state, 'DISPATCHED');
+  assert.equal(f.state.dispatches.length, 1);
+
+  await Promise.resolve();
+  f.state.inventoryAvailable = false;
+  const waiting = f.controller.tick();
+  assert.equal(waiting.state, 'PENDING');
+  assert.equal(f.controller.status().metrics.transfersConfirmed, 0);
+
+  f.controller.pending.deadlineAtMs = Date.now() - 1;
+  const timedOut = f.controller.tick();
+  assert.equal(timedOut.state, 'SUSPENDED');
+  assert.equal(timedOut.reason, 'H11_TRANSFER_UNVERIFIED_TIMEOUT');
+  assert.equal(f.controller.status().metrics.transfersUnknown, 1);
+});
+
 test('H11 never-settling item transfer becomes UNKNOWN and is never blindly retried', () => {
   const f = fixture({ neverSettle: true, noTransferMutation: true });
   assert.equal(f.controller.queueDelivery('My_Ranger', 'hpot0', 1).accepted, true);
@@ -286,6 +307,30 @@ test('H11 Merchant applies MLuck to an owned farmer and confirms the live condit
   const next = f.controller.tick();
   assert.equal(next.state, 'READY');
   assert.equal(f.state.dispatches.length, before);
+});
+
+test('H11 MLuck refresh requires observable renewal when an effect is already active', async () => {
+  const f = fixture();
+  f.state.conditions['My_Ranger:mluck'] = {
+    available: true,
+    playerName: 'My_Ranger',
+    conditionId: 'mluck',
+    active: true,
+    remainingMs: 5000,
+    source: 'Older_Merchant'
+  };
+
+  const first = f.controller.tick();
+  assert.equal(first.state, 'DISPATCHED');
+  assert.equal(f.controller.status().pending.kind, 'MLUCK');
+  assert.equal(f.controller.status().pending.beforeCondition.remainingMs, 5000);
+
+  await Promise.resolve();
+  f.controller.tick();
+  const status = f.controller.status();
+  assert.equal(status.metrics.mluckConfirmed, 1);
+  assert.equal(status.metrics.mluckUnknown, 0);
+  assert.equal(f.game.playerCondition('My_Ranger', 'mluck').remainingMs, 60000);
 });
 
 test('H11 source never performs sell, bank, exchange or gold transfer', () => {
