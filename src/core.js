@@ -197,10 +197,10 @@
       this.storage = options.storage;
       this.logger = options.logger;
       this.key = options.key || 'albot:goals:v1';
-      this.priorityKey = options.priorityKey || 'albot:strategic-priorities:v1';
+      this.priorityKey = options.priorityKey || 'albot:strategic-priorities:v2';
       this.goals = [];
       this.priorities = {
-        leveling: 'HIGH', gold: 'NORMAL', gear: 'HIGH', items: 'NORMAL', events: 'NORMAL', quests: 'LOW', economy: 'NORMAL'
+        leveling: 'NORMAL', gold: 'NORMAL', gear: 'HIGH', items: 'NORMAL', events: 'NORMAL', quests: 'LOW', economy: 'NORMAL'
       };
       this._load();
     }
@@ -257,6 +257,14 @@
       goal.progress = value; goal.updatedAt = nowIso();
       if (goal.amount != null && value >= goal.amount) goal.status = 'COMPLETED';
       this._save(); return clone(goal);
+    }
+    remove(id) {
+      const index = this.goals.findIndex(g => g.id === id);
+      if (index < 0) throw new Error('GOAL_NOT_FOUND');
+      const [removed] = this.goals.splice(index, 1);
+      this._save();
+      if (this.logger) this.logger.warn('Goal gelöscht', { id, type: removed.type, target: removed.target });
+      return clone(removed);
     }
     setPriority(name, value) {
       const allowed = new Set(['LOW','NORMAL','HIGH','CRITICAL']);
