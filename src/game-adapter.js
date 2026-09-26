@@ -106,6 +106,22 @@
       return value == null || value === '' ? null : String(value);
     }
 
+    _currentTarget() {
+      for (const candidate of this._roots()) {
+        try {
+          if (candidate && candidate.ctarget && !candidate.ctarget.dead) {
+            return { source: 'ctarget', entity: candidate.ctarget };
+          }
+        } catch (_) {}
+        try {
+          if (candidate && candidate.parent && candidate.parent.ctarget && !candidate.parent.ctarget.dead) {
+            return { source: 'parent.ctarget', entity: candidate.parent.ctarget };
+          }
+        } catch (_) {}
+      }
+      return null;
+    }
+
     _entityByIdOrName(id) {
       if (id == null) return null;
       const wanted = String(id);
@@ -175,7 +191,8 @@
 
       const pos = this._position(character);
       const targetId = this._targetId(character);
-      const targetRaw = this._entityByIdOrName(targetId);
+      const directTarget = this._currentTarget();
+      const targetRaw = directTarget || this._entityByIdOrName(targetId);
       const target = this._normalizeEntity(targetRaw, character.map || null);
       if (target && pos.x != null && pos.y != null && target.x != null && target.y != null) {
         target.distance = Math.hypot(pos.x - target.x, pos.y - target.y);
@@ -224,6 +241,7 @@
         targetResolution: {
           requestedId: targetId,
           resolved: !!target,
+          resolvedFrom: directTarget ? directTarget.source : (target ? 'entities' : null),
           entitySourceCount: this._entitySources().length,
           mergedEntityCount: entityEntries.length
         },
