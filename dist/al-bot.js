@@ -3815,6 +3815,13 @@
       return this.focusTargetId;
     }
 
+    isOwnedPartyMember(name) {
+      if (name == null) return false;
+      const snapshot = this.lastSnapshot || this.snapshot();
+      return !!(snapshot && Array.isArray(snapshot.ownedMemberNames)
+        && snapshot.ownedMemberNames.includes(String(name)));
+    }
+
     _supportReadiness(skillId, member, allowDead = false) {
       if (!this.game || typeof this.game.skillReadiness !== 'function') return null;
       return this.game.skillReadiness(skillId, member && member.name || null, { allowDeadTarget: allowDead });
@@ -4323,7 +4330,13 @@
         if (monster.distance == null || monster.distance > policy.maxAcquireDistance) return false;
         if (maxAttack != null && monster.attack == null && !policy.allowUnknownAttack) return false;
         if (maxAttack != null && monster.attack != null && monster.attack > maxAttack) return false;
-        if (!policy.allowContested && monster.targetId && monster.targetId !== character.name) return false;
+        if (!policy.allowContested && monster.targetId && monster.targetId !== character.name) {
+          const ownedPartyTarget = policy.partyAssist
+            && this.party
+            && typeof this.party.isOwnedPartyMember === 'function'
+            && this.party.isOwnedPartyMember(monster.targetId);
+          if (!ownedPartyTarget) return false;
+        }
         return true;
       });
     }
