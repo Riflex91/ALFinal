@@ -1082,6 +1082,7 @@
             farmingStarts: intelligence.metrics.farmingStarts,
             travelOrders: intelligence.metrics.travelOrders,
             pingPongBlocks: intelligence.metrics.pingPongBlocks,
+            ownershipBlocks: intelligence.metrics.ownershipBlocks,
             aoeConfirmed: farming.metrics.aoeConfirmed,
             aoeUnknown: farming.metrics.aoeUnknown,
             attacksConfirmed: combat.metrics.attacksConfirmed,
@@ -1236,7 +1237,8 @@
               assert(farming.metrics.aoeUnknown === h9Baseline.aoeUnknown, 'H9_AOE_UNKNOWN_DURING_STABILITY');
               assert(combat.metrics.attackUnknown === h9Baseline.attackUnknown, 'H9_ATTACK_UNKNOWN_DURING_STABILITY');
               assert(party.metrics.focusPingPongs === h9Baseline.focusPingPongs, 'H9_PARTY_FOCUS_PINGPONG');
-              assert(intelligence.metrics.ownershipBlocks === 0, 'H9_OWNERSHIP_BLOCK_DURING_TEST');
+              assert(intelligence.metrics.ownershipBlocks === h9Baseline.ownershipBlocks,
+                'H9_OWNERSHIP_BLOCK_DURING_TEST');
               return {
                 selection: intelligence.currentSelection,
                 switches: intelligence.metrics.switches - h9Baseline.switches,
