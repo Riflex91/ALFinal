@@ -98,3 +98,40 @@ Keine einzelnen Testschritte manuell wiederholen.
 3. Falls die GUI meldet, dass Clipboard automatisch blockiert wurde, einmal **Fehlerbericht kopieren** drücken und den Bericht einfügen.
 
 Damit besteht der normale Live-Test-Workflow ab H5 aus genau **einem Test-Start-Klick**.
+
+
+---
+
+## Live-Ergebnis 2026-09-26
+
+**BESTANDEN**
+
+Der Ein-Klick-Live-Test wurde im echten Adventure-Land-Client erfolgreich abgeschlossen.
+
+Bestätigt:
+- `preflight` = PASSED;
+- `start-combat` = PASSED;
+- `confirmed-attack` = PASSED;
+- `stability-window` = PASSED;
+- `cleanup` = PASSED;
+- Test-Endstatus = `PASSED / ALL_STEPS_PASSED`;
+- Runtime wurde für den Test automatisch gestartet und danach automatisch wieder in den vorherigen STOPPED-Zustand versetzt;
+- Scheduler nach Abschluss = 0 Ressourcen;
+- Combat nach Abschluss = inaktiv;
+- Movement nach Abschluss = inaktiv;
+- 3 Targets automatisch übernommen;
+- 3 Angriffe server-/live-evidenzbasiert bestätigt;
+- 3 Kills bestätigt;
+- `attackUnknown = 0`;
+- 3 kontrollierte Range-Annäherungen über H4 Movement;
+- keine Combat-Retreats im erfolgreichen Lauf;
+- kein Fail-Safe/UNKNOWN im Stabilitätsfenster;
+- Cleanup hat Target- und Movement-Ownership vollständig freigegeben.
+
+Zusätzlich live bestätigt:
+- health-aware Preflight passt den Retreat-Schwellenwert an aktuelle HP und reale Monster-Gefahr an;
+- Adventure-Land-`game_response` mit `place: "attack"`, passender Target-ID, `success: true` und positivem `damage` wird als autoritative Attack-Evidence akzeptiert;
+- wenn der servergemeldete Schaden mindestens den vorher beobachteten Ziel-HP entspricht, darf ein danach aus der Live-Entity-Sicht verschwundenes Monster als Kill bestätigt werden;
+- ein Target-Verlust ohne solche Evidence bleibt weiterhin `UNKNOWN`.
+
+H5 ist damit live vollständig bestanden.
