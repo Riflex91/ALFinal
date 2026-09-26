@@ -198,3 +198,70 @@ Review-Härtung:
 - alle fünf Review-Threads resolved.
 
 Nach Dokumentationsänderungen muss der **neue exakte Head** erneut grüne CI besitzen, bevor der Live-Test freigegeben wird.
+
+## Finale Live-Evidence – 2026-09-27
+
+Der echte Adventure-Land-Ein-Klick-Test ist vollständig bestanden.
+
+Finale Suite:
+
+- Runtime: `AL Bot 0.11.0-h11`
+- Suite: `h11-merchant`
+- Ergebnis: `PASSED / ALL_STEPS_PASSED`
+- Start: `2026-09-26T23:55:40.686Z`
+- Ende: `2026-09-26T23:55:47.261Z`
+- Runtime war vor dem Test STOPPED und wurde nur für die Suite automatisch gestartet.
+
+### Preflight – PASSED
+
+- Merchant: `My_Merchant`
+- eigener sichtbarer Farmer: `My_Priest`
+- Distanz: ca. `122.12`
+- gewähltes sicheres Item: `hpot0`
+- Disposition: `KEEP`
+- Ausgangsmenge: `6000`
+- Inventory Pressure: `NORMAL` bei 20 freien Slots und 2 Reserve-Slots
+- MLuck live bereit: `true`
+
+### Delivery – PASSED
+
+- Ziel: `My_Priest`
+- Item: `hpot0`
+- Menge: exakt `1`
+- `transfersDispatched=1`
+- `transfersConfirmed=1`
+- lokales Sender-Inventar: `6000 -> 5999`
+
+Damit ist der Transfer nicht nur über Promise-/Command-Erfolg, sondern über das verlangte reale Inventardelta bestätigt.
+
+### MLuck – PASSED
+
+- Ziel: `My_Priest`
+- vorhandener MLuck war bereits gesund: `alreadyHealthy=true`
+- Quelle: `Momental`
+- beobachtete Restlaufzeit: `3576369 ms`
+- `mluckDispatched=0`
+
+Der Controller hat damit korrekt **nicht** gespammt. Ein unnötiger Refresh wurde nicht ausgelöst.
+
+### Stability – PASSED
+
+- `transfersConfirmed=1`
+- `transferUnknown=0`
+- `mluckUnknown=0`
+- `pingPongBlocks=0`
+- keine Suspension
+
+### Cleanup – PASSED
+
+- `pending=false`
+- `delivery=false`
+- `movementActive=false`
+- Suite-Cleanup: `attempted=true / ok=true`
+- Merchant-Modul danach STOPPED/IDLE und nicht suspendiert
+- Runtime danach wieder STOPPED
+- Scheduler danach `totalResources=0`
+
+### Abnahme
+
+Alle H11-PASS-Kriterien sind erfüllt. H11 gilt damit live als **BESTANDEN**. Vor dem Merge bleibt nur noch der neue Exact-Head-CI-/Review-/Merge-Gate nach diesen Evidence-Commits.
