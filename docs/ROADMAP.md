@@ -24,6 +24,7 @@ Stand: 2026-09-26
 - Knowledge-Status in der GUI
 - Prioritäten-/Goal-Datenmodell
 - Prioritäten-GUI-Grundgerüst
+- dynamische Character-/Farmer-Erkennung ohne hartcodierte Namen
 
 **🟧 LIVE-TEST**
 - GUI erscheint
@@ -58,12 +59,14 @@ Stand: 2026-09-26
 
 **🟦 BAU**
 - Adventure-Land-Adapter
+- robuste Roster-Erkennung auf Basis von `get_characters()` + `get_active_characters()`
 - normalisierte Character-/Game-Snapshots
 - Windows-Bridge-KnowledgeProvider
 - Last-Known-Good Cache
 
 **🟧 LIVE-TEST**
 - Character, Map, HP/MP, Position und Target stimmen
+- eingeloggte Farmer werden ohne Namenskonfiguration korrekt erkannt
 - Knowledge-Status wird korrekt angezeigt
 - Bridge-Ausfall darf den Core nicht abstürzen lassen
 

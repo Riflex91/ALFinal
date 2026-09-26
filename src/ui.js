@@ -1,0 +1,281 @@
+(function (root) {
+  'use strict';
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns) throw new Error('ALBOT_INTERNALS_MISSING');
+
+  function esc(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
+  }
+
+  class ControlCenter {
+    constructor(runtime) {
+      this.runtime = runtime;
+      this.root = runtime.root;
+      this.uiRoot = this._resolveUiRoot(this.root);
+      this.doc = this.uiRoot && this.uiRoot.document ? this.uiRoot.document : this.root.document;
+      this.host = null;
+      this.interval = null;
+      this.activeTab = 'overview';
+      this.minimized = false;
+      this._offLog = null;
+      this._dragCleanup = null;
+    }
+
+    _resolveUiRoot(start) {
+      let current = start;
+      let best = null;
+      for (let depth = 0; depth < 8 && current; depth += 1) {
+        try {
+          if (current.document && current.document.body) best = current;
+        } catch (_) {
+          break;
+        }
+        let parentWindow = null;
+        try {
+          parentWindow = current.parent && current.parent !== current ? current.parent : null;
+          if (parentWindow) void parentWindow.document;
+        } catch (_) {
+          parentWindow = null;
+        }
+        if (!parentWindow) break;
+        current = parentWindow;
+      }
+      return best || start;
+    }
+
+    mount() {
+      if (!this.doc || !this.doc.body) return false;
+      this.destroy();
+      const host = this.doc.createElement('div');
+      host.id = 'albot-control-center';
+      host.innerHTML = this._shell();
+      this.doc.body.appendChild(host);
+      this.host = host;
+      this._bind();
+      this.render();
+      const timerRoot = this.uiRoot && typeof this.uiRoot.setInterval === 'function' ? this.uiRoot : this.root;
+      this.intervalRoot = timerRoot;
+      this.interval = timerRoot.setInterval(() => this._tick(), 1000);
+      this._offLog = this.runtime.bus.on('log', () => this.renderLogs());
+      return true;
+    }
+
+    _shell() {
+      return `<style>
+#albot-control-center{position:fixed;right:18px;top:18px;width:min(700px,calc(100vw - 36px));height:min(780px,calc(100vh - 36px));min-width:min(480px,calc(100vw - 36px));min-height:min(380px,calc(100vh - 36px));max-width:calc(100vw - 8px);max-height:calc(100vh - 8px);z-index:2147483647;background:#111827;color:#e5e7eb;border:1px solid #374151;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.45);font:12px/1.35 Arial,sans-serif;overflow:hidden;resize:both;display:flex;flex-direction:column}
+#albot-control-center *{box-sizing:border-box}#albot-control-center button,#albot-control-center input,#albot-control-center select{font:inherit}
+#albot-control-center.albot-minimized{height:auto!important;min-height:0!important;resize:none}
+#albot-control-center.albot-minimized .albot-tabs,#albot-control-center.albot-minimized .albot-body,#albot-control-center.albot-minimized .albot-footer{display:none}
+.albot-head{display:flex;align-items:center;gap:8px;padding:10px 12px;background:#0b1220;border-bottom:1px solid #374151;cursor:move;user-select:none;flex:none}.albot-title{font-weight:800;font-size:15px;flex:1}.albot-state{font-size:11px;padding:3px 7px;border-radius:999px;background:#374151}.albot-window-btn{background:#374151;color:#fff;border:0;border-radius:7px;padding:6px 9px;font-weight:800;cursor:pointer;line-height:1}.albot-window-btn:hover{background:#4b5563}.albot-stop{background:#b91c1c;color:#fff;border:0;border-radius:8px;padding:8px 14px;font-weight:800;cursor:pointer}.albot-stop:hover{background:#dc2626}
+.albot-tabs{display:flex;gap:2px;padding:6px;background:#0f172a;border-bottom:1px solid #374151;overflow:auto;flex:none}.albot-tab{background:#1f2937;color:#d1d5db;border:0;border-radius:6px;padding:6px 9px;cursor:pointer;white-space:nowrap}.albot-tab.active{background:#4b5563;color:white}
+.albot-body{padding:10px;overflow:auto;flex:1;min-height:0}.albot-panel{display:none}.albot-panel.active{display:block}.albot-card{background:#1f2937;border:1px solid #374151;border-radius:8px;padding:8px;margin-bottom:8px}.albot-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}.albot-k{color:#9ca3af}.albot-v{font-weight:700;word-break:break-word}.albot-row{display:flex;gap:6px;align-items:center;margin:6px 0}.albot-row>*{min-width:0}.albot-row input,.albot-row select{flex:1;background:#111827;color:#e5e7eb;border:1px solid #4b5563;border-radius:6px;padding:6px}.albot-btn{background:#374151;color:#fff;border:0;border-radius:6px;padding:6px 9px;cursor:pointer}.albot-btn:hover{background:#4b5563}.albot-btn.warn{background:#92400e}.albot-btn.danger{background:#991b1b}.albot-goal{border-left:3px solid #6b7280;padding-left:8px;margin:8px 0}.albot-goal-head{display:flex;align-items:center;gap:8px}.albot-goal-title{flex:1;min-width:0}.albot-goal-delete{width:22px;height:22px;padding:0;border:1px solid #ef4444;border-radius:50%;background:#7f1d1d;color:#fff;font-weight:900;line-height:18px;cursor:pointer;flex:none}.albot-goal-delete:hover{background:#dc2626}.albot-small{font-size:11px;color:#9ca3af}.albot-log{white-space:pre-wrap;background:#030712;border-radius:6px;padding:8px;max-height:250px;overflow:auto;font-family:Consolas,monospace}.albot-ok{color:#86efac}.albot-bad{color:#fca5a5}.albot-muted{color:#9ca3af}.albot-priority-grid{display:grid;grid-template-columns:1fr 120px;gap:6px;align-items:center}.albot-footer{display:flex;gap:6px;padding:8px 10px;border-top:1px solid #374151;background:#0b1220;flex:none}
+</style>
+<div class="albot-head" id="albot-drag-handle"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-minimize" class="albot-window-btn" title="Fenster minimieren" aria-label="Fenster minimieren">—</button><button id="albot-emergency" class="albot-stop">STOP</button></div>
+<div class="albot-tabs">
+<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
+</div>
+<div class="albot-body">
+<section id="albot-panel-overview" class="albot-panel active"></section>
+<section id="albot-panel-priorities" class="albot-panel"></section>
+<section id="albot-panel-logs" class="albot-panel"></section>
+<section id="albot-panel-dev" class="albot-panel"></section>
+</div>
+<div class="albot-footer"><button id="albot-start" class="albot-btn">Start</button><button id="albot-stop-normal" class="albot-btn warn">Stop Modul</button><button id="albot-copy" class="albot-btn">Fehlerbericht kopieren</button><button id="albot-hide" class="albot-btn">Ausblenden</button></div>`;
+    }
+
+    _bind() {
+      this.host.querySelectorAll('[data-tab]').forEach(btn => btn.addEventListener('click', () => { this.activeTab = btn.dataset.tab; this._selectTab(); this.render(); }));
+      this.host.querySelector('#albot-emergency').addEventListener('click', async () => { await this.runtime.emergencyStop('GUI_EMERGENCY_STOP'); this.render(); });
+      this.host.querySelector('#albot-minimize').addEventListener('click', (event) => { event.stopPropagation(); this.toggleMinimized(); });
+      this._installDrag();
+      this.host.querySelector('#albot-start').addEventListener('click', async () => { try { await this.runtime.start(); } catch (e) { this.runtime.logger.error('Start fehlgeschlagen', { error: e.message }); } this.render(); });
+      this.host.querySelector('#albot-stop-normal').addEventListener('click', async () => { await this.runtime.stop('GUI_MODULE_STOP'); this.render(); });
+      this.host.querySelector('#albot-copy').addEventListener('click', () => this.copyDiagnostics());
+      this.host.querySelector('#albot-hide').addEventListener('click', () => { this.host.style.display = 'none'; });
+    }
+
+    _installDrag() {
+      const handle = this.host && this.host.querySelector('#albot-drag-handle');
+      if (!handle || !this.uiRoot || typeof this.uiRoot.addEventListener !== 'function') return;
+
+      let dragging = false;
+      let startX = 0;
+      let startY = 0;
+      let startLeft = 0;
+      let startTop = 0;
+
+      const move = (event) => {
+        if (!dragging || !this.host) return;
+        const viewportW = Math.max(1, Number(this.uiRoot.innerWidth) || Number(this.doc.documentElement && this.doc.documentElement.clientWidth) || 1);
+        const viewportH = Math.max(1, Number(this.uiRoot.innerHeight) || Number(this.doc.documentElement && this.doc.documentElement.clientHeight) || 1);
+        const rect = this.host.getBoundingClientRect();
+        const maxLeft = Math.max(0, viewportW - Math.min(rect.width, viewportW));
+        const maxTop = Math.max(0, viewportH - Math.min(rect.height, viewportH));
+        const left = Math.max(0, Math.min(maxLeft, startLeft + event.clientX - startX));
+        const top = Math.max(0, Math.min(maxTop, startTop + event.clientY - startY));
+        this.host.style.left = left + 'px';
+        this.host.style.top = top + 'px';
+        this.host.style.right = 'auto';
+      };
+
+      const up = () => {
+        if (!dragging) return;
+        dragging = false;
+        if (this.doc && this.doc.body) this.doc.body.style.userSelect = '';
+      };
+
+      const down = (event) => {
+        if (event.button !== 0 || !this.host) return;
+        if (event.target && event.target.closest && event.target.closest('button,input,select,textarea,a')) return;
+        const rect = this.host.getBoundingClientRect();
+        dragging = true;
+        startX = event.clientX;
+        startY = event.clientY;
+        startLeft = rect.left;
+        startTop = rect.top;
+        this.host.style.left = rect.left + 'px';
+        this.host.style.top = rect.top + 'px';
+        this.host.style.right = 'auto';
+        if (this.doc && this.doc.body) this.doc.body.style.userSelect = 'none';
+        event.preventDefault();
+      };
+
+      handle.addEventListener('mousedown', down);
+      this.uiRoot.addEventListener('mousemove', move);
+      this.uiRoot.addEventListener('mouseup', up);
+      this._dragCleanup = () => {
+        handle.removeEventListener('mousedown', down);
+        this.uiRoot.removeEventListener('mousemove', move);
+        this.uiRoot.removeEventListener('mouseup', up);
+        if (this.doc && this.doc.body) this.doc.body.style.userSelect = '';
+      };
+    }
+
+    toggleMinimized(force) {
+      if (!this.host) return false;
+      this.minimized = typeof force === 'boolean' ? force : !this.minimized;
+      this.host.classList.toggle('albot-minimized', this.minimized);
+      const button = this.host.querySelector('#albot-minimize');
+      if (button) {
+        button.textContent = this.minimized ? '□' : '—';
+        button.title = this.minimized ? 'Fenster ausklappen' : 'Fenster minimieren';
+        button.setAttribute('aria-label', button.title);
+      }
+      return this.minimized;
+    }
+
+    _selectTab() {
+      this.host.querySelectorAll('[data-tab]').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === this.activeTab));
+      this.host.querySelectorAll('.albot-panel').forEach(panel => panel.classList.toggle('active', panel.id === 'albot-panel-' + this.activeTab));
+    }
+
+    _updateHeader(status) {
+      const state = this.host.querySelector('#albot-state');
+      state.textContent = status.emergencyStop.latched ? 'EMERGENCY STOP' : status.running ? 'RUNNING' : 'STOPPED';
+      state.className = 'albot-state ' + (status.emergencyStop.latched ? 'albot-bad' : status.running ? 'albot-ok' : '');
+    }
+
+    _tick() {
+      if (!this.host) return;
+      this.runtime.roster.refresh();
+      const status = this.runtime.status();
+      this._updateHeader(status);
+      if (this.activeTab === 'overview') this.renderOverview(status);
+      if (this.activeTab === 'logs') this.renderLogs();
+      if (this.activeTab === 'dev') this.renderDev(status);
+    }
+
+    render() {
+      if (!this.host) return;
+      this.runtime.roster.refresh();
+      const status = this.runtime.status();
+      this._updateHeader(status);
+      this.renderOverview(status);
+      this.renderPriorities(status);
+      this.renderLogs();
+      this.renderDev(status);
+    }
+
+    renderOverview(status) {
+      const panel = this.host.querySelector('#albot-panel-overview');
+      const roster = status.roster || { farmers: [], characters: [] };
+      const knowledge = status.knowledge || {};
+      panel.innerHTML = `<div class="albot-card"><b>System</b><div class="albot-grid" style="margin-top:6px">
+<div><span class="albot-k">Version</span><div class="albot-v">${esc(status.version)}</div></div>
+<div><span class="albot-k">Runtime</span><div class="albot-v">${status.running ? 'RUNNING' : 'STOPPED'}</div></div>
+<div><span class="albot-k">STOP</span><div class="albot-v">${status.emergencyStop.latched ? 'AKTIV' : 'bereit'}</div></div>
+<div><span class="albot-k">Knowledge</span><div class="albot-v">${knowledge.configured ? 'Provider verbunden' : 'noch nicht konfiguriert'}</div></div>
+</div></div>
+<div class="albot-card"><b>Dynamisch erkannte Charaktere</b><div class="albot-small">Quelle: ${esc(roster.source || 'unbekannt')} · keine hartcodierten Namen</div>
+<div style="margin-top:6px"><span class="albot-k">Farmer:</span> <span class="albot-v">${roster.farmers && roster.farmers.length ? roster.farmers.map(x => esc(x.name)+' ('+esc(x.ctype)+')').join(', ') : 'keine erkannt'}</span></div>
+<div><span class="albot-k">Merchant:</span> <span class="albot-v">${roster.merchant ? esc(roster.merchant.name) : 'nicht erkannt'}</span></div>
+<div><span class="albot-k">Aktiv gesamt:</span> <span class="albot-v">${roster.characters ? roster.characters.length : 0}</span></div></div>
+<div class="albot-card"><b>Module</b><div class="albot-small">${status.modules.length ? status.modules.map(m => esc(m.id)+': '+esc(m.state)).join('<br>') : 'Noch keine Gameplay-Module installiert.'}</div></div>`;
+    }
+
+    renderPriorities(status) {
+      const panel = this.host.querySelector('#albot-panel-priorities');
+      const goals = status.goals || [];
+      const p = status.strategicPriorities || {};
+      panel.innerHTML = `<div class="albot-card"><b>Neues Ziel</b>
+<div class="albot-row"><select id="albot-goal-type"><option value="COLLECT_ITEM">Item sammeln</option><option value="LEVEL">Aufleveln</option><option value="GEAR">Bessere Rüstung/Gear</option><option value="GOLD">Gold verdienen</option><option value="CUSTOM">Sonstiges</option></select><input id="albot-goal-target" placeholder="Ziel / Item / Beschreibung"></div>
+<div class="albot-row"><input id="albot-goal-amount" type="number" min="1" placeholder="Menge / Zielwert"><select id="albot-goal-scope"><option value="FARMERS">Erkannte Farmer</option><option value="PARTY">Party</option><option value="ACCOUNT">Account</option><option value="MERCHANT">Merchant</option></select><select id="albot-goal-priority"><option>HIGH</option><option selected>NORMAL</option><option>LOW</option><option>CRITICAL</option></select></div>
+<div class="albot-row"><button id="albot-add-goal" class="albot-btn">+ Ziel anlegen</button></div></div>
+<div class="albot-card"><b>Aktive Ziele</b>${goals.length ? goals.map(g => `<div class="albot-goal"><div class="albot-goal-head"><div class="albot-goal-title"><b>${esc(g.priority)}</b> · ${esc(g.type)} · ${esc(g.target || '(ohne Text)')}</div><button class="albot-goal-delete" data-goal-delete="${esc(g.id)}" title="Ziel löschen" aria-label="Ziel löschen">×</button></div><div class="albot-small">Scope: ${esc(g.scope)} · Status: ${esc(g.status)}${g.amount != null ? ' · Fortschritt: '+esc(g.progress)+' / '+esc(g.amount) : ''}</div><div class="albot-row"><button class="albot-btn" data-goal-action="${g.status === 'PAUSED' ? 'ACTIVE' : 'PAUSED'}" data-goal-id="${esc(g.id)}">${g.status === 'PAUSED' ? 'Fortsetzen' : 'Pause'}</button><button class="albot-btn danger" data-goal-action="CANCELLED" data-goal-id="${esc(g.id)}">Abbrechen</button></div></div>`).join('') : '<div class="albot-small">Noch keine Ziele.</div>'}</div>
+<div class="albot-card"><b>Grundprioritäten</b><div class="albot-priority-grid">${Object.entries(p).map(([k,v]) => `<label>${esc(k)}</label><select data-priority-name="${esc(k)}">${['LOW','NORMAL','HIGH','CRITICAL'].map(x => `<option ${x===v?'selected':''}>${x}</option>`).join('')}</select>`).join('')}</div></div>`;
+      const add = panel.querySelector('#albot-add-goal');
+      if (add) add.onclick = () => {
+        try {
+          this.runtime.goals.add({ type: panel.querySelector('#albot-goal-type').value, target: panel.querySelector('#albot-goal-target').value, amount: panel.querySelector('#albot-goal-amount').value, scope: panel.querySelector('#albot-goal-scope').value, priority: panel.querySelector('#albot-goal-priority').value });
+          this.render();
+        } catch (e) { this.runtime.logger.error('Goal konnte nicht angelegt werden', { error: e.message }); this.render(); }
+      };
+      panel.querySelectorAll('[data-goal-action]').forEach(btn => btn.onclick = () => { try { this.runtime.goals.setStatus(btn.dataset.goalId, btn.dataset.goalAction); } catch (e) { this.runtime.logger.error('Goal-Status fehlgeschlagen', { error: e.message }); } this.render(); });
+      panel.querySelectorAll('[data-goal-delete]').forEach(btn => btn.onclick = () => { try { this.runtime.goals.remove(btn.dataset.goalDelete); } catch (e) { this.runtime.logger.error('Goal konnte nicht gelöscht werden', { error: e.message }); } this.render(); });
+      panel.querySelectorAll('[data-priority-name]').forEach(sel => sel.onchange = () => { try { this.runtime.goals.setPriority(sel.dataset.priorityName, sel.value); } catch (e) { this.runtime.logger.error('Priorität konnte nicht geändert werden', { error: e.message }); } this.render(); });
+    }
+
+    renderLogs() {
+      if (!this.host) return;
+      const panel = this.host.querySelector('#albot-panel-logs');
+      const lines = this.runtime.logger.list(100).map(x => `[${x.at}] ${x.level} ${x.message}${x.data == null ? '' : ' '+JSON.stringify(x.data)}`).join('\n');
+      panel.innerHTML = `<div class="albot-card"><b>Logs</b><div class="albot-log">${esc(lines || 'Noch keine Logs.')}</div></div>`;
+    }
+
+    renderDev(status) {
+      const panel = this.host.querySelector('#albot-panel-dev');
+      panel.innerHTML = `<div class="albot-card"><b>Entwicklung</b><div class="albot-row"><button id="albot-selftest" class="albot-btn">Selftest</button><button id="albot-reset-stop" class="albot-btn danger">STOP zurücksetzen</button><button id="albot-show" class="albot-btn">GUI anzeigen</button></div><div id="albot-selftest-result" class="albot-small">H1 Foundation · ${esc(status.version)}</div></div>`;
+      panel.querySelector('#albot-selftest').onclick = () => { const result = this.runtime.selfTest(); panel.querySelector('#albot-selftest-result').textContent = JSON.stringify(result, null, 2); };
+      panel.querySelector('#albot-reset-stop').onclick = () => { this.runtime.resetEmergencyStop(); this.render(); };
+      panel.querySelector('#albot-show').onclick = () => { this.host.style.display = 'block'; };
+    }
+
+    async copyDiagnostics() {
+      const text = JSON.stringify(this.runtime.diagnostics(), null, 2);
+      try {
+        const nav = this.uiRoot && this.uiRoot.navigator || this.root.navigator;
+        if (nav && nav.clipboard && typeof nav.clipboard.writeText === 'function') {
+          await nav.clipboard.writeText(text);
+        } else {
+          const area = this.doc.createElement('textarea'); area.value = text; area.style.position='fixed'; area.style.opacity='0'; this.doc.body.appendChild(area); area.select(); this.doc.execCommand('copy'); area.remove();
+        }
+        this.runtime.logger.info('Fehlerbericht in Zwischenablage kopiert');
+      } catch (e) { this.runtime.logger.error('Clipboard-Kopie fehlgeschlagen', { error: e.message }); }
+      this.renderLogs();
+      return text;
+    }
+
+    show() { if (this.host) this.host.style.display = 'block'; }
+    hide() { if (this.host) this.host.style.display = 'none'; }
+    destroy() {
+      if (this.interval != null) { try { (this.intervalRoot || this.root).clearInterval(this.interval); } catch (_) {} this.interval = null; }
+      if (this._offLog) { try { this._offLog(); } catch (_) {} this._offLog = null; }
+      if (this._dragCleanup) { try { this._dragCleanup(); } catch (_) {} this._dragCleanup = null; }
+      const old = this.doc && this.doc.getElementById('albot-control-center');
+      if (old) old.remove();
+      this.host = null;
+    }
+  }
+
+  ns.ControlCenter = ControlCenter;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
