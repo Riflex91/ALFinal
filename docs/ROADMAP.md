@@ -121,7 +121,7 @@ Live-Ergebnis:
 
 ## H6 – Klassenlogik
 
-**🟦 BAU – aktuell**
+**🟩 BESTANDEN – 2026-09-26**
 
 **🟦 BAU**
 - Ranger-/Mage-/Warrior-/Priest-/Rogue-/Paladin-spezifische Skills
@@ -138,6 +138,14 @@ Live-Ergebnis:
 - Cleanup + Diagnosekopie automatisch
 - verwendete Charaktere nutzen Skills sinnvoll
 - kein unnötiger Skill-Spam
+
+Live-Ergebnis:
+- Ein-Klick-Suite vollständig PASSED
+- Ranger live mit Hunter's Mark + Supershot validiert
+- 2 Class-Skills dispatched, 2 bestätigt
+- 0 rejected, 0 UNKNOWN
+- H4-Range-Annäherung und H5-Basiscombat blieben stabil
+- Cleanup vollständig, Scheduler danach 0 Ressourcen
 
 ---
 
