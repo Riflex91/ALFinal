@@ -119,7 +119,7 @@ PR #3 wurde am 2026-09-26 nach bestandenem Live-Test gemerged.
 Merge-Commit:
 `241947f27f4471849dd1da340a312e8818361d51`
 
-## H4 – aktuell in Arbeit
+## H4 – live bestanden, Merge ausstehend
 
 Aktiver Entwicklungsbranch:
 `chatgpt/h4-movement`
@@ -144,10 +144,23 @@ Bereits im H4-Branch umgesetzt:
 - H4-Automatiktests;
 - `docs/H4-LIVE-TEST.md`.
 
+Live-Test im echten Adventure-Land-Client: **BESTANDEN**.
+
+Bestätigt:
+- lokales Move mit `ARRIVAL_VERIFIED`;
+- Smart Move mit beobachteter Arrival-Evidence;
+- Retarget mit sauberem Cancel des alten Auftrags und nur einem Movement-Owner;
+- manuelles Cancel ohne Retry;
+- Safe Point / Safe Return;
+- Target-Annäherung ohne Attack;
+- Movement-Ressourcen fallen nach Abschluss auf 0 zurück;
+- Emergency STOP während laufendem Smart Move setzt Runtime auf stopped, Scheduler auf 0 Ressourcen und beendet den Auftrag als `CANCELLED / EMERGENCY_STOP`;
+- best-effort Cleanup über `stop('smart')` und `use_skill('stop')`;
+- keine Callback-/Overlap-Fehler;
+- H1–H4 Regressionen grün.
+
 Noch ausstehend:
-- komplette H1–H4-CI auf PR-Head;
-- echter H4-Live-Test im Adventure-Land-Client;
-- Merge erst nach bestandenem Live-Test und ausdrücklicher User-Freigabe.
+- Merge erst nach ausdrücklicher User-Freigabe.
 
 ## H2 Architekturregel für spätere Module
 
@@ -242,4 +255,4 @@ Bei Fehler:
 
 ## Nächster Schritt
 
-H4 automatisiert prüfen, PR öffnen und anschließend `docs/H4-LIVE-TEST.md` im echten Adventure-Land-Client ausführen. Merge erst nach bestandenem Live-Test und ausdrücklicher Freigabe.
+PR #4 nach vollständigen Merge-Checks mit Methode `merge` mergen, sobald der User ausdrücklich `merge` freigibt. Danach **H5 – Combat** auf einem frischen Branch vom neuen `main` starten.
