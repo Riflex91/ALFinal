@@ -106,7 +106,10 @@
       visibleMonsters: options => runtime.game.visibleMonsters(options || {}),
       visiblePlayers: options => runtime.game.visiblePlayers(options || {}),
       monsterDefinition: mtype => runtime.game.monsterDefinition(mtype),
-      farmSpots: options => runtime.game.farmSpotCatalog(options || {})
+      itemDefinition: name => runtime.game.itemDefinition(name),
+      farmSpots: options => runtime.game.farmSpotCatalog(options || {}),
+      inventory: () => runtime.game.inventorySnapshot(),
+      chests: () => runtime.game.chestSnapshot()
     },
 
     movement: {
@@ -155,6 +158,13 @@
       stop: reason => runtime.farmIntelligence.stopAutonomy(reason || 'API_H9_STOP'),
       plan: () => runtime.farmIntelligence.plan(),
       tick: () => runtime.farmIntelligence.tick()
+    },
+
+    inventory: {
+      status: () => runtime.inventory.status(),
+      plan: () => runtime.inventory.plan(),
+      tick: () => runtime.inventory.tick(),
+      rules: rules => rules == null ? runtime.inventory.ruleSnapshot() : runtime.inventory.setRules(rules)
     },
 
     liveTests: {
@@ -206,6 +216,7 @@
   Object.freeze(api.party);
   Object.freeze(api.farming);
   Object.freeze(api.farmIntelligence);
+  Object.freeze(api.inventory);
   Object.freeze(api.liveTests);
   Object.freeze(api.knowledge);
   Object.freeze(api.roster);
