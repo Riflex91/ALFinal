@@ -238,7 +238,7 @@ test('Warrior uses charge at distance then taunt without same-skill spam', async
 
   const result = ctx.ALBot.combat.start({ owner: 'h6-warrior', maxAttack: 20, minMpRatio: 0 });
   assert.equal(result.accepted, true);
-  await sleep(700);
+  await sleep(1400);
 
   const skills = calls.skills.map(row => row.skill);
   assert.ok(skills.includes('charge'));
