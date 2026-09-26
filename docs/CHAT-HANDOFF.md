@@ -78,7 +78,7 @@ Im echten Adventure-Land-Client bestätigt:
 - Hot Reload funktioniert auch über getrennte Adventure-Land-Runner-Kontexte;
 - gemeinsamer same-origin Host dient als Hot-Reload-Anker.
 
-## H3 – aktuell in Arbeit
+## H3 – live bestanden, Merge freigegeben
 
 Aktiver Entwicklungsbranch:
 `chatgpt/h3-game-adapter-knowledge`
@@ -104,9 +104,17 @@ Bereits umgesetzt:
 - automatische H1/H2/H3-Suite grün;
 - `docs/H3-LIVE-TEST.md`.
 
-Noch ausstehend:
-- echter H3-Live-Test im Adventure-Land-Client;
-- Merge erst nach bestandenem Live-Test und ausdrücklicher User-Freigabe.
+Live-Test im echten Adventure-Land-Client: **BESTANDEN**.
+
+Bestätigt:
+- normalisierte Character-/Map-/HP-/MP-/Positionsdaten;
+- Positionsanzeige mit zwei Nachkommastellen;
+- dynamisches Roster;
+- read-only KnowledgeProvider und korrektes `WAITING_FOR_BRIDGE` ohne Runtime-Ausfall;
+- Target-Auflösung über die echte Adventure-Land-Quelle `parent.ctarget` mit erfolgreicher Live-Auflösung eines Monsters;
+- H1/H2/H3-Regressionen grün.
+
+User hat den Merge ausdrücklich freigegeben.
 
 ## H2 Architekturregel für spätere Module
 
@@ -201,6 +209,4 @@ Bei Fehler:
 
 ## Nächster Schritt
 
-User führt `docs/H3-LIVE-TEST.md` im echten Spiel gegen den aktuellen PR3-Head aus.
-
-Bei bestandenem H3 folgt nach ausdrücklicher Merge-Freigabe **H4 – Bewegung**.
+PR #3 nach vollständigen Merge-Checks mit Methode `merge` mergen. Danach **H4 – Bewegung** auf einem frischen Branch vom neuen `main` starten.
