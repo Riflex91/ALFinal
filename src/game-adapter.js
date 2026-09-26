@@ -360,29 +360,49 @@
       const G = this._gameData();
       const raw = G && G.monsters && G.monsters[id];
       if (!raw || typeof raw !== 'object') return null;
-      const dropsRaw = Array.isArray(raw.drops) ? raw.drops : [];
+      const liveDropTable = G && G.drops && G.drops.monsters && G.drops.monsters[id];
+      const dropsRaw = Array.isArray(raw.drops) && raw.drops.length
+        ? raw.drops
+        : (Array.isArray(liveDropTable) ? liveDropTable : []);
       const drops = [];
       let dropSignal = 0;
       for (const row of dropsRaw) {
         let chance = null;
         let item = null;
+        let quantity = 1;
         if (Array.isArray(row)) {
           chance = finite(row[0]);
           item = row[1] == null ? null : cleanText(row[1], 160);
+          const rawQuantity = finite(row[2]);
+          if (rawQuantity != null && rawQuantity > 0) quantity = rawQuantity;
         } else if (row && typeof row === 'object') {
           chance = finite(row.chance != null ? row.chance : row.probability);
           item = cleanText(row.item || row.name || row.id || '', 160) || null;
+          const rawQuantity = finite(row.quantity != null ? row.quantity : row.count);
+          if (rawQuantity != null && rawQuantity > 0) quantity = rawQuantity;
         }
-        if (chance != null && chance > 0) dropSignal += Math.min(1, chance);
-        if (item || chance != null) drops.push({ item, chance });
+        if (chance != null && chance > 0) dropSignal += Math.min(1, chance) * quantity;
+        if (item || chance != null) drops.push({ item, chance, quantity });
       }
+
+      const rawGold = finite(raw.gold);
+      const monsterGold = G && G.monster_gold && finite(G.monster_gold[id]);
+      const goldRules = G && G.drops && G.drops.gold || {};
+      const goldBase = finite(goldRules.base);
+      const goldRandom = finite(goldRules.random);
+      const gold = rawGold != null
+        ? rawGold
+        : (monsterGold != null
+          ? 1 + monsterGold * ((goldBase || 0) + (goldRandom || 0) / 2)
+          : null);
+
       return {
         id,
         name: raw.name == null ? id : cleanText(raw.name, 160),
         hp: finite(raw.hp),
         attack: finite(raw.attack),
         xp: finite(raw.xp),
-        gold: finite(raw.gold),
+        gold,
         speed: finite(raw.speed),
         range: finite(raw.range),
         frequency: finite(raw.frequency),
