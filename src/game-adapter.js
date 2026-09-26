@@ -50,6 +50,22 @@
       return null;
     }
 
+    _resolveFunction(name) {
+      for (const candidate of this._roots()) {
+        try {
+          if (candidate && typeof candidate[name] === 'function') {
+            return { owner: candidate, fn: candidate[name] };
+          }
+        } catch (_) {}
+        try {
+          if (candidate && candidate.parent && typeof candidate.parent[name] === 'function') {
+            return { owner: candidate.parent, fn: candidate.parent[name] };
+          }
+        } catch (_) {}
+      }
+      return null;
+    }
+
     _character() {
       return this._read('character');
     }
@@ -155,8 +171,106 @@
         y: pos.y,
         hp: finite(entity.hp),
         maxHp: finite(entity.max_hp),
+        xp: finite(entity.xp),
+        attack: finite(entity.attack),
+        range: finite(entity.range),
+        frequency: finite(entity.frequency),
+        visible: entity.visible !== false,
         targetId: entity.target == null ? null : String(entity.target),
         dead: safeBoolean(entity.dead) || safeBoolean(entity.rip)
+      };
+    }
+
+    entityReference(id) {
+      const match = this._entityByIdOrName(id);
+      if (match && match.entity && match.entity.visible !== false && !match.entity.dead && !match.entity.rip) {
+        return match.entity;
+      }
+      const current = this._currentTarget();
+      if (current && current.entity) {
+        const currentId = current.entity.id == null ? null : String(current.entity.id);
+        if (id == null || currentId === String(id)) return current.entity;
+      }
+      return null;
+    }
+
+    visibleMonsters(options = {}) {
+      const character = this._character();
+      if (!character || !character.name) return [];
+      const charPos = this._position(character);
+      const type = cleanText(options.type || options.mtype || '', 120) || null;
+      const rows = [];
+      for (const row of this._entityEntries()) {
+        const entity = row.entity;
+        if (!entity || entity.visible === false || entity.dead === true || entity.rip === true) continue;
+        if (!(entity.type === 'monster' || entity.mtype)) continue;
+        if (type && String(entity.mtype || '') !== type) continue;
+        if (entity.map && character.map && String(entity.map) !== String(character.map)) continue;
+        const normalized = this._normalizeEntity({ key: row.key, entity }, character.map || null);
+        if (!normalized || normalized.dead || normalized.visible === false) continue;
+        if (charPos.x != null && charPos.y != null && normalized.x != null && normalized.y != null) {
+          normalized.distance = Math.hypot(charPos.x - normalized.x, charPos.y - normalized.y);
+        } else {
+          normalized.distance = null;
+        }
+        rows.push(normalized);
+      }
+      rows.sort((a, b) => {
+        const ad = a.distance == null ? Number.POSITIVE_INFINITY : a.distance;
+        const bd = b.distance == null ? Number.POSITIVE_INFINITY : b.distance;
+        return ad - bd;
+      });
+      return clone(rows);
+    }
+
+    combatReadiness(targetId) {
+      const character = this._character();
+      const raw = this.entityReference(targetId);
+      if (!character || !raw) {
+        return {
+          available: false,
+          targetAvailable: !!raw,
+          canAttack: false,
+          inRange: false,
+          cooldown: null,
+          source: 'unavailable'
+        };
+      }
+
+      const canAttackFn = this._resolveFunction('can_attack');
+      const inRangeFn = this._resolveFunction('is_in_range');
+      const cooldownFn = this._resolveFunction('is_on_cooldown');
+
+      let canAttack = null;
+      let inRange = null;
+      let cooldown = null;
+
+      try { if (canAttackFn) canAttack = canAttackFn.fn.call(canAttackFn.owner, raw) === true; } catch (_) {}
+      try { if (inRangeFn) inRange = inRangeFn.fn.call(inRangeFn.owner, raw, 'attack') === true; } catch (_) {}
+      try { if (cooldownFn) cooldown = cooldownFn.fn.call(cooldownFn.owner, 'attack') === true; } catch (_) {}
+
+      if (inRange == null) {
+        const cp = this._position(character);
+        const tp = this._position(raw);
+        const range = finite(character.range);
+        if (cp.x != null && cp.y != null && tp.x != null && tp.y != null && range != null) {
+          inRange = Math.hypot(cp.x - tp.x, cp.y - tp.y) <= range;
+        } else {
+          inRange = false;
+        }
+      }
+      if (cooldown == null) cooldown = false;
+      if (canAttack == null) {
+        canAttack = !safeBoolean(character.rip) && inRange && !cooldown;
+      }
+
+      return {
+        available: true,
+        targetAvailable: true,
+        canAttack,
+        inRange,
+        cooldown,
+        source: canAttackFn || inRangeFn || cooldownFn ? 'adventure-land-api' : 'adapter-fallback'
       };
     }
 
