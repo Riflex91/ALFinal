@@ -32,8 +32,8 @@ Diese Dokumente bilden den aktuell verbindlichen Projektkontext.
 - Roadmap H1–H29
 - H1 enthält bereits das Grundgerüst für Prioritäten, Headless, Knowledge und Control Center
 
-### Aktuell in Arbeit
-- **H1 / PR1 – AL Bot Foundation & Control Center**
+### H1 / PR1 – Live-Test bestanden
+- **H1 / PR1 – AL Bot Foundation & Control Center** wurde im echten Adventure-Land-Client erfolgreich getestet.
 - Runtime-Core-Grundgerüst
 - Control Center
 - globaler persistenter STOP
@@ -49,7 +49,7 @@ Diese Dokumente bilden den aktuell verbindlichen Projektkontext.
 - echter Windows-Bridge-KnowledgeProvider
 
 ### Nächster Schritt
-**H1 fertigstellen, PR automatisch prüfen und anschließend H1 direkt im Spiel testen.**
+**PR1 nach ausdrücklicher Freigabe mergen. Danach H2 – Runtime-Stabilität beginnen.**
 
 H1 soll laut Roadmap enthalten:
 - AL Bot Core
@@ -241,3 +241,23 @@ Vor jedem größeren Schritt:
 ## Momentaufnahme
 
 Zum Zeitpunkt dieses Handoffs wurde ausschließlich Projektdokumentation erstellt. **Noch kein AL-Bot-Code wurde implementiert.**
+
+
+## H1 Live-Test Ergebnis
+
+Am 2026-09-26 wurde H1 im echten Adventure-Land-Client getestet und vom User als passend bestätigt.
+
+Bestätigt:
+- Control Center wird in der richtigen Adventure-Land-Hauptebene angezeigt.
+- Fenstergröße ist ausreichend.
+- Resize funktioniert.
+- Drag funktioniert.
+- Minimieren/Ausklappen funktioniert.
+- roter STOP bleibt sichtbar.
+- dynamische Character-/Farmer-Erkennung benötigt keine hartcodierten Namen.
+- Prioritäten-GUI funktioniert.
+- Ziele können angelegt, pausiert, fortgesetzt, abgebrochen und über rotes × gelöscht werden.
+- Leveling startet standardmäßig mit NORMAL.
+- H1 gilt damit als **LIVE-TEST BESTANDEN**.
+
+PR1 bleibt bis zu einer ausdrücklichen Merge-Anweisung ungemerged.
