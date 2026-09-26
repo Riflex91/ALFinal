@@ -159,3 +159,33 @@ Erwartung:
 ## Erwartete Version
 
 `0.9.0-h9`
+
+
+## Live-Ergebnis 2026-09-26
+
+H9 wurde mit AL Bot `0.9.0-h9` im echten Adventure-Land-Livebetrieb vollständig bestanden.
+
+Ergebnis der Ein-Klick-Suite `h9-farm-intelligence`:
+
+- Gesamtstatus: `PASSED / ALL_STEPS_PASSED`;
+- Preflight PASSED;
+- Autonomous Start PASSED;
+- Confirmed Farming PASSED;
+- Adaptive Entscheidung / Switch PASSED;
+- Stability Window PASSED;
+- Cleanup PASSED;
+- initiale Auswahl: bekannter Goo-Spawn;
+- spätere Live-Auswahl: Squigtoad;
+- echte H5-Farming-Evidence: mindestens ein bestätigter Basisangriff;
+- adaptive Beobachtung: 63 Entscheidungen, 22 Holds, 2 echte Switches, 3 Travel Orders;
+- Anti-Pingpong aktiv: 6 Blocks, kein A→B→A-Verstoß;
+- H8 AoE UNKNOWN: 0;
+- H5 Attack UNKNOWN: 0;
+- H7 Focus-Pingpong: 0;
+- H9 Ownership Blocks: 0;
+- H9 Movement UNKNOWN: 0;
+- Cleanup vollständig: H9/H8/H5/H4 inaktiv;
+- Runtime danach STOPPED;
+- Scheduler danach 0 Ressourcen.
+
+Der zuvor live gefundene Froggie-Fall wurde vor diesem finalen Pass geschlossen: physische Farmer filtern Monster unter 25 % erwarteter Trefferwahrscheinlichkeit anhand von `evasion`/`avoidance` aus. Der finale Live-Bericht enthält keine Frog-/Froggie-Auswahl und bestätigt damit den korrigierten Pfad unter realen Bedingungen.
