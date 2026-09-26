@@ -207,7 +207,7 @@ test('H7 exposes normalized owned party roles and coordinator API', async t => {
   t.after(async () => { try { await ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {} });
   await ctx.ALBot.start();
 
-  assert.equal(ctx.ALBot.version, '0.7.0-h7');
+  assert.equal(ctx.ALBot.version, '0.8.0-h8');
   assert.equal(typeof ctx.ALBot.party.status, 'function');
   assert.equal(typeof ctx.ALBot.party.snapshot, 'function');
   assert.equal(ctx.ALBot.liveTests.status().recommendedId, 'h7-party');
@@ -366,7 +366,7 @@ test('H7 one-click live suite keeps logistics merchant observer-only and passes'
   const { ctx, calls } = makePartyContext({ localClass: 'merchant' });
   vm.runInNewContext(bundle, ctx);
 
-  const result = await ctx.ALBot.liveTests.startRecommended();
+  const result = await ctx.ALBot.liveTests.start('h7-party');
 
   assert.equal(result.state, 'PASSED');
   assert.equal(result.reason, 'ALL_STEPS_PASSED');
@@ -385,7 +385,7 @@ test('H7 one-click live suite passes for two owned party members and restores ru
   const { ctx } = makePartyContext();
   vm.runInNewContext(bundle, ctx);
 
-  const result = await ctx.ALBot.liveTests.startRecommended();
+  const result = await ctx.ALBot.liveTests.start('h7-party');
 
   assert.equal(result.state, 'PASSED');
   assert.equal(result.reason, 'ALL_STEPS_PASSED');
