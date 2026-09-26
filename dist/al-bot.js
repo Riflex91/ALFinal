@@ -1,4 +1,4 @@
-/* AL Bot 0.3.0-h3 | generated file | do not edit dist directly */
+/* AL Bot 0.4.0-h4 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -1756,12 +1756,864 @@
 
 (function (root) {
   'use strict';
+
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns) throw new Error('ALBOT_INTERNALS_MISSING');
+
+  const clone = ns.helpers.clone;
+  const cleanText = ns.helpers.cleanText;
+
+  const ACTIONS = Object.freeze({
+    move: Object.freeze({ publicName: 'move', family: 'movement' }),
+    smart_move: Object.freeze({ publicName: 'smart_move', family: 'movement' }),
+    stop: Object.freeze({ publicName: 'stop', family: 'movement-cleanup' }),
+    use_skill: Object.freeze({ publicName: 'use_skill', family: 'skill' })
+  });
+
+  function errorDetails(error) {
+    return {
+      name: cleanText(error && error.name || 'Error', 80),
+      message: cleanText(error && error.message || error || 'Unknown error', 500),
+      stack: error && error.stack ? String(error.stack).slice(0, 3000) : null
+    };
+  }
+
+  class GameActionBoundary {
+    constructor(options = {}) {
+      this.root = options.root || root;
+      this.logger = options.logger || null;
+      this.assertAllowed = typeof options.assertAllowed === 'function'
+        ? options.assertAllowed
+        : () => true;
+      this.sequence = 0;
+      this.lastAction = null;
+      this.metrics = {
+        attempted: 0,
+        dispatched: 0,
+        unavailable: 0,
+        blocked: 0,
+        synchronousErrors: 0,
+        cleanupDispatches: 0
+      };
+    }
+
+    _roots() {
+      const out = [];
+      let current = this.root;
+      for (let depth = 0; depth < 8 && current; depth += 1) {
+        if (!out.includes(current)) out.push(current);
+        let parentWindow = null;
+        try {
+          parentWindow = current.parent && current.parent !== current ? current.parent : null;
+          if (parentWindow) void parentWindow.document;
+        } catch (_) {
+          parentWindow = null;
+        }
+        if (!parentWindow) break;
+        current = parentWindow;
+      }
+      return out;
+    }
+
+    _resolve(publicName) {
+      for (const candidate of this._roots()) {
+        try {
+          if (candidate && typeof candidate[publicName] === 'function') {
+            return { owner: candidate, fn: candidate[publicName] };
+          }
+        } catch (_) {}
+        try {
+          if (candidate && candidate.parent && typeof candidate.parent[publicName] === 'function') {
+            return { owner: candidate.parent, fn: candidate.parent[publicName] };
+          }
+        } catch (_) {}
+      }
+      return null;
+    }
+
+    available(action) {
+      const def = ACTIONS[action];
+      if (!def) return false;
+      return !!this._resolve(def.publicName);
+    }
+
+    dispatch(action, args = [], options = {}) {
+      const def = ACTIONS[action];
+      if (!def) throw new Error('ALBOT_ACTION_UNKNOWN:' + cleanText(action, 80));
+      if (!Array.isArray(args)) throw new Error('ALBOT_ACTION_ARGS_INVALID:' + action);
+
+      const cleanup = options.cleanup === true;
+      if (cleanup && action !== 'stop' && action !== 'use_skill') {
+        throw new Error('ALBOT_CLEANUP_ACTION_NOT_ALLOWED:' + action);
+      }
+
+      this.metrics.attempted += 1;
+      const id = 'act-' + (++this.sequence);
+      const at = new Date().toISOString();
+
+      if (!cleanup) {
+        try {
+          this.assertAllowed(action);
+        } catch (error) {
+          this.metrics.blocked += 1;
+          this.lastAction = {
+            id, at, action, family: def.family, state: 'BLOCKED',
+            cleanup: false, error: errorDetails(error)
+          };
+          throw error;
+        }
+      }
+
+      const resolved = this._resolve(def.publicName);
+      if (!resolved) {
+        this.metrics.unavailable += 1;
+        const result = {
+          id, at, action, family: def.family, state: 'UNAVAILABLE',
+          cleanup, dispatched: false, value: null,
+          error: { name: 'Error', message: 'ALBOT_ACTION_API_UNAVAILABLE:' + def.publicName, stack: null }
+        };
+        this.lastAction = clone(result);
+        return result;
+      }
+
+      try {
+        const value = resolved.fn.apply(resolved.owner, args);
+        this.metrics.dispatched += 1;
+        if (cleanup) this.metrics.cleanupDispatches += 1;
+        const result = {
+          id, at, action, family: def.family, state: 'DISPATCHED',
+          cleanup, dispatched: true, value,
+          error: null
+        };
+        this.lastAction = {
+          id, at, action, family: def.family, state: 'DISPATCHED',
+          cleanup, dispatched: true, error: null
+        };
+        if (this.logger) this.logger.info('Game-Aktion gesendet', {
+          id, action, family: def.family, cleanup
+        });
+        return result;
+      } catch (error) {
+        this.metrics.synchronousErrors += 1;
+        const result = {
+          id, at, action, family: def.family, state: 'UNKNOWN',
+          cleanup, dispatched: true, value: null, error: errorDetails(error)
+        };
+        this.lastAction = clone(result);
+        if (this.logger) this.logger.error('Game-Aktion endete synchron unklar', {
+          id, action, family: def.family, cleanup, error: result.error
+        });
+        return result;
+      }
+    }
+
+    status() {
+      return {
+        schemaVersion: 1,
+        supportedActions: Object.keys(ACTIONS),
+        availability: Object.fromEntries(Object.keys(ACTIONS).map(action => [action, this.available(action)])),
+        metrics: clone(this.metrics),
+        lastAction: clone(this.lastAction)
+      };
+    }
+  }
+
+  ns.GameActionBoundary = GameActionBoundary;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+
+(function (root) {
+  'use strict';
+
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns) throw new Error('ALBOT_INTERNALS_MISSING');
+
+  const clone = ns.helpers.clone;
+  const cleanText = ns.helpers.cleanText;
+
+  function finite(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function distance(a, b) {
+    if (!a || !b) return null;
+    const ax = finite(a.x), ay = finite(a.y), bx = finite(b.x), by = finite(b.y);
+    if (ax == null || ay == null || bx == null || by == null) return null;
+    return Math.hypot(ax - bx, ay - by);
+  }
+
+  function errorReason(value, fallback = 'MOVEMENT_UNKNOWN') {
+    if (value && typeof value === 'object') {
+      const raw = value.reason || value.code || value.message;
+      if (raw) return cleanText(raw, 180);
+    }
+    const text = cleanText(value, 180);
+    return text || fallback;
+  }
+
+  class MovementController {
+    constructor(options = {}) {
+      this.root = options.root || root;
+      this.logger = options.logger || null;
+      this.game = options.game;
+      this.actions = options.actions;
+      this.now = typeof options.now === 'function' ? options.now : () => Date.now();
+
+      this.config = {
+        pollMs: Math.max(100, Math.min(1000, Number(options.pollMs) || 200)),
+        localTimeoutMs: Math.max(3000, Math.min(60000, Number(options.localTimeoutMs) || 15000)),
+        smartTimeoutMs: Math.max(10000, Math.min(10 * 60 * 1000, Number(options.smartTimeoutMs) || 120000)),
+        stuckMs: Math.max(1500, Math.min(30000, Number(options.stuckMs) || 6000)),
+        progressEpsilon: Math.max(0.5, Math.min(20, Number(options.progressEpsilon) || 2)),
+        arrivalRadius: Math.max(2, Math.min(100, Number(options.arrivalRadius) || 12)),
+        retargetMinAgeMs: Math.max(250, Math.min(10000, Number(options.retargetMinAgeMs) || 1000)),
+        rapidSwitchMs: Math.max(250, Math.min(10000, Number(options.rapidSwitchMs) || 1500)),
+        pingPongWindowMs: Math.max(1000, Math.min(30000, Number(options.pingPongWindowMs) || 6000)),
+        destinationBucket: Math.max(5, Math.min(100, Number(options.destinationBucket) || 20))
+      };
+
+      this.enabled = false;
+      this.scope = null;
+      this.heartbeat = null;
+      this.pollResourceId = null;
+      this.sequence = 0;
+      this.activeOrder = null;
+      this.lastOrder = null;
+      this.safePoint = null;
+      this.destinationHistory = [];
+      this.metrics = {
+        localMoves: 0,
+        smartMoves: 0,
+        approaches: 0,
+        retargets: 0,
+        safeReturns: 0,
+        completed: 0,
+        cancelled: 0,
+        stuck: 0,
+        failedSafe: 0,
+        unknown: 0,
+        rejected: 0,
+        pingPongBlocks: 0,
+        rapidSwitchBlocks: 0,
+        cleanupStops: 0
+      };
+    }
+
+    start(context) {
+      this.enabled = true;
+      this.scope = context && context.scope || null;
+      this.heartbeat = context && typeof context.heartbeat === 'function' ? context.heartbeat : null;
+      this.captureSafePoint('RUNTIME_START');
+      if (this.heartbeat) this.heartbeat({ phase: 'movement-start', active: false });
+      return this.status();
+    }
+
+    stop(reason = 'MOVEMENT_MODULE_STOP') {
+      this.enabled = false;
+      this._cancelActive(reason, { cleanup: true });
+      this.scope = null;
+      this.heartbeat = null;
+      return this.status();
+    }
+
+    _snapshot() {
+      return this.game && typeof this.game.snapshot === 'function' ? this.game.snapshot() : null;
+    }
+
+    _character() {
+      const snap = this._snapshot();
+      return snap && snap.available ? snap.character : null;
+    }
+
+    _canMoveTo(x, y) {
+      const wantedX = finite(x);
+      const wantedY = finite(y);
+      if (wantedX == null || wantedY == null) return false;
+      const candidates = [];
+      let current = this.root;
+      for (let depth = 0; depth < 8 && current; depth += 1) {
+        if (!candidates.includes(current)) candidates.push(current);
+        let parentWindow = null;
+        try {
+          parentWindow = current.parent && current.parent !== current ? current.parent : null;
+          if (parentWindow) void parentWindow.document;
+        } catch (_) { parentWindow = null; }
+        if (!parentWindow) break;
+        current = parentWindow;
+      }
+      for (const candidate of candidates) {
+        try {
+          if (candidate && typeof candidate.can_move_to === 'function') {
+            return candidate.can_move_to(wantedX, wantedY) !== false;
+          }
+        } catch (_) {
+          return false;
+        }
+        try {
+          if (candidate && candidate.parent && typeof candidate.parent.can_move_to === 'function') {
+            return candidate.parent.can_move_to(wantedX, wantedY) !== false;
+          }
+        } catch (_) {
+          return false;
+        }
+      }
+      return null;
+    }
+
+    _normalizeDestination(destination, currentMap) {
+      if (typeof destination === 'string') {
+        const map = cleanText(destination, 120);
+        if (!map) throw new Error('MOVEMENT_DESTINATION_INVALID');
+        return { map, x: null, y: null };
+      }
+      if (!destination || typeof destination !== 'object') throw new Error('MOVEMENT_DESTINATION_INVALID');
+      const map = cleanText(destination.map || currentMap || '', 120) || null;
+      const x = finite(destination.x);
+      const y = finite(destination.y);
+      if (!map && (x == null || y == null)) throw new Error('MOVEMENT_DESTINATION_INVALID');
+      if ((x == null) !== (y == null)) throw new Error('MOVEMENT_DESTINATION_COORDINATES_INCOMPLETE');
+      return { map, x, y };
+    }
+
+    _destinationKey(destination) {
+      const bucket = this.config.destinationBucket;
+      const x = destination.x == null ? '*' : Math.round(destination.x / bucket);
+      const y = destination.y == null ? '*' : Math.round(destination.y / bucket);
+      return String(destination.map || '*') + ':' + x + ':' + y;
+    }
+
+    _trimHistory(now = this.now()) {
+      const cutoff = now - this.config.pingPongWindowMs;
+      this.destinationHistory = this.destinationHistory.filter(row => row.atMs >= cutoff).slice(-8);
+    }
+
+    _antiPingPong(destination, options = {}) {
+      const now = this.now();
+      this._trimHistory(now);
+      const key = this._destinationKey(destination);
+      if (options.safety === true) return { ok: true, key };
+      const last = this.destinationHistory[this.destinationHistory.length - 1] || null;
+
+      if (last && last.key !== key && !options.retarget && now - last.atMs < this.config.rapidSwitchMs) {
+        this.metrics.rapidSwitchBlocks += 1;
+        return { ok: false, reason: 'MOVEMENT_RAPID_SWITCH_BLOCKED', key, previousKey: last.key };
+      }
+
+      if (last && last.key !== key) {
+        const olderSame = this.destinationHistory.slice(0, -1).reverse().find(row => row.key === key);
+        if (olderSame && now - olderSame.atMs < this.config.pingPongWindowMs) {
+          this.metrics.pingPongBlocks += 1;
+          return { ok: false, reason: 'MOVEMENT_PINGPONG_BLOCKED', key, previousKey: last.key };
+        }
+      }
+      return { ok: true, key };
+    }
+
+    _recordDestination(key, kind) {
+      const now = this.now();
+      this._trimHistory(now);
+      this.destinationHistory.push({ key, kind, atMs: now });
+      this._trimHistory(now);
+    }
+
+    _preflight(kind, destination, options = {}) {
+      if (!this.enabled) return { ok: false, reason: 'MOVEMENT_MODULE_NOT_ACTIVE' };
+      if (this.activeOrder && options.allowActive !== true) return { ok: false, reason: 'MOVEMENT_BUSY' };
+
+      const snap = this._snapshot();
+      const character = snap && snap.character;
+      if (!snap || !snap.available || !character) return { ok: false, reason: 'CHARACTER_UNAVAILABLE' };
+      if (character.rip === true) return { ok: false, reason: 'CHARACTER_DEAD' };
+
+      let normalized;
+      try { normalized = this._normalizeDestination(destination, character.map); }
+      catch (error) { return { ok: false, reason: errorReason(error, 'MOVEMENT_DESTINATION_INVALID') }; }
+
+      if (kind === 'local') {
+        if (normalized.map && character.map && String(normalized.map) !== String(character.map)) {
+          return { ok: false, reason: 'LOCAL_MOVE_CROSS_MAP_REJECTED' };
+        }
+        if (normalized.x == null || normalized.y == null) return { ok: false, reason: 'LOCAL_MOVE_COORDINATES_REQUIRED' };
+        const passable = this._canMoveTo(normalized.x, normalized.y);
+        if (passable === false) return { ok: false, reason: 'LOCAL_DESTINATION_NOT_WALKABLE' };
+      }
+
+      if (kind === 'smart'
+        && normalized.x == null
+        && normalized.y == null
+        && normalized.map
+        && character.map
+        && String(normalized.map) === String(character.map)) {
+        return { ok: false, reason: 'SMART_MOVE_SAME_MAP_NEEDS_COORDINATES' };
+      }
+
+      const anti = this._antiPingPong(normalized, options);
+      if (!anti.ok) return { ...anti, destination: normalized };
+      return { ok: true, character, destination: normalized, key: anti.key };
+    }
+
+    _publicOrder(order) {
+      if (!order) return null;
+      const copy = clone(order);
+      delete copy.promise;
+      return copy;
+    }
+
+    _cancelPoll(reason) {
+      if (this.pollResourceId && this.scope) {
+        try { this.scope.cancel(this.pollResourceId, reason || 'MOVEMENT_POLL_CANCEL'); } catch (_) {}
+      }
+      this.pollResourceId = null;
+    }
+
+    _bestEffortStop(reason, options = {}) {
+      const results = [];
+      const smart = options.smart !== false;
+      const local = options.local !== false;
+      if (smart && this.actions) {
+        try {
+          const result = this.actions.dispatch('stop', ['smart'], { cleanup: true });
+          results.push({ action: 'stop-smart', state: result.state });
+          if (result.dispatched) this.metrics.cleanupStops += 1;
+        } catch (_) {}
+      }
+      if (local && this.actions && this.actions.available('use_skill')) {
+        try {
+          const result = this.actions.dispatch('use_skill', ['stop'], { cleanup: true });
+          results.push({ action: 'use-skill-stop', state: result.state });
+          if (result.dispatched) this.metrics.cleanupStops += 1;
+        } catch (_) {}
+      }
+      if (this.logger && results.length) this.logger.warn('Bewegung bestmöglich gestoppt', { reason, results });
+      return results;
+    }
+
+    _finish(state, reason, options = {}) {
+      const order = this.activeOrder;
+      if (!order) return null;
+      this._cancelPoll('MOVEMENT_' + state);
+
+      order.state = state;
+      order.reason = reason;
+      order.finishedAt = new Date().toISOString();
+      order.finishedAtMs = this.now();
+      order.lastObserved = options.lastObserved || order.lastObserved || null;
+
+      if (state === 'COMPLETED') this.metrics.completed += 1;
+      else if (state === 'CANCELLED') this.metrics.cancelled += 1;
+      else if (state === 'STUCK') this.metrics.stuck += 1;
+      else if (state === 'UNKNOWN') this.metrics.unknown += 1;
+      else if (state === 'FAILED_SAFE') this.metrics.failedSafe += 1;
+
+      if (options.stop !== false && state !== 'COMPLETED') {
+        this._bestEffortStop(reason, { smart: order.kind === 'smart', local: true });
+      } else if (options.stopOnArrival === true && order.kind === 'smart') {
+        this._bestEffortStop('ARRIVAL_VERIFIED', { smart: true, local: false });
+      }
+
+      this.lastOrder = this._publicOrder(order);
+      this.activeOrder = null;
+      if (this.heartbeat) this.heartbeat({ phase: 'movement-terminal', state, reason, orderId: order.id });
+
+      if (this.logger) {
+        const data = { id: order.id, kind: order.kind, state, reason, destination: order.destination };
+        if (state === 'COMPLETED') this.logger.info('Bewegungsauftrag abgeschlossen', data);
+        else this.logger.warn('Bewegungsauftrag beendet', data);
+      }
+      return this.lastOrder;
+    }
+
+    _observeOrder() {
+      const order = this.activeOrder;
+      if (!order) return;
+      const snap = this._snapshot();
+      const character = snap && snap.character;
+      const now = this.now();
+
+      if (!snap || !snap.available || !character) {
+        this._finish('UNKNOWN', 'CHARACTER_OBSERVATION_LOST');
+        return;
+      }
+      if (character.rip === true) {
+        this._finish('FAILED_SAFE', 'CHARACTER_DEAD', { lastObserved: character });
+        return;
+      }
+
+      const sameMap = !order.destination.map || String(character.map || '') === String(order.destination.map);
+      const currentDistance = sameMap && order.destination.x != null
+        ? distance(character, order.destination)
+        : null;
+
+      const observed = {
+        at: new Date().toISOString(),
+        atMs: now,
+        map: character.map || null,
+        x: finite(character.x),
+        y: finite(character.y),
+        moving: character.moving === true,
+        distance: currentDistance
+      };
+      order.lastObserved = observed;
+
+      const arrivedByPosition = sameMap
+        && currentDistance != null
+        && currentDistance <= order.arrivalRadius;
+      const arrivedByMap = sameMap
+        && order.destination.x == null
+        && order.destination.y == null
+        && String(character.map || '') === String(order.destination.map || '');
+
+      if (arrivedByPosition || arrivedByMap) {
+        this._finish('COMPLETED', 'ARRIVAL_VERIFIED', {
+          lastObserved: observed,
+          stop: false,
+          stopOnArrival: true
+        });
+        return;
+      }
+
+      let progress = false;
+      if (order.lastMap != null && String(character.map || '') !== String(order.lastMap)) progress = true;
+      if (currentDistance != null && (order.bestDistance == null || currentDistance < order.bestDistance - this.config.progressEpsilon)) {
+        order.bestDistance = currentDistance;
+        progress = true;
+      }
+      if (progress) {
+        order.lastProgressAtMs = now;
+        order.progressEvents += 1;
+      }
+      order.lastMap = character.map || null;
+
+      if (now >= order.deadlineAtMs) {
+        this._finish('FAILED_SAFE', 'MOVEMENT_TIMEOUT', { lastObserved: observed });
+        return;
+      }
+
+      if (now - order.lastProgressAtMs >= this.config.stuckMs) {
+        this._finish('STUCK', 'MOVEMENT_STUCK_NO_PROGRESS', { lastObserved: observed });
+        return;
+      }
+
+      if (this.heartbeat) this.heartbeat({
+        phase: 'movement-active',
+        orderId: order.id,
+        kind: order.kind,
+        distance: currentDistance,
+        progressEvents: order.progressEvents
+      });
+    }
+
+    _watchCommand(order, dispatch) {
+      if (!dispatch || dispatch.state !== 'DISPATCHED') return;
+      const value = dispatch.value;
+      if (!value || typeof value.then !== 'function') {
+        order.commandSettlement = 'RETURNED';
+        return;
+      }
+
+      order.commandSettlement = 'PENDING';
+      Promise.resolve(value).then(response => {
+        if (!this.activeOrder || this.activeOrder.id !== order.id) return;
+        order.commandResponse = response == null ? null : clone(response);
+        if (response && response.failed === true) {
+          order.commandSettlement = 'FAILED';
+          this._finish('FAILED_SAFE', errorReason(response.reason || response, 'MOVEMENT_COMMAND_FAILED'));
+          return;
+        }
+        order.commandSettlement = 'RESOLVED';
+        // Return/resolve is not arrival evidence. Observation decides completion.
+      }, error => {
+        if (!this.activeOrder || this.activeOrder.id !== order.id) return;
+        order.commandSettlement = 'REJECTED';
+        order.commandError = errorReason(error, 'MOVEMENT_COMMAND_REJECTED');
+        this._finish('UNKNOWN', order.commandError);
+      }).catch(() => {});
+    }
+
+    _startOrder(kind, destination, options = {}) {
+      const check = this._preflight(kind, destination, options);
+      if (!check.ok) {
+        this.metrics.rejected += 1;
+        if (this.logger) this.logger.warn('Bewegungsauftrag abgelehnt', { kind, reason: check.reason, destination: check.destination || destination });
+        return { accepted: false, reason: check.reason, status: this.status() };
+      }
+
+      const now = this.now();
+      const character = check.character;
+      const arrivalRadius = Math.max(2, Math.min(100, Number(options.arrivalRadius) || this.config.arrivalRadius));
+      const timeoutMs = kind === 'local'
+        ? Math.max(1000, Number(options.timeoutMs) || this.config.localTimeoutMs)
+        : Math.max(3000, Number(options.timeoutMs) || this.config.smartTimeoutMs);
+
+      const order = {
+        id: 'move-' + (++this.sequence),
+        kind,
+        owner: cleanText(options.owner || 'manual', 80) || 'manual',
+        state: 'STARTING',
+        reason: null,
+        destination: check.destination,
+        destinationKey: check.key,
+        arrivalRadius,
+        startedAt: new Date().toISOString(),
+        startedAtMs: now,
+        deadlineAtMs: now + timeoutMs,
+        lastProgressAtMs: now,
+        progressEvents: 0,
+        bestDistance: distance(character, check.destination),
+        lastMap: character.map || null,
+        lastObserved: {
+          at: new Date().toISOString(),
+          atMs: now,
+          map: character.map || null,
+          x: finite(character.x),
+          y: finite(character.y),
+          moving: character.moving === true,
+          distance: distance(character, check.destination)
+        },
+        commandSettlement: 'NOT_SENT',
+        commandResponse: null,
+        commandError: null,
+        retargetedFrom: options.retargetedFrom || null
+      };
+
+      this.activeOrder = order;
+      this._recordDestination(check.key, kind);
+
+      const action = kind === 'local' ? 'move' : 'smart_move';
+      const args = kind === 'local'
+        ? [check.destination.x, check.destination.y]
+        : [check.destination.x == null
+          ? check.destination.map
+          : { map: check.destination.map, x: check.destination.x, y: check.destination.y }];
+
+      let dispatch;
+      try {
+        dispatch = this.actions.dispatch(action, args);
+      } catch (error) {
+        order.commandSettlement = 'BLOCKED';
+        this._finish('FAILED_SAFE', errorReason(error, 'MOVEMENT_ACTION_BLOCKED'), { stop: false });
+        return { accepted: false, reason: this.lastOrder.reason, order: clone(this.lastOrder) };
+      }
+
+      if (!dispatch || dispatch.state === 'UNAVAILABLE') {
+        order.commandSettlement = 'UNAVAILABLE';
+        this._finish('FAILED_SAFE', 'MOVEMENT_API_UNAVAILABLE', { stop: false });
+        return { accepted: false, reason: 'MOVEMENT_API_UNAVAILABLE', order: clone(this.lastOrder) };
+      }
+      if (dispatch.state === 'UNKNOWN') {
+        order.commandSettlement = 'UNKNOWN';
+        this._finish('UNKNOWN', errorReason(dispatch.error, 'MOVEMENT_DISPATCH_UNKNOWN'));
+        return { accepted: false, reason: this.lastOrder.reason, order: clone(this.lastOrder) };
+      }
+
+      order.state = 'ACTIVE';
+      order.commandSettlement = 'DISPATCHED';
+      if (kind === 'local') this.metrics.localMoves += 1;
+      else this.metrics.smartMoves += 1;
+
+      if (!this.scope) {
+        this._finish('UNKNOWN', 'MOVEMENT_SCOPE_UNAVAILABLE');
+        return { accepted: false, reason: 'MOVEMENT_SCOPE_UNAVAILABLE', order: clone(this.lastOrder) };
+      }
+
+      this.pollResourceId = this.scope.interval(
+        'movement-observer:' + order.id,
+        () => this._observeOrder(),
+        this.config.pollMs,
+        { immediate: false }
+      );
+      this._observeOrder();
+      this._watchCommand(order, dispatch);
+
+      if (this.logger) this.logger.warn('Bewegungsauftrag gestartet', {
+        id: order.id,
+        kind,
+        owner: order.owner,
+        destination: order.destination,
+        arrivalRadius
+      });
+      return { accepted: true, order: this._publicOrder(order) };
+    }
+
+    moveLocal(x, y, options = {}) {
+      const character = this._character();
+      return this._startOrder('local', {
+        map: character && character.map || null,
+        x,
+        y
+      }, options);
+    }
+
+    smartMove(destination, options = {}) {
+      return this._startOrder('smart', destination, options);
+    }
+
+    approachCurrentTarget(options = {}) {
+      const snap = this._snapshot();
+      const character = snap && snap.character;
+      const target = snap && snap.target;
+      if (!character || !target || target.dead === true) {
+        this.metrics.rejected += 1;
+        return { accepted: false, reason: 'MOVEMENT_TARGET_UNAVAILABLE', status: this.status() };
+      }
+      if (target.map && character.map && String(target.map) !== String(character.map)) {
+        this.metrics.rejected += 1;
+        return { accepted: false, reason: 'MOVEMENT_TARGET_CROSS_MAP', status: this.status() };
+      }
+      const d = distance(character, target);
+      if (d == null || d <= 0) {
+        this.metrics.rejected += 1;
+        return { accepted: false, reason: 'MOVEMENT_TARGET_DISTANCE_UNAVAILABLE', status: this.status() };
+      }
+      const desired = Math.max(0, Math.min(d, Number(options.distance) || Math.max(10, Number(character.range) * 0.8 || 40)));
+      if (d <= desired + this.config.arrivalRadius) {
+        return { accepted: true, completed: true, reason: 'ALREADY_IN_APPROACH_RANGE', distance: d };
+      }
+      const dx = Number(target.x) - Number(character.x);
+      const dy = Number(target.y) - Number(character.y);
+      const x = Number(target.x) - (dx / d) * desired;
+      const y = Number(target.y) - (dy / d) * desired;
+      this.metrics.approaches += 1;
+
+      const localAllowed = this._canMoveTo(x, y);
+      if (localAllowed !== false) {
+        return this._startOrder('local', { map: character.map, x, y }, {
+          ...options,
+          owner: options.owner || 'target-approach'
+        });
+      }
+      return this._startOrder('smart', { map: character.map, x, y }, {
+        ...options,
+        owner: options.owner || 'target-approach'
+      });
+    }
+
+    retarget(destination, options = {}) {
+      const active = this.activeOrder;
+      if (!active) {
+        return options.local === true
+          ? this.moveLocal(destination && destination.x, destination && destination.y, options)
+          : this.smartMove(destination, options);
+      }
+
+      const now = this.now();
+      if (now - active.startedAtMs < this.config.retargetMinAgeMs) {
+        this.metrics.rejected += 1;
+        return { accepted: false, reason: 'MOVEMENT_RETARGET_TOO_SOON', status: this.status() };
+      }
+
+      let normalized;
+      try {
+        const character = this._character();
+        normalized = this._normalizeDestination(destination, character && character.map);
+      } catch (error) {
+        this.metrics.rejected += 1;
+        return { accepted: false, reason: errorReason(error, 'MOVEMENT_DESTINATION_INVALID'), status: this.status() };
+      }
+      const key = this._destinationKey(normalized);
+      if (key === active.destinationKey) {
+        return { accepted: true, changed: false, reason: 'MOVEMENT_DESTINATION_UNCHANGED', order: this._publicOrder(active) };
+      }
+
+      const anti = this._antiPingPong(normalized, { retarget: true });
+      if (!anti.ok) {
+        this.metrics.rejected += 1;
+        return { accepted: false, reason: anti.reason, status: this.status() };
+      }
+
+      const previousId = active.id;
+      this._cancelActive('RETARGET', { cleanup: true });
+      this.metrics.retargets += 1;
+      return options.local === true
+        ? this._startOrder('local', normalized, { ...options, retarget: true, retargetedFrom: previousId })
+        : this._startOrder('smart', normalized, { ...options, retarget: true, retargetedFrom: previousId });
+    }
+
+    _cancelActive(reason, options = {}) {
+      if (!this.activeOrder) {
+        if (options.forceCleanup === true) this._bestEffortStop(reason, { smart: true, local: true });
+        return { cancelled: false, reason: 'NO_ACTIVE_MOVEMENT' };
+      }
+      const id = this.activeOrder.id;
+      const order = this._finish('CANCELLED', cleanText(reason || 'MOVEMENT_CANCELLED', 180), {
+        stop: options.cleanup !== false
+      });
+      return { cancelled: true, orderId: id, order };
+    }
+
+    cancel(reason = 'MANUAL_CANCEL') {
+      return this._cancelActive(reason, { cleanup: true });
+    }
+
+    emergencyStop(reason = 'EMERGENCY_STOP') {
+      return this._cancelActive(reason, { cleanup: true, forceCleanup: true });
+    }
+
+    captureSafePoint(source = 'MANUAL') {
+      const character = this._character();
+      if (!character || !character.map || finite(character.x) == null || finite(character.y) == null) {
+        return { captured: false, reason: 'CHARACTER_POSITION_UNAVAILABLE' };
+      }
+      this.safePoint = {
+        map: character.map,
+        x: finite(character.x),
+        y: finite(character.y),
+        capturedAt: new Date().toISOString(),
+        source: cleanText(source, 80)
+      };
+      return { captured: true, safePoint: clone(this.safePoint) };
+    }
+
+    safeReturn(options = {}) {
+      if (!this.safePoint) return { accepted: false, reason: 'SAFE_POINT_UNAVAILABLE' };
+      this.metrics.safeReturns += 1;
+      const character = this._character();
+      if (character && String(character.map || '') === String(this.safePoint.map || '')) {
+        const can = this._canMoveTo(this.safePoint.x, this.safePoint.y);
+        if (can !== false) {
+          return this._startOrder('local', this.safePoint, {
+            ...options,
+            owner: options.owner || 'safe-return',
+            safety: true
+          });
+        }
+      }
+      return this._startOrder('smart', this.safePoint, {
+        ...options,
+        owner: options.owner || 'safe-return',
+        safety: true
+      });
+    }
+
+    status() {
+      return {
+        schemaVersion: 1,
+        enabled: this.enabled,
+        state: this.activeOrder ? this.activeOrder.state : 'IDLE',
+        active: !!this.activeOrder,
+        activeOrder: this._publicOrder(this.activeOrder),
+        lastOrder: clone(this.lastOrder),
+        safePoint: clone(this.safePoint),
+        config: clone(this.config),
+        recentDestinations: clone(this.destinationHistory.slice(-5)),
+        metrics: clone(this.metrics)
+      };
+    }
+  }
+
+  ns.MovementController = MovementController;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+
+(function (root) {
+  'use strict';
   const ns = root.__ALBOT_INTERNALS__;
   if (!ns || !ns.Scheduler) throw new Error('ALBOT_SCHEDULER_MISSING');
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.3.0-h3';
+      this.version = options.version || '0.4.0-h4';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -1778,6 +2630,17 @@
       this.scheduler.setErrorHandler(details => this.modules.handleResourceError(details));
       this.goals = new ns.GoalService({ storage: this.storage, logger: this.logger });
       this.game = new ns.AdventureLandGameAdapter({ root: this.root, logger: this.logger });
+      this.actions = new ns.GameActionBoundary({
+        root: this.root,
+        logger: this.logger,
+        assertAllowed: action => this.assertActionAllowed(action)
+      });
+      this.movement = new ns.MovementController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions
+      });
       this.knowledge = new ns.KnowledgeService({ logger: this.logger, storage: this.storage });
       this.knowledgeProvider = new ns.WindowsBridgeKnowledgeProvider({ root: this.root, logger: this.logger });
       this.knowledge.setProvider(this.knowledgeProvider);
@@ -1799,7 +2662,7 @@
       this.modules.register({
         id: 'runtime-health',
         title: 'Runtime Health',
-        version: '0.3.0',
+        version: '0.4.0',
         watchdogMs: 4000,
         start: context => {
           context.scope.interval('heartbeat', () => {
@@ -1816,6 +2679,15 @@
           purpose: 'runtime-heartbeat',
           runEpoch: this.runEpoch
         })
+      });
+
+      this.modules.register({
+        id: 'movement',
+        title: 'Movement',
+        version: '0.4.0',
+        start: context => this.movement.start(context),
+        stop: reason => this.movement.stop(reason),
+        status: () => this.movement.status()
       });
     }
 
@@ -1957,6 +2829,8 @@
         scheduler: this.scheduler.status(),
         modules: this.modules.list(),
         game: this.game.status(),
+        actions: this.actions.status(),
+        movement: this.movement.status(),
         knowledge: this.knowledge.status(),
         roster,
         goals: this.goals.list(),
@@ -1973,6 +2847,8 @@
         runtime: this.status(),
         game,
         character: game && game.character ? ns.helpers.clone(game.character) : null,
+        actionBoundary: this.actions.status(),
+        movement: this.movement.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
         logs: this.logger.list(160),
         userAgent: this.root && this.root.navigator && this.root.navigator.userAgent || null
@@ -1988,6 +2864,8 @@
       push('emergency-stop-api', typeof this.emergencyStop === 'function' && typeof this.resetEmergencyStop === 'function');
       push('goal-service', Array.isArray(this.goals.list()));
       push('game-adapter', !!this.game.status() && typeof this.game.snapshot === 'function', this.game.status());
+      push('action-boundary', !!this.actions.status() && this.actions.status().supportedActions.includes('move') && this.actions.status().supportedActions.includes('smart_move'), this.actions.status());
+      push('movement-controller', !!this.movement.status() && typeof this.movement.moveLocal === 'function' && typeof this.movement.smartMove === 'function', this.movement.status());
       push('knowledge-service', !!this.knowledge.status());
       push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);
       push('dynamic-roster-no-hardcoded-names', roster.hardcodedNamesRequired === false, {
@@ -2108,6 +2986,7 @@
       this.activeTab = 'overview';
       this.minimized = false;
       this.devResult = null;
+      this.navigationResult = null;
       this._offLog = null;
       this._dragCleanup = null;
     }
@@ -2163,11 +3042,12 @@
 </style>
 <div class="albot-head" id="albot-drag-handle"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-minimize" class="albot-window-btn" title="Fenster minimieren" aria-label="Fenster minimieren">—</button><button id="albot-emergency" class="albot-stop">STOP</button></div>
 <div class="albot-tabs">
-<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
+<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
 </div>
 <div class="albot-body">
 <section id="albot-panel-overview" class="albot-panel active"></section>
 <section id="albot-panel-priorities" class="albot-panel"></section>
+<section id="albot-panel-navigation" class="albot-panel"></section>
 <section id="albot-panel-knowledge" class="albot-panel"></section>
 <section id="albot-panel-logs" class="albot-panel"></section>
 <section id="albot-panel-dev" class="albot-panel"></section>
@@ -2281,6 +3161,11 @@
       const status = this.runtime.status();
       this._updateHeader(status);
       if (this.activeTab === 'overview') this.renderOverview(status);
+      if (this.activeTab === 'navigation') {
+        const panel = this.host.querySelector('#albot-panel-navigation');
+        const focused = panel && this.doc && this.doc.activeElement && panel.contains(this.doc.activeElement);
+        if (!focused) this.renderNavigation(status);
+      }
       if (this.activeTab === 'knowledge') this.renderKnowledge(status);
       if (this.activeTab === 'logs') this.renderLogs();
       if (this.activeTab === 'dev') this.renderDev(status);
@@ -2293,6 +3178,7 @@
       this._updateHeader(status);
       this.renderOverview(status);
       this.renderPriorities(status);
+      this.renderNavigation(status);
       this.renderKnowledge(status);
       this.renderLogs();
       this.renderDev(status);
@@ -2352,6 +3238,81 @@
       panel.querySelectorAll('[data-priority-name]').forEach(sel => sel.onchange = () => { try { this.runtime.goals.setPriority(sel.dataset.priorityName, sel.value); } catch (e) { this.runtime.logger.error('Priorität konnte nicht geändert werden', { error: e.message }); } this.render(); });
     }
 
+    renderNavigation(status) {
+      const panel = this.host.querySelector('#albot-panel-navigation');
+      if (!panel) return;
+      const movement = status.movement || {};
+      const game = status.game || {};
+      const character = game.character || {};
+      const active = movement.activeOrder || null;
+      const last = movement.lastOrder || null;
+      const safe = movement.safePoint || null;
+      const resultText = this.navigationResult ? JSON.stringify(this.navigationResult, null, 2) : 'Noch keine manuelle H4-Bewegungsaktion.';
+
+      panel.innerHTML = `<div class="albot-card"><b>H4 Bewegung</b>
+<div class="albot-small">Alle Aktionen laufen über die zentrale Action-Grenze. Arrival wird aus der beobachteten Position bestätigt; ein Return von smart_move allein gilt nicht als Ankunft.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${movement.enabled ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Zustand</span><div class="albot-v">${esc(movement.state || 'IDLE')}</div></div>
+<div><span class="albot-k">Map</span><div class="albot-v">${esc(character.map || '-')}</div></div>
+<div><span class="albot-k">Position</span><div class="albot-v">x=${esc(formatPosition(character.x))} · y=${esc(formatPosition(character.y))}</div></div>
+<div><span class="albot-k">Aktiver Auftrag</span><div class="albot-v">${active ? esc(active.kind)+' · '+esc(active.id) : 'keiner'}</div></div>
+<div><span class="albot-k">Safe Point</span><div class="albot-v">${safe ? esc(safe.map)+' · '+esc(formatPosition(safe.x))+', '+esc(formatPosition(safe.y)) : 'nicht gesetzt'}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Kontrollierter Zielpunkt</b>
+<div class="albot-row"><input id="albot-nav-map" value="${esc(character.map || '')}" placeholder="Map"><input id="albot-nav-x" type="number" step="0.01" placeholder="x"><input id="albot-nav-y" type="number" step="0.01" placeholder="y"></div>
+<div class="albot-row"><button id="albot-nav-local" class="albot-btn">Lokal bewegen</button><button id="albot-nav-smart" class="albot-btn">Smart Move</button><button id="albot-nav-retarget" class="albot-btn">Retarget</button><button id="albot-nav-cancel" class="albot-btn danger">Bewegung abbrechen</button></div>
+</div>
+
+<div class="albot-card"><b>Zielannäherung & Safe Return</b>
+<div class="albot-row"><input id="albot-nav-distance" type="number" min="0" step="1" placeholder="Abstand zum ausgewählten Target"><button id="albot-nav-approach" class="albot-btn">Target annähern</button></div>
+<div class="albot-row"><button id="albot-nav-safe-capture" class="albot-btn">Safe Point hier setzen</button><button id="albot-nav-safe-return" class="albot-btn">Zum Safe Point zurück</button></div>
+</div>
+
+<div class="albot-card"><b>Letzter Status</b>
+<div class="albot-small">${last ? 'Letzter Auftrag: '+esc(last.state)+' · '+esc(last.reason || '-') : 'Noch kein abgeschlossener Auftrag.'}</div>
+<div class="albot-log" style="margin-top:8px;max-height:220px">${esc(resultText)}</div>
+</div>`;
+
+      const readDestination = () => {
+        const map = panel.querySelector('#albot-nav-map').value.trim();
+        const xRaw = panel.querySelector('#albot-nav-x').value;
+        const yRaw = panel.querySelector('#albot-nav-y').value;
+        const x = xRaw === '' ? null : Number(xRaw);
+        const y = yRaw === '' ? null : Number(yRaw);
+        return { map: map || character.map || null, x, y };
+      };
+      const run = fn => {
+        try { this.navigationResult = fn(); }
+        catch (error) { this.navigationResult = { accepted: false, reason: String(error && error.message || error) }; }
+        this.renderNavigation(this.runtime.status());
+      };
+
+      panel.querySelector('#albot-nav-local').onclick = () => {
+        const destination = readDestination();
+        run(() => this.runtime.movement.moveLocal(destination.x, destination.y, { owner: 'gui-h4-local' }));
+      };
+      panel.querySelector('#albot-nav-smart').onclick = () => {
+        const destination = readDestination();
+        run(() => this.runtime.movement.smartMove(destination, { owner: 'gui-h4-smart' }));
+      };
+      panel.querySelector('#albot-nav-retarget').onclick = () => {
+        const destination = readDestination();
+        run(() => this.runtime.movement.retarget(destination, { owner: 'gui-h4-retarget' }));
+      };
+      panel.querySelector('#albot-nav-cancel').onclick = () => run(() => this.runtime.movement.cancel('GUI_MOVEMENT_CANCEL'));
+      panel.querySelector('#albot-nav-approach').onclick = () => {
+        const raw = panel.querySelector('#albot-nav-distance').value;
+        run(() => this.runtime.movement.approachCurrentTarget({
+          owner: 'gui-h4-target-approach',
+          distance: raw === '' ? undefined : Number(raw)
+        }));
+      };
+      panel.querySelector('#albot-nav-safe-capture').onclick = () => run(() => this.runtime.movement.captureSafePoint('GUI'));
+      panel.querySelector('#albot-nav-safe-return').onclick = () => run(() => this.runtime.movement.safeReturn({ owner: 'gui-h4-safe-return' }));
+    }
+
     renderKnowledge(status) {
       const panel = this.host.querySelector('#albot-panel-knowledge');
       if (!panel) return;
@@ -2399,7 +3360,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
     renderDev(status) {
       const panel = this.host.querySelector('#albot-panel-dev');
       const scheduler = status.scheduler || {};
-      const resultText = this.devResult ? JSON.stringify(this.devResult, null, 2) : 'H3 Game Adapter & Knowledge · ' + status.version;
+      const resultText = this.devResult ? JSON.stringify(this.devResult, null, 2) : 'H4 Movement · ' + status.version;
       panel.innerHTML = `<div class="albot-card"><b>Entwicklung</b>
 <div class="albot-row"><button id="albot-selftest" class="albot-btn">Selftest</button><button id="albot-stability-test" class="albot-btn">H2 Runtime-Test</button><button id="albot-reset-stop" class="albot-btn danger">STOP zurücksetzen</button><button id="albot-show" class="albot-btn">GUI anzeigen</button></div>
 <div class="albot-small">Scheduler: ${scheduler.enabled ? 'ACTIVE' : 'STOPPED'} · Ressourcen: ${esc(scheduler.totalResources || 0)} · Generation: ${esc(scheduler.generation || 0)} · Boot: #${esc(status.bootCount || 1)}</div>
@@ -2501,7 +3462,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.3.0-h3',
+    version: '0.4.0-h4',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -2556,6 +3517,17 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
       status: () => runtime.game.status()
     },
 
+    movement: {
+      status: () => runtime.movement.status(),
+      local: (x, y, options) => runtime.movement.moveLocal(x, y, options || {}),
+      smart: (destination, options) => runtime.movement.smartMove(destination, options || {}),
+      approachTarget: options => runtime.movement.approachCurrentTarget(options || {}),
+      retarget: (destination, options) => runtime.movement.retarget(destination, options || {}),
+      cancel: reason => runtime.movement.cancel(reason || 'API_MOVEMENT_CANCEL'),
+      captureSafePoint: source => runtime.movement.captureSafePoint(source || 'API'),
+      safeReturn: options => runtime.movement.safeReturn(options || {})
+    },
+
     knowledge: {
       setProvider: provider => runtime.knowledge.setProvider(provider),
       refresh: () => runtime.knowledge.refresh(),
@@ -2591,6 +3563,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
   Object.freeze(api.scheduler);
   Object.freeze(api.modules);
   Object.freeze(api.game);
+  Object.freeze(api.movement);
   Object.freeze(api.knowledge);
   Object.freeze(api.roster);
   Object.freeze(api.actions);
@@ -2607,7 +3580,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
     };
   } catch (_) {}
 
-  runtime.logger.info('AL Bot H3 geladen', {
+  runtime.logger.info('AL Bot H4 geladen', {
     version: api.version,
     bootCount,
     hotReload: !!previous,

@@ -31,7 +31,7 @@ Neuere Repo-Entscheidungen haben Vorrang vor älteren Handoff-Angaben.
 - direkte kleine Live-Test-Häppchen statt verpflichtender V5-Ketten wie
   `Shadow → Evidence → Authorization → One-shot → 5m → 15m`.
 - vor GitHub-Writes Branch gegen aktuellen `main` prüfen; auf stale Branches nicht weiterschreiben.
-- PRs nur nach ausdrücklicher User-Freigabe mergen.
+- PRs automatisch mergen, sobald Implementierung vollständig, CI grün, Live-Test bestanden und alle Merge-Sicherheitschecks erfüllt sind. Keine separate Merge-Freigabe mehr erforderlich, außer der User untersagt den Merge ausdrücklich.
 
 ## H1 – abgeschlossen und gemerged
 
@@ -78,7 +78,7 @@ Im echten Adventure-Land-Client bestätigt:
 - Hot Reload funktioniert auch über getrennte Adventure-Land-Runner-Kontexte;
 - gemeinsamer same-origin Host dient als Hot-Reload-Anker.
 
-## H3 – live bestanden, Merge freigegeben
+## H3 – abgeschlossen und gemerged
 
 Aktiver Entwicklungsbranch:
 `chatgpt/h3-game-adapter-knowledge`
@@ -114,7 +114,52 @@ Bestätigt:
 - Target-Auflösung über die echte Adventure-Land-Quelle `parent.ctarget` mit erfolgreicher Live-Auflösung eines Monsters;
 - H1/H2/H3-Regressionen grün.
 
-User hat den Merge ausdrücklich freigegeben.
+PR #3 wurde am 2026-09-26 nach bestandenem Live-Test gemerged.
+
+Merge-Commit:
+`241947f27f4471849dd1da340a312e8818361d51`
+
+## H4 – live bestanden, automatischer Merge freigegeben
+
+Aktiver Entwicklungsbranch:
+`chatgpt/h4-movement`
+
+Ziel: **kontrollierte Bewegung** als erste produktive Gameplay-Write-Schicht.
+
+Bereits im H4-Branch umgesetzt:
+- zentrale `GameActionBoundary` für Adventure-Land-Writes;
+- `move(x,y)` und `smart_move` nur hinter Runtime-/STOP-Gate;
+- genau ein aktiver Movement-Owner;
+- beobachtete Arrival-Postcondition statt Vertrauen auf `smart_move`-Return;
+- lokale Bewegung mit `can_move_to`-Preflight;
+- Target-Annäherung;
+- Cancel;
+- Retarget;
+- Stuck-Erkennung;
+- `UNKNOWN` ohne Blind-Retry;
+- Anti-Pingpong-/Rapid-Switch-Schutz;
+- Safe Point + Safe Return;
+- best-effort Movement-Cleanup bei Stop/Hot Reload/Emergency STOP;
+- Movement-Tab im Control Center;
+- H4-Automatiktests;
+- `docs/H4-LIVE-TEST.md`.
+
+Live-Test im echten Adventure-Land-Client: **BESTANDEN**.
+
+Bestätigt:
+- lokales Move mit `ARRIVAL_VERIFIED`;
+- Smart Move mit beobachteter Arrival-Evidence;
+- Retarget mit sauberem Cancel des alten Auftrags und nur einem Movement-Owner;
+- manuelles Cancel ohne Retry;
+- Safe Point / Safe Return;
+- Target-Annäherung ohne Attack;
+- Movement-Ressourcen fallen nach Abschluss auf 0 zurück;
+- Emergency STOP während laufendem Smart Move setzt Runtime auf stopped, Scheduler auf 0 Ressourcen und beendet den Auftrag als `CANCELLED / EMERGENCY_STOP`;
+- best-effort Cleanup über `stop('smart')` und `use_skill('stop')`;
+- keine Callback-/Overlap-Fehler;
+- H1–H4 Regressionen grün.
+
+User hat ab H4 eine dauerhafte Auto-Merge-Regel festgelegt: Nach vollständig bestandenem Schritt und allen Sicherheitschecks automatisch mergen.
 
 ## H2 Architekturregel für spätere Module
 
@@ -209,4 +254,4 @@ Bei Fehler:
 
 ## Nächster Schritt
 
-PR #3 nach vollständigen Merge-Checks mit Methode `merge` mergen. Danach **H4 – Bewegung** auf einem frischen Branch vom neuen `main` starten.
+PR #4 nach vollständigen Merge-Checks mit Methode `merge` automatisch mergen. Danach **H5 – Combat** auf einem frischen Branch vom neuen `main` starten. Für kommende Schritte gilt dieselbe Auto-Merge-Regel.

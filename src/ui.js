@@ -23,6 +23,7 @@
       this.activeTab = 'overview';
       this.minimized = false;
       this.devResult = null;
+      this.navigationResult = null;
       this._offLog = null;
       this._dragCleanup = null;
     }
@@ -78,11 +79,12 @@
 </style>
 <div class="albot-head" id="albot-drag-handle"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-minimize" class="albot-window-btn" title="Fenster minimieren" aria-label="Fenster minimieren">—</button><button id="albot-emergency" class="albot-stop">STOP</button></div>
 <div class="albot-tabs">
-<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
+<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
 </div>
 <div class="albot-body">
 <section id="albot-panel-overview" class="albot-panel active"></section>
 <section id="albot-panel-priorities" class="albot-panel"></section>
+<section id="albot-panel-navigation" class="albot-panel"></section>
 <section id="albot-panel-knowledge" class="albot-panel"></section>
 <section id="albot-panel-logs" class="albot-panel"></section>
 <section id="albot-panel-dev" class="albot-panel"></section>
@@ -196,6 +198,11 @@
       const status = this.runtime.status();
       this._updateHeader(status);
       if (this.activeTab === 'overview') this.renderOverview(status);
+      if (this.activeTab === 'navigation') {
+        const panel = this.host.querySelector('#albot-panel-navigation');
+        const focused = panel && this.doc && this.doc.activeElement && panel.contains(this.doc.activeElement);
+        if (!focused) this.renderNavigation(status);
+      }
       if (this.activeTab === 'knowledge') this.renderKnowledge(status);
       if (this.activeTab === 'logs') this.renderLogs();
       if (this.activeTab === 'dev') this.renderDev(status);
@@ -208,6 +215,7 @@
       this._updateHeader(status);
       this.renderOverview(status);
       this.renderPriorities(status);
+      this.renderNavigation(status);
       this.renderKnowledge(status);
       this.renderLogs();
       this.renderDev(status);
@@ -267,6 +275,81 @@
       panel.querySelectorAll('[data-priority-name]').forEach(sel => sel.onchange = () => { try { this.runtime.goals.setPriority(sel.dataset.priorityName, sel.value); } catch (e) { this.runtime.logger.error('Priorität konnte nicht geändert werden', { error: e.message }); } this.render(); });
     }
 
+    renderNavigation(status) {
+      const panel = this.host.querySelector('#albot-panel-navigation');
+      if (!panel) return;
+      const movement = status.movement || {};
+      const game = status.game || {};
+      const character = game.character || {};
+      const active = movement.activeOrder || null;
+      const last = movement.lastOrder || null;
+      const safe = movement.safePoint || null;
+      const resultText = this.navigationResult ? JSON.stringify(this.navigationResult, null, 2) : 'Noch keine manuelle H4-Bewegungsaktion.';
+
+      panel.innerHTML = `<div class="albot-card"><b>H4 Bewegung</b>
+<div class="albot-small">Alle Aktionen laufen über die zentrale Action-Grenze. Arrival wird aus der beobachteten Position bestätigt; ein Return von smart_move allein gilt nicht als Ankunft.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${movement.enabled ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Zustand</span><div class="albot-v">${esc(movement.state || 'IDLE')}</div></div>
+<div><span class="albot-k">Map</span><div class="albot-v">${esc(character.map || '-')}</div></div>
+<div><span class="albot-k">Position</span><div class="albot-v">x=${esc(formatPosition(character.x))} · y=${esc(formatPosition(character.y))}</div></div>
+<div><span class="albot-k">Aktiver Auftrag</span><div class="albot-v">${active ? esc(active.kind)+' · '+esc(active.id) : 'keiner'}</div></div>
+<div><span class="albot-k">Safe Point</span><div class="albot-v">${safe ? esc(safe.map)+' · '+esc(formatPosition(safe.x))+', '+esc(formatPosition(safe.y)) : 'nicht gesetzt'}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Kontrollierter Zielpunkt</b>
+<div class="albot-row"><input id="albot-nav-map" value="${esc(character.map || '')}" placeholder="Map"><input id="albot-nav-x" type="number" step="0.01" placeholder="x"><input id="albot-nav-y" type="number" step="0.01" placeholder="y"></div>
+<div class="albot-row"><button id="albot-nav-local" class="albot-btn">Lokal bewegen</button><button id="albot-nav-smart" class="albot-btn">Smart Move</button><button id="albot-nav-retarget" class="albot-btn">Retarget</button><button id="albot-nav-cancel" class="albot-btn danger">Bewegung abbrechen</button></div>
+</div>
+
+<div class="albot-card"><b>Zielannäherung & Safe Return</b>
+<div class="albot-row"><input id="albot-nav-distance" type="number" min="0" step="1" placeholder="Abstand zum ausgewählten Target"><button id="albot-nav-approach" class="albot-btn">Target annähern</button></div>
+<div class="albot-row"><button id="albot-nav-safe-capture" class="albot-btn">Safe Point hier setzen</button><button id="albot-nav-safe-return" class="albot-btn">Zum Safe Point zurück</button></div>
+</div>
+
+<div class="albot-card"><b>Letzter Status</b>
+<div class="albot-small">${last ? 'Letzter Auftrag: '+esc(last.state)+' · '+esc(last.reason || '-') : 'Noch kein abgeschlossener Auftrag.'}</div>
+<div class="albot-log" style="margin-top:8px;max-height:220px">${esc(resultText)}</div>
+</div>`;
+
+      const readDestination = () => {
+        const map = panel.querySelector('#albot-nav-map').value.trim();
+        const xRaw = panel.querySelector('#albot-nav-x').value;
+        const yRaw = panel.querySelector('#albot-nav-y').value;
+        const x = xRaw === '' ? null : Number(xRaw);
+        const y = yRaw === '' ? null : Number(yRaw);
+        return { map: map || character.map || null, x, y };
+      };
+      const run = fn => {
+        try { this.navigationResult = fn(); }
+        catch (error) { this.navigationResult = { accepted: false, reason: String(error && error.message || error) }; }
+        this.renderNavigation(this.runtime.status());
+      };
+
+      panel.querySelector('#albot-nav-local').onclick = () => {
+        const destination = readDestination();
+        run(() => this.runtime.movement.moveLocal(destination.x, destination.y, { owner: 'gui-h4-local' }));
+      };
+      panel.querySelector('#albot-nav-smart').onclick = () => {
+        const destination = readDestination();
+        run(() => this.runtime.movement.smartMove(destination, { owner: 'gui-h4-smart' }));
+      };
+      panel.querySelector('#albot-nav-retarget').onclick = () => {
+        const destination = readDestination();
+        run(() => this.runtime.movement.retarget(destination, { owner: 'gui-h4-retarget' }));
+      };
+      panel.querySelector('#albot-nav-cancel').onclick = () => run(() => this.runtime.movement.cancel('GUI_MOVEMENT_CANCEL'));
+      panel.querySelector('#albot-nav-approach').onclick = () => {
+        const raw = panel.querySelector('#albot-nav-distance').value;
+        run(() => this.runtime.movement.approachCurrentTarget({
+          owner: 'gui-h4-target-approach',
+          distance: raw === '' ? undefined : Number(raw)
+        }));
+      };
+      panel.querySelector('#albot-nav-safe-capture').onclick = () => run(() => this.runtime.movement.captureSafePoint('GUI'));
+      panel.querySelector('#albot-nav-safe-return').onclick = () => run(() => this.runtime.movement.safeReturn({ owner: 'gui-h4-safe-return' }));
+    }
+
     renderKnowledge(status) {
       const panel = this.host.querySelector('#albot-panel-knowledge');
       if (!panel) return;
@@ -314,7 +397,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
     renderDev(status) {
       const panel = this.host.querySelector('#albot-panel-dev');
       const scheduler = status.scheduler || {};
-      const resultText = this.devResult ? JSON.stringify(this.devResult, null, 2) : 'H3 Game Adapter & Knowledge · ' + status.version;
+      const resultText = this.devResult ? JSON.stringify(this.devResult, null, 2) : 'H4 Movement · ' + status.version;
       panel.innerHTML = `<div class="albot-card"><b>Entwicklung</b>
 <div class="albot-row"><button id="albot-selftest" class="albot-btn">Selftest</button><button id="albot-stability-test" class="albot-btn">H2 Runtime-Test</button><button id="albot-reset-stop" class="albot-btn danger">STOP zurücksetzen</button><button id="albot-show" class="albot-btn">GUI anzeigen</button></div>
 <div class="albot-small">Scheduler: ${scheduler.enabled ? 'ACTIVE' : 'STOPPED'} · Ressourcen: ${esc(scheduler.totalResources || 0)} · Generation: ${esc(scheduler.generation || 0)} · Boot: #${esc(status.bootCount || 1)}</div>

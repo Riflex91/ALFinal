@@ -50,7 +50,7 @@
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.3.0-h3',
+    version: '0.4.0-h4',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -105,6 +105,17 @@
       status: () => runtime.game.status()
     },
 
+    movement: {
+      status: () => runtime.movement.status(),
+      local: (x, y, options) => runtime.movement.moveLocal(x, y, options || {}),
+      smart: (destination, options) => runtime.movement.smartMove(destination, options || {}),
+      approachTarget: options => runtime.movement.approachCurrentTarget(options || {}),
+      retarget: (destination, options) => runtime.movement.retarget(destination, options || {}),
+      cancel: reason => runtime.movement.cancel(reason || 'API_MOVEMENT_CANCEL'),
+      captureSafePoint: source => runtime.movement.captureSafePoint(source || 'API'),
+      safeReturn: options => runtime.movement.safeReturn(options || {})
+    },
+
     knowledge: {
       setProvider: provider => runtime.knowledge.setProvider(provider),
       refresh: () => runtime.knowledge.refresh(),
@@ -140,6 +151,7 @@
   Object.freeze(api.scheduler);
   Object.freeze(api.modules);
   Object.freeze(api.game);
+  Object.freeze(api.movement);
   Object.freeze(api.knowledge);
   Object.freeze(api.roster);
   Object.freeze(api.actions);
@@ -156,7 +168,7 @@
     };
   } catch (_) {}
 
-  runtime.logger.info('AL Bot H3 geladen', {
+  runtime.logger.info('AL Bot H4 geladen', {
     version: api.version,
     bootCount,
     hotReload: !!previous,
