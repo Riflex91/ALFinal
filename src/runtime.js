@@ -4497,10 +4497,10 @@
                 const separateWindowNames = remoteOnlineNames.filter(name => !runnerActive.has(name));
                 const missingHeartbeats = separateWindowNames.filter(name => !peerMap.has(name));
                 const versionMismatches = peers
-                  .filter(peer => peer && peer.version && String(peer.version) !== String(runtime.version))
+                  .filter(peer => !peer || !peer.version || String(peer.version) !== String(runtime.version))
                   .map(peer => ({
-                    name: String(peer.name),
-                    version: String(peer.version),
+                    name: peer && peer.name ? String(peer.name) : null,
+                    version: peer && peer.version ? String(peer.version) : null,
                     expectedVersion: String(runtime.version)
                   }));
                 const emergencyPeers = peers
@@ -4536,6 +4536,7 @@
               });
 
               assert(snapshot, 'H19_READINESS_ROSTER_UNAVAILABLE');
+              assert(snapshot.missingHeartbeats.length === 0, 'H19_READINESS_MISSING_REMOTE_HEARTBEAT');
               assert(snapshot.versionMismatches.length === 0, 'H19_READINESS_VERSION_MISMATCH');
               assert(snapshot.emergencyPeers.length === 0, 'H19_READINESS_REMOTE_EMERGENCY_STOP_LATCHED');
               assert(snapshot.candidates.length > 0, 'H19_READINESS_CROSS_WINDOW_TARGET_UNAVAILABLE');
