@@ -372,6 +372,11 @@
         byName.set(local.name, { ...existing, ...local, ctype: local.ctype || existing.ctype });
       }
       const characters = [...byName.values()].filter(row => row.online || row.state).sort((a,b) => a.name.localeCompare(b.name));
+      const accountCharacters = account.rows.slice().sort((a,b) => a.name.localeCompare(b.name));
+      const activeCharacterNames = [...new Set([
+        ...active.rows.map(row => row.name),
+        ...(local && local.name ? [local.name] : [])
+      ])].sort((a,b) => a.localeCompare(b));
       const farmers = characters.filter(row => COMBAT_CLASSES.has(row.ctype));
       const merchants = characters.filter(row => row.ctype === 'merchant');
       this.last = {
@@ -381,6 +386,8 @@
         activeStateAvailable: active.available,
         local,
         characters,
+        accountCharacters,
+        activeCharacterNames,
         farmers,
         merchant: merchants.length === 1 ? merchants[0] : null,
         merchantCandidates: merchants,
