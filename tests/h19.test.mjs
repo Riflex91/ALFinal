@@ -509,6 +509,14 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(runtime, /new ns\.CharacterLifecycleController/);
   assert.match(runtime, /id: 'character-lifecycle'/);
   assert.match(runtime, /id: 'h19-character-lifecycle'/);
+  assert.match(runtime, /id: 'h19-remote-recovery'/);
+  assert.match(runtime, /_registerH19RemoteRecoveryLiveTest\(\)/);
+  assert.match(runtime, /row\.name !== localName && row\.name !== leader && active\.has\(row\.name\)/);
+  assert.match(runtime, /safeFirstStartRecovery/);
+  assert.match(runtime, /dispatchedDelta === 1/);
+  assert.match(runtime, /rejectedDelta === 0/);
+  assert.match(runtime, /unknownDelta === 0/);
+  assert.match(runtime, /H19_REMOTE_TARGET_NOT_RESTORED/);
   assert.match(runtime, /options\.version \|\| '0\.19\.0-h19'/);
   assert.match(entry, /runtime\.lifecycle\.queueStart/);
   assert.match(entry, /runtime\.lifecycle\.queueStop/);
