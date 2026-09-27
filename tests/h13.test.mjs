@@ -277,6 +277,17 @@ test('H13 NPC buy travels once, dispatches buy_with_gold and confirms inventory 
   assert.equal(f.state.local.gold, 49800);
 });
 
+test('H13 NPC buy rechecks gold reserve immediately before dispatch', () => {
+  const f = fixture();
+  const queued = f.controller.queueNpcBuy('hpot0', 1, { maxUnitPrice: 200 });
+  assert.equal(queued.accepted, true);
+  f.state.local.gold = 10199;
+  const blocked = f.controller.tick();
+  assert.equal(blocked.state, 'BLOCKED');
+  assert.equal(blocked.reason, 'H13_GOLD_RESERVE_CHANGED');
+  assert.equal(f.state.dispatches.length, 0);
+});
+
 test('H13 NPC sell only accepts H10 SELL rows and confirms both deltas', async () => {
   const f = fixture();
   assert.equal(f.controller.queueNpcSell(2, 1).reason, 'H13_SELL_ITEM_NOT_SAFE');
@@ -291,6 +302,17 @@ test('H13 NPC sell only accepts H10 SELL rows and confirms both deltas', async (
   assert.equal(status.metrics.npcSellsConfirmed, 1);
   assert.equal(f.state.rows.find(x => x.name === 'junk').quantity, 2);
   assert.equal(f.state.local.gold, 50050);
+});
+
+test('H13 NPC sell rechecks H10 SELL safety immediately before dispatch', () => {
+  const f = fixture();
+  const queued = f.controller.queueNpcSell(1, 1);
+  assert.equal(queued.accepted, true);
+  f.state.rows.find(x => Number(x.slot) === 1).disposition = 'KEEP';
+  const blocked = f.controller.tick();
+  assert.equal(blocked.state, 'BLOCKED');
+  assert.equal(blocked.reason, 'H13_SELL_ITEM_NO_LONGER_SAFE');
+  assert.equal(f.state.dispatches.length, 0);
 });
 
 test('H13 market buy enforces price cap and rechecks listing RID before dispatch', () => {
@@ -316,6 +338,35 @@ test('H13 market buy dispatches trade_buy and confirms inventory plus gold delta
   assert.equal(f.controller.status().metrics.marketBuysConfirmed, 1);
   assert.equal(f.state.rows.find(x => x.name === 'hpot0').quantity, 11);
   assert.equal(f.state.local.gold, 49820);
+});
+
+test('H13 market sell requires the safe inventory variant to match the bid fingerprint', () => {
+  const f = fixture({
+    listings: [{
+      playerId:'Buyer1', playerName:'Buyer1', slot:'trade2', rid:'bid-rid',
+      name:'junk', level:0, quantity:2, price:150, buying:true, giveaway:false,
+      statType:'int', property:{bonus:1}
+    }]
+  });
+  f.state.players.Buyer1 = {
+    id:'Buyer1', name:'Buyer1',
+    slots:{ trade2:{ name:'junk', level:0, q:2, price:150, rid:'bid-rid', b:true, stat_type:'int', p:{bonus:1} } }
+  };
+  const blocked = f.controller.queueMarketSell('Buyer1', 'trade2', 1, { minUnitPrice: 150 });
+  assert.equal(blocked.accepted, false);
+  assert.equal(blocked.reason, 'H13_MARKET_SELL_ITEM_NOT_SAFE_OR_AVAILABLE');
+  assert.equal(f.state.dispatches.length, 0);
+});
+
+test('H13 market sell rechecks H10 safety immediately before dispatch', () => {
+  const f = fixture();
+  const queued = f.controller.queueMarketSell('Buyer1', 'trade2', 1, { minUnitPrice: 150 });
+  assert.equal(queued.accepted, true);
+  f.state.rows.find(x => x.name === 'junk').disposition = 'KEEP';
+  const blocked = f.controller.tick();
+  assert.equal(blocked.state, 'BLOCKED');
+  assert.equal(blocked.reason, 'H13_MARKET_SELL_ITEM_NO_LONGER_SAFE');
+  assert.equal(f.state.dispatches.length, 0);
 });
 
 test('H13 market sell rejects quantity larger than the live bid', () => {
@@ -420,6 +471,17 @@ test('H13 ActionBoundary preserves listing RID across CODE-wrapper and native pa
   const bad = mismatch.dispatch('trade_buy', [target, 'trade1', 'wrong-rid', 1]);
   assert.equal(bad.state, 'UNKNOWN');
   assert.equal(wrapperCalls.length, 1);
+});
+
+test('H13 market buy also rechecks gold reserve before dispatch', () => {
+  const f = fixture();
+  const queued = f.controller.queueMarketBuy('Seller1', 'trade1', 1, { maxUnitPrice: 180 });
+  assert.equal(queued.accepted, true);
+  f.state.local.gold = 10179;
+  const blocked = f.controller.tick();
+  assert.equal(blocked.state, 'BLOCKED');
+  assert.equal(blocked.reason, 'H13_GOLD_RESERVE_CHANGED');
+  assert.equal(f.state.dispatches.length, 0);
 });
 
 test('H13 UNKNOWN suspends immediately and is never blindly retried', () => {
