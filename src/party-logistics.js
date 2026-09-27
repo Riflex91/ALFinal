@@ -330,8 +330,11 @@
       if (!party || !party.coordinationEnabled) return { accepted: false, reason: 'H18_OWNED_PARTY_REQUIRED' };
       const target = this._ownedTarget(targetName, party);
       if (!target) return { accepted: false, reason: 'H18_TARGET_NOT_OWNED_PARTY_MEMBER' };
-      const wanted = Math.floor(Number(amount) || 0);
-      if (wanted <= 0) return { accepted: false, reason: 'H18_GOLD_AMOUNT_INVALID' };
+      const rawAmount = finite(amount);
+      if (rawAmount == null || rawAmount <= 0 || !Number.isInteger(rawAmount)) {
+        return { accepted: false, reason: 'H18_GOLD_AMOUNT_INVALID' };
+      }
+      const wanted = rawAmount;
       const snap = this._snapshot();
       const gold = snap && snap.character ? finite(snap.character.gold) : null;
       if (gold == null || gold - wanted < this.config.goldReserve) return { accepted: false, reason: 'H18_GOLD_RESERVE_BLOCKED' };
