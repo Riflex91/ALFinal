@@ -906,3 +906,22 @@ Test bricht fail-safe ab
 → Korrektur
 → erneut nur „Test starten“
 ```
+
+### H16 Suite v6 – Bank-Material-Discovery (PR #20)
+
+Stand 2026-09-27:
+
+- v5-Live-Diagnostik isolierte den Hauptblocker auf fehlende live nutzbare Materialquellen statt auf zu niedrige Gold-/Risk-Caps;
+- Suite v6 ergänzt read-only Bank-Discovery vor dem Material-Fallback;
+- Bankmaterial wird nur verwendet, wenn Map, Item-Safety, H12-Reservierungen, craftbare Einzelstack-Größe und Inventar-Slot-Kapazität passen;
+- Nicht-Merchants behalten lokale H16-Craft-/Exchange-Pfade ohne Bankpflicht;
+- BANK delegiert über H12, NPC/MARKET über H13;
+- keine Safety-Limits wurden erhöht;
+- technischer Head `c96b01d50dcd91f93ad76f3b56c145e0c336b077`;
+- Exact-Head-CI #417: **222/222 PASS, 0 FAIL, 0 SKIP**;
+- Bundle source-synchron;
+- PR #20 beim technischen Check `behind_by=0`, `mergeable=true`;
+- alle bekannten Review-Funde behoben und Threads resolved;
+- frischer Codex-Review auf dem aktuellen technischen Head derzeit durch ausgeschöpftes Codex-Code-Review-Kontingent blockiert.
+
+**Gate bleibt geschlossen:** kein Merge, bevor ein frischer Codex-Review auf dem dann aktuellen finalen Head clean ist und danach der vollständige Merge-Gate erneut frisch geprüft wurde.
