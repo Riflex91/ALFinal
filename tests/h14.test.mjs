@@ -288,6 +288,21 @@ test('H14 group allocation keeps farmers ahead of merchant and proposes only mer
   assert.equal(farmerPlan.group.proposals.length, 0);
 });
 
+test('H14 group allocation uses distinct inventory items for interchangeable ring slots', () => {
+  const f = fixture({
+    rows: [
+      item({ slot: 3, name: 'ring_int', level: 2 }),
+      item({ slot: 4, name: 'ring_int', level: 1 })
+    ]
+  });
+  const proposals = f.controller.plan().group.proposals
+    .filter(row => row.targetName === 'My_Warrior' && row.item.name === 'ring_int');
+  assert.equal(proposals.length, 2);
+  assert.equal(new Set(proposals.map(row => row.inventorySlot)).size, 2);
+  assert.equal(new Set(proposals.map(row => row.slot)).size, 2);
+  assert.deepEqual(new Set(proposals.map(row => row.slot)), new Set(['ring1', 'ring2']));
+});
+
 test('H14 Gear Goals distinguish local equip, remote delivery and acquisition gaps', () => {
   const f = fixture();
   f.controller.setGoals([
