@@ -1,4 +1,4 @@
-/* AL Bot 0.12.0-h12 | generated file | do not edit dist directly */
+/* AL Bot 0.13.0-h13 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -1304,6 +1304,122 @@
       return clone(rows);
     }
 
+    npcLocation(npcId) {
+      const id = cleanText(npcId || '', 120);
+      if (!id) return null;
+      const findNpc = this._resolveFunction('find_npc');
+      if (!findNpc) return null;
+      let raw = null;
+      try { raw = findNpc.fn.call(findNpc.owner, id); } catch (_) { raw = null; }
+      if (!raw || typeof raw !== 'object') return null;
+      const x = finite(raw.x != null ? raw.x : raw.real_x);
+      const y = finite(raw.y != null ? raw.y : raw.real_y);
+      const map = cleanText(raw.map || '', 120) || null;
+      if (!map || x == null || y == null) return null;
+      return { npcId: id, map, x, y };
+    }
+
+    npcShopSources(itemName) {
+      const wanted = cleanText(itemName || '', 160);
+      if (!wanted) return [];
+      const G = this._gameData();
+      const npcs = G && G.npcs && typeof G.npcs === 'object' ? G.npcs : {};
+      const rows = [];
+      for (const [npcId, raw] of Object.entries(npcs)) {
+        if (!raw || !Array.isArray(raw.items) || !raw.items.includes(wanted)) continue;
+        const location = this.npcLocation(npcId);
+        rows.push({
+          npcId: String(npcId),
+          name: raw.name == null ? String(npcId) : cleanText(raw.name, 160),
+          role: raw.role == null ? null : cleanText(raw.role, 80),
+          location
+        });
+      }
+      return clone(rows);
+    }
+
+    marketSnapshot(options = {}) {
+      const character = this._character();
+      if (!character || !character.name) {
+        return {
+          schemaVersion: 1,
+          available: false,
+          reason: 'CHARACTER_UNAVAILABLE',
+          players: [],
+          listings: []
+        };
+      }
+      const radius = finite(options.radius);
+      const charPos = this._position(character);
+      const players = [];
+      const listings = [];
+      for (const row of this._entityEntries()) {
+        const entity = row.entity;
+        if (!entity || entity.visible === false || entity.dead === true || entity.rip === true) continue;
+        const isPlayer = entity.type === 'character' || entity.player === true || entity.ctype != null;
+        if (!isPlayer) continue;
+        const name = cleanText(entity.name || entity.id || row.key || '', 120);
+        if (!name || name === String(character.name || '')) continue;
+        if (entity.map && character.map && String(entity.map) !== String(character.map)) continue;
+        const pos = this._position(entity);
+        const distance = charPos.x != null && charPos.y != null && pos.x != null && pos.y != null
+          ? Math.hypot(charPos.x - pos.x, charPos.y - pos.y)
+          : null;
+        if (radius != null && (distance == null || distance > radius)) continue;
+
+        const player = {
+          id: entity.id == null ? String(row.key) : String(entity.id),
+          name,
+          ctype: entity.ctype == null ? null : cleanText(entity.ctype, 80),
+          map: entity.map || character.map || null,
+          x: pos.x,
+          y: pos.y,
+          distance,
+          stand: !!(entity.stand || entity.p && entity.p.stand)
+        };
+        players.push(player);
+
+        const slots = entity.slots && typeof entity.slots === 'object' ? entity.slots : {};
+        for (const [slot, rawListing] of Object.entries(slots)) {
+          if (!String(slot).startsWith('trade') || !rawListing || !rawListing.name) continue;
+          const price = finite(rawListing.price);
+          if (price == null || price <= 0) continue;
+          listings.push({
+            playerId: player.id,
+            playerName: player.name,
+            distance,
+            slot: String(slot),
+            rid: rawListing.rid == null ? null : cleanText(rawListing.rid, 160),
+            name: cleanText(rawListing.name, 160),
+            level: Math.max(0, finite(rawListing.level) || 0),
+            quantity: Math.max(1, finite(rawListing.q) || 1),
+            price,
+            buying: rawListing.b === true,
+            giveaway: rawListing.giveaway === true,
+            statType: rawListing.stat_type == null ? null : cleanText(rawListing.stat_type, 80),
+            property: rawListing.p == null ? null : clone(rawListing.p)
+          });
+        }
+      }
+      players.sort((a, b) => {
+        const ad = a.distance == null ? Number.POSITIVE_INFINITY : a.distance;
+        const bd = b.distance == null ? Number.POSITIVE_INFINITY : b.distance;
+        return ad - bd;
+      });
+      listings.sort((a, b) => {
+        if (String(a.name) !== String(b.name)) return String(a.name).localeCompare(String(b.name));
+        if (a.buying !== b.buying) return a.buying ? 1 : -1;
+        return a.buying ? Number(b.price) - Number(a.price) : Number(a.price) - Number(b.price);
+      });
+      return {
+        schemaVersion: 1,
+        available: true,
+        reason: null,
+        players: clone(players),
+        listings: clone(listings)
+      };
+    }
+
     itemDefinition(name) {
       const id = cleanText(name || '', 160);
       if (!id) return null;
@@ -2498,7 +2614,11 @@
     bank_store: Object.freeze({ publicName: 'bank_store', family: 'bank' }),
     bank_retrieve: Object.freeze({ publicName: 'bank_retrieve', family: 'bank' }),
     bank_deposit: Object.freeze({ publicName: 'bank_deposit', family: 'bank-gold' }),
-    bank_withdraw: Object.freeze({ publicName: 'bank_withdraw', family: 'bank-gold' })
+    bank_withdraw: Object.freeze({ publicName: 'bank_withdraw', family: 'bank-gold' }),
+    buy_with_gold: Object.freeze({ publicName: 'buy_with_gold', family: 'npc-trade' }),
+    sell: Object.freeze({ publicName: 'sell', family: 'npc-trade' }),
+    trade_buy: Object.freeze({ publicName: 'trade_buy', family: 'player-trade' }),
+    trade_sell: Object.freeze({ publicName: 'trade_sell', family: 'player-trade' })
   });
 
   function errorDetails(error) {
@@ -2568,6 +2688,30 @@
       return !!this._resolve(def.publicName);
     }
 
+    _normalizedCallArgs(action, resolved, args) {
+      if (!['trade_buy', 'trade_sell'].includes(action) || !Array.isArray(args) || args.length < 4) return args;
+      const target = args[0];
+      const tradeSlot = cleanText(args[1] || '', 80);
+      const rid = cleanText(args[2] || '', 160);
+      const quantity = Number(args[3]);
+      if (!target || !target.id || !tradeSlot || !rid || !Number.isFinite(quantity) || quantity <= 0) {
+        throw new Error('ALBOT_PLAYER_TRADE_ARGS_INVALID:' + action);
+      }
+      const live = target.slots && target.slots[tradeSlot];
+      if (!live || String(live.rid || '') !== rid) {
+        throw new Error('ALBOT_PLAYER_TRADE_RID_MISMATCH:' + action);
+      }
+
+      // Adventure Land exposes two compatible layers:
+      // CODE wrapper: trade_buy(target, slot, quantity)
+      // native parent: trade_buy(slot, id, rid, quantity)
+      // Keep one logical boundary contract and adapt only at dispatch time.
+      if (Number(resolved && resolved.fn && resolved.fn.length) >= 4) {
+        return [tradeSlot, target.id, rid, quantity];
+      }
+      return [target, tradeSlot, quantity];
+    }
+
     dispatch(action, args = [], options = {}) {
       const def = ACTIONS[action];
       if (!def) throw new Error('ALBOT_ACTION_UNKNOWN:' + cleanText(action, 80));
@@ -2611,7 +2755,8 @@
       }
 
       try {
-        const value = resolved.fn.apply(resolved.owner, args);
+        const callArgs = this._normalizedCallArgs(action, resolved, args);
+        const value = resolved.fn.apply(resolved.owner, callArgs);
         this.metrics.dispatched += 1;
         if (cleanup) this.metrics.cleanupDispatches += 1;
         const result = {
@@ -8669,6 +8814,787 @@
   const clone = ns.helpers.clone;
   const cleanText = ns.helpers.cleanText;
 
+  function finite(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function nowIso() {
+    return new Date().toISOString();
+  }
+
+  function stableProperty(value) {
+    if (value == null) return '';
+    try { return JSON.stringify(value, Object.keys(value).sort()); }
+    catch (_) { return String(value); }
+  }
+
+  class TradeController {
+    constructor(options = {}) {
+      this.root = options.root || root;
+      this.logger = options.logger || null;
+      this.game = options.game || null;
+      this.actions = options.actions || null;
+      this.movement = options.movement || null;
+      this.inventory = options.inventory || null;
+      this.moduleActive = false;
+      this.scope = null;
+      this.suspendedReason = null;
+      this.pending = null;
+      this.request = null;
+      this.lastPlan = null;
+      this.lastAction = null;
+      this.sequence = 0;
+      this.config = {
+        tickMs: Math.max(250, Math.min(5000, Number(options.tickMs) || 750)),
+        outcomeTimeoutMs: Math.max(1000, Math.min(60000, Number(options.outcomeTimeoutMs) || 6000)),
+        npcRange: Math.max(80, Math.min(600, Number(options.npcRange) || 240)),
+        movementTimeoutMs: Math.max(3000, Math.min(120000, Number(options.movementTimeoutMs) || 45000)),
+        goldReserve: Math.max(0, Math.floor(Number(options.goldReserve) || 10000))
+      };
+      this.metrics = {
+        ticks: 0,
+        plans: 0,
+        analyses: 0,
+        acquisitionsPlanned: 0,
+        npcBuysDispatched: 0,
+        npcBuysConfirmed: 0,
+        npcBuysRejected: 0,
+        npcBuysUnknown: 0,
+        npcSellsDispatched: 0,
+        npcSellsConfirmed: 0,
+        npcSellsRejected: 0,
+        npcSellsUnknown: 0,
+        marketBuysDispatched: 0,
+        marketBuysConfirmed: 0,
+        marketBuysRejected: 0,
+        marketBuysUnknown: 0,
+        marketSellsDispatched: 0,
+        marketSellsConfirmed: 0,
+        marketSellsRejected: 0,
+        marketSellsUnknown: 0,
+        priceBlocks: 0,
+        safetyBlocks: 0,
+        movementRequests: 0,
+        movementUnknown: 0
+      };
+    }
+
+    start(context = {}) {
+      if (this.moduleActive) return { started: false, reason: 'H13_ALREADY_ACTIVE' };
+      this.moduleActive = true;
+      this.scope = context.scope || null;
+      this.suspendedReason = null;
+      if (this.scope && typeof this.scope.interval === 'function') {
+        this.scope.interval('trade-tick', () => this.tick(), this.config.tickMs, { immediate: true });
+      }
+      return { started: true };
+    }
+
+    stop(reason = 'H13_MODULE_STOP') {
+      this.moduleActive = false;
+      this.scope = null;
+      this.pending = null;
+      this.request = null;
+      this._cancelOwnedMovement(reason);
+      this.lastAction = { at: nowIso(), type: 'STOP', reason: cleanText(reason, 240) };
+      return { stopped: true };
+    }
+
+    resetSafety(reason = 'H13_EXPLICIT_RESET') {
+      this.pending = null;
+      this.request = null;
+      this.suspendedReason = null;
+      this._cancelOwnedMovement(reason);
+      this.lastAction = { at: nowIso(), type: 'RESET', reason: cleanText(reason, 240) };
+      return this.status();
+    }
+
+    cancelRequest(reason = 'H13_REQUEST_CANCELLED') {
+      this.pending = null;
+      this.request = null;
+      this._cancelOwnedMovement(reason);
+      this.lastAction = { at: nowIso(), type: 'REQUEST_CANCELLED', reason: cleanText(reason, 240) };
+      return this.status();
+    }
+
+    _cancelOwnedMovement(reason) {
+      try {
+        const movement = this.movement && this.movement.status ? this.movement.status() : null;
+        if (movement && movement.activeOrder && String(movement.activeOrder.owner || '') === 'trade-h13') {
+          this.movement.cancel(cleanText(reason, 180) || 'H13_CANCEL');
+        }
+      } catch (_) {}
+    }
+
+    _snapshot() {
+      return this.game && typeof this.game.snapshot === 'function' ? this.game.snapshot() : null;
+    }
+
+    _inventorySnapshot() {
+      try { return this.game && this.game.inventorySnapshot ? this.game.inventorySnapshot() : null; }
+      catch (_) { return null; }
+    }
+
+    _inventoryPlan() {
+      try { return this.inventory && this.inventory.plan ? this.inventory.plan() : null; }
+      catch (_) { return null; }
+    }
+
+    _marketSnapshot() {
+      try { return this.game && this.game.marketSnapshot ? this.game.marketSnapshot() : null; }
+      catch (_) { return null; }
+    }
+
+    _merchantReady() {
+      const snap = this._snapshot();
+      return !!(snap && snap.available && snap.character
+        && String(snap.character.ctype || '').toLowerCase() === 'merchant'
+        && snap.character.rip !== true);
+    }
+
+    _characterGold() {
+      const snap = this._snapshot();
+      return snap && snap.character ? finite(snap.character.gold) : null;
+    }
+
+    _fingerprint(row) {
+      if (!row || !row.name) return null;
+      return [
+        String(row.name),
+        String(Math.max(0, Number(row.level) || 0)),
+        cleanText(row.statType != null ? row.statType : row.stat_type || '', 80),
+        stableProperty(row.property != null ? row.property : row.p)
+      ].join('|');
+    }
+
+    _quantity(snapshot, fingerprint) {
+      if (!snapshot || snapshot.available === false) return null;
+      return (snapshot.items || []).reduce((sum, row) =>
+        sum + (this._fingerprint(row) === fingerprint ? Math.max(1, Math.floor(Number(row.quantity) || 1)) : 0), 0);
+    }
+
+    _quantityByName(snapshot, name, level = 0) {
+      if (!snapshot || snapshot.available === false) return null;
+      return (snapshot.items || []).reduce((sum, row) =>
+        sum + (String(row.name) === String(name) && Math.max(0, Number(row.level) || 0) === Math.max(0, Number(level) || 0)
+          ? Math.max(1, Math.floor(Number(row.quantity) || 1)) : 0), 0);
+    }
+
+    _safeSellRows() {
+      const plan = this._inventoryPlan();
+      if (!plan || plan.state !== 'READY') return [];
+      return (plan.items || []).filter(row =>
+        row && row.name
+        && String(row.disposition || '').toUpperCase() === 'SELL'
+        && row.locked !== true
+        && row.giveaway !== true
+        && row.gift !== true
+        && !row.expiresAt
+        && Math.max(0, Number(row.level) || 0) === 0
+        && !(row.definition && (row.definition.quest === true || row.definition.upgrade === true || row.definition.compound === true))
+      );
+    }
+
+    marketAnalysis(itemName = null, options = {}) {
+      this.metrics.analyses += 1;
+      const market = this._marketSnapshot();
+      const wanted = cleanText(itemName || '', 160);
+      const level = finite(options.level);
+      if (!market || market.available === false) {
+        return { available: false, reason: market && market.reason || 'H13_MARKET_UNAVAILABLE', asks: [], bids: [] };
+      }
+      const rows = (market.listings || []).filter(row => {
+        if (row.giveaway) return false;
+        if (wanted && String(row.name) !== wanted) return false;
+        if (level != null && Number(row.level || 0) !== level) return false;
+        return finite(row.price) != null && finite(row.price) > 0;
+      });
+      const asks = rows.filter(row => row.buying !== true).sort((a, b) => Number(a.price) - Number(b.price));
+      const bids = rows.filter(row => row.buying === true).sort((a, b) => Number(b.price) - Number(a.price));
+      return {
+        available: true,
+        itemName: wanted || null,
+        level,
+        asks: clone(asks),
+        bids: clone(bids),
+        bestAsk: asks[0] ? clone(asks[0]) : null,
+        bestBid: bids[0] ? clone(bids[0]) : null,
+        spread: asks[0] && bids[0] ? Number(asks[0].price) - Number(bids[0].price) : null
+      };
+    }
+
+    plan() {
+      this.metrics.plans += 1;
+      const snap = this._snapshot();
+      const inventory = this._inventorySnapshot();
+      const market = this._marketSnapshot();
+      const plan = {
+        state: !snap || !snap.available || !snap.character
+          ? 'BLOCKED'
+          : String(snap.character.ctype || '').toLowerCase() !== 'merchant'
+            ? 'BLOCKED'
+            : 'READY',
+        reason: !snap || !snap.available || !snap.character
+          ? 'CHARACTER_UNAVAILABLE'
+          : String(snap.character.ctype || '').toLowerCase() !== 'merchant'
+            ? 'H13_REQUIRES_MERCHANT'
+            : 'H13_READY',
+        character: snap && snap.character ? {
+          name: snap.character.name,
+          ctype: snap.character.ctype,
+          map: snap.character.map,
+          gold: snap.character.gold
+        } : null,
+        inventory: inventory ? {
+          available: inventory.available,
+          freeSlots: inventory.freeSlots,
+          usedSlots: inventory.usedSlots,
+          capacity: inventory.capacity
+        } : null,
+        safeSellRows: clone(this._safeSellRows()),
+        market: market ? {
+          available: market.available,
+          listingCount: (market.listings || []).length,
+          sellerCount: (market.players || []).length
+        } : null,
+        goldReserve: this.config.goldReserve
+      };
+      this.lastPlan = clone(plan);
+      return clone(plan);
+    }
+
+    queueNpcBuy(itemName, quantity = 1, options = {}) {
+      if (this.suspendedReason) return { accepted: false, reason: this.suspendedReason };
+      if (this.request || this.pending) return { accepted: false, reason: 'H13_BUSY' };
+      if (!this._merchantReady()) return { accepted: false, reason: 'H13_REQUIRES_LIVE_MERCHANT' };
+      const name = cleanText(itemName || '', 160);
+      const q = finite(quantity);
+      const maxUnitPrice = finite(options.maxUnitPrice);
+      if (!name || q == null || q <= 0 || !Number.isInteger(q)) return { accepted: false, reason: 'H13_BUY_QUANTITY_INVALID' };
+      if (maxUnitPrice == null || maxUnitPrice <= 0) return { accepted: false, reason: 'H13_MAX_UNIT_PRICE_REQUIRED' };
+      const definition = this.game && this.game.itemDefinition ? this.game.itemDefinition(name) : null;
+      const unitPrice = definition && finite(definition.g);
+      if (unitPrice == null || unitPrice <= 0) return { accepted: false, reason: 'H13_NPC_PRICE_UNAVAILABLE' };
+      if (unitPrice > maxUnitPrice) {
+        this.metrics.priceBlocks += 1;
+        return { accepted: false, reason: 'H13_NPC_PRICE_ABOVE_LIMIT', unitPrice, maxUnitPrice };
+      }
+      const sources = this.game && this.game.npcShopSources ? this.game.npcShopSources(name) : [];
+      const source = (sources || []).find(row => row && row.location);
+      if (!source) return { accepted: false, reason: 'H13_NPC_SOURCE_UNAVAILABLE' };
+      const gold = this._characterGold();
+      const totalCost = unitPrice * q;
+      if (gold == null || gold - totalCost < this.config.goldReserve) {
+        this.metrics.priceBlocks += 1;
+        return { accepted: false, reason: 'H13_GOLD_RESERVE_BLOCKED', gold, totalCost, reserve: this.config.goldReserve };
+      }
+      const inventory = this._inventorySnapshot();
+      if (!inventory || inventory.available === false || Number(inventory.freeSlots) <= 0) {
+        return { accepted: false, reason: 'H13_INVENTORY_FULL_OR_UNAVAILABLE' };
+      }
+      this.request = {
+        id: 'trade-request-' + (++this.sequence),
+        kind: 'NPC_BUY',
+        itemName: name,
+        level: 0,
+        quantity: q,
+        unitPrice,
+        maxUnitPrice,
+        totalCost,
+        npcId: source.npcId,
+        location: clone(source.location),
+        travelStartedAtMs: null,
+        createdAt: nowIso()
+      };
+      this.metrics.acquisitionsPlanned += 1;
+      return { accepted: true, request: clone(this.request) };
+    }
+
+    queueNpcSell(slot, quantity = 1, options = {}) {
+      if (this.suspendedReason) return { accepted: false, reason: this.suspendedReason };
+      if (this.request || this.pending) return { accepted: false, reason: 'H13_BUSY' };
+      if (!this._merchantReady()) return { accepted: false, reason: 'H13_REQUIRES_LIVE_MERCHANT' };
+      const wantedSlot = finite(slot);
+      const q = finite(quantity);
+      if (wantedSlot == null || q == null || q <= 0 || !Number.isInteger(q)) {
+        return { accepted: false, reason: 'H13_SELL_ARGUMENT_INVALID' };
+      }
+      const row = this._safeSellRows().find(item => Number(item.slot) === wantedSlot);
+      if (!row) {
+        this.metrics.safetyBlocks += 1;
+        return { accepted: false, reason: 'H13_SELL_ITEM_NOT_SAFE' };
+      }
+      if (q > Math.max(1, Math.floor(Number(row.quantity) || 1))) return { accepted: false, reason: 'H13_SELL_QUANTITY_UNAVAILABLE' };
+      const npcId = cleanText(options.npcId || 'fancypots', 120);
+      const location = this.game && this.game.npcLocation ? this.game.npcLocation(npcId) : null;
+      if (!location) return { accepted: false, reason: 'H13_SELL_NPC_UNAVAILABLE' };
+      this.request = {
+        id: 'trade-request-' + (++this.sequence),
+        kind: 'NPC_SELL',
+        itemName: row.name,
+        fingerprint: this._fingerprint(row),
+        inventorySlot: Number(row.slot),
+        quantity: q,
+        npcId,
+        location: clone(location),
+        travelStartedAtMs: null,
+        createdAt: nowIso()
+      };
+      return { accepted: true, request: clone(this.request) };
+    }
+
+    queueMarketBuy(playerName, tradeSlot, quantity = 1, options = {}) {
+      if (this.suspendedReason) return { accepted: false, reason: this.suspendedReason };
+      if (this.request || this.pending) return { accepted: false, reason: 'H13_BUSY' };
+      if (!this._merchantReady()) return { accepted: false, reason: 'H13_REQUIRES_LIVE_MERCHANT' };
+      const name = cleanText(playerName || '', 120);
+      const slot = cleanText(tradeSlot || '', 80);
+      const q = finite(quantity);
+      const maxUnitPrice = finite(options.maxUnitPrice);
+      if (!name || !slot || q == null || q <= 0 || !Number.isInteger(q)) return { accepted: false, reason: 'H13_MARKET_BUY_ARGUMENT_INVALID' };
+      if (maxUnitPrice == null || maxUnitPrice <= 0) return { accepted: false, reason: 'H13_MAX_UNIT_PRICE_REQUIRED' };
+      const analysis = this._marketSnapshot();
+      const listing = analysis && (analysis.listings || []).find(row =>
+        String(row.playerName) === name && String(row.slot) === slot);
+      if (!listing || listing.buying === true || listing.giveaway) return { accepted: false, reason: 'H13_MARKET_ASK_NOT_AVAILABLE' };
+      if (!listing.rid) return { accepted: false, reason: 'H13_MARKET_RID_UNAVAILABLE' };
+      if (q > Math.max(1, Math.floor(Number(listing.quantity) || 1))) return { accepted: false, reason: 'H13_MARKET_QUANTITY_UNAVAILABLE' };
+      const unitPrice = finite(listing.price);
+      if (unitPrice == null || unitPrice <= 0 || unitPrice > maxUnitPrice) {
+        this.metrics.priceBlocks += 1;
+        return { accepted: false, reason: 'H13_MARKET_PRICE_ABOVE_LIMIT', unitPrice, maxUnitPrice };
+      }
+      const gold = this._characterGold();
+      const totalCost = unitPrice * q;
+      if (gold == null || gold - totalCost < this.config.goldReserve) {
+        this.metrics.priceBlocks += 1;
+        return { accepted: false, reason: 'H13_GOLD_RESERVE_BLOCKED', gold, totalCost, reserve: this.config.goldReserve };
+      }
+      const inventory = this._inventorySnapshot();
+      if (!inventory || inventory.available === false || Number(inventory.freeSlots) <= 0) {
+        return { accepted: false, reason: 'H13_INVENTORY_FULL_OR_UNAVAILABLE' };
+      }
+      this.request = {
+        id: 'trade-request-' + (++this.sequence),
+        kind: 'MARKET_BUY',
+        playerName: name,
+        tradeSlot: slot,
+        rid: String(listing.rid),
+        itemName: listing.name,
+        level: Number(listing.level) || 0,
+        quantity: q,
+        unitPrice,
+        maxUnitPrice,
+        totalCost,
+        createdAt: nowIso()
+      };
+      this.metrics.acquisitionsPlanned += 1;
+      return { accepted: true, request: clone(this.request) };
+    }
+
+    queueMarketSell(playerName, tradeSlot, quantity = 1, options = {}) {
+      if (this.suspendedReason) return { accepted: false, reason: this.suspendedReason };
+      if (this.request || this.pending) return { accepted: false, reason: 'H13_BUSY' };
+      if (!this._merchantReady()) return { accepted: false, reason: 'H13_REQUIRES_LIVE_MERCHANT' };
+      const name = cleanText(playerName || '', 120);
+      const slot = cleanText(tradeSlot || '', 80);
+      const q = finite(quantity);
+      const minUnitPrice = finite(options.minUnitPrice);
+      if (!name || !slot || q == null || q <= 0 || !Number.isInteger(q)) return { accepted: false, reason: 'H13_MARKET_SELL_ARGUMENT_INVALID' };
+      if (minUnitPrice == null || minUnitPrice < 0) return { accepted: false, reason: 'H13_MIN_UNIT_PRICE_REQUIRED' };
+      const market = this._marketSnapshot();
+      const listing = market && (market.listings || []).find(row =>
+        String(row.playerName) === name && String(row.slot) === slot);
+      if (!listing || listing.buying !== true || listing.giveaway) return { accepted: false, reason: 'H13_MARKET_BID_NOT_AVAILABLE' };
+      if (!listing.rid) return { accepted: false, reason: 'H13_MARKET_RID_UNAVAILABLE' };
+      if (q > Math.max(1, Math.floor(Number(listing.quantity) || 1))) {
+        return { accepted: false, reason: 'H13_MARKET_BID_QUANTITY_UNAVAILABLE' };
+      }
+      const unitPrice = finite(listing.price);
+      if (unitPrice == null || unitPrice < minUnitPrice) {
+        this.metrics.priceBlocks += 1;
+        return { accepted: false, reason: 'H13_MARKET_BID_BELOW_LIMIT', unitPrice, minUnitPrice };
+      }
+      const sellRow = this._safeSellRows().find(row =>
+        String(row.name) === String(listing.name)
+        && Math.max(0, Number(row.level) || 0) === Math.max(0, Number(listing.level) || 0)
+        && Math.max(1, Math.floor(Number(row.quantity) || 1)) >= q);
+      if (!sellRow) {
+        this.metrics.safetyBlocks += 1;
+        return { accepted: false, reason: 'H13_MARKET_SELL_ITEM_NOT_SAFE_OR_AVAILABLE' };
+      }
+      this.request = {
+        id: 'trade-request-' + (++this.sequence),
+        kind: 'MARKET_SELL',
+        playerName: name,
+        tradeSlot: slot,
+        rid: String(listing.rid),
+        itemName: listing.name,
+        fingerprint: this._fingerprint(sellRow),
+        level: Number(listing.level) || 0,
+        quantity: q,
+        unitPrice,
+        minUnitPrice,
+        createdAt: nowIso()
+      };
+      return { accepted: true, request: clone(this.request) };
+    }
+
+    queueAcquire(itemName, quantity = 1, options = {}) {
+      const name = cleanText(itemName || '', 160);
+      const q = finite(quantity);
+      const maxUnitPrice = finite(options.maxUnitPrice);
+      if (!name || q == null || q <= 0 || !Number.isInteger(q)) return { accepted: false, reason: 'H13_ACQUIRE_ARGUMENT_INVALID' };
+      if (maxUnitPrice == null || maxUnitPrice <= 0) return { accepted: false, reason: 'H13_MAX_UNIT_PRICE_REQUIRED' };
+      const definition = this.game && this.game.itemDefinition ? this.game.itemDefinition(name) : null;
+      const npcPrice = definition && finite(definition.g);
+      const sources = this.game && this.game.npcShopSources ? this.game.npcShopSources(name) : [];
+      const npcAvailable = npcPrice != null && npcPrice > 0 && npcPrice <= maxUnitPrice && (sources || []).some(row => row.location);
+      const analysis = this.marketAnalysis(name, { level: options.level == null ? 0 : options.level });
+      const eligibleAsk = (analysis.asks || []).find(row =>
+        Number(row.price) <= maxUnitPrice
+        && Math.max(1, Math.floor(Number(row.quantity) || 1)) >= q) || null;
+      if (npcAvailable && (!eligibleAsk || npcPrice <= Number(eligibleAsk.price))) {
+        return this.queueNpcBuy(name, q, { maxUnitPrice });
+      }
+      if (eligibleAsk) {
+        return this.queueMarketBuy(eligibleAsk.playerName, eligibleAsk.slot, q, { maxUnitPrice });
+      }
+      this.metrics.priceBlocks += 1;
+      return {
+        accepted: false,
+        reason: 'H13_NO_ACQUISITION_WITHIN_PRICE_LIMIT',
+        npcPrice,
+        bestAsk: clone(analysis.bestAsk),
+        eligibleAsk: null
+      };
+    }
+
+    _metric(kind, suffix) {
+      const prefix = {
+        NPC_BUY: 'npcBuys',
+        NPC_SELL: 'npcSells',
+        MARKET_BUY: 'marketBuys',
+        MARKET_SELL: 'marketSells'
+      }[kind];
+      const key = prefix ? prefix + suffix : null;
+      if (key && Object.prototype.hasOwnProperty.call(this.metrics, key)) this.metrics[key] += 1;
+    }
+
+    _suspend(kind, reason) {
+      this._metric(kind, 'Unknown');
+      this.pending = null;
+      this.request = null;
+      this.suspendedReason = cleanText(reason || 'H13_UNKNOWN', 240) || 'H13_UNKNOWN';
+      this.lastAction = { at: nowIso(), type: kind + '_UNKNOWN', reason: this.suspendedReason };
+      return { state: 'SUSPENDED', reason: this.suspendedReason };
+    }
+
+    _watch(value, pending) {
+      if (!value || typeof value.then !== 'function') {
+        pending.settlement = 'RETURNED';
+        pending.response = value == null ? null : clone(value);
+        return;
+      }
+      Promise.resolve(value).then(response => {
+        if (!this.pending || this.pending.id !== pending.id) return;
+        this.pending.settlement = 'RESOLVED';
+        this.pending.response = response == null ? null : clone(response);
+      }, error => {
+        if (!this.pending || this.pending.id !== pending.id) return;
+        this.pending.settlement = 'REJECTED';
+        this.pending.error = cleanText(error && (error.reason || error.message) || error || 'H13_ACTION_REJECTED', 500);
+      }).catch(() => {});
+    }
+
+    _dispatch(action, args, pendingBase) {
+      if (!this.actions || typeof this.actions.dispatch !== 'function') {
+        return { accepted: false, reason: 'H13_ACTION_BOUNDARY_UNAVAILABLE' };
+      }
+      let result;
+      try { result = this.actions.dispatch(action, args); }
+      catch (error) { return { accepted: false, reason: cleanText(error && error.message || error, 300) }; }
+      if (!result || result.state !== 'DISPATCHED') {
+        if (result && result.state === 'UNKNOWN') return this._suspend(pendingBase.kind, result.error && result.error.message || 'H13_DISPATCH_UNKNOWN');
+        this._metric(pendingBase.kind, 'Rejected');
+        this.request = null;
+        return { accepted: false, reason: result && result.state || 'H13_ACTION_REJECTED' };
+      }
+      const now = Date.now();
+      const pending = {
+        id: 'trade-pending-' + (++this.sequence),
+        ...pendingBase,
+        dispatchedAt: nowIso(),
+        dispatchedAtMs: now,
+        deadlineAtMs: now + this.config.outcomeTimeoutMs,
+        settlement: 'PENDING',
+        response: null,
+        error: null
+      };
+      this.pending = pending;
+      this._metric(pending.kind, 'Dispatched');
+      this.lastAction = { at: pending.dispatchedAt, type: pending.kind + '_DISPATCHED' };
+      this._watch(result.value, pending);
+      return { accepted: true, state: 'DISPATCHED', pending: clone(pending) };
+    }
+
+    _observed(pending) {
+      const inventory = this._inventorySnapshot();
+      const gold = this._characterGold();
+      if (!inventory || inventory.available === false || gold == null) return false;
+
+      if (pending.kind === 'NPC_BUY' || pending.kind === 'MARKET_BUY') {
+        const afterQuantity = this._quantityByName(inventory, pending.itemName, pending.level || 0);
+        return afterQuantity != null
+          && afterQuantity >= pending.beforeQuantity + pending.quantity
+          && gold <= pending.beforeGold - pending.totalCost;
+      }
+
+      if (pending.kind === 'NPC_SELL' || pending.kind === 'MARKET_SELL') {
+        const afterQuantity = this._quantity(inventory, pending.fingerprint);
+        return afterQuantity != null
+          && afterQuantity <= pending.beforeQuantity - pending.quantity
+          && gold > pending.beforeGold;
+      }
+      return false;
+    }
+
+    _observePending() {
+      const pending = this.pending;
+      if (!pending) return false;
+      if (pending.settlement === 'REJECTED') return this._suspend(pending.kind, pending.error || 'H13_ACTION_REJECTED');
+      if (pending.response && pending.response.failed === true) {
+        this.pending = null;
+        this.request = null;
+        this._metric(pending.kind, 'Rejected');
+        this.lastAction = {
+          at: nowIso(),
+          type: pending.kind + '_REJECTED',
+          reason: cleanText(pending.response.reason || 'H13_ACTION_REJECTED', 240)
+        };
+        return true;
+      }
+      if (this._observed(pending)) {
+        this.pending = null;
+        this.request = null;
+        this._metric(pending.kind, 'Confirmed');
+        this.lastAction = {
+          at: nowIso(),
+          type: pending.kind + '_CONFIRMED',
+          itemName: pending.itemName,
+          quantity: pending.quantity,
+          unitPrice: pending.unitPrice == null ? null : pending.unitPrice,
+          playerName: pending.playerName || null,
+          tradeSlot: pending.tradeSlot || null
+        };
+        return true;
+      }
+      if (Date.now() >= pending.deadlineAtMs) return this._suspend(pending.kind, 'H13_' + pending.kind + '_UNVERIFIED_TIMEOUT');
+      return false;
+    }
+
+    _distanceTo(location) {
+      const snap = this._snapshot();
+      const c = snap && snap.character;
+      if (!c || !location) return null;
+      if (location.map && c.map && String(location.map) !== String(c.map)) return Infinity;
+      const cx = finite(c.x), cy = finite(c.y), x = finite(location.x), y = finite(location.y);
+      return cx == null || cy == null || x == null || y == null ? null : Math.hypot(cx - x, cy - y);
+    }
+
+    _ensureNpc(request) {
+      const distance = this._distanceTo(request.location);
+      if (distance != null && distance <= this.config.npcRange) return { ready: true };
+      const now = Date.now();
+      if (request.travelStartedAtMs != null && now - request.travelStartedAtMs >= this.config.movementTimeoutMs) {
+        this.metrics.movementUnknown += 1;
+        return this._suspend(request.kind, 'H13_NPC_MOVEMENT_TIMEOUT');
+      }
+      let movement = null;
+      try { movement = this.movement && this.movement.status ? this.movement.status() : null; } catch (_) {}
+      if (movement && movement.activeOrder) {
+        if (String(movement.activeOrder.owner || '') === 'trade-h13') return { ready: false, waiting: true };
+        return { ready: false, waiting: true, reason: 'H13_MOVEMENT_OWNED_BY_OTHER' };
+      }
+      if (request.travelStartedAtMs != null) return { ready: false, waiting: true };
+      if (!this.movement || typeof this.movement.smartMove !== 'function') return this._suspend(request.kind, 'H13_MOVEMENT_UNAVAILABLE');
+      const moved = this.movement.smartMove(request.location, { owner: 'trade-h13' });
+      if (!moved || moved.accepted !== true) {
+        this.metrics.movementUnknown += 1;
+        return this._suspend(request.kind, moved && moved.reason || 'H13_NPC_MOVE_REJECTED');
+      }
+      request.travelStartedAtMs = now;
+      this.metrics.movementRequests += 1;
+      this.lastAction = { at: nowIso(), type: 'NPC_MOVE_REQUESTED', npcId: request.npcId };
+      return { ready: false, waiting: true };
+    }
+
+    _marketListingStillMatches(request, buying) {
+      const market = this._marketSnapshot();
+      if (!market || market.available === false) return null;
+      return (market.listings || []).find(row =>
+        String(row.playerName) === String(request.playerName)
+        && String(row.slot) === String(request.tradeSlot)
+        && String(row.rid || '') === String(request.rid || '')
+        && row.buying === buying
+        && String(row.name) === String(request.itemName)
+        && Number(row.price) === Number(request.unitPrice)
+      ) || null;
+    }
+
+    tick() {
+      this.metrics.ticks += 1;
+      if (!this.moduleActive) return { state: 'STOPPED', reason: 'H13_MODULE_NOT_ACTIVE' };
+      if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason };
+
+      if (this.pending) {
+        this._observePending();
+        if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason };
+        return this.pending ? { state: 'PENDING', pending: clone(this.pending) } : { state: 'READY' };
+      }
+
+      const request = this.request;
+      if (!request) return this.plan();
+      if (!this._merchantReady()) {
+        this.request = null;
+        return { state: 'BLOCKED', reason: 'H13_REQUIRES_LIVE_MERCHANT' };
+      }
+
+      if (request.kind === 'NPC_BUY' || request.kind === 'NPC_SELL') {
+        const near = this._ensureNpc(request);
+        if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason };
+        if (!near || near.ready !== true) return { state: 'WAITING_NPC', reason: near && near.reason || 'H13_NPC_TRAVEL' };
+      }
+
+      const inventory = this._inventorySnapshot();
+      const beforeGold = this._characterGold();
+      if (!inventory || inventory.available === false || beforeGold == null) return { state: 'BLOCKED', reason: 'H13_OBSERVATION_UNAVAILABLE' };
+
+      if (request.kind === 'NPC_BUY') {
+        const beforeQuantity = this._quantityByName(inventory, request.itemName, request.level || 0);
+        if (beforeQuantity == null) return { state: 'BLOCKED', reason: 'H13_INVENTORY_OBSERVATION_UNAVAILABLE' };
+        return this._dispatch('buy_with_gold', [request.itemName, request.quantity], {
+          kind: request.kind,
+          itemName: request.itemName,
+          level: request.level || 0,
+          quantity: request.quantity,
+          unitPrice: request.unitPrice,
+          totalCost: request.totalCost,
+          beforeQuantity,
+          beforeGold
+        });
+      }
+
+      if (request.kind === 'NPC_SELL') {
+        const current = (inventory.items || []).find(row => Number(row.slot) === Number(request.inventorySlot));
+        if (!current || this._fingerprint(current) !== request.fingerprint) {
+          this.request = null;
+          return { state: 'BLOCKED', reason: 'H13_SELL_SOURCE_CHANGED' };
+        }
+        const beforeQuantity = this._quantity(inventory, request.fingerprint);
+        return this._dispatch('sell', [request.inventorySlot, request.quantity], {
+          kind: request.kind,
+          itemName: request.itemName,
+          fingerprint: request.fingerprint,
+          quantity: request.quantity,
+          beforeQuantity,
+          beforeGold
+        });
+      }
+
+      if (request.kind === 'MARKET_BUY') {
+        const listing = this._marketListingStillMatches(request, false);
+        if (!listing
+          || Number(listing.price) > Number(request.maxUnitPrice)
+          || Math.max(1, Math.floor(Number(listing.quantity) || 1)) < request.quantity) {
+          this.request = null;
+          this.metrics.priceBlocks += 1;
+          return { state: 'BLOCKED', reason: 'H13_MARKET_ASK_CHANGED' };
+        }
+        const target = this.game && this.game.playerReference ? this.game.playerReference(request.playerName) : null;
+        if (!target || !target.slots || !target.slots[request.tradeSlot]) {
+          this.request = null;
+          return { state: 'BLOCKED', reason: 'H13_MARKET_TARGET_UNAVAILABLE' };
+        }
+        const beforeQuantity = this._quantityByName(inventory, request.itemName, request.level || 0);
+        return this._dispatch('trade_buy', [target, request.tradeSlot, request.rid, request.quantity], {
+          kind: request.kind,
+          itemName: request.itemName,
+          level: request.level || 0,
+          playerName: request.playerName,
+          tradeSlot: request.tradeSlot,
+          rid: request.rid,
+          quantity: request.quantity,
+          unitPrice: request.unitPrice,
+          totalCost: request.totalCost,
+          beforeQuantity,
+          beforeGold
+        });
+      }
+
+      if (request.kind === 'MARKET_SELL') {
+        const listing = this._marketListingStillMatches(request, true);
+        if (!listing
+          || Number(listing.price) < Number(request.minUnitPrice)
+          || Math.max(1, Math.floor(Number(listing.quantity) || 1)) < request.quantity) {
+          this.request = null;
+          this.metrics.priceBlocks += 1;
+          return { state: 'BLOCKED', reason: 'H13_MARKET_BID_CHANGED' };
+        }
+        const target = this.game && this.game.playerReference ? this.game.playerReference(request.playerName) : null;
+        if (!target || !target.slots || !target.slots[request.tradeSlot]) {
+          this.request = null;
+          return { state: 'BLOCKED', reason: 'H13_MARKET_TARGET_UNAVAILABLE' };
+        }
+        const beforeQuantity = this._quantity(inventory, request.fingerprint);
+        return this._dispatch('trade_sell', [target, request.tradeSlot, request.rid, request.quantity], {
+          kind: request.kind,
+          itemName: request.itemName,
+          fingerprint: request.fingerprint,
+          playerName: request.playerName,
+          tradeSlot: request.tradeSlot,
+          rid: request.rid,
+          quantity: request.quantity,
+          unitPrice: request.unitPrice,
+          beforeQuantity,
+          beforeGold
+        });
+      }
+
+      this.request = null;
+      return { state: 'BLOCKED', reason: 'H13_REQUEST_UNKNOWN' };
+    }
+
+    status() {
+      return {
+        schemaVersion: 1,
+        moduleActive: this.moduleActive,
+        suspended: !!this.suspendedReason,
+        suspendedReason: this.suspendedReason,
+        pending: clone(this.pending),
+        request: clone(this.request),
+        lastPlan: clone(this.lastPlan),
+        lastAction: clone(this.lastAction),
+        config: clone(this.config),
+        metrics: clone(this.metrics)
+      };
+    }
+  }
+
+  ns.TradeController = TradeController;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+
+(function (root) {
+  'use strict';
+
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns) throw new Error('ALBOT_INTERNALS_MISSING');
+
+  const clone = ns.helpers.clone;
+  const cleanText = ns.helpers.cleanText;
+
   function errorDetails(error) {
     return {
       name: cleanText(error && error.name || 'Error', 80),
@@ -9000,7 +9926,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.12.0-h12';
+      this.version = options.version || '0.13.0-h13';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -9097,6 +10023,14 @@
         movement: this.movement,
         inventory: this.inventory
       });
+      this.trade = new ns.TradeController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        movement: this.movement,
+        inventory: this.inventory
+      });
       this.liveTests = new ns.LiveTestRunner({
         runtime: this,
         logger: this.logger,
@@ -9109,6 +10043,7 @@
       this._registerLiveTests();
       this._registerH11LiveTest();
       this._registerH12LiveTest();
+      this._registerH13LiveTest();
       this._installErrorCapture();
       this.logger.info('AL Bot Runtime erstellt', {
         version: this.version,
@@ -9220,6 +10155,15 @@
         start: context => this.bank.start(context),
         stop: reason => this.bank.stop(reason),
         status: () => this.bank.status()
+      });
+
+      this.modules.register({
+        id: 'trade',
+        title: 'Handel',
+        version: '0.13.0',
+        start: context => this.trade.start(context),
+        stop: reason => this.trade.stop(reason),
+        status: () => this.trade.status()
       });
     }
 
@@ -11028,6 +11972,208 @@
       });
     }
 
+    _registerH13LiveTest() {
+      let baseline = null;
+      let testPlan = null;
+      this.liveTests.register({
+        id: 'h13-trade',
+        title: 'H13 – Handel',
+        description: 'Ein-Klick-Live-Test für preisgedeckelten NPC-Kauf, Live-Deltas und read-only Player-Market-Analyse.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.trade.resetSafety('H13_LIVE_TEST_RESET'); } catch (_) {}
+          try { runtime.trade.cancelRequest('H13_LIVE_TEST_RESET'); } catch (_) {}
+          try {
+            const movement = runtime.movement.status();
+            if (movement.activeOrder && String(movement.activeOrder.owner || '') === 'trade-h13') {
+              runtime.movement.cancel('H13_LIVE_TEST_RESET');
+            }
+          } catch (_) {}
+          const metrics = runtime.trade.status().metrics;
+          baseline = {
+            npcBuysConfirmed: metrics.npcBuysConfirmed,
+            npcBuysUnknown: metrics.npcBuysUnknown,
+            npcSellsUnknown: metrics.npcSellsUnknown,
+            marketBuysUnknown: metrics.marketBuysUnknown,
+            marketSellsUnknown: metrics.marketSellsUnknown,
+            movementUnknown: metrics.movementUnknown
+          };
+          testPlan = null;
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.trade.cancelRequest('H13_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try {
+            const movement = runtime.movement.status();
+            if (movement.activeOrder && String(movement.activeOrder.owner || '') === 'trade-h13') {
+              runtime.movement.cancel('H13_LIVE_TEST_CLEANUP');
+            }
+          } catch (_) {}
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Merchant, Handels-APIs, hpot0-Festpreis und NPC-Quelle prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(String(game.character.ctype || '').toLowerCase() === 'merchant', 'H13_LIVE_TEST_REQUIRES_MERCHANT');
+              assert(game.character.rip !== true, 'CHARACTER_DEAD');
+              const module = runtime.modules.describe('trade');
+              assert(module && module.state === 'ACTIVE', 'H13_MODULE_NOT_ACTIVE');
+              assert(runtime.actions.available('buy_with_gold'), 'BUY_WITH_GOLD_API_UNAVAILABLE');
+              assert(runtime.actions.available('sell'), 'SELL_API_UNAVAILABLE');
+              assert(runtime.actions.available('trade_buy'), 'TRADE_BUY_API_UNAVAILABLE');
+              assert(runtime.actions.available('trade_sell'), 'TRADE_SELL_API_UNAVAILABLE');
+              assert(runtime.actions.available('smart_move'), 'SMART_MOVE_API_UNAVAILABLE');
+
+              const definition = runtime.game.itemDefinition('hpot0');
+              assert(definition && Number.isFinite(Number(definition.g)) && Number(definition.g) > 0,
+                'H13_HPOT0_PRICE_UNAVAILABLE');
+              const sources = runtime.game.npcShopSources('hpot0');
+              const source = (sources || []).find(row => row && row.location);
+              assert(source, 'H13_HPOT0_NPC_SOURCE_UNAVAILABLE');
+
+              const inventory = runtime.game.inventorySnapshot();
+              assert(inventory && inventory.available !== false && Number(inventory.freeSlots) > 0,
+                'H13_INVENTORY_FULL_OR_UNAVAILABLE');
+              const beforeQuantity = (inventory.items || []).reduce((sum, row) =>
+                sum + (String(row.name) === 'hpot0' && Number(row.level || 0) === 0 ? Number(row.quantity || 1) : 0), 0);
+              const beforeGold = Number(game.character.gold);
+              const unitPrice = Number(definition.g);
+              assert(Number.isFinite(beforeGold) && beforeGold - unitPrice >= runtime.trade.config.goldReserve,
+                'H13_LIVE_TEST_GOLD_RESERVE_BLOCKED');
+
+              testPlan = {
+                itemName: 'hpot0',
+                quantity: 1,
+                unitPrice,
+                beforeQuantity,
+                beforeGold,
+                npcId: source.npcId,
+                location: source.location
+              };
+              return {
+                merchant: game.character.name,
+                map: game.character.map,
+                itemName: testPlan.itemName,
+                quantity: 1,
+                unitPrice,
+                beforeQuantity,
+                beforeGold,
+                goldReserve: runtime.trade.config.goldReserve,
+                npcId: source.npcId,
+                npcLocation: source.location
+              };
+            }
+          },
+          {
+            id: 'npc-buy',
+            title: 'Genau ein hpot0 zum live bekannten NPC-Festpreis kaufen und Delta bestätigen',
+            timeoutMs: 90000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(testPlan, 'H13_LIVE_TEST_PLAN_MISSING');
+              const queued = runtime.trade.queueNpcBuy(testPlan.itemName, 1, {
+                maxUnitPrice: testPlan.unitPrice
+              });
+              assert(queued && queued.accepted === true, queued && queued.reason || 'H13_NPC_BUY_QUEUE_FAILED');
+              const confirmed = await waitFor(() => {
+                const status = runtime.trade.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H13_SUSPENDED');
+                if (status.metrics.npcBuysUnknown > baseline.npcBuysUnknown) throw new Error('H13_NPC_BUY_UNKNOWN');
+                if (status.metrics.movementUnknown > baseline.movementUnknown) throw new Error('H13_MOVEMENT_UNKNOWN');
+                return status.metrics.npcBuysConfirmed > baseline.npcBuysConfirmed ? status : null;
+              }, { timeoutMs: 85000, pollMs: 150, label: 'h13-npc-buy-confirmed' });
+
+              const inventory = runtime.game.inventorySnapshot();
+              const afterQuantity = (inventory.items || []).reduce((sum, row) =>
+                sum + (String(row.name) === testPlan.itemName && Number(row.level || 0) === 0 ? Number(row.quantity || 1) : 0), 0);
+              const afterGame = runtime.game.snapshot();
+              const afterGold = Number(afterGame && afterGame.character && afterGame.character.gold);
+              assert(afterQuantity >= testPlan.beforeQuantity + 1, 'H13_NPC_BUY_INVENTORY_DELTA_NOT_CONFIRMED');
+              assert(Number.isFinite(afterGold) && afterGold <= testPlan.beforeGold - testPlan.unitPrice,
+                'H13_NPC_BUY_GOLD_DELTA_NOT_CONFIRMED');
+              return {
+                itemName: testPlan.itemName,
+                quantity: 1,
+                unitPrice: testPlan.unitPrice,
+                beforeQuantity: testPlan.beforeQuantity,
+                afterQuantity,
+                beforeGold: testPlan.beforeGold,
+                afterGold,
+                npcBuysConfirmed: confirmed.metrics.npcBuysConfirmed - baseline.npcBuysConfirmed,
+                movementRequests: confirmed.metrics.movementRequests
+              };
+            }
+          },
+          {
+            id: 'market-analysis',
+            title: 'Sichtbare Player-Listings read-only analysieren ohne Kauf oder Verkauf',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const before = runtime.trade.status().metrics;
+              const analysis = runtime.trade.marketAnalysis(null);
+              assert(analysis && analysis.available === true, analysis && analysis.reason || 'H13_MARKET_ANALYSIS_UNAVAILABLE');
+              const after = runtime.trade.status().metrics;
+              assert(after.marketBuysDispatched === before.marketBuysDispatched, 'H13_MARKET_ANALYSIS_DISPATCHED_BUY');
+              assert(after.marketSellsDispatched === before.marketSellsDispatched, 'H13_MARKET_ANALYSIS_DISPATCHED_SELL');
+              return {
+                asks: analysis.asks.length,
+                bids: analysis.bids.length,
+                bestAsk: analysis.bestAsk,
+                bestBid: analysis.bestBid,
+                spread: analysis.spread
+              };
+            }
+          },
+          {
+            id: 'stability',
+            title: 'Fünf Sekunden ohne Trade-UNKNOWN beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              await sleep(5000);
+              const status = runtime.trade.status();
+              assert(status.suspended === false, status.suspendedReason || 'H13_SUSPENDED');
+              assert(status.metrics.npcBuysUnknown === baseline.npcBuysUnknown, 'H13_NPC_BUY_UNKNOWN_DURING_STABILITY');
+              assert(status.metrics.npcSellsUnknown === baseline.npcSellsUnknown, 'H13_NPC_SELL_UNKNOWN_DURING_STABILITY');
+              assert(status.metrics.marketBuysUnknown === baseline.marketBuysUnknown, 'H13_MARKET_BUY_UNKNOWN_DURING_STABILITY');
+              assert(status.metrics.marketSellsUnknown === baseline.marketSellsUnknown, 'H13_MARKET_SELL_UNKNOWN_DURING_STABILITY');
+              assert(status.metrics.movementUnknown === baseline.movementUnknown, 'H13_MOVEMENT_UNKNOWN_DURING_STABILITY');
+              return {
+                npcBuyUnknown: status.metrics.npcBuysUnknown - baseline.npcBuysUnknown,
+                npcSellUnknown: status.metrics.npcSellsUnknown - baseline.npcSellsUnknown,
+                marketBuyUnknown: status.metrics.marketBuysUnknown - baseline.marketBuysUnknown,
+                marketSellUnknown: status.metrics.marketSellsUnknown - baseline.marketSellsUnknown,
+                movementUnknown: status.metrics.movementUnknown - baseline.movementUnknown
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'H13 Pending/Request und H13-eigene Bewegung vollständig freigeben',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.trade.cancelRequest('H13_LIVE_TEST_COMPLETE');
+              const trade = runtime.trade.status();
+              const movement = runtime.movement.status();
+              assert(trade.pending == null, 'H13_PENDING_ACTION_REMAINS');
+              assert(trade.request == null, 'H13_REQUEST_REMAINS');
+              assert(!(movement.activeOrder && String(movement.activeOrder.owner || '') === 'trade-h13'),
+                'H13_MOVEMENT_REMAINS');
+              return {
+                pending: !!trade.pending,
+                request: !!trade.request,
+                movementActive: !!(movement.activeOrder && String(movement.activeOrder.owner || '') === 'trade-h13')
+              };
+            }
+          }
+        ]
+      });
+    }
+
     _installErrorCapture() {
       if (!this.root || typeof this.root.addEventListener !== 'function') return;
       this._errorHandler = event => {
@@ -11177,6 +12323,7 @@
         inventory: this.inventory.status(),
         merchant: this.merchant.status(),
         bank: this.bank.status(),
+        trade: this.trade.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
         roster,
@@ -11204,6 +12351,7 @@
         inventory: this.inventory.status(),
         merchant: this.merchant.status(),
         bank: this.bank.status(),
+        trade: this.trade.status(),
         liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
         logs: this.logger.list(160),
@@ -11230,6 +12378,7 @@
       push('loot-inventory-controller', !!this.inventory.status() && typeof this.inventory.plan === 'function' && typeof this.inventory.tick === 'function', this.inventory.status());
       push('merchant-controller', !!this.merchant.status() && typeof this.merchant.plan === 'function', this.merchant.status());
       push('bank-controller', !!this.bank.status() && typeof this.bank.plan === 'function' && typeof this.bank.reconcile === 'function', this.bank.status());
+      push('trade-controller', !!this.trade.status() && typeof this.trade.marketAnalysis === 'function' && typeof this.trade.queueAcquire === 'function', this.trade.status());
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
       push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);
@@ -11359,6 +12508,7 @@
       this.inventoryResult = null;
       this.merchantResult = null;
       this.bankResult = null;
+      this.tradeResult = null;
       this.liveTestClipboard = null;
       this._offLog = null;
       this._dragCleanup = null;
@@ -11415,7 +12565,7 @@
 </style>
 <div class="albot-head" id="albot-drag-handle"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-minimize" class="albot-window-btn" title="Fenster minimieren" aria-label="Fenster minimieren">—</button><button id="albot-emergency" class="albot-stop">STOP</button></div>
 <div class="albot-tabs">
-<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="merchant">Merchant</button><button class="albot-tab" data-tab="bank">Bank</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
+<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="merchant">Merchant</button><button class="albot-tab" data-tab="bank">Bank</button><button class="albot-tab" data-tab="trade">Handel</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
 </div>
 <div class="albot-body">
 <section id="albot-panel-overview" class="albot-panel active"></section>
@@ -11428,6 +12578,7 @@
 <section id="albot-panel-inventory" class="albot-panel"></section>
 <section id="albot-panel-merchant" class="albot-panel"></section>
 <section id="albot-panel-bank" class="albot-panel"></section>
+<section id="albot-panel-trade" class="albot-panel"></section>
 <section id="albot-panel-live-test" class="albot-panel"></section>
 <section id="albot-panel-knowledge" class="albot-panel"></section>
 <section id="albot-panel-logs" class="albot-panel"></section>
@@ -11569,6 +12720,7 @@
       if (this.activeTab === 'inventory') this.renderInventory(status);
       if (this.activeTab === 'merchant') this.renderMerchant(status);
       if (this.activeTab === 'bank') this.renderBank(status);
+      if (this.activeTab === 'trade') this.renderTrade(status);
       if (this.activeTab === 'live-test') this.renderLiveTest(status);
       if (this.activeTab === 'knowledge') this.renderKnowledge(status);
       if (this.activeTab === 'logs') this.renderLogs();
@@ -11590,6 +12742,7 @@
       this.renderInventory(status);
       this.renderMerchant(status);
       this.renderBank(status);
+      this.renderTrade(status);
       this.renderLiveTest(status);
       this.renderKnowledge(status);
       this.renderLogs();
@@ -12199,6 +13352,126 @@ ${items.length ? items.slice(0, 24).map(row => '<div class="albot-small">#'+esc(
       };
     }
 
+    renderTrade(status) {
+      const panel = this.host.querySelector('#albot-panel-trade');
+      if (!panel) return;
+      const trade = status.trade || {};
+      const metrics = trade.metrics || {};
+      const plan = trade.lastPlan || null;
+      const resultText = this.tradeResult ? JSON.stringify(this.tradeResult, null, 2) : 'Noch keine manuelle H13-Aktion.';
+      let market = null;
+      try { market = this.runtime.trade.marketAnalysis(null); } catch (_) { market = null; }
+      const asks = market && Array.isArray(market.asks) ? market.asks : [];
+      const bids = market && Array.isArray(market.bids) ? market.bids : [];
+      const safeSell = plan && Array.isArray(plan.safeSellRows) ? plan.safeSellRows : [];
+
+      const askOptions = asks.length
+        ? asks.slice(0, 40).map(row => '<option value="'+esc(row.playerName)+'|'+esc(row.slot)+'">'+esc(row.name)+' +'+esc(row.level || 0)+' · '+esc(row.price)+'g · '+esc(row.playerName)+'</option>').join('')
+        : '<option value="">keine sichtbaren Verkaufsangebote</option>';
+      const bidOptions = bids.length
+        ? bids.slice(0, 40).map(row => '<option value="'+esc(row.playerName)+'|'+esc(row.slot)+'">'+esc(row.name)+' +'+esc(row.level || 0)+' · '+esc(row.price)+'g · '+esc(row.playerName)+'</option>').join('')
+        : '<option value="">keine sichtbaren Kaufangebote</option>';
+      const sellOptions = safeSell.length
+        ? safeSell.map(row => '<option value="'+esc(row.slot)+'">'+esc(row.name)+' x'+esc(row.quantity || 1)+' · Slot '+esc(row.slot)+'</option>').join('')
+        : '<option value="">kein H10-SELL-Item</option>';
+
+      panel.innerHTML = `<div class="albot-card"><b>H13 Handel</b>
+<div class="albot-small">NPC Buy/Sell, sichtbare Player-Market-Analyse und explizit preisgedeckelte Acquisition. Kein Player-Market-Write ohne konkrete Preisgrenze und erneute Listing-Prüfung unmittelbar vor Dispatch.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${trade.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Plan</span><div class="albot-v">${esc(plan && plan.state || '-')} · ${esc(plan && plan.reason || '-')}</div></div>
+<div><span class="albot-k">Goldreserve</span><div class="albot-v">${esc(trade.config && trade.config.goldReserve || 0)}</div></div>
+<div><span class="albot-k">Suspendiert</span><div class="albot-v">${trade.suspended ? 'JA · '+esc(trade.suspendedReason || '-') : 'NEIN'}</div></div>
+<div><span class="albot-k">NPC Käufe bestätigt</span><div class="albot-v">${esc(metrics.npcBuysConfirmed || 0)}</div></div>
+<div><span class="albot-k">NPC Verkäufe bestätigt</span><div class="albot-v">${esc(metrics.npcSellsConfirmed || 0)}</div></div>
+<div><span class="albot-k">Markt Käufe bestätigt</span><div class="albot-v">${esc(metrics.marketBuysConfirmed || 0)}</div></div>
+<div><span class="albot-k">Markt Verkäufe bestätigt</span><div class="albot-v">${esc(metrics.marketSellsConfirmed || 0)}</div></div>
+<div><span class="albot-k">Price Blocks</span><div class="albot-v">${esc(metrics.priceBlocks || 0)}</div></div>
+<div><span class="albot-k">Safety Blocks</span><div class="albot-v">${esc(metrics.safetyBlocks || 0)}</div></div>
+<div><span class="albot-k">Sichtbare Asks</span><div class="albot-v">${esc(asks.length)}</div></div>
+<div><span class="albot-k">Sichtbare Bids</span><div class="albot-v">${esc(bids.length)}</div></div>
+</div></div>
+
+<div class="albot-card"><b>NPC Acquisition</b>
+<div class="albot-row"><input id="albot-h13-npc-item" value="hpot0" placeholder="Item-ID"><input id="albot-h13-npc-qty" type="number" min="1" step="1" value="1" style="max-width:80px"><input id="albot-h13-npc-max" type="number" min="1" step="1" placeholder="Max. Stückpreis"><button id="albot-h13-acquire" class="albot-btn">Acquisition planen</button></div>
+<div class="albot-small">Der Maximalpreis ist Pflicht. NPC-Festpreis und sichtbare Player-Asks werden verglichen; gewählt wird nur eine Quelle innerhalb des Limits.</div>
+</div>
+
+<div class="albot-card"><b>NPC SELL</b>
+<div class="albot-row"><select id="albot-h13-sell-item">${sellOptions}</select><input id="albot-h13-sell-qty" type="number" min="1" step="1" value="1" style="max-width:80px"><button id="albot-h13-sell-npc" class="albot-btn">SELL-Item verkaufen</button></div>
+<div class="albot-small">Nur Items mit H10-Disposition SELL. KEEP/PROTECT/RESERVE/BANK/EXCHANGE sind blockiert.</div>
+</div>
+
+<div class="albot-card"><b>Player Market – explizit</b>
+<div class="albot-small">Analyse ist read-only. Kauf/Verkauf prüft Listing-RID und Preis unmittelbar vor Dispatch erneut.</div>
+<div class="albot-row"><select id="albot-h13-ask">${askOptions}</select><input id="albot-h13-ask-max" type="number" min="1" step="1" placeholder="Max. Stückpreis"><button id="albot-h13-buy-market" class="albot-btn">Ask kaufen</button></div>
+<div class="albot-row"><select id="albot-h13-bid">${bidOptions}</select><input id="albot-h13-bid-min" type="number" min="0" step="1" placeholder="Min. Stückpreis"><button id="albot-h13-sell-market" class="albot-btn">In Bid verkaufen</button></div>
+</div>
+
+<div class="albot-card"><b>Steuerung</b>
+<div class="albot-row"><button id="albot-h13-plan" class="albot-btn">Plan</button><button id="albot-h13-analysis" class="albot-btn">Markt analysieren</button><button id="albot-h13-tick" class="albot-btn">Tick</button><button id="albot-h13-reset" class="albot-btn warn" ${trade.suspended ? '' : 'disabled'}>Safety zurücksetzen</button></div>
+<div class="albot-small">Pending: ${trade.pending ? esc(trade.pending.kind) : 'nein'} · Request: ${trade.request ? esc(trade.request.kind) : 'keiner'}</div>
+</div>
+
+<div class="albot-card"><b>Letzte Aktion</b><div class="albot-small">${esc(trade.lastAction && trade.lastAction.type || '-')} · ${esc(trade.lastAction && trade.lastAction.reason || '-')}</div></div>
+<div class="albot-card"><b>Letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.tradeResult = fn(); }
+        catch (error) { this.tradeResult = { ok: false, reason: String(error && error.message || error) }; }
+        this.renderTrade(this.runtime.status());
+      };
+      const planButton = panel.querySelector('#albot-h13-plan');
+      if (planButton) planButton.onclick = () => run(() => this.runtime.trade.plan());
+      const analysisButton = panel.querySelector('#albot-h13-analysis');
+      if (analysisButton) analysisButton.onclick = () => run(() => this.runtime.trade.marketAnalysis(null));
+      const tickButton = panel.querySelector('#albot-h13-tick');
+      if (tickButton) tickButton.onclick = () => run(() => this.runtime.trade.tick());
+      const resetButton = panel.querySelector('#albot-h13-reset');
+      if (resetButton) resetButton.onclick = () => run(() => this.runtime.trade.resetSafety('GUI_H13_RESET'));
+
+      const acquireButton = panel.querySelector('#albot-h13-acquire');
+      if (acquireButton) acquireButton.onclick = () => {
+        const itemName = panel.querySelector('#albot-h13-npc-item').value;
+        const quantity = Number(panel.querySelector('#albot-h13-npc-qty').value) || 1;
+        const maxUnitPrice = Number(panel.querySelector('#albot-h13-npc-max').value);
+        run(() => this.runtime.trade.queueAcquire(itemName, quantity, { maxUnitPrice }));
+      };
+
+      const sellNpcButton = panel.querySelector('#albot-h13-sell-npc');
+      if (sellNpcButton) sellNpcButton.onclick = () => {
+        const slot = Number(panel.querySelector('#albot-h13-sell-item').value);
+        const quantity = Number(panel.querySelector('#albot-h13-sell-qty').value) || 1;
+        run(() => Number.isFinite(slot)
+          ? this.runtime.trade.queueNpcSell(slot, quantity, {})
+          : { accepted: false, reason: 'H13_GUI_NO_SELL_ITEM' });
+      };
+
+      const buyMarketButton = panel.querySelector('#albot-h13-buy-market');
+      if (buyMarketButton) buyMarketButton.onclick = () => {
+        const raw = panel.querySelector('#albot-h13-ask').value || '';
+        const split = raw.lastIndexOf('|');
+        const playerName = split >= 0 ? raw.slice(0, split) : '';
+        const tradeSlot = split >= 0 ? raw.slice(split + 1) : '';
+        const maxUnitPrice = Number(panel.querySelector('#albot-h13-ask-max').value);
+        run(() => playerName && tradeSlot
+          ? this.runtime.trade.queueMarketBuy(playerName, tradeSlot, 1, { maxUnitPrice })
+          : { accepted: false, reason: 'H13_GUI_NO_MARKET_ASK' });
+      };
+
+      const sellMarketButton = panel.querySelector('#albot-h13-sell-market');
+      if (sellMarketButton) sellMarketButton.onclick = () => {
+        const raw = panel.querySelector('#albot-h13-bid').value || '';
+        const split = raw.lastIndexOf('|');
+        const playerName = split >= 0 ? raw.slice(0, split) : '';
+        const tradeSlot = split >= 0 ? raw.slice(split + 1) : '';
+        const minUnitPrice = Number(panel.querySelector('#albot-h13-bid-min').value);
+        run(() => playerName && tradeSlot
+          ? this.runtime.trade.queueMarketSell(playerName, tradeSlot, 1, { minUnitPrice })
+          : { accepted: false, reason: 'H13_GUI_NO_MARKET_BID' });
+      };
+    }
+
     async runRecommendedLiveTest() {
       const state = this.runtime.status();
       if (state.emergencyStop && state.emergencyStop.latched) {
@@ -12429,7 +13702,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.12.0-h12',
+    version: '0.13.0-h13',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -12489,6 +13762,9 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
       farmSpots: options => runtime.game.farmSpotCatalog(options || {}),
       inventory: () => runtime.game.inventorySnapshot(),
       bank: () => runtime.game.bankSnapshot(),
+      market: options => runtime.game.marketSnapshot(options || {}),
+      npcLocation: npcId => runtime.game.npcLocation(npcId),
+      npcSources: itemName => runtime.game.npcShopSources(itemName),
       chests: () => runtime.game.chestSnapshot()
     },
 
@@ -12573,6 +13849,20 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
       withdrawGold: amount => runtime.bank.queueGoldWithdraw(amount)
     },
 
+    trade: {
+      status: () => runtime.trade.status(),
+      plan: () => runtime.trade.plan(),
+      tick: () => runtime.trade.tick(),
+      reset: reason => runtime.trade.resetSafety(reason || 'API_H13_RESET'),
+      cancel: reason => runtime.trade.cancelRequest(reason || 'API_H13_REQUEST_CANCEL'),
+      market: (itemName, options) => runtime.trade.marketAnalysis(itemName, options || {}),
+      acquire: (itemName, quantity, options) => runtime.trade.queueAcquire(itemName, quantity, options || {}),
+      buyNpc: (itemName, quantity, options) => runtime.trade.queueNpcBuy(itemName, quantity, options || {}),
+      sellNpc: (slot, quantity, options) => runtime.trade.queueNpcSell(slot, quantity, options || {}),
+      buyMarket: (playerName, tradeSlot, quantity, options) => runtime.trade.queueMarketBuy(playerName, tradeSlot, quantity, options || {}),
+      sellMarket: (playerName, tradeSlot, quantity, options) => runtime.trade.queueMarketSell(playerName, tradeSlot, quantity, options || {})
+    },
+
     liveTests: {
       status: () => runtime.liveTests.status(),
       list: () => runtime.liveTests.list(),
@@ -12625,6 +13915,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
   Object.freeze(api.inventory);
   Object.freeze(api.merchant);
   Object.freeze(api.bank);
+  Object.freeze(api.trade);
   Object.freeze(api.liveTests);
   Object.freeze(api.knowledge);
   Object.freeze(api.roster);
@@ -12642,7 +13933,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
     };
   } catch (_) {}
 
-  runtime.logger.info('AL Bot H12 geladen', {
+  runtime.logger.info('AL Bot H13 geladen', {
     version: api.version,
     bootCount,
     hotReload: !!previous,

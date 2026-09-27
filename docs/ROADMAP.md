@@ -374,7 +374,7 @@ H11 wurde nach bestandenem Live-Test und sauberem Exact-Head-Gate als PR #11 gem
 
 ## H12 – Bank
 
-**🟩 BESTANDEN – 2026-09-27**
+**🟦 IMPLEMENTIERT · PRE-LIVE CI GRÜN · LIVE-TEST OFFEN**
 
 **BAU**
 - Live-Bank-Snapshot aus `character.bank`
@@ -400,32 +400,64 @@ H11 wurde nach bestandenem Live-Test und sauberem Exact-Head-Gate als PR #11 gem
 - `dist/al-bot.js` source-synchron auf `0.12.0-h12`
 - nach finalen Bundle-/Dokumentationscommits erneut Exact-Head-CI
 
-**🟩 LIVE-TEST BESTANDEN**
-- Suite `h12-bank`: `PASSED / ALL_STEPS_PASSED`
-- Merchant `My_Merchant`
-- `slice_honey` x155 aus Inventarslot 3 in `items0/0` eingelagert
-- derselbe Stack vollständig zurück in Slot 3 geholt
-- `depositsConfirmed=1`, `withdrawalsConfirmed=1`
-- `depositsUnknown=0`, `withdrawalsUnknown=0`, `movementUnknown=0`
-- `reconciliationEntries=43`, `reconciliationFailures=0`, `itemRestored=true`
-- Cleanup ohne Pending/Request/H12-Movement
-- Runtime wieder STOPPED, Scheduler `totalResources=0`
-- finale Evidence in `docs/H12-LIVE-TEST.md`
+**🟧 LIVE-TEST NOCH AUSSTEHEND**
+- auf dem eigenen Merchant ausführen
+- mindestens ein sicheres H10-`BANK`-Item im Inventar
+- automatische Bankfahrt bei Bedarf
+- reversibler Deposit→Withdraw-Roundtrip
+- Item muss mit ursprünglicher Menge im ursprünglichen Inventarslot zurückkehren
+- 5-Sekunden-Reconciliation ohne UNKNOWN
+- Cleanup + Auto-Restore
+- Nutzer klickt nur **Test starten**
 
-Vor Merge: neuen Exact-Head-CI und vollständigen Merge-Gate erneut prüfen.
+H12 wird erst nach bestandenem echten Adventure-Land-Live-Test gemergt.
 ---
 
 ## H13 – Handel
 
-**🟦 BAU**
-- NPC Buy/Sell
-- Player Market Analysis
-- sichere Preis-/Kauf-/Verkaufsregeln
-- Acquisition
+**🟦 IMPLEMENTIERT · PRE-LIVE CI GRÜN · LIVE-TEST OFFEN**
 
-**🟧 LIVE-TEST**
-- kleine kontrollierte reale Handelsaktionen
+H13 ist als gestapelter Folge-Branch auf H12 vorbereitet und darf erst nach bestandenem H12-Live-Test und H12-Merge auf `main` weitergeführt/gemergt werden.
 
+**BAU**
+- NPC Buy via ActionBoundary `buy_with_gold`
+- NPC Sell via ActionBoundary `sell`
+- Player Market Buy/Sell via `trade_buy` / `trade_sell`
+- Live-NPC-Shopquellen aus `G.npcs` + `find_npc`
+- sichtbare Player-Listings aus Live-Trade-Slots
+- Ask/Bid-Trennung (`b=true` = Buy-Order)
+- verpflichtende Maximalpreise für Käufe
+- verpflichtende Mindestpreise für Player-Market-Verkäufe
+- Listing-`rid` + Preis direkt vor Dispatch erneut geprüft
+- Goldreserve
+- automatische Sell-Auswahl ausschließlich H10-Disposition `SELL`
+- Acquisition: NPC-Festpreis gegen sichtbaren Ask innerhalb expliziter Preisgrenze
+- H4-NPC-Fahrt mit Owner `trade-h13`
+- Inventory-/Gold-Delta-Bestätigung
+- bounded UNKNOWN + Suspension, kein Blind-Retry
+- Headless API `ALBot.trade.*`
+- Control-Center-Tab **Handel**
+- H13-Ein-Klick-Suite `h13-trade`
+- `docs/H13-LIVE-TEST.md`
+
+**🟩 PRE-LIVE CI**
+- Run #249: 157/157 Tests grün
+- H1–H12 Regressionen grün
+- `dist/al-bot.js` source-synchron auf `0.13.0-h13`
+- nach finalen Dokumentationscommits erneut Exact-Head-CI erforderlich
+
+**🟧 LIVE-TEST NOCH AUSSTEHEND**
+- zuerst H12 live testen und bei PASS mergen
+- danach H13 gegen neuen `main` prüfen
+- eigener Merchant
+- exakt 1 `hpot0` zum live bekannten NPC-Festpreis kaufen
+- Inventory- und Gold-Delta bestätigen
+- Player-Market nur read-only analysieren; kein Player-Trade-Write im H13-Live-Test
+- 5-Sekunden-Stabilität ohne H13-UNKNOWN
+- Cleanup + Auto-Restore
+- Nutzer klickt nur **Test starten**
+
+H13 wird erst nach H12-Merge und eigenem echten Adventure-Land-Live-PASS gemergt.
 ---
 
 ## H14 – Gear
