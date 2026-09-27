@@ -15682,7 +15682,7 @@
         id: 'h16-exchange-craft',
         title: 'H16 – Exchange & Craft',
         description: 'Ein-Klick-Live-Test für Materialbeschaffung, eine kleine niedrig riskante Craft- und Exchange-Sequenz, Live-Outcome-Evidence und Produktionsgraph.',
-        version: '4',
+        version: '5',
         recommended: true,
         autoStartRuntime: true,
         restoreRuntimeState: true,
@@ -15732,7 +15732,7 @@
             id: 'preflight',
             title: 'Sicheren Craft-/Exchange-Pfad inklusive beschaffbarer Materialien prüfen',
             timeoutMs: 12000,
-            run: async ({ runtime, assert }) => {
+            run: async ({ runtime, assert, note }) => {
               const game = runtime.game.snapshot();
               assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
               assert(game.character.rip !== true, 'CHARACTER_DEAD');
@@ -15753,14 +15753,72 @@
                 && row.questEvent !== true
                 && Number(row.valueAtRisk || 0) <= 2000000);
 
-              assert(exchanges.length > 0, 'H16_NEEDS_LOW_RISK_EXCHANGE_CANDIDATE');
-
               let selectedCraft = null;
               let selectedExchange = null;
               let materials = [];
               let production = null;
               let materialAcquisitionGold = 0;
               let mode = null;
+              const localCraftRejects = {};
+              const fallbackRejects = {};
+              const nearMatches = [];
+              const bump = (bucket, reason) => {
+                const key = String(reason || 'UNKNOWN');
+                bucket[key] = (bucket[key] || 0) + 1;
+              };
+              const recordFallbackReject = (recipe, reason, details = {}, distance = 9) => {
+                bump(fallbackRejects, reason);
+                nearMatches.push({
+                  ...details,
+                  itemName: recipe && recipe.name || null,
+                  reason,
+                  distance,
+                  craftCost: recipe ? Number(recipe.cost || 0) : null
+                });
+              };
+              const recordLocalCraftReject = (craft, reason, details = {}, distance = 3) => {
+                bump(localCraftRejects, reason);
+                nearMatches.push({
+                  ...details,
+                  itemName: craft && craft.itemName || null,
+                  reason,
+                  distance,
+                  craftCost: craft ? Number(craft.cost || 0) : null
+                });
+              };
+              const buildPreflightDiagnostics = () => {
+                nearMatches.sort((a, b) =>
+                  Number(a.distance) - Number(b.distance)
+                  || Number(a.craftCost == null ? Number.MAX_SAFE_INTEGER : a.craftCost)
+                    - Number(b.craftCost == null ? Number.MAX_SAFE_INTEGER : b.craftCost)
+                  || String(a.itemName || '').localeCompare(String(b.itemName || '')));
+                return {
+                  suiteVersion: 5,
+                  selectedMode: mode,
+                  totalCraftCandidates: (plan.craftCandidates || []).length,
+                  safeCraftCandidates: crafts.length,
+                  safeExchangeCandidates: exchanges.length,
+                  localCraftRejects,
+                  fallbackRejects,
+                  topNearMatches: nearMatches.slice(0, 5),
+                  caps: {
+                    exchangeValueAtRisk: 2000000,
+                    craftInputValueAtRisk: 2000000,
+                    craftCost: 1000000,
+                    materialAcquisition: 1000000,
+                    goldReserve: 10000,
+                    maxMissingLeaves: 2,
+                    missingLeafLevel: 0
+                  }
+                };
+              };
+
+              for (const row of plan.craftCandidates || []) {
+                if (row && row.safe !== true) bump(localCraftRejects, row.reason || 'H16_CRAFT_UNSAFE');
+              }
+
+              note(buildPreflightDiagnostics());
+              assert(exchanges.length > 0, 'H16_NEEDS_LOW_RISK_EXCHANGE_CANDIDATE');
 
               for (const craft of crafts) {
                 const outputDef = craft.definition || runtime.game.itemDefinition(craft.itemName);
@@ -15790,7 +15848,14 @@
                 for (const craft of crafts) {
                   const sourceNames = new Set((craft.recipe && craft.recipe.items || []).map(row => String(row.name)));
                   const exchange = exchanges.find(row => !sourceNames.has(String(row.itemName)));
-                  if (!exchange) continue;
+                  if (!exchange) {
+                    recordLocalCraftReject(craft, 'NO_DISJOINT_EXCHANGE_CANDIDATE', {
+                      inputRisk: Number(craft.inputValueAtRisk || 0),
+                      sourceItems: Array.from(sourceNames).slice(0, 5),
+                      availableExchangeCandidates: exchanges.length
+                    }, 3);
+                    continue;
+                  }
                   selectedCraft = craft;
                   selectedExchange = {
                     itemName: exchange.itemName,
@@ -15807,39 +15872,124 @@
                 }
               }
 
-              if (!selectedCraft
-                  && String(game.character.ctype || '').toLowerCase() === 'merchant'
-                  && !(runtime.trade.status() && runtime.trade.status().suspended)) {
+              const tradeStatus = runtime.trade.status();
+              const isMerchant = String(game.character.ctype || '').toLowerCase() === 'merchant';
+              if (!selectedCraft && !isMerchant) {
+                recordFallbackReject(null, 'MATERIAL_ACQUISITION_REQUIRES_MERCHANT', {
+                  characterType: game.character.ctype || null
+                }, 0);
+              } else if (!selectedCraft && tradeStatus && tradeStatus.suspended) {
+                recordFallbackReject(null, 'MATERIAL_ACQUISITION_TRADE_SUSPENDED', {
+                  tradeReason: tradeStatus.reason || null
+                }, 0);
+              } else if (!selectedCraft) {
                 const acquisitionCandidates = [];
                 const catalog = runtime.game.craftCatalog();
                 for (const recipe of catalog || []) {
-                  if (!recipe || recipe.quest) continue;
-                  if (Number(recipe.cost || 0) > 1000000) continue;
+                  if (!recipe) {
+                    recordFallbackReject(null, 'RECIPE_UNAVAILABLE', {}, 12);
+                    continue;
+                  }
+                  if (recipe.quest) {
+                    recordFallbackReject(recipe, 'QUEST_EVENT_RECIPE', { quest: recipe.quest }, 12);
+                    continue;
+                  }
+                  if (Number(recipe.cost || 0) > 1000000) {
+                    recordFallbackReject(recipe, 'CRAFT_COST_OVER_CAP', { craftCost: Number(recipe.cost || 0), cap: 1000000 }, 8);
+                    continue;
+                  }
                   const outputDef = runtime.game.itemDefinition(recipe.name);
-                  if (!outputDef || outputDef.quest === true || outputDef.cash === true) continue;
+                  if (!outputDef) {
+                    recordFallbackReject(recipe, 'OUTPUT_DEFINITION_UNAVAILABLE', {}, 11);
+                    continue;
+                  }
+                  if (outputDef.quest === true || outputDef.cash === true) {
+                    recordFallbackReject(recipe, 'OUTPUT_QUEST_OR_CASH_BLOCKED', { quest: outputDef.quest === true, cash: outputDef.cash === true }, 11);
+                    continue;
+                  }
                   const inputRisk = recipeInputRisk(runtime, recipe);
-                  if (inputRisk == null || inputRisk > 2000000) continue;
+                  if (inputRisk == null) {
+                    recordFallbackReject(recipe, 'INPUT_RISK_UNAVAILABLE', {}, 9);
+                    continue;
+                  }
+                  if (inputRisk > 2000000) {
+                    recordFallbackReject(recipe, 'INPUT_RISK_OVER_CAP', { inputRisk, cap: 2000000 }, 8);
+                    continue;
+                  }
 
                   const candidateProduction = runtime.exchangeCraft.productionPlan(recipe.name, 1, { includeBank: false });
-                  if (!candidateProduction || candidateProduction.state !== 'NEEDS_MATERIALS') continue;
-                  if ((candidateProduction.protectedRecipes || []).length) continue;
-                  if ((candidateProduction.stages || []).length !== 1) continue;
+                  if (candidateProduction && (candidateProduction.protectedRecipes || []).length) {
+                    recordFallbackReject(recipe, 'PROTECTED_RECIPE_IN_PRODUCTION', {
+                      productionState: candidateProduction.state || null,
+                      productionReason: candidateProduction.reason || null,
+                      protectedRecipes: (candidateProduction.protectedRecipes || []).slice(0, 3),
+                      inputRisk
+                    }, 7);
+                    continue;
+                  }
+                  if (!candidateProduction || candidateProduction.state !== 'NEEDS_MATERIALS') {
+                    recordFallbackReject(recipe, 'PRODUCTION_NOT_NEEDS_MATERIALS', {
+                      productionState: candidateProduction && candidateProduction.state || null,
+                      productionReason: candidateProduction && candidateProduction.reason || null,
+                      inputRisk
+                    }, 7);
+                    continue;
+                  }
+                  if ((candidateProduction.stages || []).length !== 1) {
+                    recordFallbackReject(recipe, 'NESTED_OR_MULTI_STAGE_RECIPE', {
+                      stageCount: (candidateProduction.stages || []).length,
+                      stages: (candidateProduction.stages || []).slice(0, 4).map(row => row.itemName),
+                      inputRisk
+                    }, 5);
+                    continue;
+                  }
                   const stage = candidateProduction.stages[0];
-                  if (!stage || String(stage.itemName) !== String(recipe.name) || Number(stage.runs) !== 1) continue;
+                  if (!stage || String(stage.itemName) !== String(recipe.name) || Number(stage.runs) !== 1) {
+                    recordFallbackReject(recipe, 'DIRECT_STAGE_MISMATCH', {
+                      stage: stage ? { itemName: stage.itemName, runs: stage.runs } : null,
+                      inputRisk
+                    }, 5);
+                    continue;
+                  }
                   const missing = candidateProduction.missing || [];
-                  if (!missing.length || missing.length > 2) continue;
+                  if (!missing.length) {
+                    recordFallbackReject(recipe, 'NO_MISSING_LEAVES_AFTER_NEEDS_MATERIALS', { inputRisk }, 6);
+                    continue;
+                  }
+                  if (missing.length > 2) {
+                    recordFallbackReject(recipe, 'TOO_MANY_MISSING_LEAVES', {
+                      missingCount: missing.length,
+                      missing: missing.slice(0, 5).map(row => ({ itemName: row.itemName, level: row.level, quantity: row.quantity })),
+                      inputRisk
+                    }, 4);
+                    continue;
+                  }
 
                   const sourceNames = new Set((recipe.items || []).map(row => String(row.name)));
                   const exchange = exchanges.find(row => !sourceNames.has(String(row.itemName)));
-                  if (!exchange) continue;
+                  if (!exchange) {
+                    recordFallbackReject(recipe, 'NO_DISJOINT_EXCHANGE_CANDIDATE', {
+                      missingCount: missing.length,
+                      missing: missing.map(row => ({ itemName: row.itemName, level: row.level, quantity: row.quantity })),
+                      inputRisk
+                    }, 4);
+                    continue;
+                  }
 
                   let viable = true;
+                  let viabilityReason = null;
+                  let viabilityDetails = null;
                   let acquisitionGold = 0;
                   const plannedMaterials = [];
                   for (const row of missing) {
                     const quantity = Math.max(1, Math.floor(Number(row.quantity) || 1));
                     const level = Math.max(0, Number(row.level) || 0);
-                    if (level !== 0) { viable = false; break; }
+                    if (level !== 0) {
+                      viable = false;
+                      viabilityReason = 'MISSING_LEAF_LEVEL_NONZERO';
+                      viabilityDetails = { missingItemName: row.itemName, level, quantity };
+                      break;
+                    }
 
                     const offers = [];
                     const npcPrice = Number(row.npcPrice);
@@ -15856,7 +16006,22 @@
 
                     offers.sort((a, b) => a.unitPrice - b.unitPrice);
                     const chosen = offers[0];
-                    if (!chosen) { viable = false; break; }
+                    if (!chosen) {
+                      viable = false;
+                      viabilityReason = 'MISSING_LEAF_NO_NPC_OR_MARKET_SOURCE';
+                      viabilityDetails = {
+                        missingItemName: row.itemName,
+                        level,
+                        quantity,
+                        npcPrice: Number.isFinite(npcPrice) ? npcPrice : null,
+                        npcSources: (row.npcSources || []).slice(0, 4).map(source => ({
+                          npcId: source.npcId,
+                          hasLocation: !!(source && source.location)
+                        })),
+                        bestMarketAsk: ask ? { price: ask.price, quantity: ask.quantity, playerName: ask.playerName || null } : null
+                      };
+                      break;
+                    }
 
                     const estimatedCost = chosen.unitPrice * quantity;
                     acquisitionGold += estimatedCost;
@@ -15869,12 +16034,42 @@
                       estimatedCost
                     });
                   }
-                  if (!viable || acquisitionGold > 1000000) continue;
+                  if (!viable) {
+                    recordFallbackReject(recipe, viabilityReason || 'MATERIAL_PATH_NOT_VIABLE', {
+                      ...(viabilityDetails || {}),
+                      missingCount: missing.length,
+                      missing: missing.map(row => ({ itemName: row.itemName, level: row.level, quantity: row.quantity })),
+                      inputRisk,
+                      acquisitionGold
+                    }, 2);
+                    continue;
+                  }
+                  if (acquisitionGold > 1000000) {
+                    recordFallbackReject(recipe, 'MATERIAL_ACQUISITION_OVER_CAP', {
+                      acquisitionGold,
+                      cap: 1000000,
+                      materials: plannedMaterials,
+                      inputRisk
+                    }, 1);
+                    continue;
+                  }
                   const recipeCost = Number(recipe.cost || 0);
                   const currentGold = Number(game.character.gold);
                   const totalEstimatedGold = acquisitionGold + recipeCost;
                   if (!Number.isFinite(currentGold)
-                      || currentGold - totalEstimatedGold < 10000) continue;
+                      || currentGold - totalEstimatedGold < 10000) {
+                    recordFallbackReject(recipe, 'GOLD_RESERVE_AFTER_ACQUISITION_AND_CRAFT', {
+                      currentGold: Number.isFinite(currentGold) ? currentGold : null,
+                      acquisitionGold,
+                      recipeCost,
+                      totalEstimatedGold,
+                      requiredGoldWithReserve: totalEstimatedGold + 10000,
+                      reserve: 10000,
+                      materials: plannedMaterials,
+                      inputRisk
+                    }, 1);
+                    continue;
+                  }
 
                   acquisitionCandidates.push({
                     recipe,
@@ -15920,6 +16115,8 @@
                   selectedCraft.requiredGoldWithReserve = chosen.requiredGoldWithReserve;
                 }
               }
+
+              note(buildPreflightDiagnostics());
 
               assert(selectedCraft && selectedExchange,
                 'H16_NEEDS_LOW_RISK_CRAFT_OR_ACQUIRABLE_MATERIALS');
