@@ -1303,3 +1303,24 @@ ALFinal H19 fuehrt deshalb einen nativen Cross-Window-Lifecycle-Kanal ein:
 PR #35 (`chatgpt/h19-cross-window-lifecycle`) enthaelt Implementierung, Live-Test v2 und Regressionstests. Nach erfolgreichem Merge muessen alle separat geoeffneten Adventure-Land-Fenster denselben neuen ALFinal-Build laden, bevor der naechste echte `h19-remote-recovery`-Lauf ausgefuehrt wird.
 
 H19 bleibt bis zum vollstaendigen Remote-Recovery-PASS und anschliessendem Party-Recovery-Gate offen.
+
+
+### H19 v2 – Cross-Window Remote-Recovery live bestaetigt
+
+Stand 2026-09-27.
+
+Der echte `h19-remote-recovery`-Lauf auf `My_Priest` gegen das separat geoeffnete `My_Merchant`-Fenster ist vollstaendig PASSED:
+
+- `cross-window-runtime`;
+- 1 bestaetigter Remote STOP;
+- 1 bestaetigter Recovery START;
+- insgesamt 2 Dispatch / 2 Confirm;
+- 0 Rejects / 0 UNKNOWNs;
+- 2 CM-Commands / 2 ACKs / 2 erfolgreiche terminale Settlements;
+- 5 Sekunden stabil ohne Retry;
+- Cleanup erfolgreich, Ziel aktiv, H19-Autonomie aus, Queue leer, keine Suspension;
+- urspruengliche leere Lifecycle-Policy wiederhergestellt.
+
+Damit sind Remote Character Runtime-STOP und Restart-Recovery fuer getrennte Browserfenster live bestaetigt.
+
+**Offen in H19:** nur noch der separate Party-Recovery-Live-Gate. Erst nach dessen PASS ist H19 abgeschlossen und H20 freigegeben.
