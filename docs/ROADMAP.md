@@ -522,7 +522,7 @@ H14 ist live bestanden. Vor Merge bleiben nur neuer Exact-Head-CI und der vollst
 
 ## H15 – Upgrade & Compound
 
-**🟦 IMPLEMENTIERT · PRE-LIVE CI/REVIEW GRÜN · FINALER DOKU-CI OFFEN · LIVE-TEST OFFEN**
+**✅ IMPLEMENTIERT · LIVE BESTANDEN · FINALER MERGE-CI OFFEN**
 
 **BAU**
 - eigener `UpgradeCompoundController`
@@ -564,7 +564,18 @@ Falls kein geeigneter Kandidat vorhanden ist:
 
 Dann wird nichts verändert.
 
-H15 wird erst nach grünem Exact-Head-CI, sauberem Review-Gate und echtem Adventure-Land-Live-PASS gemergt.
+Finale Live-Evidence:
+- Suite `h15-upgrade-compound`: **PASSED / ALL_STEPS_PASSED**
+- echte Aktion: `gloves +0 → +1`
+- Outcome: `UPGRADE_SUCCEEDED`
+- Evidence: `INVENTORY_LEVEL_DELTA`
+- genau 1 Versuch
+- beide UNKNOWN-Deltas 0
+- keine Suspension
+- Cleanup ohne Pending/Request
+- Runtime Auto-Restore erfolgreich, Scheduler danach `totalResources=0`
+
+H15-Live-Gate ist bestanden. Nach den Evidence-Dokucommits ist nur noch der neue Exact-Head-CI plus vollständiger Merge-Gate-Check erforderlich.
 
 ---
 
