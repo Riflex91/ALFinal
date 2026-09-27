@@ -624,3 +624,22 @@ Live-Evidence:
 Zusammen mit dem bereits erfolgreich bestaetigten `h19-remote-recovery`-Lauf sind damit die dedizierten H19-Cross-Window- und Party-Recovery-Live-Gates vollstaendig PASSED.
 
 H20 bleibt bis zum Merge der append-only H19-Evidence blockiert. Nach deren Merge ist H19 abgeschlossen und H20 darf beginnen.
+
+
+
+### Append-only Nachtrag – Cross-Window Remote-Recovery PASS aus PR #37
+
+Die bereits separat erfasste Remote-Recovery-Evidence aus dem inzwischen stale gewordenen PR #37 wird hier ohne Umschreiben der bisherigen Historie in den aktuellen H19-Abschlussstand uebernommen:
+
+- Suite `h19-remote-recovery` v2: `PASSED / ALL_STEPS_PASSED`;
+- Test-Runner `My_Priest`, Remote-Ziel `My_Merchant`, Control Mode `cross-window-runtime`;
+- Preflight sah `My_Merchant`, `My_Ranger1` und `My_Warrior` als frische getrennte H19-Peers;
+- alle Cross-Window-Peers meldeten Version `0.19.0-h19`, `running=true` und keinen Emergency-Stop-Latch;
+- Remote STOP: 1 Dispatch / 1 Confirm / 1 Stop-Confirm;
+- Recovery START: kumulativ 2 Dispatch / 2 Confirm / 1 Stop / 1 Start;
+- 0 Rejects / 0 UNKNOWNs;
+- Transport: 2 CM-Commands / 2 ACKs / 2 erfolgreiche terminale Settlements / 0 Transportfehler;
+- Stability: 5 Sekunden ohne Retry;
+- Cleanup PASS: Ziel aktiv, Autonomie aus, keine aktive Aktion, Queue leer, keine Suspension; Lifecycle-Policy wiederhergestellt.
+
+Dieser Nachtrag ersetzt oder veraendert keine fruehere Evidence; er stellt lediglich sicher, dass der aktuelle, auf neuem `main` basierende H19-Abschluss-PR sowohl Remote-Recovery- als auch Party-Recovery-Evidence enthaelt.
