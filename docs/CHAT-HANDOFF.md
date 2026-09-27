@@ -628,11 +628,13 @@ Finale Live-Evidence vom 2026-09-27:
 - Scheduler danach `totalResources=0`
 
 Post-Live-Hardening:
-- der Report zeigte globalen Spread zwischen unterschiedlichen Items;
-- Spread wird jetzt nur noch berechnet, wenn Best Ask und Best Bid dasselbe Item+Level betreffen;
-- Regression hinzugefügt;
+- globaler Spread nur noch bei gleichem Item+Level;
+- NPC-Buy und Market-Buy prüfen die Goldreserve direkt vor Dispatch erneut;
+- NPC-Sell prüft H10-SELL-Safety und Menge direkt vor Dispatch erneut;
+- Player-Market-Sell verlangt exakten Bid-Fingerprint inklusive Stat-Type/Property und prüft H10-Safety/Menge direkt vor Dispatch erneut;
+- Regressionen hinzugefügt;
 - Bundle synchronisiert;
-- kein Gameplay-Write-Pfad wurde dadurch verändert.
+- ausschließlich zusätzliche fail-closed Guards, keine neuen Write-Pfade.
 
 Nächster verbindlicher H13-Ablauf:
 1. neuen exakten Head nach Hardening/Evidence-Commits bestimmen;
