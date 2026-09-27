@@ -493,3 +493,85 @@ Diese Entscheidung ersetzt ausschließlich den zuvor dokumentierten externen Cod
 - anschließende Verifikation von `main`.
 
 Die historische Codex-Evidence oben bleibt unverändert erhalten und wird nicht rückwirkend umgeschrieben.
+
+## Suite v6 – echter Adventure-Land-Live-PASS
+
+Append-only Evidence vom 2026-09-27, nach Merge von PR #20 auf `main`.
+
+Der echte Live-Test `h16-exchange-craft` Suite-Version 6 endete mit:
+
+- `state = PASSED`
+- `reason = ALL_STEPS_PASSED`
+- Laufzeit ca. 47 Sekunden
+- Cleanup `attempted=true`, `ok=true`
+
+Bestätigte Schritte:
+
+1. **bank-discovery**
+   - `PASSED`
+   - Bank war vorher nicht gemountet
+   - Bank-Map `bank`
+   - 2 sichtbare Packs, 26 belegte Slots
+   - genau 1 Bank-Movement-Request
+   - kein Bank-Write während Discovery
+
+2. **preflight**
+   - `PASSED`
+   - Suite-Version 6
+   - Modus `ACQUIRE_CRAFT_AND_EXCHANGE_COVERAGE`
+   - gewählter Craft: `cake`
+   - Craft-Kosten: 5 Gold
+   - Input Value-at-Risk: 50
+   - gewählter Exchange: `anniversarygift`, Menge 1
+   - Exchange Value-at-Risk: 100
+   - fehlendes Material: 10× `whiteegg`
+   - Quelle: BANK, `items0`, Bank-Slot 5, Stack-Menge 79
+   - reservierter Inventory-Slot-Bedarf: 1
+   - Materialbeschaffungskosten: 0 Gold
+
+3. **materials**
+   - `PASSED`
+   - H16 → H12 Delegation bestätigt
+   - `WITHDRAW_CONFIRMED` für `whiteegg`
+   - Bank-Slot 5 → Inventory-Slot 7
+   - danach Produktionsgraph `READY / H16_PRODUCTION_READY`
+   - `materialDelegations = 1`
+
+4. **craft**
+   - `PASSED`
+   - `cake`
+   - 1 Dispatch, 1 Confirmation
+   - Evidence `CRAFT_OUTPUT_AND_INPUT_DELTAS`
+
+5. **exchange**
+   - `PASSED`
+   - `anniversarygift`
+   - 1 Dispatch, 1 Confirmation
+   - Evidence `EXCHANGE_SOURCE_QUANTITY_DELTA`
+
+6. **stability**
+   - `PASSED`
+   - `exchangeUnknown=0`
+   - `craftUnknown=0`
+   - `tradeUnknown=0`
+   - H16 nicht suspended
+   - H13 nicht suspended
+
+7. **cleanup**
+   - `PASSED`
+   - H16/H13 request/pending vollständig leer
+   - Runtime Auto-Restore erfolgreich
+
+Finale H16-Metriken des Laufes:
+
+- `exchangesDispatched=1`, `exchangesConfirmed=1`, `exchangesUnknown=0`
+- `craftsDispatched=1`, `craftsConfirmed=1`, `craftsUnknown=0`
+- `materialDelegations=1`
+- H12: 1 Withdrawal dispatched + confirmed, 0 rejected, 0 unknown
+- Scheduler nach Auto-Restore ohne Restressourcen/Callback-Fehler
+
+### Ergebnis
+
+**H16 Exchange & Craft ist damit technisch und live in Adventure Land bestanden.**
+
+Die v6-Bank-Materialerweiterung hat den zuvor mit v5 isolierten Materialquellen-Blocker real behoben, ohne Safety-Caps anzuheben. H16 kann als abgeschlossen markiert werden; nächster Entwicklungsblock ist H17 – Economy Autonomy.
