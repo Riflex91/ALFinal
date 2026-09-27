@@ -413,9 +413,9 @@
         this.metrics.priceBlocks += 1;
         return { accepted: false, reason: 'H13_MARKET_BID_BELOW_LIMIT', unitPrice, minUnitPrice };
       }
+      const listingFingerprint = this._fingerprint(listing);
       const sellRow = this._safeSellRows().find(row =>
-        String(row.name) === String(listing.name)
-        && Math.max(0, Number(row.level) || 0) === Math.max(0, Number(listing.level) || 0)
+        this._fingerprint(row) === listingFingerprint
         && Math.max(1, Math.floor(Number(row.quantity) || 1)) >= q);
       if (!sellRow) {
         this.metrics.safetyBlocks += 1;
@@ -428,7 +428,7 @@
         tradeSlot: slot,
         rid: String(listing.rid),
         itemName: listing.name,
-        fingerprint: this._fingerprint(sellRow),
+        fingerprint: listingFingerprint,
         level: Number(listing.level) || 0,
         quantity: q,
         unitPrice,
@@ -671,6 +671,17 @@
       if (request.kind === 'NPC_BUY') {
         const beforeQuantity = this._quantityByName(inventory, request.itemName, request.level || 0);
         if (beforeQuantity == null) return { state: 'BLOCKED', reason: 'H13_INVENTORY_OBSERVATION_UNAVAILABLE' };
+        if (beforeGold - request.totalCost < this.config.goldReserve) {
+          this.request = null;
+          this.metrics.priceBlocks += 1;
+          return {
+            state: 'BLOCKED',
+            reason: 'H13_GOLD_RESERVE_CHANGED',
+            gold: beforeGold,
+            totalCost: request.totalCost,
+            reserve: this.config.goldReserve
+          };
+        }
         return this._dispatch('buy_with_gold', [request.itemName, request.quantity], {
           kind: request.kind,
           itemName: request.itemName,
@@ -684,10 +695,14 @@
       }
 
       if (request.kind === 'NPC_SELL') {
-        const current = (inventory.items || []).find(row => Number(row.slot) === Number(request.inventorySlot));
-        if (!current || this._fingerprint(current) !== request.fingerprint) {
+        const safeCurrent = this._safeSellRows().find(row =>
+          Number(row.slot) === Number(request.inventorySlot)
+          && this._fingerprint(row) === request.fingerprint
+          && Math.max(1, Math.floor(Number(row.quantity) || 1)) >= request.quantity);
+        if (!safeCurrent) {
           this.request = null;
-          return { state: 'BLOCKED', reason: 'H13_SELL_SOURCE_CHANGED' };
+          this.metrics.safetyBlocks += 1;
+          return { state: 'BLOCKED', reason: 'H13_SELL_ITEM_NO_LONGER_SAFE' };
         }
         const beforeQuantity = this._quantity(inventory, request.fingerprint);
         return this._dispatch('sell', [request.inventorySlot, request.quantity], {
@@ -701,6 +716,17 @@
       }
 
       if (request.kind === 'MARKET_BUY') {
+        if (beforeGold - request.totalCost < this.config.goldReserve) {
+          this.request = null;
+          this.metrics.priceBlocks += 1;
+          return {
+            state: 'BLOCKED',
+            reason: 'H13_GOLD_RESERVE_CHANGED',
+            gold: beforeGold,
+            totalCost: request.totalCost,
+            reserve: this.config.goldReserve
+          };
+        }
         const listing = this._marketListingStillMatches(request, false);
         if (!listing
           || Number(listing.price) > Number(request.maxUnitPrice)
@@ -743,6 +769,14 @@
         if (!target || !target.slots || !target.slots[request.tradeSlot]) {
           this.request = null;
           return { state: 'BLOCKED', reason: 'H13_MARKET_TARGET_UNAVAILABLE' };
+        }
+        const safeCurrent = this._safeSellRows().find(row =>
+          this._fingerprint(row) === request.fingerprint
+          && Math.max(1, Math.floor(Number(row.quantity) || 1)) >= request.quantity);
+        if (!safeCurrent) {
+          this.request = null;
+          this.metrics.safetyBlocks += 1;
+          return { state: 'BLOCKED', reason: 'H13_MARKET_SELL_ITEM_NO_LONGER_SAFE' };
         }
         const beforeQuantity = this._quantity(inventory, request.fingerprint);
         return this._dispatch('trade_sell', [target, request.tradeSlot, request.rid, request.quantity], {
