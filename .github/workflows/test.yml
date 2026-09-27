@@ -21,14 +21,3 @@ jobs:
         with:
           node-version: 22
       - run: npm test
-      - uses: actions/upload-artifact@v4
-        with:
-          name: h18-dist
-          path: dist/al-bot.js
-          if-no-files-found: error
-      - name: Emit generated bundle
-        run: |
-          echo ALBOT_DIST_B64_START
-          base64 -w0 dist/al-bot.js
-          echo
-          echo ALBOT_DIST_B64_END
