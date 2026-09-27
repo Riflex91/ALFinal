@@ -1,0 +1,35 @@
+name: H19 Sync Dist
+
+on:
+  push:
+    branches:
+      - chatgpt/h19-lifecycle-recovery
+    paths-ignore:
+      - dist/al-bot.js
+
+permissions:
+  contents: write
+
+jobs:
+  sync-dist:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/h19-lifecycle-recovery
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm run build
+      - name: Commit generated dist if changed
+        run: |
+          if git diff --quiet -- dist/al-bot.js; then
+            echo "dist already synchronized"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dist/al-bot.js
+          git commit -m "build(h19): sync generated bundle"
+          git push origin HEAD:chatgpt/h19-lifecycle-recovery
