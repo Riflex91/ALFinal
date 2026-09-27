@@ -31,7 +31,8 @@ function fixture(options = {}) {
       { name: 'My_Merchant', ctype: 'merchant', online: true },
       { name: 'My_Warrior', ctype: 'warrior', online: true }
     ],
-    active: new Set(options.activeNames || ['My_Ranger', 'My_Priest']),
+    online: new Set(options.onlineNames || options.activeNames || ['My_Ranger', 'My_Priest']),
+    active: new Set(options.runnerActiveNames || options.activeNames || options.onlineNames || ['My_Ranger', 'My_Priest']),
     party: {
       partyId: options.partyId || (Array.isArray(options.partyMembers) && options.partyMembers.length ? 'party-1' : null),
       leader: options.partyLeader || (Array.isArray(options.partyMembers) && options.partyMembers.length ? options.partyMembers[0] : null),
@@ -51,11 +52,14 @@ function fixture(options = {}) {
       observedAt: new Date().toISOString(),
       source: 'test',
       accountStateAvailable: options.accountUnavailable !== true,
+      onlineStateAvailable: options.onlineUnavailable !== true && options.accountUnavailable !== true,
       activeStateAvailable: options.activeUnavailable !== true,
       local: { name: state.character.name, ctype: state.character.ctype, online: true, state: 'self' },
-      characters: state.account.filter(row => state.active.has(row.name)).map(row => ({ ...clone(row), state: row.name === state.character.name ? 'self' : 'active' })),
-      accountCharacters: clone(state.account),
+      characters: state.account.filter(row => state.online.has(row.name)).map(row => ({ ...clone(row), online: true, state: row.name === state.character.name ? 'self' : null })),
+      accountCharacters: state.account.map(row => ({ ...clone(row), online: state.online.has(row.name) })),
+      onlineCharacterNames: [...state.online].sort(),
       activeCharacterNames: [...state.active].sort(),
+      runnerActiveCharacterNames: [...state.active].sort(),
       farmers: [],
       merchant: null,
       merchantCandidates: [],
@@ -94,8 +98,14 @@ function fixture(options = {}) {
       state.dispatches.push({ name, args: clone(args) });
       if (options.syncUnknown) return { state: 'UNKNOWN', dispatched: true, error: { message: 'NETWORK_UNCERTAIN' } };
 
-      if (name === 'start_character' && options.noMutation !== true) state.active.add(String(args[0]));
-      if (name === 'stop_character' && options.noMutation !== true) state.active.delete(String(args[0]));
+      if (name === 'start_character' && options.noMutation !== true) {
+        state.online.add(String(args[0]));
+        if (options.freezeRunnerActive !== true) state.active.add(String(args[0]));
+      }
+      if (name === 'stop_character' && options.noMutation !== true) {
+        state.online.delete(String(args[0]));
+        if (options.freezeRunnerActive !== true) state.active.delete(String(args[0]));
+      }
       if (name === 'respawn' && options.noMutation !== true) state.character.rip = false;
       if (options.noMutation !== true && ['send_party_invite', 'send_party_request', 'accept_party_invite', 'accept_party_request'].includes(name)) {
         const target = String(args[0]);
@@ -486,14 +496,47 @@ test('H19 automatic known reject stops autonomy and does not immediately retry',
   assert.equal(state.dispatches.length, 1);
 });
 
-test('H19 fails closed when account or active roster truth is unavailable', () => {
+test('H19 fails closed when account or account-wide online truth is unavailable', () => {
   const accountUnavailable = fixture({ accountUnavailable: true });
   assert.equal(accountUnavailable.controller.queueStart('My_Merchant').accepted, false);
   assert.equal(accountUnavailable.state.dispatches.length, 0);
 
-  const activeUnavailable = fixture({ activeUnavailable: true });
-  assert.equal(activeUnavailable.controller.queueStart('My_Merchant').accepted, false);
-  assert.equal(activeUnavailable.state.dispatches.length, 0);
+  const onlineUnavailable = fixture({ onlineUnavailable: true });
+  assert.equal(onlineUnavailable.controller.queueStart('My_Merchant').accepted, false);
+  assert.equal(onlineUnavailable.state.dispatches.length, 0);
+
+  const runnerActiveUnavailable = fixture({ activeUnavailable: true });
+  assert.equal(runnerActiveUnavailable.controller.queueStart('My_Merchant').accepted, true);
+  assert.equal(runnerActiveUnavailable.state.dispatches.length, 0);
+});
+
+test('H19 remote lifecycle uses account-wide online truth when runner-active view is local-only', async () => {
+  const { controller, state } = fixture({
+    onlineNames: ['My_Ranger', 'My_Priest', 'My_Merchant'],
+    runnerActiveNames: ['My_Ranger'],
+    freezeRunnerActive: true
+  });
+
+  const captured = controller.captureDesiredActive();
+  assert.equal(captured.accepted, true);
+  assert.deepEqual([...captured.desiredActiveNames], ['My_Merchant', 'My_Priest', 'My_Ranger']);
+  assert.equal(state.active.has('My_Merchant'), false);
+
+  assert.equal(controller.queueStop('My_Merchant').accepted, true);
+  assert.equal(controller.tick().state, 'DISPATCHED');
+  await flush();
+  assert.equal(controller.tick().state, 'CONFIRMED');
+  assert.equal(state.online.has('My_Merchant'), false);
+  assert.equal(state.active.has('My_Merchant'), false);
+
+  assert.equal(controller.queueStart('My_Merchant').accepted, true);
+  assert.equal(controller.tick().state, 'DISPATCHED');
+  await flush();
+  assert.equal(controller.tick().state, 'CONFIRMED');
+  assert.equal(state.online.has('My_Merchant'), true);
+  assert.equal(state.active.has('My_Merchant'), false);
+  assert.equal(controller.status().metrics.stopsConfirmed, 1);
+  assert.equal(controller.status().metrics.startsConfirmed, 1);
 });
 
 test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired', () => {
@@ -511,7 +554,7 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(runtime, /id: 'h19-character-lifecycle'/);
   assert.match(runtime, /id: 'h19-remote-recovery'/);
   assert.match(runtime, /_registerH19RemoteRecoveryLiveTest\(\)/);
-  assert.match(runtime, /row\.name !== localName && row\.name !== leader && active\.has\(row\.name\)/);
+  assert.match(runtime, /row\.name !== localName && row\.name !== leader && online\.has\(row\.name\)/);
   assert.match(runtime, /safeFirstStartRecovery/);
   assert.match(runtime, /targetName = null;\s*baseline = null;\s*originalPolicy = null;/);
   assert.match(runtime, /const cleanupSleep = \(runtime, ms\) => new Promise/);
@@ -546,6 +589,9 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(boundary, /stop_character: Object\.freeze/);
   assert.match(boundary, /respawn: Object\.freeze/);
   assert.match(core, /accountCharacters/);
+  assert.match(core, /onlineStateAvailable/);
+  assert.match(core, /onlineCharacterNames/);
+  assert.match(core, /runnerActiveCharacterNames/);
   assert.match(core, /activeCharacterNames/);
   assert.match(build, /src\/lifecycle-recovery\.js/);
   assert.match(build, /AL Bot 0\.19\.0-h19/);
