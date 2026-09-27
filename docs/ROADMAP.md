@@ -951,3 +951,36 @@ Stand 2026-09-27:
 **H16 – Exchange & Craft: abgeschlossen.**
 
 Nächster Entwicklungsblock: **H17 – Economy Autonomy**.
+
+### H17 – Economy Autonomy technischer Pre-Live-Gate
+
+Stand 2026-09-27, PR #22 `H17: Add bounded economy autonomy planner`.
+
+Implementiert:
+
+- gemeinsamer read-only Planner für Bank, Trade/Market, Gear, Upgrade, Compound, Exchange und Craft;
+- deterministische Prioritäts-/Konfliktauflösung;
+- Autonomie standardmäßig AUS und nur explizit startbar;
+- genau eine delegierte Child-Aktion gleichzeitig;
+- keine direkten Adventure-Land-Writes aus H17;
+- Delegation ausschließlich an bestehende sichere H12–H16-Pfade;
+- STOP/Runtime, Combat, Movement-Ownership, Inventory-`pendingLoot`, Child-Busy/Suspension und Session-Budget als harte Gates;
+- Child UNKNOWN suspendiert H17 ohne Blind-Retry;
+- BLOCKED/REJECTED/FAILED/CANCELLED als terminale Rejects;
+- nach CONFIRMED/REJECTED keine zweite Aktion im selben Tick;
+- proposal-spezifischer Reject-Backoff;
+- H17 Headless-API und Control-Center-Tab;
+- bounded Live-Suite `h17-economy-autonomy` v1 mit maximal drei Aktionen und deaktivierten Gear-/Upgrade-/Compound-Mutationen.
+
+Technischer Head vor finaler Doku:
+
+- `4f8c6fb3733dcf83006611242c74a4ebbc813a99`
+- CI #465: **237/237 PASS, 0 FAIL, 0 CANCELLED, 0 SKIP**
+- beim technischen Check `behind_by=0`, `mergeable=true`
+- vier konkrete Review-Funde behoben und Threads resolved
+- kein `CHANGES_REQUESTED`
+- Bundle source-synchron
+- Runtime/Bundle `0.17.0-h17`, Package `0.17.0`
+- historische globale Versions-/Recommended-/Scheduler-Assertions auf H17 fortgeschrieben.
+
+Nächster Gate-Schritt: finaler Doku-Head durch Exact-Head-CI und vollständigen Merge-Gate. Danach genau **einen** echten `h17-economy-autonomy`-Live-Test auf dem Merchant.

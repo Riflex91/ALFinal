@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.16.0-h16';
+      this.version = options.version || '0.17.0-h17';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -137,6 +137,21 @@
         trade: this.trade,
         combat: this.combat
       });
+      this.economy = new ns.EconomyController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        movement: this.movement,
+        combat: this.combat,
+        inventory: this.inventory,
+        merchant: this.merchant,
+        bank: this.bank,
+        trade: this.trade,
+        gear: this.gear,
+        upgrade: this.upgrade,
+        exchangeCraft: this.exchangeCraft,
+        canAct: action => this.actionAllowed(action)
+      });
       this.liveTests = new ns.LiveTestRunner({
         runtime: this,
         logger: this.logger,
@@ -153,6 +168,7 @@
       this._registerH14LiveTest();
       this._registerH15LiveTest();
       this._registerH16LiveTest();
+      this._registerH17LiveTest();
       this._installErrorCapture();
       this.logger.info('AL Bot Runtime erstellt', {
         version: this.version,
@@ -300,6 +316,15 @@
         start: context => this.exchangeCraft.start(context),
         stop: reason => this.exchangeCraft.stop(reason),
         status: () => this.exchangeCraft.status()
+      });
+
+      this.modules.register({
+        id: 'economy',
+        title: 'Economy Autonomy',
+        version: '0.17.0',
+        start: context => this.economy.start(context),
+        stop: reason => this.economy.stop(reason),
+        status: () => this.economy.status()
       });
     }
 
@@ -3680,6 +3705,223 @@
       });
     }
 
+    _registerH17LiveTest() {
+      let baseline = null;
+      let previousPolicy = null;
+
+      const childUnknownTotal = runtime => {
+        const inventory = runtime.inventory.status().metrics || {};
+        const bank = runtime.bank.status().metrics || {};
+        const trade = runtime.trade.status().metrics || {};
+        const gear = runtime.gear.status().metrics || {};
+        const upgrade = runtime.upgrade.status().metrics || {};
+        const exchange = runtime.exchangeCraft.status().metrics || {};
+        return Number(inventory.lootUnknown || 0)
+          + Number(bank.withdrawalsUnknown || 0)
+          + Number(bank.depositsUnknown || 0)
+          + Number(bank.goldWithdrawalsUnknown || 0)
+          + Number(bank.goldDepositsUnknown || 0)
+          + Number(bank.movementUnknown || 0)
+          + Number(trade.npcBuysUnknown || 0)
+          + Number(trade.npcSellsUnknown || 0)
+          + Number(trade.marketBuysUnknown || 0)
+          + Number(trade.marketSellsUnknown || 0)
+          + Number(trade.movementUnknown || 0)
+          + Number(gear.equipsUnknown || 0)
+          + Number(gear.unequipsUnknown || 0)
+          + Number(gear.deliveriesUnknown || 0)
+          + Number(upgrade.upgradesUnknown || 0)
+          + Number(upgrade.compoundsUnknown || 0)
+          + Number(exchange.exchangesUnknown || 0)
+          + Number(exchange.craftsUnknown || 0);
+      };
+
+      const childBusy = runtime => {
+        const statuses = [
+          runtime.inventory.status(),
+          runtime.bank.status(),
+          runtime.trade.status(),
+          runtime.gear.status(),
+          runtime.upgrade.status(),
+          runtime.exchangeCraft.status()
+        ];
+        return statuses.some(status => status && (status.pending || status.request || status.pendingLoot));
+      };
+
+      this.liveTests.register({
+        id: 'h17-economy-autonomy',
+        title: 'H17 – Economy Autonomy',
+        description: 'Begrenzter Live-Test des gemeinsamen Economy-Planners mit Konfliktauflösung, maximal drei bestätigten Aktionen und ohne Gear-/Upgrade-/Compound-Mutation.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.economy.stopAutonomy('H17_LIVE_TEST_RESET'); } catch (_) {}
+          const current = runtime.economy.status();
+          if (current.currentAction) throw new Error('H17_ACTIVE_ACTION_BEFORE_LIVE_TEST');
+          try {
+            if (!current.suspended) runtime.economy.resetSafety('H17_LIVE_TEST_RESET');
+          } catch (_) {}
+          previousPolicy = runtime.economy.policy();
+          runtime.economy.policy({
+            maxActionsPerSession: 3,
+            actionCooldownMs: 1500,
+            actionTimeoutMs: 120000,
+            minMarketPremiumRatio: 1,
+            allowKinds: {
+              BANK_MOUNT: true,
+              BANK_DEPOSIT: true,
+              GEAR_EQUIP: false,
+              MARKET_SELL: true,
+              EXCHANGE: true,
+              CRAFT: true,
+              UPGRADE: false,
+              COMPOUND: false,
+              NPC_SELL: true
+            }
+          });
+          const status = runtime.economy.status();
+          baseline = {
+            actionsQueued: Number(status.metrics.actionsQueued || 0),
+            actionsConfirmed: Number(status.metrics.actionsConfirmed || 0),
+            actionsRejected: Number(status.metrics.actionsRejected || 0),
+            actionsUnknown: Number(status.metrics.actionsUnknown || 0),
+            childUnknown: childUnknownTotal(runtime)
+          };
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.economy.stopAutonomy('H17_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try {
+            const current = runtime.economy.status();
+            if (!current.suspended && !current.currentAction) runtime.economy.resetSafety('H17_LIVE_TEST_CLEANUP');
+          } catch (_) {}
+          if (previousPolicy) {
+            try { runtime.economy.policy(previousPolicy); } catch (_) {}
+          }
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Economy-Planner und konfliktfreien Merchant-Pfad prüfen',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, note }) => {
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(game.character.rip !== true, 'CHARACTER_DEAD');
+              assert(String(game.character.ctype || '').toLowerCase() === 'merchant', 'H17_REQUIRES_MERCHANT');
+              const module = runtime.modules.describe('economy');
+              assert(module && module.state === 'ACTIVE', 'H17_MODULE_NOT_ACTIVE');
+
+              const status = runtime.economy.status();
+              assert(status.suspended === false, status.suspendedReason || 'H17_SUSPENDED');
+              assert(status.currentAction == null, 'H17_ACTION_ACTIVE_BEFORE_PREFLIGHT');
+              assert(childUnknownTotal(runtime) === baseline.childUnknown, 'H17_CHILD_UNKNOWN_BEFORE_PREFLIGHT');
+
+              const plan = runtime.economy.plan();
+              note({
+                selected: plan.selected || null,
+                proposals: (plan.proposals || []).slice(0, 8),
+                blockers: plan.blockers || [],
+                pressure: plan.pressure || null
+              });
+              assert(plan.state === 'READY' && plan.selected, plan.reason || 'H17_NEEDS_SAFE_ECONOMY_ACTION');
+              assert(['BANK_MOUNT','BANK_DEPOSIT','MARKET_SELL','EXCHANGE','CRAFT','NPC_SELL'].includes(plan.selected.kind),
+                'H17_LIVE_SELECTED_KIND_NOT_ALLOWED');
+              return {
+                state: plan.state,
+                reason: plan.reason,
+                selected: plan.selected,
+                proposalCount: (plan.proposals || []).length,
+                pressure: plan.pressure || null
+              };
+            }
+          },
+          {
+            id: 'bounded-autonomy',
+            title: 'Economy-Autonomie begrenzt arbeiten lassen',
+            timeoutMs: 70000,
+            run: async ({ runtime, assert, sleep, waitFor }) => {
+              const started = runtime.economy.startAutonomy({ maxActions: 3 });
+              assert(started && started.accepted === true, started && started.reason || 'H17_AUTONOMY_START_FAILED');
+
+              await sleep(30000);
+              runtime.economy.stopAutonomy('H17_LIVE_TEST_WINDOW_COMPLETE');
+
+              await waitFor(() => {
+                const status = runtime.economy.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H17_SUSPENDED_DURING_AUTONOMY');
+                if (Number(status.metrics.actionsUnknown || 0) > baseline.actionsUnknown) throw new Error('H17_ACTION_UNKNOWN');
+                if (childUnknownTotal(runtime) > baseline.childUnknown) throw new Error('H17_CHILD_UNKNOWN');
+                return status.currentAction == null && !childBusy(runtime) ? status : null;
+              }, { timeoutMs: 30000, pollMs: 200, label: 'h17-autonomy-settle' });
+
+              const status = runtime.economy.status();
+              const confirmed = Number(status.metrics.actionsConfirmed || 0) - baseline.actionsConfirmed;
+              const queued = Number(status.metrics.actionsQueued || 0) - baseline.actionsQueued;
+              const rejected = Number(status.metrics.actionsRejected || 0) - baseline.actionsRejected;
+              assert(confirmed >= 1, 'H17_NO_CONFIRMED_ECONOMY_ACTION');
+              assert(confirmed <= 3, 'H17_CONFIRMED_ACTION_BUDGET_EXCEEDED');
+              assert(queued <= 3, 'H17_QUEUED_ACTION_BUDGET_EXCEEDED');
+              assert(Number(status.metrics.actionsUnknown || 0) === baseline.actionsUnknown, 'H17_ACTION_UNKNOWN');
+              assert(childUnknownTotal(runtime) === baseline.childUnknown, 'H17_CHILD_UNKNOWN');
+              return {
+                actionsQueued: queued,
+                actionsConfirmed: confirmed,
+                actionsRejected: rejected,
+                actionsUnknown: Number(status.metrics.actionsUnknown || 0) - baseline.actionsUnknown,
+                actionsThisSession: status.actionsThisSession,
+                lastAction: status.lastAction || null
+              };
+            }
+          },
+          {
+            id: 'stability',
+            title: 'Zehn Sekunden ohne UNKNOWN oder neue Economy-Mutation beobachten',
+            timeoutMs: 15000,
+            run: async ({ runtime, assert, sleep }) => {
+              const before = runtime.economy.status();
+              const beforeQueued = Number(before.metrics.actionsQueued || 0);
+              await sleep(10000);
+              const after = runtime.economy.status();
+              assert(after.autonomyEnabled === false, 'H17_AUTONOMY_RESTARTED');
+              assert(after.currentAction == null, 'H17_ACTION_REMAINS_DURING_STABILITY');
+              assert(after.suspended === false, after.suspendedReason || 'H17_SUSPENDED_DURING_STABILITY');
+              assert(Number(after.metrics.actionsQueued || 0) === beforeQueued, 'H17_NEW_ACTION_AFTER_AUTONOMY_STOP');
+              assert(Number(after.metrics.actionsUnknown || 0) === baseline.actionsUnknown, 'H17_ACTION_UNKNOWN_DURING_STABILITY');
+              assert(childUnknownTotal(runtime) === baseline.childUnknown, 'H17_CHILD_UNKNOWN_DURING_STABILITY');
+              assert(!childBusy(runtime), 'H17_CHILD_BUSY_DURING_STABILITY');
+              return {
+                actionsQueued: Number(after.metrics.actionsQueued || 0) - baseline.actionsQueued,
+                actionsConfirmed: Number(after.metrics.actionsConfirmed || 0) - baseline.actionsConfirmed,
+                actionsRejected: Number(after.metrics.actionsRejected || 0) - baseline.actionsRejected,
+                actionsUnknown: Number(after.metrics.actionsUnknown || 0) - baseline.actionsUnknown,
+                childUnknown: childUnknownTotal(runtime) - baseline.childUnknown
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'Economy-Autonomie stoppen und Ownership freigeben',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.economy.stopAutonomy('H17_LIVE_TEST_COMPLETE');
+              const status = runtime.economy.status();
+              assert(status.autonomyEnabled === false, 'H17_AUTONOMY_STILL_ENABLED');
+              assert(status.currentAction == null, 'H17_CURRENT_ACTION_REMAINS');
+              assert(!childBusy(runtime), 'H17_CHILD_BUSY_AFTER_TEST');
+              return {
+                autonomyEnabled: status.autonomyEnabled,
+                currentAction: status.currentAction,
+                actionsThisSession: status.actionsThisSession,
+                suspended: status.suspended
+              };
+            }
+          }
+        ]
+      });
+    }
+
     _installErrorCapture() {
       if (!this.root || typeof this.root.addEventListener !== 'function') return;
       this._errorHandler = event => {
@@ -3833,6 +4075,7 @@
         gear: this.gear.status(),
         upgrade: this.upgrade.status(),
         exchangeCraft: this.exchangeCraft.status(),
+        economy: this.economy.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
         roster,
@@ -3864,6 +4107,7 @@
         gear: this.gear.status(),
         upgrade: this.upgrade.status(),
         exchangeCraft: this.exchangeCraft.status(),
+        economy: this.economy.status(),
         liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
         logs: this.logger.list(160),
@@ -3894,6 +4138,7 @@
       push('gear-controller', !!this.gear.status() && typeof this.gear.plan === 'function' && typeof this.gear.queueBestLocal === 'function', this.gear.status());
       push('upgrade-compound-controller', !!this.upgrade.status() && typeof this.upgrade.plan === 'function' && typeof this.upgrade.queueBest === 'function', this.upgrade.status());
       push('exchange-craft-controller', !!this.exchangeCraft.status() && typeof this.exchangeCraft.plan === 'function' && typeof this.exchangeCraft.productionPlan === 'function', this.exchangeCraft.status());
+      push('economy-controller', !!this.economy.status() && typeof this.economy.plan === 'function' && typeof this.economy.startAutonomy === 'function', this.economy.status());
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
       push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);
