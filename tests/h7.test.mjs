@@ -210,7 +210,7 @@ test('H7 exposes normalized owned party roles and coordinator API', async t => {
   assert.equal(ctx.ALBot.version, '0.19.0-h19');
   assert.equal(typeof ctx.ALBot.party.status, 'function');
   assert.equal(typeof ctx.ALBot.party.snapshot, 'function');
-  assert.equal(ctx.ALBot.liveTests.status().recommendedId, 'h19-character-lifecycle');
+  assert.equal(ctx.ALBot.liveTests.status().recommendedId, 'h19-remote-recovery');
 
   const snapshot = ctx.ALBot.party.snapshot();
   assert.equal(snapshot.size, 2);
