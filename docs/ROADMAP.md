@@ -581,7 +581,7 @@ H15-Live-Gate ist bestanden. Nach den Evidence-Dokucommits ist nur noch der neue
 
 ## H16 – Exchange & Craft
 
-**🟦 IMPLEMENTIERT · CI/REVIEW IN ARBEIT · LIVE-TEST OFFEN**
+**🟦 IMPLEMENTIERT · PRE-LIVE CI/REVIEW GRÜN · FINALER DOKU-CI OFFEN · LIVE-TEST OFFEN**
 
 **BAU**
 - eigener `ExchangeCraftController`
@@ -604,6 +604,14 @@ H15-Live-Gate ist bestanden. Nach den Evidence-Dokucommits ist nur noch der neue
 - Headless API `ALBot.exchangeCraft.*`
 - Control-Center-Tab **Exchange & Craft**
 - H16-Regressionen und `docs/H16-LIVE-TEST.md`
+- Safety-Hardening: rejected dispatched promises -> UNKNOWN-Suspension
+- verifizierte NPC-Ankunft erforderlich: nur `COMPLETED / ARRIVAL_VERIFIED`
+- Quest-/Event-Kandidaten im UI nur via explizitem Opt-in
+- leveled Exchange-Evidence
+- CI Run #342: 209/209 PASS, 0 FAIL, 0 SKIP, completed/success
+- alle bisherigen Review-Threads resolved
+- Bundle exakt source-synchron auf `0.16.0-h16`
+- nach den finalen Evidence-Dokucommits erneut Exact-Head-CI erforderlich
 
 **🟧 LIVE-TEST NOCH AUSSTEHEND**
 - Suite `h16-exchange-craft`
