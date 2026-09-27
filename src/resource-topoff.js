@@ -375,6 +375,7 @@
         this.metrics.operationalBypasses += 1;
       }
 
+      const before = this._resourceEvidence(selected.action);
       let dispatch;
       try { dispatch = this.actions && this.actions.dispatch ? this.actions.dispatch(selected.action, []) : null; }
       catch (error) {
@@ -394,7 +395,6 @@
         return { state: 'WAITING', reason: dispatch && dispatch.state || 'RESOURCE_TOPOFF_NOT_DISPATCHED' };
       }
 
-      const before = this._resourceEvidence(selected.action);
       const pending = {
         id: dispatch.id,
         action: selected.action,
