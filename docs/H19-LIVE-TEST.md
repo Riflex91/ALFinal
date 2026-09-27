@@ -458,3 +458,31 @@ Vor dem finalen v2-Gate wurden zwei zusätzliche Cleanup-Safety-Punkte geschloss
 - Restore-Fehler werden nicht mehr verschluckt. Ein nicht erfolgreich wiederhergestellter Remote-Character macht den Cleanup sichtbar fehlerhaft.
 
 Exact-Head-CI #560 bestätigte den gehärteten Source-/Test-Stand vollständig grün.
+
+
+## Live-Versuch 4 – Remote-Recovery Preflight: Account-Online vs. Runner-Active
+
+Stand: 2026-09-27
+
+Der erste echte Lauf von `h19-remote-recovery` wurde parallel auf zwei eigenen laufenden Characters diagnostiziert. Beide Läufe scheiterten **vor jeder Mutation** im Preflight mit `H19_REMOTE_SAFE_ACTIVE_TARGET_UNAVAILABLE`.
+
+Live-Evidence:
+
+- Runtime: `0.19.0-h19`;
+- Suite: `h19-remote-recovery` v1;
+- auf dem Merchant meldete der accountweite Character-Roster `My_Merchant`, `My_Priest`, `My_Ranger1` und `My_Warrior` als `online=true`, während `activeCharacterNames` nur `My_Merchant` enthielt;
+- auf dem Warrior meldete derselbe accountweite Roster dieselben vier Characters als `online=true`, während `activeCharacterNames` nur `My_Warrior` enthielt;
+- `remote-stop`, `restart-recovery`, `stability` und der explizite Suite-`cleanup` wurden nach dem Preflight-Fail nicht mutierend ausgeführt bzw. übersprungen;
+- Lifecycle-Metriken blieben bei 0 Dispatches / 0 Confirms / 0 Rejects / 0 UNKNOWNs;
+- Runner-Cleanup war erfolgreich.
+
+Schlussfolgerung aus Live Truth:
+
+`get_active_characters()` darf in dieser Laufzeit nicht als accountweite Online-Wahrheit für Remote Character Start/Stop interpretiert werden. Für H19 werden deshalb zwei getrennte Roster-Sichten geführt:
+
+- `onlineCharacterNames`: accountweite Online-Evidence aus `get_characters().online` plus Local Character;
+- `activeCharacterNames` / `runnerActiveCharacterNames`: bisherige lokale Runner-/Worker-Sicht aus `get_active_characters()` plus Local Character.
+
+Remote Lifecycle, Desired Active sowie der Remote-Recovery-Live-Gate verwenden ausschließlich die accountweite Online-Evidence. Die bestehende Runner-Active-Sicht bleibt separat erhalten und wird nicht semantisch umdefiniert.
+
+Dieser Lauf ist **keine H19-PASS-Evidence**. Nach Source-/Test-/Bundle-Synchronisierung, grünem finalem Gate und Merge ist genau ein neuer echter `h19-remote-recovery`-Lauf erforderlich.
