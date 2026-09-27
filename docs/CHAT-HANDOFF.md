@@ -624,7 +624,7 @@ Finale Post-Live-Härtung:
 - exakter Bid-Fingerprint inklusive Stat-Type/Property;
 - finaler Exact-Head-CI und Review-Gate grün.
 
-## H14 – Gear – implementiert, Live-Test offen
+## H14 – Gear – live bestanden, Merge-Gate offen
 
 Aktiver Branch:
 `chatgpt/h14-gear`
@@ -671,22 +671,24 @@ Pre-Live-Teststand:
 - Bundle source-synchron;
 - nach finalen Dokucommits erneut Exact-Head-CI erforderlich.
 
-H14-Live-Test:
-1. Charakter + Equipment-Snapshot prüfen;
-2. reversiblen kompatiblen Gear-Kandidaten auswählen;
-3. Gear Goal und Farmer-vor-Merchant-Priorität read-only prüfen;
-4. Kandidaten echt ausrüsten und Live-Deltas bestätigen;
-5. ursprüngliches Gear exakt zurückrüsten;
-6. fünf Sekunden ohne Equip-/Unequip-/Delivery-UNKNOWN;
-7. Cleanup ohne Pending/Request und mit restauriertem Original-Gear;
-8. vorherigen Runtime-Zustand automatisch wiederherstellen.
+Finale H14-Live-Evidence vom 2026-09-27:
+- Runtime `0.14.0-h14`;
+- Suite `h14-gear`: **PASSED / ALL_STEPS_PASSED**;
+- alle sechs Schritte PASSED: Preflight, Planning, Equip Swap, Restore, Stability, Cleanup;
+- Character `My_Merchant` / Merchant;
+- Zielslot `shoes`;
+- echte Verbesserung: `wshoes +5` (Score `59.2375`) → `shoes1 +3` (Score `73.9675`), Delta `+14.73`;
+- Farmer-Priorität `100` vor Merchant-Priorität `10`;
+- realer Equip bestätigt, Original danach exakt zurückgerüstet;
+- `equipsConfirmed=2`;
+- `equipUnknown=0`, `unequipUnknown=0`, `deliveryUnknown=0`;
+- keine H14-Suspension;
+- Cleanup ohne Pending/Request, vorherige Goals restauriert;
+- Runtime war vor Test STOPPED, wurde automatisch gestartet und danach wieder STOPPED;
+- Scheduler danach `totalResources=0`;
+- Live-Test-Cleanup `ok=true`.
 
-Falls kein reversibler Kandidat vorhanden ist:
-`H14_NEEDS_REVERSIBLE_COMPATIBLE_INVENTORY_GEAR`
-
-Dann wird kein Gear verändert.
-
-H14 darf erst nach grünem Exact-Head-CI, sauberem Review-Gate und echtem Adventure-Land-Live-PASS gemergt werden.
+H14 Live-Gate ist bestanden. Noch erforderlich: neuer Exact-Head-CI nach den Evidence-Dokucommits, danach vollständiger frischer Merge-Gate-Check und Merge von PR #15 ausschließlich mit Methode `merge` und exaktem aktuellem `expected_head_sha`.
 
 ## H2 Architekturregel für spätere Module
 
@@ -781,4 +783,4 @@ Bei Fehler:
 
 ## Nächster Schritt
 
-H14 Exact-Head-CI und Review-Gate auf PR #15 sauber bestätigen. Danach auf dem eigenen Charakter die Suite `h14-gear` einmal starten. Bei PASS finale Evidence dokumentieren und erst dann mergen.
+Nach den H14-Evidence-Dokucommits den neuen Exact-Head-CI abwarten und den vollständigen Merge-Gate frisch prüfen. Bei komplett grünem Gate PR #15 mit Methode `merge` und exakt aktuellem `expected_head_sha` mergen, Merge auf `main` verifizieren und danach H15 – Upgrade & Compound frisch vom neuen `main` starten.
