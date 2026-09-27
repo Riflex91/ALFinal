@@ -12119,16 +12119,33 @@
       if (!name) return { accepted: false, reason: 'H16_MATERIAL_NAME_REQUIRED' };
 
       const bank = this._bankSnapshot();
+      let lastRecoverableBankReject = null;
       if (options.allowBank !== false && bank && bank.available !== false && this.bank && typeof this.bank.queueWithdraw === 'function') {
+        const recoverableBankReasons = new Set([
+          'H12_WITHDRAW_WRONG_OR_UNKNOWN_BANK_MAP',
+          'H12_BANK_RESERVATION_BLOCKED',
+          'H12_WITHDRAW_ITEM_NOT_FOUND'
+        ]);
         for (const pack of bank.packs || []) {
-          const row = (pack.items || []).find(item =>
+          const rows = (pack.items || []).filter(item =>
             String(item.name) === name
             && Math.max(0, Number(item.level) || 0) === Math.max(0, Number(options.level) || 0)
             && Math.max(1, Number(item.quantity) || 1) >= q);
-          if (row) {
+          for (const row of rows) {
             const result = this.bank.queueWithdraw(pack.name, row.slot);
-            if (result && result.accepted) this.metrics.materialDelegations += 1;
-            return { ...clone(result), delegatedTo: 'bank', source: { pack: pack.name, slot: row.slot } };
+            if (result && result.accepted) {
+              this.metrics.materialDelegations += 1;
+              return { ...clone(result), delegatedTo: 'bank', source: { pack: pack.name, slot: row.slot } };
+            }
+            const reason = result && result.reason || 'H16_BANK_WITHDRAW_REJECTED';
+            if (!recoverableBankReasons.has(String(reason))) {
+              return { ...clone(result || { accepted: false, reason }), delegatedTo: 'bank', source: { pack: pack.name, slot: row.slot } };
+            }
+            lastRecoverableBankReject = {
+              ...clone(result || { accepted: false, reason }),
+              delegatedTo: 'bank',
+              source: { pack: pack.name, slot: row.slot }
+            };
           }
         }
       }
@@ -12143,6 +12160,7 @@
         return { ...clone(result), delegatedTo: 'trade' };
       }
 
+      if (lastRecoverableBankReject) return lastRecoverableBankReject;
       return { accepted: false, reason: 'H16_MATERIAL_ACQUISITION_UNAVAILABLE' };
     }
 
@@ -15836,6 +15854,11 @@
                     });
                   }
                   if (!viable || acquisitionGold > 10000) continue;
+                  const recipeCost = Number(recipe.cost || 0);
+                  const currentGold = Number(game.character.gold);
+                  const totalEstimatedGold = acquisitionGold + recipeCost;
+                  if (!Number.isFinite(currentGold)
+                      || currentGold - totalEstimatedGold < 10000) continue;
 
                   acquisitionCandidates.push({
                     recipe,
@@ -15844,7 +15867,9 @@
                     acquisitionGold,
                     materials: plannedMaterials,
                     exchange,
-                    totalEstimatedGold: acquisitionGold + Number(recipe.cost || 0)
+                    currentGold,
+                    requiredGoldWithReserve: totalEstimatedGold + 10000,
+                    totalEstimatedGold
                   });
                 }
 
@@ -15875,6 +15900,8 @@
                   materials = chosen.materials;
                   materialAcquisitionGold = chosen.acquisitionGold;
                   mode = 'ACQUIRE_CRAFT_AND_EXCHANGE_COVERAGE';
+                  selectedCraft.currentGold = chosen.currentGold;
+                  selectedCraft.requiredGoldWithReserve = chosen.requiredGoldWithReserve;
                 }
               }
 
@@ -15887,7 +15914,9 @@
                   itemName: selectedCraft.itemName,
                   cost: selectedCraft.cost,
                   inputValueAtRisk: selectedCraft.inputValueAtRisk,
-                  sources: selectedCraft.sources || []
+                  sources: selectedCraft.sources || [],
+                  currentGold: selectedCraft.currentGold == null ? null : selectedCraft.currentGold,
+                  requiredGoldWithReserve: selectedCraft.requiredGoldWithReserve == null ? null : selectedCraft.requiredGoldWithReserve
                 },
                 exchange: selectedExchange,
                 production,
