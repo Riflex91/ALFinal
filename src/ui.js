@@ -31,6 +31,7 @@
       this.merchantResult = null;
       this.bankResult = null;
       this.tradeResult = null;
+      this.gearResult = null;
       this.liveTestClipboard = null;
       this._offLog = null;
       this._dragCleanup = null;
@@ -87,7 +88,7 @@
 </style>
 <div class="albot-head" id="albot-drag-handle"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-minimize" class="albot-window-btn" title="Fenster minimieren" aria-label="Fenster minimieren">—</button><button id="albot-emergency" class="albot-stop">STOP</button></div>
 <div class="albot-tabs">
-<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="merchant">Merchant</button><button class="albot-tab" data-tab="bank">Bank</button><button class="albot-tab" data-tab="trade">Handel</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
+<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="merchant">Merchant</button><button class="albot-tab" data-tab="bank">Bank</button><button class="albot-tab" data-tab="trade">Handel</button><button class="albot-tab" data-tab="gear">Gear</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
 </div>
 <div class="albot-body">
 <section id="albot-panel-overview" class="albot-panel active"></section>
@@ -101,6 +102,7 @@
 <section id="albot-panel-merchant" class="albot-panel"></section>
 <section id="albot-panel-bank" class="albot-panel"></section>
 <section id="albot-panel-trade" class="albot-panel"></section>
+<section id="albot-panel-gear" class="albot-panel"></section>
 <section id="albot-panel-live-test" class="albot-panel"></section>
 <section id="albot-panel-knowledge" class="albot-panel"></section>
 <section id="albot-panel-logs" class="albot-panel"></section>
@@ -243,6 +245,7 @@
       if (this.activeTab === 'merchant') this.renderMerchant(status);
       if (this.activeTab === 'bank') this.renderBank(status);
       if (this.activeTab === 'trade') this.renderTrade(status);
+      if (this.activeTab === 'gear') this.renderGear(status);
       if (this.activeTab === 'live-test') this.renderLiveTest(status);
       if (this.activeTab === 'knowledge') this.renderKnowledge(status);
       if (this.activeTab === 'logs') this.renderLogs();
@@ -265,6 +268,7 @@
       this.renderMerchant(status);
       this.renderBank(status);
       this.renderTrade(status);
+      this.renderGear(status);
       this.renderLiveTest(status);
       this.renderKnowledge(status);
       this.renderLogs();
@@ -992,6 +996,120 @@ ${items.length ? items.slice(0, 24).map(row => '<div class="albot-small">#'+esc(
           ? this.runtime.trade.queueMarketSell(playerName, tradeSlot, 1, { minUnitPrice })
           : { accepted: false, reason: 'H13_GUI_NO_MARKET_BID' });
       };
+    }
+
+    renderGear(status) {
+      const panel = this.host.querySelector('#albot-panel-gear');
+      if (!panel) return;
+      const gear = status.gear || {};
+      const metrics = gear.metrics || {};
+      let plan = gear.lastPlan || null;
+      try { if (!plan || plan.state !== 'READY') plan = this.runtime.gear.plan(); } catch (_) {}
+      const local = plan && plan.local || {};
+      const improvements = Array.isArray(local.improvements) ? local.improvements : [];
+      const proposals = plan && plan.group && Array.isArray(plan.group.proposals) ? plan.group.proposals : [];
+      const goals = Array.isArray(gear.goals) ? gear.goals : [];
+      const upgradeCandidates = Array.isArray(local.upgradeCandidates) ? local.upgradeCandidates : [];
+      const resultText = this.gearResult ? JSON.stringify(this.gearResult, null, 2) : 'Noch keine manuelle H14-Aktion.';
+
+      const improvementOptions = improvements.length
+        ? improvements.map(row => '<option value="'+esc(row.bestInventory.inventorySlot)+'|'+esc(row.slot)+'">'+esc(row.slot)+' · '+esc(row.bestInventory.item.name)+' +'+esc(row.bestInventory.item.level || 0)+' · Δ '+esc(row.delta)+'</option>').join('')
+        : '<option value="">keine sichere lokale Verbesserung</option>';
+      const slotOptions = (local.slots || []).filter(row => row.current)
+        .map(row => '<option value="'+esc(row.slot)+'">'+esc(row.slot)+' · '+esc(row.current.name)+' +'+esc(row.current.level || 0)+'</option>').join('') || '<option value="">kein belegter Gear-Slot</option>';
+      const proposalOptions = proposals.length
+        ? proposals.map(row => '<option value="'+esc(row.targetName)+'|'+esc(row.inventorySlot)+'">'+esc(row.targetName)+' · '+esc(row.slot)+' · '+esc(row.item.name)+' +'+esc(row.item.level || 0)+' · Δ '+esc(row.delta)+'</option>').join('')
+        : '<option value="">kein sichtbarer Farmer-Upgrade-Vorschlag</option>';
+
+      panel.innerHTML = `<div class="albot-card"><b>H14 Gear</b>
+<div class="albot-small">Klassenkompatibles Gear-Ranking, Farmer-vor-Merchant-Allokation, Gear Goals und bestätigte lokale Swaps. Upgrade/Compound bleibt hier reine Planung für H15.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${gear.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Plan</span><div class="albot-v">${esc(plan && plan.state || '-')} · ${esc(plan && plan.reason || '-')}</div></div>
+<div><span class="albot-k">Lokale Verbesserungen</span><div class="albot-v">${esc(improvements.length)}</div></div>
+<div><span class="albot-k">Farmer-Proposals</span><div class="albot-v">${esc(proposals.length)}</div></div>
+<div><span class="albot-k">Upgrade-Kandidaten</span><div class="albot-v">${esc(upgradeCandidates.length)}</div></div>
+<div><span class="albot-k">Gear Goals</span><div class="albot-v">${esc(goals.length)}</div></div>
+<div><span class="albot-k">Equip bestätigt</span><div class="albot-v">${esc(metrics.equipsConfirmed || 0)}</div></div>
+<div><span class="albot-k">Delivery bestätigt</span><div class="albot-v">${esc(metrics.deliveriesConfirmed || 0)}</div></div>
+<div><span class="albot-k">Safety Blocks</span><div class="albot-v">${esc(metrics.safetyBlocks || 0)}</div></div>
+<div><span class="albot-k">Suspendiert</span><div class="albot-v">${gear.suspended ? 'JA · '+esc(gear.suspendedReason || '-') : 'NEIN'}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Lokaler Swap</b>
+<div class="albot-row"><select id="albot-h14-improvement">${improvementOptions}</select><button id="albot-h14-equip" class="albot-btn">Verbesserung ausrüsten</button></div>
+<div class="albot-row"><select id="albot-h14-equipped">${slotOptions}</select><button id="albot-h14-unequip" class="albot-btn warn">Slot ausziehen</button></div>
+<div class="albot-small">Zwei-Hand-Konflikte und laufender Combat werden fail-closed blockiert. Erfolg zählt erst nach Live-Equipment- und Inventar-Delta.</div>
+</div>
+
+<div class="albot-card"><b>Farmer-Priorität / Gear Delivery</b>
+<div class="albot-small">Farmer-Priorität ${esc(plan && plan.farmerPriority || 100)} · Merchant-Priorität ${esc(plan && plan.merchantPriority || 10)}. Delivery ist immer explizit; H14 verschickt kein Gear automatisch.</div>
+<div class="albot-row"><select id="albot-h14-proposal">${proposalOptions}</select><button id="albot-h14-deliver" class="albot-btn">Vorschlag senden</button></div>
+</div>
+
+<div class="albot-card"><b>Gear Goals</b>
+<div class="albot-row"><input id="albot-h14-goal-target" placeholder="Character"><select id="albot-h14-goal-slot"><option>helmet</option><option>coat</option><option>pants</option><option>gloves</option><option>shoes</option><option>cape</option><option>belt</option><option>amulet</option><option>orb</option><option>ring1</option><option>ring2</option><option>earring1</option><option>earring2</option><option>mainhand</option><option>offhand</option></select></div>
+<div class="albot-row"><input id="albot-h14-goal-item" placeholder="Item-ID"><input id="albot-h14-goal-level" type="number" min="0" step="1" value="0" style="max-width:90px"><button id="albot-h14-goal-add" class="albot-btn">Goal hinzufügen</button><button id="albot-h14-goal-clear" class="albot-btn warn">Goals leeren</button></div>
+<div class="albot-small">${goals.length ? goals.map(row => esc(row.targetName)+' · '+esc(row.slot)+' · '+esc(row.itemName || '*')+' +'+esc(row.minLevel || 0)).join('<br>') : 'keine Gear Goals'}</div>
+</div>
+
+<div class="albot-card"><b>Steuerung</b>
+<div class="albot-row"><button id="albot-h14-plan" class="albot-btn">Plan</button><button id="albot-h14-tick" class="albot-btn">Tick</button><button id="albot-h14-reset" class="albot-btn warn" ${gear.suspended ? '' : 'disabled'}>Safety zurücksetzen</button></div>
+<div class="albot-small">Pending: ${gear.pending ? esc(gear.pending.kind) : 'nein'} · Request: ${gear.request ? esc(gear.request.kind) : 'keiner'}</div>
+</div>
+
+<div class="albot-card"><b>Letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.gearResult = fn(); }
+        catch (error) { this.gearResult = { ok: false, reason: String(error && error.message || error) }; }
+        this.renderGear(this.runtime.status());
+      };
+      const planButton = panel.querySelector('#albot-h14-plan');
+      if (planButton) planButton.onclick = () => run(() => this.runtime.gear.plan());
+      const tickButton = panel.querySelector('#albot-h14-tick');
+      if (tickButton) tickButton.onclick = () => run(() => this.runtime.gear.tick());
+      const resetButton = panel.querySelector('#albot-h14-reset');
+      if (resetButton) resetButton.onclick = () => run(() => this.runtime.gear.resetSafety('GUI_H14_RESET'));
+
+      const equipButton = panel.querySelector('#albot-h14-equip');
+      if (equipButton) equipButton.onclick = () => {
+        const raw = panel.querySelector('#albot-h14-improvement').value || '';
+        const split = raw.lastIndexOf('|');
+        const inventorySlot = split >= 0 ? Number(raw.slice(0, split)) : NaN;
+        const targetSlot = split >= 0 ? raw.slice(split + 1) : '';
+        run(() => Number.isInteger(inventorySlot) && targetSlot
+          ? this.runtime.gear.queueEquip(inventorySlot, targetSlot)
+          : { accepted: false, reason: 'H14_GUI_NO_IMPROVEMENT' });
+      };
+      const unequipButton = panel.querySelector('#albot-h14-unequip');
+      if (unequipButton) unequipButton.onclick = () => {
+        const targetSlot = panel.querySelector('#albot-h14-equipped').value || '';
+        run(() => targetSlot
+          ? this.runtime.gear.queueUnequip(targetSlot)
+          : { accepted: false, reason: 'H14_GUI_NO_EQUIPPED_SLOT' });
+      };
+      const deliverButton = panel.querySelector('#albot-h14-deliver');
+      if (deliverButton) deliverButton.onclick = () => {
+        const raw = panel.querySelector('#albot-h14-proposal').value || '';
+        const split = raw.lastIndexOf('|');
+        const targetName = split >= 0 ? raw.slice(0, split) : '';
+        const inventorySlot = split >= 0 ? Number(raw.slice(split + 1)) : NaN;
+        run(() => targetName && Number.isInteger(inventorySlot)
+          ? this.runtime.gear.queueDelivery(targetName, inventorySlot)
+          : { accepted: false, reason: 'H14_GUI_NO_DELIVERY_PROPOSAL' });
+      };
+      const addGoal = panel.querySelector('#albot-h14-goal-add');
+      if (addGoal) addGoal.onclick = () => {
+        const targetName = panel.querySelector('#albot-h14-goal-target').value || '';
+        const slot = panel.querySelector('#albot-h14-goal-slot').value || '';
+        const itemName = panel.querySelector('#albot-h14-goal-item').value || '';
+        const minLevel = Number(panel.querySelector('#albot-h14-goal-level').value) || 0;
+        const next = this.runtime.gear.goalSnapshot().concat([{ targetName, slot, itemName, minLevel, priority: 0 }]);
+        run(() => this.runtime.gear.setGoals(next));
+      };
+      const clearGoal = panel.querySelector('#albot-h14-goal-clear');
+      if (clearGoal) clearGoal.onclick = () => run(() => this.runtime.gear.setGoals([]));
     }
 
     async runRecommendedLiveTest() {
