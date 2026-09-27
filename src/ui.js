@@ -1527,9 +1527,12 @@ ${items.length ? items.slice(0, 24).map(row => '<div class="albot-small">#'+esc(
 <div><span class="albot-k">Plan</span><div class="albot-v">${esc(plan && plan.state || '-')} · ${esc(plan && plan.reason || '-')}</div></div>
 <div><span class="albot-k">Aktive Aktion</span><div class="albot-v">${action ? esc(action.kind)+' · '+esc(action.targetName || '-')+' · '+esc(action.settlement || '-') : 'keine'}</div></div>
 <div><span class="albot-k">Desired Active</span><div class="albot-v">${desired.length ? desired.map(esc).join(', ') : 'nicht erfasst'}</div></div>
+<div><span class="albot-k">Desired Party Leader</span><div class="albot-v">${esc(policy.desiredPartyLeader || '-')}</div></div>
 <div><span class="albot-k">Session-Aktionen</span><div class="albot-v">${esc(lifecycle.actionsThisSession || 0)} / ${esc(policy.maxActionsPerSession || '-')}</div></div>
 <div><span class="albot-k">Bestätigt / Reject / Unknown</span><div class="albot-v">${esc(metrics.actionsConfirmed || 0)} / ${esc(metrics.actionsRejected || 0)} / ${esc(metrics.actionsUnknown || 0)}</div></div>
 <div><span class="albot-k">Start / Stop / Respawn bestätigt</span><div class="albot-v">${esc(metrics.startsConfirmed || 0)} / ${esc(metrics.stopsConfirmed || 0)} / ${esc(metrics.respawnsConfirmed || 0)}</div></div>
+<div><span class="albot-k">Party Invite / Request / Accept bestätigt</span><div class="albot-v">${esc(metrics.partyInvitesConfirmed || 0)} / ${esc(metrics.partyRequestsConfirmed || 0)} / ${esc(metrics.partyAcceptsConfirmed || 0)}</div></div>
+<div><span class="albot-k">Party Signals / Konflikt-Blocks</span><div class="albot-v">${esc((lifecycle.partySignals || []).length)} / ${esc(metrics.partyConflictBlocks || 0)}</div></div>
 <div><span class="albot-k">Reconciliations</span><div class="albot-v">${esc(metrics.reconciliations || 0)}</div></div>
 <div><span class="albot-k">Suspendiert</span><div class="albot-v">${lifecycle.suspended ? 'JA · '+esc(lifecycle.suspendedReason || '-') : 'NEIN'}</div></div>
 </div></div>
@@ -1537,7 +1540,7 @@ ${items.length ? items.slice(0, 24).map(row => '<div class="albot-small">#'+esc(
 <div class="albot-card"><b>Gewünschtes aktives Team</b>
 <div class="albot-row"><button id="albot-h19-capture" class="albot-btn">Aktive Characters erfassen</button><label>Max Aktionen <input id="albot-h19-max-actions" type="number" min="1" max="20" value="${esc(policy.maxActionsPerSession == null ? 4 : policy.maxActionsPerSession)}"></label></div>
 <div class="albot-row"><button id="albot-h19-start-auto" class="albot-btn" ${lifecycle.autonomyEnabled || action ? 'disabled' : ''}>Recovery starten</button><button id="albot-h19-stop-auto" class="albot-btn warn" ${lifecycle.autonomyEnabled ? '' : 'disabled'}>Recovery stoppen</button></div>
-<div class="albot-small">„Aktive Characters erfassen“ speichert ausschließlich aktuell live beobachtete, account-eigene Characters als Desired-Set. Fehlende Desired-Characters dürfen danach bounded wieder gestartet werden.</div>
+<div class="albot-small">„Aktive Characters erfassen“ speichert ausschließlich aktuell live beobachtete, account-eigene Characters als Desired-Set und übernimmt einen live beobachteten eigenen Party-Leader. Fehlende Desired-Characters dürfen bounded wieder gestartet werden; Party-Recovery läuft nur mit eindeutig gespeichertem Leader.</div>
 </div>
 
 <div class="albot-card"><b>Manuelle Lifecycle-Aktion</b>
