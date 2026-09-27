@@ -86,11 +86,15 @@ Die Suite startet eine zuvor gestoppte Runtime automatisch und stellt den vorher
 
 ### Temporäre Live-Test-Policy
 
-- maximal 2 echte H16-Aktionen;
+- maximal 2 echte H16-Aktionen (Craft + Exchange);
 - Exchange-Value-at-Risk maximal 20.000 Gold;
 - Craft-Goldkosten maximal 10.000 Gold;
 - Craft-Input-Value-at-Risk maximal 20.000 Gold;
 - Goldreserve 10.000 Gold;
+- fehlende direkte Craft-Materialien dürfen nur beschafft werden, wenn höchstens 2 Leaf-Materialien fehlen;
+- Materialbeschaffung maximal 10.000 Gold gesamt;
+- nur Level-0-Materialien im automatischen Beschaffungsfallback;
+- Beschaffung im Live-Test explizit über H13 Trade (`allowBank:false`);
 - Quest-/Event-Aktionen deaktiviert;
 - Produktionsgraph-Tiefe maximal 6.
 
@@ -106,13 +110,31 @@ Falls keine solche direkte Kette vorhanden ist, ist zulässig:
 
 `CRAFT_AND_EXCHANGE_COVERAGE`
 
-Dabei werden ein niedrig riskanter Craft und ein davon quellslot-disjunkter niedrig riskanter Exchange in derselben Suite getestet.
+Dabei werden ein bereits lokal ausführbarer niedrig riskanter Craft und ein davon itemseitig disjunkter niedrig riskanter Exchange in derselben Suite getestet.
 
-Wenn nicht mindestens ein sicherer Craft- und Exchange-Kandidat vorhanden ist:
+Wenn kein lokaler Craft bereit ist, kann v2 verwenden:
 
-`H16_NEEDS_LOW_RISK_CRAFT_AND_EXCHANGE_CANDIDATES`
+`ACQUIRE_CRAFT_AND_EXCHANGE_COVERAGE`
 
-Dann erfolgt **keine Mutation**.
+Dafür gilt zusätzlich:
+- direkte Recipe-Stufe, keine verschachtelte Produktionskette;
+- höchstens 2 fehlende Leaf-Materialien;
+- nur Level 0;
+- jedes fehlende Material braucht eine live sichtbare NPC-Quelle oder einen ausreichend großen sichtbaren Market-Ask;
+- Materialbeschaffung zusammen höchstens 10.000 Gold;
+- Craft-Input-Risiko weiterhin höchstens 20.000 Gold;
+- Materialkäufe laufen über H16 → H13 mit explizitem Max-Unit-Price;
+- H13-UNKNOWN bleibt ein harter FAIL.
+
+Fehlt ein sicherer Exchange-Kandidat:
+
+`H16_NEEDS_LOW_RISK_EXCHANGE_CANDIDATE`
+
+Fehlt trotz Beschaffungsfallback ein sicherer Craft-Pfad:
+
+`H16_NEEDS_LOW_RISK_CRAFT_OR_ACQUIRABLE_MATERIALS`
+
+In beiden Fällen erfolgt **keine weitere Mutation**.
 
 ## Schritte
 
@@ -124,30 +146,37 @@ Dann erfolgt **keine Mutation**.
    - keine Quest-/Event-Aktion.
 
 2. **Planning**
-   - lokaler Produktionsplan des gewählten Crafts ist `READY`;
-   - keine fehlenden Materialien;
+   - lokaler Produktionsplan ist entweder `READY` oder exakt `NEEDS_MATERIALS` für den begrenzten Fallback;
    - keine geschützten Rezepte;
-   - Live-Test-Policy aktiv.
+   - Materialbudget und Live-Test-Policy aktiv.
 
-3. **Craft**
+3. **Materials**
+   - nur falls nötig;
+   - fehlende Materialien einzeln via H16 → H13 beschaffen;
+   - explizites `maxUnitPrice`;
+   - kein H13-UNKNOWN;
+   - danach muss der Produktionsplan `READY` sein.
+
+4. **Craft**
    - exakt eine echte Craft-Aktion;
    - Erfolg nur durch Output-/Input-/Gold-Live-Deltas.
 
-4. **Exchange**
+5. **Exchange**
    - exakt eine echte Exchange-Aktion;
    - Erfolg nur durch Quellmengen-Live-Delta.
 
-5. **Stability**
+6. **Stability**
    - fünf Sekunden;
-   - exakt zwei Session-Versuche;
+   - exakt zwei H16-Session-Versuche;
    - Exchange-UNKNOWN-Delta 0;
    - Craft-UNKNOWN-Delta 0;
-   - keine Suspension;
+   - Material-Trade-UNKNOWN-Delta 0;
+   - keine H16- oder H13-Suspension;
    - kein Pending;
    - kein Request.
 
-6. **Cleanup**
-   - kein Pending/Request;
+7. **Cleanup**
+   - kein H16/H13 Pending oder Request;
    - temporäre Policy wird im Suite-Cleanup wiederhergestellt;
    - vorheriger Runtime-Zustand wird wiederhergestellt.
 
@@ -158,13 +187,15 @@ Dann erfolgt **keine Mutation**.
 - `PASSED / ALL_STEPS_PASSED`
 - Preflight PASSED
 - Planning PASSED
+- Materials PASSED
 - Craft PASSED
 - Exchange PASSED
 - Stability PASSED
 - Cleanup PASSED
+- bei nötiger Beschaffung: eindeutig bestätigte H13-Acquisition(s) innerhalb des 10.000-Gold-Gesamtbudgets
 - `craftsConfirmed=1` Delta
 - `exchangesConfirmed=1` Delta
-- beide UNKNOWN-Deltas 0
+- Exchange-, Craft- und Material-Trade-UNKNOWN-Deltas 0
 - genau zwei H16-Session-Versuche
 - keine Suspension
 - kein Pending/Request
@@ -202,3 +233,47 @@ Im Review und eigenen Safety-Review gefunden und behoben:
 Zusätzliche Regressionen decken Promise-UNKNOWN, Movement-Terminalzustände, leveled Exchange-Evidence und die vollständige H16-Wiring-Kette ab.
 
 Nach diesem Evidence-Commit ist erneut ein Exact-Head-CI erforderlich. Erst wenn auch dieser neue Head `completed/success`, `behind_by=0`, review-clean und mergeable ist, darf der echte H16-Live-Test freigegeben werden.
+
+
+## Live-Versuch 1 – sauberer Preflight-Abbruch
+
+Zeitpunkt: 2026-09-27T10:18:01Z
+
+Der erste echte H16-Live-Versuch wurde **vor jeder H16-Mutation** beendet:
+
+- Runtime `0.16.0-h16`;
+- Suite `h16-exchange-craft`;
+- Ergebnis `FAILED`;
+- Reason `H16_NEEDS_LOW_RISK_CRAFT_AND_EXCHANGE_CANDIDATES`;
+- nur Preflight lief und FAILte;
+- Planning/Craft/Exchange/Stability/Cleanup-Schritte wurden nicht ausgeführt;
+- Suite-Cleanup wurde trotzdem ausgeführt und meldete `ok=true`;
+- H16 `attemptsThisSession=0`;
+- `exchangesDispatched=0`;
+- `craftsDispatched=0`;
+- beide H16-UNKNOWN-Zähler 0;
+- `movementRequests=0`;
+- keine H16-Suspension;
+- Runtime war vor dem Test STOPPED, wurde automatisch gestartet und danach wieder STOPPED;
+- Scheduler danach `totalResources=0`, `created=12`, `cancelled=12`, `callbackErrors=0`.
+
+Live-Inventar-/Plan-Evidence:
+- 1 sicherer Exchange-Kandidat vorhanden;
+- Kandidat: `anniversarygift`, Menge 153, Exchange-Menge 1, Value-at-Risk 100 Gold;
+- 134 Craft-Kandidaten geprüft;
+- 0 davon lokal sicher ausführbar;
+- 106 mit `H16_CRAFT_MATERIAL_MISSING`;
+- 28 mit `H16_QUEST_EVENT_REQUIRES_EXPLICIT_OPT_IN`.
+
+Interpretation:
+Der Fail-Closed-Pfad hat korrekt funktioniert. Die Lücke lag nicht in Safety oder Outcome-Erkennung, sondern darin, dass der Live-Test Materialbeschaffung als H16-Scope noch nicht aktiv in den Testablauf einbezogen hatte.
+
+Daraufhin wurde Suite-Version 2 implementiert:
+- begrenzter Materialbeschaffungsfallback;
+- maximal zwei fehlende Level-0-Leaf-Materialien;
+- maximal 10.000 Gold Materialbeschaffung;
+- live sichtbare NPC- oder Market-Quelle zwingend;
+- H16 delegiert explizit an H13;
+- Bank wird im Testpfad mit `allowBank:false` umgangen;
+- H13-UNKNOWN/Suspension ist ein harter Test-Fail;
+- erst nach bestätigter Beschaffung darf Craft folgen.
