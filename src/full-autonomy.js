@@ -81,6 +81,18 @@
       this.configure(options);
       const initialOnline = this._onlineNames();
       const waitForRoster = options.waitForRoster === true;
+      const requestedDesired = Array.isArray(options.desiredCharacterNames)
+        ? [...new Set(options.desiredCharacterNames.map(value => cleanText(value, 120)).filter(Boolean))].sort()
+        : [];
+      if (requestedDesired.length && requestedDesired.length !== this.config.expectedOnlineCount) {
+        return {
+          accepted: false,
+          reason: 'FULL_AUTONOMY_DESIRED_ROSTER_INVALID',
+          expectedOnlineCount: this.config.expectedOnlineCount,
+          desiredCharacterNames: requestedDesired,
+          status: this.status()
+        };
+      }
       if (initialOnline.length > this.config.expectedOnlineCount
           || (!waitForRoster && initialOnline.length !== this.config.expectedOnlineCount)) {
         return {
@@ -91,9 +103,9 @@
           status: this.status()
         };
       }
-      this.desiredCharacterNames = initialOnline.length === this.config.expectedOnlineCount
-        ? initialOnline.slice().sort()
-        : [];
+      this.desiredCharacterNames = requestedDesired.length === this.config.expectedOnlineCount
+        ? requestedDesired.slice()
+        : (initialOnline.length === this.config.expectedOnlineCount ? initialOnline.slice().sort() : []);
       this.lifecycleArmed = false;
       this.enabled = true;
       this.startedAt = new Date().toISOString();
@@ -156,13 +168,23 @@
       const profiles = this.strategy ? this.strategy.profiles() : [];
       const local = this._local();
       const online = this._onlineNames();
-      const ready = new Set(profiles.filter(row => row && row.online && (row.local || row.peerFresh)).map(row => String(row.name)));
-      if (local && local.name) ready.add(String(local.name));
-      const missing = this.config.requireAllOnlineProfiles ? online.filter(name => !ready.has(name)) : [];
+      const ready = new Set(profiles.filter(row => row && row.online
+        && (row.local ? (this.runtime && this.runtime.running === true) : (row.peerFresh && row.running === true)))
+        .map(row => String(row.name)));
+      if (local && local.name && this.runtime && this.runtime.running === true) ready.add(String(local.name));
+      const desired = this.desiredCharacterNames.length ? this.desiredCharacterNames.slice() : online.slice();
+      const missing = this.config.requireAllOnlineProfiles
+        ? [...new Set([...online, ...desired].filter(name => !ready.has(String(name))))].sort()
+        : [];
+      const stoppedNames = profiles
+        .filter(row => row && desired.includes(String(row.name)) && !row.local && row.peerFresh && row.running !== true)
+        .map(row => String(row.name))
+        .sort();
       return {
         profiles,
         online,
         missing,
+        stoppedNames,
         readyNames: [...ready].sort(),
         onlineLimitExceeded: online.length > 4
       };
@@ -240,7 +262,13 @@
         && !!effectiveLeader
         && String(party.leader || '') === String(effectiveLeader);
       const localInParty = memberNames.has(localName);
-      const shouldRunLifecycle = coordinator ? !partyTopologyHealthy : !localInParty;
+      const stoppedDesiredNames = readiness.profiles
+        .filter(row => row && stableDesired.includes(String(row.name)) && !row.local
+          && row.peerFresh && row.running !== true)
+        .map(row => String(row.name))
+        .sort();
+      const runtimeRecoveryRequired = coordinator && stoppedDesiredNames.length > 0;
+      const shouldRunLifecycle = coordinator ? (!partyTopologyHealthy || runtimeRecoveryRequired) : !localInParty;
       const current = lifecycle.status();
       const recoverySafetyBlocked = current.suspended === true
         || !!(current.currentAction && current.currentAction.unknownRecorded === true);
@@ -284,8 +312,56 @@
         leader: effectiveLeader,
         partyTopologyHealthy,
         recoveryRequired: shouldRunLifecycle,
+        runtimeRecoveryRequired,
+        stoppedDesiredNames,
         recoverySafetyBlocked,
         recoveryBlockReason
+      };
+    }
+
+    _pauseOwnedRoleWork(reason = 'FULL_AUTONOMY_RECOVERY_PAUSE') {
+      try {
+        const status = this.runtime.farmIntelligence.status();
+        if (status && status.active && status.session && String(status.session.owner || '') === 'full-autonomy') {
+          this.runtime.farmIntelligence.stopAutonomy(reason);
+        }
+      } catch (_) {}
+      try {
+        const status = this.runtime.economy.status();
+        if (this.started.economy && status && status.autonomyEnabled === true) this.runtime.economy.stopAutonomy(reason);
+      } catch (_) {}
+      try {
+        const status = this.runtime.partyLogistics.status();
+        if (this.started.partyLogistics && status && status.autonomyEnabled === true) this.runtime.partyLogistics.stopAutonomy(reason);
+      } catch (_) {}
+      this.started.farming = false;
+      this.started.economy = false;
+      this.started.partyLogistics = false;
+    }
+
+    _recoveryPlan(readiness) {
+      const stableDesired = this.desiredCharacterNames.length ? this.desiredCharacterNames.slice() : readiness.online.slice();
+      const profiles = readiness.profiles || [];
+      const combat = profiles
+        .filter(row => row && stableDesired.includes(String(row.name)) && String(row.ctype || '').toLowerCase() !== 'merchant')
+        .map(row => String(row.name))
+        .sort();
+      const support = profiles
+        .filter(row => row && stableDesired.includes(String(row.name)) && String(row.ctype || '').toLowerCase() === 'merchant')
+        .map(row => String(row.name))
+        .sort();
+      let party = null;
+      try { party = this.runtime.party && this.runtime.party.snapshot ? this.runtime.party.snapshot() : null; } catch (_) {}
+      const currentLeader = cleanText(party && party.leader || '', 120);
+      const warrior = profiles.find(row => row && stableDesired.includes(String(row.name)) && String(row.ctype || '').toLowerCase() === 'warrior');
+      const leaderName = currentLeader && stableDesired.includes(currentLeader)
+        ? currentLeader
+        : (warrior && String(warrior.name) || combat[0] || stableDesired[0] || null);
+      return {
+        taskType: this.config.taskType,
+        selected: { memberNames: combat },
+        supportMemberNames: support,
+        leaderName
       };
     }
 
@@ -298,11 +374,23 @@
       const shouldFarm = ctype !== 'merchant' && selected.has(localName);
       const status = this.runtime.farmIntelligence.status();
 
+      if (shouldFarm && status.suspended === true) {
+        return { ok: false, reason: status.suspendedReason || 'FULL_AUTONOMY_FARM_INTELLIGENCE_SUSPENDED' };
+      }
+      if (shouldFarm && typeof this.runtime.farmIntelligence.configureGroup === 'function') {
+        this.runtime.farmIntelligence.configureGroup({
+          groupLeaderName: plan && plan.leaderName || null,
+          groupMemberNames: plan && plan.selected ? plan.selected.memberNames : []
+        });
+      }
+
       if (shouldFarm) {
         if (!status.active) {
           const started = this.runtime.farmIntelligence.startAutonomy({
             owner: 'full-autonomy',
-            allowTravel: true
+            allowTravel: true,
+            groupLeaderName: plan && plan.leaderName || null,
+            groupMemberNames: plan && plan.selected ? plan.selected.memberNames : []
           });
           if (started && started.accepted === true) this.started.farming = true;
           else if (!started || !String(started.reason || '').includes('ALREADY')) {
@@ -397,8 +485,9 @@
             onlineCharacterNames: readiness.online
           };
         }
-        if (readiness.online.length < this.config.expectedOnlineCount) {
+        if (readiness.online.length < this.config.expectedOnlineCount && !this.desiredCharacterNames.length) {
           this.strategy.recordTraining(false);
+          this._pauseOwnedRoleWork('FULL_AUTONOMY_INITIAL_ROSTER_WARMING');
           return this.lastDecision = {
             at: new Date().toISOString(),
             state: 'WARMING',
@@ -407,16 +496,37 @@
             onlineCharacterNames: readiness.online
           };
         }
-        if (!this.desiredCharacterNames.length) {
+        if (!this.desiredCharacterNames.length && readiness.online.length === this.config.expectedOnlineCount) {
           this.desiredCharacterNames = readiness.online.slice().sort();
         }
-        if (readiness.missing.length) {
+        if (readiness.online.length < this.config.expectedOnlineCount || readiness.missing.length) {
           this.strategy.recordTraining(false);
+          this._pauseOwnedRoleWork('FULL_AUTONOMY_LIFECYCLE_RECOVERY');
+          const recoveryPlan = this._recoveryPlan(readiness);
+          const lifecycle = this._ensureLifecycle(recoveryPlan, readiness);
+          if (!lifecycle.ok) {
+            return this.lastDecision = {
+              at: new Date().toISOString(),
+              state: 'BLOCKED',
+              reason: lifecycle.reason,
+              expectedOnlineCount: this.config.expectedOnlineCount,
+              onlineCharacterNames: readiness.online,
+              missingProfiles: readiness.missing
+            };
+          }
           return this.lastDecision = {
             at: new Date().toISOString(),
             state: 'WARMING',
-            reason: 'FULL_AUTONOMY_WAITING_FOR_FRESH_PEERS',
-            missingProfiles: readiness.missing
+            reason: readiness.online.length < this.config.expectedOnlineCount
+              ? 'FULL_AUTONOMY_RECOVERING_EXPECTED_ROSTER'
+              : 'FULL_AUTONOMY_RECOVERING_STOPPED_OR_STALE_PEER',
+            expectedOnlineCount: this.config.expectedOnlineCount,
+            onlineCharacterNames: readiness.online,
+            missingProfiles: readiness.missing,
+            stoppedDesiredNames: readiness.stoppedNames,
+            lifecycleRecoveryRequired: lifecycle.recoveryRequired === true,
+            runtimeRecoveryRequired: lifecycle.runtimeRecoveryRequired === true,
+            lifecycleCoordinator: lifecycle.coordinatorName
           };
         }
 
