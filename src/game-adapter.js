@@ -608,6 +608,46 @@
       };
     }
 
+    craftDefinition(name) {
+      const id = cleanText(name || '', 160);
+      if (!id) return null;
+      const G = this._gameData();
+      const raw = G && G.craft && G.craft[id];
+      if (!raw || typeof raw !== 'object' || !Array.isArray(raw.items)) return null;
+      const items = [];
+      for (const entry of raw.items) {
+        if (!Array.isArray(entry) || entry.length < 2) continue;
+        const quantity = finite(entry[0]);
+        const itemName = cleanText(entry[1] || '', 160);
+        const level = Math.max(0, finite(entry[2]) || 0);
+        if (!itemName || quantity == null || quantity <= 0) continue;
+        items.push({
+          quantity: Math.max(1, Math.floor(quantity)),
+          name: itemName,
+          level
+        });
+      }
+      if (!items.length) return null;
+      const cost = finite(raw.cost != null ? raw.cost : raw.gold);
+      return {
+        name: id,
+        output: this.itemDefinition(id),
+        items,
+        cost: Math.max(0, cost || 0),
+        quest: raw.quest == null ? null : cleanText(raw.quest, 120) || null
+      };
+    }
+
+    craftCatalog() {
+      const G = this._gameData();
+      const raw = G && G.craft;
+      if (!raw || typeof raw !== 'object') return [];
+      return Object.keys(raw)
+        .map(name => this.craftDefinition(name))
+        .filter(Boolean)
+        .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    }
+
     inventorySnapshot() {
       const character = this._character();
       if (!character || !character.name) {

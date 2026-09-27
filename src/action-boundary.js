@@ -28,7 +28,9 @@
     equip: Object.freeze({ publicName: 'equip', family: 'gear' }),
     unequip: Object.freeze({ publicName: 'unequip', family: 'gear' }),
     upgrade: Object.freeze({ publicName: 'upgrade', family: 'upgrade-compound' }),
-    compound: Object.freeze({ publicName: 'compound', family: 'upgrade-compound' })
+    compound: Object.freeze({ publicName: 'compound', family: 'upgrade-compound' }),
+    exchange: Object.freeze({ publicName: 'exchange', family: 'exchange-craft' }),
+    auto_craft: Object.freeze({ publicName: 'auto_craft', family: 'exchange-craft' })
   });
 
   function errorDetails(error) {

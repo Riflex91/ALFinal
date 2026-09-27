@@ -660,7 +660,7 @@ Finale H14-Live-Evidence vom 2026-09-27:
 - Original-Gear exakt restauriert
 - Runtime wieder STOPPED, Scheduler `totalResources=0`
 
-## H15 – Upgrade & Compound – Entwicklung läuft
+## H15 – Upgrade & Compound – abgeschlossen und gemergt
 
 Aktiver Branch:
 `chatgpt/h15-upgrade-compound`
@@ -737,12 +737,126 @@ Finale H15-Live-Evidence vom 2026-09-27:
 
 H15 Live-Gate ist bestanden.
 
+Finaler H15-Abschluss:
+- finaler Evidence-Head: `8202ff54f6ce4d2c1b8f11a2ec0c81714c29c6d9`;
+- Exact-Head-CI Run #328: **194/194 PASS, 0 FAIL, 0 SKIP, completed/success**;
+- Merge mit Methode `merge` und exaktem `expected_head_sha`;
+- Merge-Commit auf `main`: `4675760a9b33861cdf88af2e479c95fbaed1dab7`;
+- PR #16 geschlossen und als merged bestätigt.
+
+## H16 – Exchange & Craft – Entwicklung läuft
+
+Aktiver Branch:
+`chatgpt/h16-exchange-craft`
+
+PR:
+`#17 – H16: Exchange & Craft`
+
+Basis:
+H15-Merge auf `main` bei `4675760a9b33861cdf88af2e479c95fbaed1dab7`
+
+Version:
+`0.16.0-h16`
+
+Implementiert:
+- `src/exchange-craft.js` / `ExchangeCraftController`;
+- Exchange-/Craft-Writes nur über ActionBoundary;
+- Exchange-Mengen aus Live-`G.items[*].e`;
+- Craft-Rezepte aus Live-`G.craft`;
+- Quest-/Event-Aktionen standardmäßig fail-closed mit explizitem Opt-in;
+- protected Items aus Automation ausgeschlossen;
+- Craft-Quellslotwahl passend zu Adventure Lands `auto_craft`;
+- unmittelbare Revalidation vor Dispatch;
+- Exchange-/Craft-Risiko-, Gold- und Session-Budgets;
+- Combat-Block und eigene Movement-Ownership;
+- Outcome-Bestätigung über Live-Inventar-/Gold-Deltas;
+- bounded UNKNOWN + Suspension ohne Blind-Retry;
+- rekursiver Produktionsgraph mit Cycle-/Depth-Guard;
+- Produktionsplanung mit lokalem Inventar und optional gemountetem Bankbestand;
+- fehlende Materialien mit Bank-/NPC-/Marktquellen;
+- explizite Materialbeschaffung via H12 Bank oder H13 Handel;
+- gemeinsamer Economy-Konfliktlöser bleibt H17;
+- `ALBot.exchangeCraft.*`;
+- Control-Center-Tab **Exchange & Craft**;
+- Ein-Klick-Suite `h16-exchange-craft`;
+- `docs/H16-LIVE-TEST.md`;
+- H16-Regressionen;
+- `dist/al-bot.js` auf H16-Source synchronisiert.
+
+H16 Live-Test v2:
+- bevorzugt echte `CRAFT_TO_EXCHANGE_CHAIN`;
+- sonst `CRAFT_AND_EXCHANGE_COVERAGE`;
+- wenn kein lokaler Craft bereit ist: `ACQUIRE_CRAFT_AND_EXCHANGE_COVERAGE`;
+- maximal zwei echte H16-Aktionen (Craft + Exchange);
+- bei Bedarf höchstens zwei fehlende Level-0-Leaf-Materialien;
+- Materialbeschaffung maximal 10.000 Gold gesamt;
+- Materialquelle muss live als NPC-Quelle oder ausreichender sichtbarer Market-Ask belegbar sein;
+- Beschaffung läuft explizit über H16 → H13 mit `allowBank:false`;
+- temporäre Live-Test-Grenzen: Exchange-Risiko ≤ 2.000.000 Gold, Craft-Input-Risiko ≤ 2.000.000 Gold, Craft-Kosten ≤ 1.000.000 Gold;
+- keine Quest-/Event-Aktionen;
+- Craft und Exchange müssen durch Live-Deltas bestätigt werden;
+- Exchange-, Craft- und Material-Trade-UNKNOWN-Deltas müssen 0 bleiben;
+- fünf Sekunden Stabilität;
+- Cleanup + Runtime Auto-Restore;
+- fehlt weiterhin ein sicherer Pfad, fail-closed ohne weitere Mutation.
+
+Live-Versuch 1 am 2026-09-27:
+- Suite `h16-exchange-craft` auf Runtime `0.16.0-h16`;
+- FAIL bereits im Preflight mit `H16_NEEDS_LOW_RISK_CRAFT_AND_EXCHANGE_CANDIDATES`;
+- 1 sicherer Exchange (`anniversarygift`, Value-at-Risk 100 Gold);
+- 0 lokal sichere Crafts;
+- 106 Rezepte mit fehlenden Materialien, 28 Quest/Event;
+- `attemptsThisSession=0`;
+- 0 Exchange-/Craft-Dispatches;
+- alle H16-UNKNOWN-Zähler 0;
+- 0 Movement-Requests;
+- Suite-Cleanup `ok=true`;
+- Runtime Auto-Restore erfolgreich, Scheduler danach `totalResources=0`.
+Der Test hat damit korrekt fail-closed gearbeitet; die fehlende Materialbeschaffung im Testdesign wurde als Lücke identifiziert.
+
+v2-Fix:
+- Live-Test kann nun begrenzt fehlende Materialien beschaffen;
+- `queueMaterialAcquire(..., {allowBank:false})` ergänzt;
+- Beschaffung nur über H13 und explizites Max-Unit-Price;
+- maximal 2 fehlende Level-0-Leaf-Materialien;
+- Materialbudget maximal 10.000 Gold;
+- H13-UNKNOWN/Suspension ist harter FAIL;
+- nach Beschaffung muss `productionPlan(...).state === READY` sein.
+
+Pre-Live-Hardening:
+- rejected dispatched Promise -> UNKNOWN-Suspension ohne Blind-Retry;
+- H16 dispatcht erst nach verifiziertem Movement-`COMPLETED / ARRIVAL_VERIFIED`;
+- CANCELLED/STUCK/UNKNOWN/FAILED_SAFE Movement führt nicht zum Write;
+- Exchange-Evidence bewahrt den tatsächlichen Item-Level;
+- Quest-/Event-Kandidaten sind im UI sichtbar, aber nur nach explizitem Opt-in ausführbar;
+- Cross-Realm- und Combat-Regressionsannahmen korrigiert;
+- vollständiger H16-Wiring-Test ergänzt;
+- `dist/al-bot.js` exakt source-synchron, Banner `0.16.0-h16`;
+- CI Run #342 auf Head `a8384e031efbbf0441234928f8e7ddc704ff3031`: **209/209 PASS, 0 FAIL, 0 SKIP, completed/success**;
+- alle bisherigen Review-Threads resolved;
+- kein `CHANGES_REQUESTED`;
+- `behind_by=0`, `mergeable=true`.
+
+v2 finaler technischer Pre-Live-Stand:
+- technischer Head `9e007bc6bfdf872ebf91ecd9f8dbf7f7c2140428`;
+- Exact-Head-CI Run #362: **213/213 PASS, 0 FAIL, 0 SKIP, completed/success**;
+- `behind_by=0`, PR `mergeable=true`;
+- Bundle exakt source-synchron auf `0.16.0-h16`;
+- Craft→Exchange-Output-Risiko wird bereits im Preflight geblockt;
+- H16-UNKNOWN-Suspension bleibt auch nach Suite-Cleanup erhalten;
+- frischer Codex-v2-Review ausgewertet;
+- P1: Character-Gold muss Materialbeschaffung + Craft-Kosten + 10.000 Reserve vor jeder Materialmutation decken;
+- P2: recoverable H12-Bank-Rejects prüfen weitere passende Stacks; non-recoverable Rejects stoppen fail-closed;
+- beide neuen Review-Threads resolved;
+- kein `CHANGES_REQUESTED`;
+- v2-Safety/Wiring regressionsseitig abgedeckt.
+
 Noch offen:
-- nach diesen Evidence-Dokucommits neuen Exact-Head-CI abwarten;
-- vollständigen Merge-Gate frisch prüfen;
-- PR #16 nur mit Methode `merge` und exakt aktuellem `expected_head_sha` mergen;
-- Merge auf `main` verifizieren;
-- danach H16 – Bank & Exchange Autonomie frisch vom neuen `main` starten.
+- nach diesen finalen Dokucommits neuen Exact-Head-CI grün bestätigen;
+- vollständiges v2-Pre-Live-Gate frisch prüfen;
+- danach Nutzer genau einmal den zweiten echten `h16-exchange-craft`-Test starten lassen;
+- Diagnose vollständig auswerten;
+- bei PASS finale Evidence anhängen, erneut Exact-Head-CI + Merge-Gate und erst danach PR #17 mergen.
 
 ## H2 Architekturregel für spätere Module
 
@@ -837,4 +951,4 @@ Bei Fehler:
 
 ## Nächster Schritt
 
-H15-Live-Gate ist bestanden. Jetzt den neuen Exact-Head-CI der Evidence-Dokucommits abwarten, danach das vollständige Merge-Gate frisch prüfen und PR #16 nur bei komplett grünem Gate mit Methode `merge` und exakt aktuellem `expected_head_sha` mergen. Anschließend Merge auf `main` verifizieren und H16 frisch vom neuen `main` starten.
+H16 v2 ist technisch und reviewseitig grün (Head `9e007bc6...`, Run #362: 213/213 PASS). Jetzt nur noch den neuen Exact-Head-CI der finalen Dokucommits bestätigen und das vollständige Pre-Live-Gate frisch prüfen. Danach den Nutzer genau einmal den zweiten `h16-exchange-craft`-Live-Test starten lassen.

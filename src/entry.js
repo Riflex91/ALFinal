@@ -50,7 +50,7 @@
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.15.0-h15',
+    version: '0.16.0-h16',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -107,6 +107,8 @@
       visiblePlayers: options => runtime.game.visiblePlayers(options || {}),
       monsterDefinition: mtype => runtime.game.monsterDefinition(mtype),
       itemDefinition: name => runtime.game.itemDefinition(name),
+      craftDefinition: name => runtime.game.craftDefinition(name),
+      craftCatalog: () => runtime.game.craftCatalog(),
       equipmentDefinition: name => runtime.game.equipmentDefinition(name),
       equipment: name => runtime.game.equipmentSnapshot(name),
       classEquipmentProfile: ctype => runtime.game.classEquipmentProfile(ctype),
@@ -240,6 +242,22 @@
       compound: (inventorySlots, options) => runtime.upgrade.queueCompound(inventorySlots, options || {})
     },
 
+    exchangeCraft: {
+      status: () => runtime.exchangeCraft.status(),
+      plan: () => runtime.exchangeCraft.plan(),
+      tick: () => runtime.exchangeCraft.tick(),
+      reset: reason => runtime.exchangeCraft.resetSafety(reason || 'API_H16_RESET'),
+      cancel: reason => runtime.exchangeCraft.cancelRequest(reason || 'API_H16_REQUEST_CANCEL'),
+      policy: value => runtime.exchangeCraft.policy(value),
+      exchanges: options => runtime.exchangeCraft.exchangeCandidates(options || {}),
+      crafts: options => runtime.exchangeCraft.craftCandidates(options || {}),
+      production: (itemName, quantity, options) => runtime.exchangeCraft.productionPlan(itemName, quantity, options || {}),
+      best: kind => runtime.exchangeCraft.queueBest(kind),
+      exchange: (inventorySlot, options) => runtime.exchangeCraft.queueExchange(inventorySlot, options || {}),
+      craft: (itemName, options) => runtime.exchangeCraft.queueCraft(itemName, options || {}),
+      acquire: (itemName, quantity, options) => runtime.exchangeCraft.queueMaterialAcquire(itemName, quantity, options || {})
+    },
+
     liveTests: {
       status: () => runtime.liveTests.status(),
       list: () => runtime.liveTests.list(),
@@ -295,6 +313,7 @@
   Object.freeze(api.trade);
   Object.freeze(api.gear);
   Object.freeze(api.upgrade);
+  Object.freeze(api.exchangeCraft);
   Object.freeze(api.liveTests);
   Object.freeze(api.knowledge);
   Object.freeze(api.roster);
@@ -312,7 +331,7 @@
     };
   } catch (_) {}
 
-  runtime.logger.info('AL Bot H15 geladen', {
+  runtime.logger.info('AL Bot H16 geladen', {
     version: api.version,
     bootCount,
     hotReload: !!previous,

@@ -581,15 +581,85 @@ H15-Live-Gate ist bestanden. Nach den Evidence-Dokucommits ist nur noch der neue
 
 ## H16 – Exchange & Craft
 
-**🟦 BAU**
-- Exchange NPCs
-- Quest-/Event Exchange
-- Crafting
-- Produktionsgraph
-- Materialbeschaffung
+**🟦 IMPLEMENTIERT · LIVE V1 FAIL-CLOSED · V2 TECHNISCH/REVIEW GRÜN · FINALER DOKU-CI OFFEN · LIVE V2 OFFEN**
 
-**🟧 LIVE-TEST**
-- kleine vollständige Produktions-/Exchange-Kette automatisch durchlaufen lassen
+**BAU**
+- eigener `ExchangeCraftController`
+- Exchange-/Craft-Writes ausschließlich über ActionBoundary
+- Exchange-Mengen aus Live-`G.items[*].e`
+- Craft-Rezepte aus Live-`G.craft`
+- Quest-/Event Exchange und Craft standardmäßig fail-closed; nur explizites Opt-in
+- protected Items aus Automation ausgeschlossen
+- Craft-Quellslotwahl passend zu Adventure Lands `auto_craft`
+- unmittelbare Source-/Definition-Revalidation vor Dispatch
+- Exchange-Value-at-Risk-, Craft-Gold-, Craft-Input- und Session-Budgets
+- Goldreserve und Combat-Block
+- Live-Deltas als Ergebnis-Wahrheit
+- bounded UNKNOWN + Suspension ohne Blind-Retry
+- rekursiver Produktionsgraph mit Cycle-/Depth-Guard
+- lokales Inventar + optional gemounteter Bankbestand in Produktionsplanung
+- fehlende Materialien mit Bank-/NPC-/Marktquellen
+- explizite Materialbeschaffung via H12 Bank oder H13 Handel
+- gemeinsamer autonomer Economy-Konfliktlöser bewusst erst H17
+- Headless API `ALBot.exchangeCraft.*`
+- Control-Center-Tab **Exchange & Craft**
+- H16-Regressionen und `docs/H16-LIVE-TEST.md`
+- Safety-Hardening: rejected dispatched promises -> UNKNOWN-Suspension
+- verifizierte NPC-Ankunft erforderlich: nur `COMPLETED / ARRIVAL_VERIFIED`
+- Quest-/Event-Kandidaten im UI nur via explizitem Opt-in
+- leveled Exchange-Evidence
+- CI Run #342: 209/209 PASS, 0 FAIL, 0 SKIP, completed/success
+- alle bisherigen Review-Threads resolved
+- Bundle exakt source-synchron auf `0.16.0-h16`
+- nach den finalen Evidence-Dokucommits erneut Exact-Head-CI erforderlich
+
+**🟧 LIVE-TEST NOCH AUSSTEHEND**
+- Suite `h16-exchange-craft`
+- bevorzugt echte `CRAFT_TO_EXCHANGE_CHAIN`
+- sonst sichere `CRAFT_AND_EXCHANGE_COVERAGE`
+- v2 zusätzlich `ACQUIRE_CRAFT_AND_EXCHANGE_COVERAGE`
+- maximal zwei echte H16-Aktionen (Craft + Exchange)
+- bei Bedarf höchstens zwei fehlende Level-0-Leaf-Materialien via H16 → H13
+- Materialbeschaffung insgesamt maximal 10.000 Gold
+- Bank im Live-Test-Fallback explizit deaktiviert (`allowBank:false`)
+- temporäre Live-Test-Grenzen: Exchange-Risiko ≤ 2.000.000 Gold, Craft-Input-Risiko ≤ 2.000.000 Gold, Craft-Kosten ≤ 1.000.000 Gold
+- keine Quest-/Event-Aktion im automatischen Live-Test
+- Craft und Exchange jeweils über Live-Deltas bestätigen
+- Exchange-, Craft- und Material-Trade-UNKNOWN-Deltas 0
+- 5-Sekunden-Stabilität ohne Retry/Suspension
+- Cleanup + Runtime Auto-Restore
+
+Live-Versuch 1:
+- sauberer Preflight-Abbruch ohne Mutation;
+- 1 sicherer Exchange-Kandidat (`anniversarygift`, Risiko 100 Gold);
+- 0 lokal sichere Crafts;
+- 106 Craft-Rezepte mit fehlenden Materialien;
+- 28 Quest/Event-Rezepte;
+- 0 Dispatches, 0 UNKNOWN, 0 Movement;
+- Runtime/Scheduler sauber restauriert.
+
+v2 behebt genau diese Testlücke durch begrenzte Materialbeschaffung. Fehlt weiterhin ein sicherer Pfad, wird erneut fail-closed ohne weitere Mutation beendet.
+
+v2 finaler technischer Pre-Live-Stand:
+- technischer Head `9e007bc6bfdf872ebf91ecd9f8dbf7f7c2140428`;
+- CI Run #362: **213/213 PASS, 0 FAIL, 0 SKIP, completed/success**;
+- Bundle exakt source-synchron auf `0.16.0-h16`;
+- Craft→Exchange prüft Output-Risiko bereits im Preflight;
+- H16-UNKNOWN-Suspension wird durch Test-Cleanup nicht automatisch aufgehoben;
+- v2 Material-Fallback ist regressionsseitig abgedeckt;
+- frischer Codex-v2-Review ausgewertet;
+- P1 Gesamt-Goldbudget vor Materialmutation behoben;
+- P2 recoverable Bank-Stacks werden weitergesucht, non-recoverable Rejects bleiben fail-closed;
+- alle Review-Threads resolved, kein `CHANGES_REQUESTED`;
+- finaler Doku-Exact-Head-CI noch erforderlich.
+- Review Round 2: Gesamt-Golddeckung vor Materialkäufen ergänzt;
+- Review Round 2: recoverable Bank-Stacks werden weiter durchsucht, globale Bankfehler blockieren Trade-Fallback;
+- neuer technischer Head `9e007bc6bfdf872ebf91ecd9f8dbf7f7c2140428`;
+- CI Run #362: **213/213 PASS, 0 FAIL, 0 SKIP, completed/success**;
+- beide neuen Review-Threads resolved;
+- finaler Codex-Review auf diesem Fix-Head angefordert.
+
+H16 wird erst nach grünem Exact-Head-CI, sauberem Review-Gate und echtem Adventure-Land-Live-PASS gemergt.
 
 ---
 
