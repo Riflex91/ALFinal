@@ -531,12 +531,19 @@ test('H19 fails closed when account or account-wide online truth is unavailable'
   assert.equal(onlineUnavailable.controller.queueStart('My_Merchant').accepted, false);
   assert.equal(onlineUnavailable.state.dispatches.length, 0);
 
-  const runnerActiveUnavailable = fixture({ activeUnavailable: true });
+  const runnerActiveUnavailable = fixture({
+    activeUnavailable: true,
+    onlineNames: ['My_Ranger', 'My_Priest'],
+    runnerActiveNames: ['My_Ranger', 'My_Priest']
+  });
   assert.equal(runnerActiveUnavailable.controller.queueStart('My_Merchant').accepted, true);
+  const blockedStop = runnerActiveUnavailable.controller.queueStop('My_Priest');
+  assert.equal(blockedStop.accepted, false);
+  assert.equal(blockedStop.reason, 'H19_RUNNER_ACTIVE_STATE_UNAVAILABLE');
   assert.equal(runnerActiveUnavailable.state.dispatches.length, 0);
 });
 
-test('H19 remote lifecycle uses account-wide online truth when runner-active view is local-only', async () => {
+test('H19 remote stop requires runner controllability while start still uses account-wide online truth', async () => {
   const { controller, state } = fixture({
     onlineNames: ['My_Ranger', 'My_Priest', 'My_Merchant'],
     runnerActiveNames: ['My_Ranger'],
@@ -548,20 +555,19 @@ test('H19 remote lifecycle uses account-wide online truth when runner-active vie
   assert.deepEqual([...captured.desiredActiveNames], ['My_Merchant', 'My_Priest', 'My_Ranger']);
   assert.equal(state.active.has('My_Merchant'), false);
 
-  assert.equal(controller.queueStop('My_Merchant').accepted, true);
-  assert.equal(controller.tick().state, 'DISPATCHED');
-  await flush();
-  assert.equal(controller.tick().state, 'CONFIRMED');
-  assert.equal(state.online.has('My_Merchant'), false);
-  assert.equal(state.active.has('My_Merchant'), false);
+  const blockedStop = controller.queueStop('My_Merchant');
+  assert.equal(blockedStop.accepted, false);
+  assert.equal(blockedStop.reason, 'H19_REMOTE_TARGET_NOT_RUNNER_CONTROLLABLE');
+  assert.equal(state.dispatches.length, 0);
 
+  state.online.delete('My_Merchant');
   assert.equal(controller.queueStart('My_Merchant').accepted, true);
   assert.equal(controller.tick().state, 'DISPATCHED');
   await flush();
   assert.equal(controller.tick().state, 'CONFIRMED');
   assert.equal(state.online.has('My_Merchant'), true);
   assert.equal(state.active.has('My_Merchant'), false);
-  assert.equal(controller.status().metrics.stopsConfirmed, 1);
+  assert.equal(controller.status().metrics.stopsConfirmed, 0);
   assert.equal(controller.status().metrics.startsConfirmed, 1);
 });
 
@@ -580,7 +586,10 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(runtime, /id: 'h19-character-lifecycle'/);
   assert.match(runtime, /id: 'h19-remote-recovery'/);
   assert.match(runtime, /_registerH19RemoteRecoveryLiveTest\(\)/);
-  assert.match(runtime, /row\.name !== localName && row\.name !== leader && online\.has\(row\.name\)/);
+  assert.match(runtime, /const runnerActive = runnerActiveSet\(roster\)/);
+  assert.match(runtime, /online\.has\(row\.name\)/);
+  assert.match(runtime, /runnerActive\.has\(row\.name\)/);
+  assert.match(runtime, /H19_REMOTE_CONTROLLABLE_TARGET_UNAVAILABLE/);
   assert.match(runtime, /safeFirstStartRecovery/);
   assert.match(runtime, /targetName = null;\s*baseline = null;\s*originalPolicy = null;/);
   assert.match(runtime, /const cleanupSleep = \(runtime, ms\) => new Promise/);
@@ -611,6 +620,8 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(source, /settlementGeneration/);
   assert.match(source, /respawnGraceMs/);
   assert.match(source, /H19_RESPAWN_COOLDOWN/);
+  assert.match(source, /H19_REMOTE_TARGET_NOT_RUNNER_CONTROLLABLE/);
+  assert.match(source, /H19_RUNNER_ACTIVE_STATE_UNAVAILABLE/);
   assert.match(boundary, /start_character: Object\.freeze/);
   assert.match(boundary, /stop_character: Object\.freeze/);
   assert.match(boundary, /respawn: Object\.freeze/);
@@ -623,5 +634,7 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(build, /AL Bot 0\.19\.0-h19/);
   assert.match(dist, /AL Bot 0\.19\.0-h19/);
   assert.match(dist, /class CharacterLifecycleController/);
+  assert.match(dist, /H19_REMOTE_TARGET_NOT_RUNNER_CONTROLLABLE/);
+  assert.match(dist, /H19_REMOTE_CONTROLLABLE_TARGET_UNAVAILABLE/);
   assert.equal(pkg.version, '0.19.0');
 });

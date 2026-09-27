@@ -1247,3 +1247,33 @@ Korrektur:
 - Regression deckt explizit den Live-Fall „Remote accountweit online, aber nicht in der lokalen Runner-Active-Sicht“ ab.
 
 Die bisherigen FAIL-Evidence bleibt append-only dokumentiert. H19 Remote Start/Stop + Restart-Recovery ist weiterhin **nicht live bestätigt**, bis der korrigierte Gate nach finalem Merge einmal vollständig PASSED ist.
+
+
+### H19 v2 Live-Truth-Korrektur 2 – Runner-Kontrollierbarkeit für Remote STOP
+
+Stand 2026-09-27.
+
+Der nächste echte `h19-remote-recovery`-Lauf bestätigte die accountweite Online-Sicht, scheiterte aber erst beim tatsächlichen Stop:
+
+- `My_Merchant` war accountweit `online=true`;
+- die Runner-Active-Sicht auf `My_Warrior` enthielt nur `My_Warrior`;
+- genau ein `stop_character("My_Merchant")` wurde dispatcht;
+- der Merchant blieb accountweit online;
+- H19 ging nach dem Outcome-Fenster fail-closed auf `H19_STOP_UNVERIFIED_TIMEOUT`;
+- 1 Dispatch / 0 Confirms / 0 Rejects / 1 UNKNOWN / 0 Stop-Confirms; kein Blind-Retry.
+
+Die korrigierte Semantik ist deshalb:
+
+- accountweite `onlineCharacterNames` bleiben die Wahrheit für Desired Active, START-Vorbedingungen und START/STOP-Ergebnisbestätigung;
+- `runnerActiveCharacterNames` sind zusätzlich die Kontrollierbarkeitsgrenze für Remote STOP;
+- STOP wird vor Dispatch blockiert, wenn die Runner-Active-Sicht fehlt oder das Ziel dort nicht enthalten ist;
+- der Live-Gate wählt nur Ziele aus account-online ∩ runner-active.
+
+Arbeitsbranch/PR:
+
+- `chatgpt/h19-runner-controllability`;
+- PR #34;
+- Source- und Regressionstests wurden ergänzt;
+- der nächste echte H19-v2-Live-Test benötigt mindestens einen Remote-Character, der vom Test-Runner selbst als Child-Character gestartet wurde.
+
+H19 Remote Start/Stop + Restart-Recovery bleibt bis zu einem vollständigen PASS weiter offen.

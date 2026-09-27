@@ -486,3 +486,37 @@ Schlussfolgerung aus Live Truth:
 Remote Lifecycle, Desired Active sowie der Remote-Recovery-Live-Gate verwenden ausschließlich die accountweite Online-Evidence. Die bestehende Runner-Active-Sicht bleibt separat erhalten und wird nicht semantisch umdefiniert.
 
 Dieser Lauf ist **keine H19-PASS-Evidence**. Nach Source-/Test-/Bundle-Synchronisierung, grünem finalem Gate und Merge ist genau ein neuer echter `h19-remote-recovery`-Lauf erforderlich.
+
+
+## Live-Versuch 5 – Remote-Stop: Account-Online ist nicht gleich Runner-kontrollierbar
+
+Stand: 2026-09-27
+
+Der erste echte Lauf nach der Account-Online-Korrektur erreichte den Remote-Stop. Auf `My_Warrior` wurde `My_Merchant` accountweit als `online=true` erkannt, während die Runner-Active-Sicht weiterhin nur `My_Warrior` enthielt.
+
+Beobachtetes Verhalten:
+
+- Preflight wählte `My_Merchant` als Remote-Ziel;
+- genau ein `stop_character("My_Merchant")` wurde dispatcht;
+- Adventure Land lieferte keinen synchronen Fehler;
+- `My_Merchant` blieb jedoch während des gesamten Outcome-Fensters accountweit online;
+- H19 bestätigte deshalb keinen Stop und ging fail-closed auf `H19_STOP_UNVERIFIED_TIMEOUT`;
+- Ergebnis: 1 Dispatch / 0 Confirms / 0 Rejects / 1 UNKNOWN / 0 Stop-Confirms;
+- Restart-Recovery und Stability wurden nicht mutierend fortgesetzt; kein Blind-Retry.
+
+Die Adventure-Land-Laufzeit trennt damit zwei Wahrheiten:
+
+- `onlineCharacterNames`: accountweite Online-Wahrheit aus `get_characters().online`;
+- `runnerActiveCharacterNames`: Character, die im aktuellen Browser-/Runner-Kontext durch `get_active_characters()` kontrolliert werden.
+
+`stop_character(name)` kann nur einen vom aktuellen Runner geführten Remote-Character zuverlässig stoppen. Ein separat geöffnetes Adventure-Land-Fenster kann accountweit online sein, ohne in diesem Runner stoppbar zu sein.
+
+Korrektur:
+
+- Remote-`START` verwendet weiterhin accountweite Online-Wahrheit: ein eigener Character darf nur gestartet werden, wenn er accountweit offline ist.
+- Remote-`STOP` verlangt zusätzlich Runner-Kontrollierbarkeit: Ziel muss accountweit online **und** in `runnerActiveCharacterNames` vorhanden sein.
+- Fehlt die Runner-Active-Sicht, wird der Stop mit `H19_RUNNER_ACTIVE_STATE_UNAVAILABLE` fail-closed abgewiesen.
+- Ist ein eigener Remote-Character accountweit online, aber nicht runner-kontrollierbar, wird er mit `H19_REMOTE_TARGET_NOT_RUNNER_CONTROLLABLE` vor jedem Dispatch abgewiesen.
+- Der `h19-remote-recovery`-Preflight wählt nur Ziele aus der Schnittmenge account-online ∩ runner-active und meldet andernfalls `H19_REMOTE_CONTROLLABLE_TARGET_UNAVAILABLE`.
+
+Dieser Lauf ist weiterhin **keine H19-PASS-Evidence**. Für den nächsten echten Remote-Recovery-Live-Test muss mindestens ein Remote-Character vom Test-Runner selbst per `start_character(...)` als Child-Character gestartet worden sein.
