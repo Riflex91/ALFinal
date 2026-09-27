@@ -258,3 +258,71 @@ Code-/Bundle-Head vor dieser Dokumentation:
 Nach diesen Dokumentationscommits ist erneut Exact-Head-CI erforderlich.
 
 H13 wird erst nach eigenem bestandenem Adventure-Land-Live-Test und anschließend erneut sauberem Exact-Head-Merge-Gate gemergt.
+
+## Finale Live-Evidence – 2026-09-27
+
+Der echte Adventure-Land-Ein-Klick-Test ist vollständig bestanden.
+
+Finale Suite:
+- Runtime: `AL Bot 0.13.0-h13`
+- Suite: `h13-trade`
+- Ergebnis: `PASSED / ALL_STEPS_PASSED`
+- Start: `2026-09-27T08:13:18.294Z`
+- Ende: `2026-09-27T08:13:25.586Z`
+- Runtime war vor dem Test STOPPED und wurde nur für die Suite automatisch gestartet.
+
+### Preflight – PASSED
+- Merchant: `My_Merchant`
+- Start-Map: `bank`
+- Testitem: `hpot0`
+- Menge: `1`
+- Live-NPC-Stückpreis: `20` Gold
+- Ausgangsmenge: `5999`
+- Ausgangsgold: `14195004`
+- Goldreserve: `10000`
+- NPC: `fancypots`
+- NPC-Position: `main (-35, -162)`
+
+### NPC Buy – PASSED
+- genau `1 x hpot0` gekauft
+- `beforeQuantity=5999`
+- `afterQuantity=6000`
+- `beforeGold=14195004`
+- `afterGold=14194984`
+- `npcBuysConfirmed=1`
+- `movementRequests=1`
+- `npcBuysUnknown=0`
+- `movementUnknown=0`
+
+### Player-Market-Analyse – PASSED
+- rein read-only
+- sichtbare Asks: `51`
+- sichtbare Bids: `1`
+- `marketBuysDispatched=0`
+- `marketSellsDispatched=0`
+- der Live-Bericht zeigte dabei einen semantisch falschen globalen Spread zwischen unterschiedlichen Items; nach dem Live-Test wurde deshalb read-only gehärtet:
+  - Spread wird nur noch berechnet, wenn Best Ask und Best Bid dasselbe Item und Level betreffen;
+  - neue Regression deckt Cross-Item-Spread ab;
+  - kein Gameplay-Write-Pfad wurde dadurch verändert.
+
+### Stability – PASSED
+- `npcBuyUnknown=0`
+- `npcSellUnknown=0`
+- `marketBuyUnknown=0`
+- `marketSellUnknown=0`
+- `movementUnknown=0`
+- keine Suspension.
+
+### Cleanup – PASSED
+- `pending=false`
+- `request=false`
+- `movementActive=false`
+- Suite-Cleanup: `attempted=true / ok=true`
+- Runtime danach wieder STOPPED
+- Scheduler danach `totalResources=0`
+- Scheduler `callbackErrors=0`
+
+### Abnahme
+Alle H13-PASS-Kriterien sind erfüllt. H13 gilt damit live als **BESTANDEN**.
+
+Vor dem Merge bleibt nur der neue Exact-Head-CI-/Review-/Merge-Gate nach dem read-only Spread-Hardening und diesen Evidence-Commits.
