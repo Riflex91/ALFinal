@@ -337,7 +337,9 @@
       }
       candidates.sort((a, b) => b.score - a.score || a.inventorySlot - b.inventorySlot);
       const best = candidates[0] || null;
-      const delta = best ? best.score - currentScore : null;
+      const delta = best
+        ? (current == null ? best.score : best.score - currentScore)
+        : null;
       const conflict = best ? this._handConflict(best.item, slot, equipment, ctype) : { blocked: false, reason: null };
       return {
         slot,
@@ -881,6 +883,11 @@
           return { state: 'BLOCKED', reason: conflict.blocked ? conflict.reason : allowed.reason };
         }
         const current = equipment.slots && equipment.slots[request.targetSlot] || null;
+        if (this._fingerprint(current) !== request.currentFingerprint) {
+          this.request = null;
+          this.metrics.safetyBlocks += 1;
+          return { state: 'BLOCKED', reason: 'H14_EQUIP_TARGET_CHANGED' };
+        }
         const beforeCandidateQuantity = this._quantity(inventory, request.candidateFingerprint);
         const beforeCurrentQuantity = request.currentFingerprint ? this._quantity(inventory, request.currentFingerprint) : 0;
         return this._dispatch('equip', [request.inventorySlot, request.targetSlot], {
