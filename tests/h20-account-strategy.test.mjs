@@ -1,0 +1,219 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import vm from 'node:vm';
+import { fileURLToPath } from 'node:url';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+
+function loadStrategy(options = {}) {
+  const source = fs.readFileSync(path.resolve(here, '../src/account-strategy.js'), 'utf8');
+  const local = options.local || {
+    name: 'My_Warrior', ctype: 'warrior', level: 80, hp: 4000, maxHp: 4000,
+    mp: 900, maxMp: 900, attack: 700, armor: 500, resistance: 250,
+    frequency: 1.2, speed: 45, range: 45, rip: false, map: 'main'
+  };
+  const peers = options.peers || [
+    {
+      name: 'My_Priest', running: true, emergencyStopLatched: false, peerFresh: true,
+      profile: { name: 'My_Priest', ctype: 'priest', level: 79, hp: 2800, maxHp: 3000, attack: 420, armor: 220, resistance: 420, frequency: 1, speed: 46, range: 120, gearScore: 450, trainingMs: 2000 }
+    },
+    {
+      name: 'My_Ranger1', running: true, emergencyStopLatched: false, peerFresh: true,
+      profile: { name: 'My_Ranger1', ctype: 'ranger', level: 76, hp: 2600, maxHp: 2800, attack: 650, armor: 180, resistance: 180, frequency: 1.3, speed: 55, range: 220, gearScore: 430, trainingMs: 1000 }
+    },
+    {
+      name: 'My_Merchant', running: true, emergencyStopLatched: false, peerFresh: true,
+      profile: { name: 'My_Merchant', ctype: 'merchant', level: 70, hp: 2200, maxHp: 2200, attack: 120, armor: 120, resistance: 120, frequency: 0.8, speed: 40, range: 40, gearScore: 200, trainingMs: 500 }
+    }
+  ];
+  const accountRows = [
+    { name: 'My_Warrior', ctype: 'warrior', level: 80, online: true },
+    { name: 'My_Priest', ctype: 'priest', level: 79, online: true },
+    { name: 'My_Ranger1', ctype: 'ranger', level: 76, online: true },
+    { name: 'My_Merchant', ctype: 'merchant', level: 70, online: true }
+  ];
+  const clone = value => value == null ? value : JSON.parse(JSON.stringify(value));
+  const ctx = {
+    console, Date, Math, JSON, Map, Set, Object, Array, String, Number, Boolean,
+    __ALBOT_INTERNALS__: {
+      helpers: {
+        clone,
+        cleanText: (value, max = 1000) => String(value == null ? '' : value).trim().slice(0, max)
+      }
+    }
+  };
+  ctx.globalThis = ctx;
+  vm.runInNewContext(source, ctx, { filename: 'account-strategy.js' });
+  const Controller = ctx.__ALBOT_INTERNALS__.AccountStrategyController;
+  const game = {
+    snapshot: () => ({ available: true, character: clone(local) }),
+    equipmentSnapshot: () => ({ available: true, slots: {} })
+  };
+  const roster = {
+    refresh: () => ({
+      accountStateAvailable: true,
+      accountCharacters: clone(accountRows),
+      onlineCharacterNames: accountRows.filter(row => row.online).map(row => row.name)
+    })
+  };
+  const crossWindow = { freshPeers: () => clone(peers) };
+  const gear = { score: () => 0 };
+  const controller = new Controller({ game, roster, crossWindow, gear, now: options.now || (() => 10000) });
+  controller.start({});
+  return { controller, ctx };
+}
+
+test('account strategy chooses the capable combat trio for boss work and keeps merchant as support', () => {
+  const { controller } = loadStrategy();
+  const plan = controller.optimizeTask({ type: 'BOSS' });
+  assert.equal(plan.status, 'SELECTION_READY');
+  assert.deepEqual(
+    [...plan.selected.memberNames],
+    ['My_Priest', 'My_Ranger1', 'My_Warrior']
+  );
+  assert.equal(plan.leaderName, 'My_Warrior');
+  assert.deepEqual([...plan.supportMemberNames], ['My_Merchant']);
+  assert.ok(plan.selected.capabilities.includes('TANK'));
+  assert.ok(plan.selected.capabilities.includes('HEALER'));
+  assert.ok(plan.selected.capabilities.includes('DPS'));
+});
+
+test('account progression identifies the weaker combat character for catch-up training', () => {
+  const { controller } = loadStrategy({
+    peers: [
+      {
+        name: 'My_Priest', running: true, emergencyStopLatched: false,
+        profile: { name: 'My_Priest', ctype: 'priest', level: 80, hp: 3000, maxHp: 3000, attack: 450, armor: 250, resistance: 450, frequency: 1, gearScore: 500, trainingMs: 5000 }
+      },
+      {
+        name: 'My_Ranger1', running: true, emergencyStopLatched: false,
+        profile: { name: 'My_Ranger1', ctype: 'ranger', level: 55, hp: 1800, maxHp: 2500, attack: 350, armor: 100, resistance: 100, frequency: 1, gearScore: 220, trainingMs: 250 }
+      },
+      {
+        name: 'My_Merchant', running: true, emergencyStopLatched: false,
+        profile: { name: 'My_Merchant', ctype: 'merchant', level: 70, hp: 2200, maxHp: 2200, attack: 120, frequency: 0.8, gearScore: 200, trainingMs: 1000 }
+      }
+    ]
+  });
+  const plan = controller.progressionPlan();
+  assert.equal(plan.selectedCharacterName, 'My_Ranger1');
+  assert.equal(plan.ranking[0].name, 'My_Ranger1');
+  assert.ok(plan.ranking[0].catchUp > 0);
+});
+
+function loadFullAutonomy({ missingPeer = false } = {}) {
+  const source = fs.readFileSync(path.resolve(here, '../src/full-autonomy.js'), 'utf8');
+  const clone = value => value == null ? value : JSON.parse(JSON.stringify(value));
+  const ctx = {
+    console, Date, Math, JSON, Map, Set, Object, Array, String, Number, Boolean,
+    __ALBOT_INTERNALS__: {
+      helpers: {
+        clone,
+        cleanText: (value, max = 1000) => String(value == null ? '' : value).trim().slice(0, max)
+      }
+    }
+  };
+  ctx.globalThis = ctx;
+  vm.runInNewContext(source, ctx, { filename: 'full-autonomy.js' });
+  const Controller = ctx.__ALBOT_INTERNALS__.FullAutonomyController;
+  const state = {
+    lifecyclePolicy: null,
+    lifecycleStarts: 0,
+    farmStarts: 0,
+    economyStarts: 0,
+    logisticsStarts: 0,
+    broadcasts: 0,
+    training: []
+  };
+  const profiles = [
+    { name: 'My_Warrior', ctype: 'warrior', online: true, local: true, peerFresh: true, running: true },
+    { name: 'My_Priest', ctype: 'priest', online: true, peerFresh: true, running: true },
+    { name: 'My_Ranger1', ctype: 'ranger', online: true, peerFresh: true, running: true },
+    ...(!missingPeer ? [{ name: 'My_Merchant', ctype: 'merchant', online: true, peerFresh: true, running: true }] : [])
+  ];
+  const strategy = {
+    profiles: () => clone(profiles),
+    optimizeTask: () => ({
+      status: 'SELECTION_READY',
+      taskType: 'FARM',
+      selected: { memberNames: ['My_Priest', 'My_Ranger1', 'My_Warrior'] },
+      supportMemberNames: ['My_Merchant'],
+      leaderName: 'My_Warrior',
+      progression: { selectedCharacterName: 'My_Ranger1' }
+    }),
+    recordTraining: value => state.training.push(value)
+  };
+  const lifecycle = {
+    setPolicy: value => { state.lifecyclePolicy = clone(value); return { accepted: true }; },
+    status: () => ({ autonomyEnabled: state.lifecycleStarts > 0, suspended: false, currentAction: null }),
+    startAutonomy: () => { state.lifecycleStarts += 1; return { accepted: true }; },
+    stopAutonomy: () => ({ accepted: true })
+  };
+  const farmIntelligence = {
+    status: () => ({ active: state.farmStarts > 0 }),
+    startAutonomy: () => { state.farmStarts += 1; return { accepted: true }; },
+    stopAutonomy: () => ({ stopped: true })
+  };
+  const economy = {
+    status: () => ({ autonomyEnabled: state.economyStarts > 0, currentAction: null, suspendedReason: null }),
+    startAutonomy: () => { state.economyStarts += 1; return { accepted: true }; },
+    stopAutonomy: () => ({})
+  };
+  const partyLogistics = {
+    status: () => ({ autonomyEnabled: state.logisticsStarts > 0, currentAction: null, suspendedReason: null }),
+    plan: () => ({ state: 'IDLE', reason: 'NO_WORK' }),
+    startAutonomy: () => { state.logisticsStarts += 1; return { accepted: true }; },
+    stopAutonomy: () => ({})
+  };
+  const runtime = {
+    running: true,
+    stopLatch: { status: () => ({ latched: false }) },
+    actionAllowed: () => true,
+    game: { snapshot: () => ({ available: true, character: { name: 'My_Warrior', ctype: 'warrior' } }) },
+    roster: {
+      refresh: () => ({
+        onlineCharacterNames: ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior']
+      })
+    },
+    lifecycle,
+    farmIntelligence,
+    economy,
+    partyLogistics,
+    lifecycleTransport: { broadcastHeartbeat: () => { state.broadcasts += 1; } }
+  };
+  const controller = new Controller({ runtime, strategy });
+  controller.start({});
+  return { controller, state };
+}
+
+test('full autonomy waits fail-closed until every online character has a fresh bot profile', () => {
+  const { controller, state } = loadFullAutonomy({ missingPeer: true });
+  const started = controller.startAutonomy({ taskType: 'FARM' });
+  assert.equal(started.accepted, true);
+  assert.equal(started.tick.state, 'WARMING');
+  assert.deepEqual([...started.tick.missingProfiles], ['My_Merchant']);
+  assert.equal(state.lifecycleStarts, 0);
+  assert.equal(state.farmStarts, 0);
+});
+
+test('full autonomy applies one shared party policy and starts the selected combat role', () => {
+  const { controller, state } = loadFullAutonomy();
+  const started = controller.startAutonomy({ taskType: 'FARM' });
+  assert.equal(started.accepted, true);
+  assert.equal(started.tick.state, 'RUNNING');
+  assert.equal(state.lifecycleStarts, 1);
+  assert.equal(state.farmStarts, 1);
+  assert.equal(state.lifecyclePolicy.desiredPartyLeader, 'My_Warrior');
+  assert.deepEqual(
+    [...state.lifecyclePolicy.desiredPartyMemberNames],
+    ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior']
+  );
+  assert.deepEqual(
+    [...state.lifecyclePolicy.desiredActiveNames],
+    ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior']
+  );
+  assert.equal(state.broadcasts, 1);
+  assert.deepEqual(state.training, [true]);
+});
