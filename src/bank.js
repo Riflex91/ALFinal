@@ -342,7 +342,7 @@
       let packs = (bank.packs || []).slice();
       if (wanted) packs = packs.sort((a, b) => (String(a.name) === wanted ? -1 : String(b.name) === wanted ? 1 : 0));
       for (const pack of packs) {
-        if (bank.map && pack.map && String(pack.map) !== String(bank.map)) continue;
+        if (!bank.map || !pack.map || String(pack.map) !== String(bank.map)) continue;
         const occupied = new Set((pack.items || []).map(row => Number(row.slot)));
         const capacity = Math.max(0, Number(pack.capacity) || 0);
         for (let slot = 0; slot < capacity; slot += 1) {
@@ -387,6 +387,10 @@
       if (!pack || slot == null) return { accepted: false, reason: 'H12_WITHDRAW_LOCATION_REQUIRED' };
       const bank = this._bankSnapshot();
       if (!bank || bank.available === false) return { accepted: false, reason: 'H12_BANK_NOT_MOUNTED' };
+      const packView = (bank.packs || []).find(entry => String(entry.name) === pack) || null;
+      if (!packView || !bank.map || !packView.map || String(packView.map) !== String(bank.map)) {
+        return { accepted: false, reason: 'H12_WITHDRAW_WRONG_OR_UNKNOWN_BANK_MAP' };
+      }
       const row = this._bankItem(bank, pack, slot);
       if (!row) return { accepted: false, reason: 'H12_WITHDRAW_ITEM_NOT_FOUND' };
       const reserved = Math.max(0, Math.floor(Number(this.reservations[row.name]) || 0));
