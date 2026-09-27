@@ -580,6 +580,7 @@ H15-Live-Gate ist bestanden. Nach den Evidence-Dokucommits ist nur noch der neue
 ---
 
 ## H16 – Exchange & Craft
+- Suite v5 Preflight-Diagnostik: strukturierte Reject-Zähler + Top-5-Fast-Matches vor fail-closed Abbruch
 
 **🟦 IMPLEMENTIERT · LIVE V1 FAIL-CLOSED · V2 TECHNISCH/REVIEW GRÜN · FINALER DOKU-CI OFFEN · LIVE V2 OFFEN**
 
