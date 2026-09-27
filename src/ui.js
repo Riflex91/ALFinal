@@ -33,6 +33,7 @@
       this.tradeResult = null;
       this.gearResult = null;
       this.upgradeResult = null;
+      this.exchangeCraftResult = null;
       this.liveTestClipboard = null;
       this._offLog = null;
       this._dragCleanup = null;
@@ -89,7 +90,7 @@
 </style>
 <div class="albot-head" id="albot-drag-handle"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-minimize" class="albot-window-btn" title="Fenster minimieren" aria-label="Fenster minimieren">—</button><button id="albot-emergency" class="albot-stop">STOP</button></div>
 <div class="albot-tabs">
-<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="merchant">Merchant</button><button class="albot-tab" data-tab="bank">Bank</button><button class="albot-tab" data-tab="trade">Handel</button><button class="albot-tab" data-tab="gear">Gear</button><button class="albot-tab" data-tab="upgrade">Upgrade & Compound</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
+<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="merchant">Merchant</button><button class="albot-tab" data-tab="bank">Bank</button><button class="albot-tab" data-tab="trade">Handel</button><button class="albot-tab" data-tab="gear">Gear</button><button class="albot-tab" data-tab="upgrade">Upgrade & Compound</button><button class="albot-tab" data-tab="exchange-craft">Exchange & Craft</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
 </div>
 <div class="albot-body">
 <section id="albot-panel-overview" class="albot-panel active"></section>
@@ -105,6 +106,7 @@
 <section id="albot-panel-trade" class="albot-panel"></section>
 <section id="albot-panel-gear" class="albot-panel"></section>
 <section id="albot-panel-upgrade" class="albot-panel"></section>
+<section id="albot-panel-exchange-craft" class="albot-panel"></section>
 <section id="albot-panel-live-test" class="albot-panel"></section>
 <section id="albot-panel-knowledge" class="albot-panel"></section>
 <section id="albot-panel-logs" class="albot-panel"></section>
@@ -249,6 +251,7 @@
       if (this.activeTab === 'trade') this.renderTrade(status);
       if (this.activeTab === 'gear') this.renderGear(status);
       if (this.activeTab === 'upgrade') this.renderUpgrade(status);
+      if (this.activeTab === 'exchange-craft') this.renderExchangeCraft(status);
       if (this.activeTab === 'live-test') this.renderLiveTest(status);
       if (this.activeTab === 'knowledge') this.renderKnowledge(status);
       if (this.activeTab === 'logs') this.renderLogs();
@@ -273,6 +276,7 @@
       this.renderTrade(status);
       this.renderGear(status);
       this.renderUpgrade(status);
+      this.renderExchangeCraft(status);
       this.renderLiveTest(status);
       this.renderKnowledge(status);
       this.renderLogs();
@@ -1204,6 +1208,112 @@ ${items.length ? items.slice(0, 24).map(row => '<div class="albot-small">#'+esc(
         maxConsumableCost: Number(panel.querySelector('#albot-h15-max-cost').value),
         offeringMode: panel.querySelector('#albot-h15-offering-mode').value,
         offeringFromLevel: Number(panel.querySelector('#albot-h15-offering-level').value)
+      }));
+    }
+
+    renderExchangeCraft(status) {
+      const panel = this.host.querySelector('#albot-panel-exchange-craft');
+      if (!panel) return;
+      const ec = status.exchangeCraft || {};
+      const metrics = ec.metrics || {};
+      const policy = ec.config || {};
+      let plan = ec.lastPlan || null;
+      try { if (!plan || plan.state !== 'READY') plan = this.runtime.exchangeCraft.plan(); } catch (_) {}
+      const exchanges = plan && Array.isArray(plan.exchangeCandidates) ? plan.exchangeCandidates : [];
+      const crafts = plan && Array.isArray(plan.craftCandidates) ? plan.craftCandidates : [];
+      const safeExchanges = exchanges.filter(row => row.safe);
+      const safeCrafts = crafts.filter(row => row.safe);
+      const resultText = this.exchangeCraftResult ? JSON.stringify(this.exchangeCraftResult, null, 2) : 'Noch keine manuelle H16-Aktion.';
+
+      const exchangeOptions = safeExchanges.length
+        ? safeExchanges.map(row => '<option value="'+esc(row.inventorySlot)+'">'+esc(row.itemName)+' · '+esc(row.requiredQuantity)+' Stück · Risiko '+esc(row.valueAtRisk)+'</option>').join('')
+        : '<option value="">kein sicherer Exchange-Kandidat</option>';
+      const craftOptions = safeCrafts.length
+        ? safeCrafts.map(row => '<option value="'+esc(row.itemName)+'">'+esc(row.itemName)+' · Gold '+esc(row.cost)+' · Input-Risiko '+esc(row.inputValueAtRisk)+'</option>').join('')
+        : '<option value="">kein sicherer Craft-Kandidat</option>';
+
+      panel.innerHTML = `<div class="albot-card"><b>H16 Exchange & Craft</b>
+<div class="albot-small">Live Exchange-Mengen, Craft-Rezepte aus G.craft, Produktionsgraph, Materialquellen und konservative Risiko-/Kostenbudgets. Quest-/Event-Rezepte und -Exchanges sind standardmäßig blockiert.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${ec.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Plan</span><div class="albot-v">${esc(plan && plan.state || '-')} · ${esc(plan && plan.reason || '-')}</div></div>
+<div><span class="albot-k">Sichere Exchanges</span><div class="albot-v">${esc(safeExchanges.length)} / ${esc(exchanges.length)}</div></div>
+<div><span class="albot-k">Sichere Crafts</span><div class="albot-v">${esc(safeCrafts.length)} / ${esc(crafts.length)}</div></div>
+<div><span class="albot-k">Session-Versuche</span><div class="albot-v">${esc(ec.attemptsThisSession || 0)} / ${esc(policy.maxAttemptsPerSession || '-')}</div></div>
+<div><span class="albot-k">Material-Delegationen</span><div class="albot-v">${esc(metrics.materialDelegations || 0)}</div></div>
+<div><span class="albot-k">Exchange bestätigt / Unknown</span><div class="albot-v">${esc(metrics.exchangesConfirmed || 0)} / ${esc(metrics.exchangesUnknown || 0)}</div></div>
+<div><span class="albot-k">Craft bestätigt / Unknown</span><div class="albot-v">${esc(metrics.craftsConfirmed || 0)} / ${esc(metrics.craftsUnknown || 0)}</div></div>
+<div><span class="albot-k">Budget Blocks</span><div class="albot-v">${esc(metrics.budgetBlocks || 0)}</div></div>
+<div><span class="albot-k">Suspendiert</span><div class="albot-v">${ec.suspended ? 'JA · '+esc(ec.suspendedReason || '-') : 'NEIN'}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Direkte Aktionen</b>
+<div class="albot-row"><select id="albot-h16-exchange">${exchangeOptions}</select><button id="albot-h16-exchange-run" class="albot-btn">Exchange vormerken</button></div>
+<div class="albot-row"><select id="albot-h16-craft">${craftOptions}</select><button id="albot-h16-craft-run" class="albot-btn">Craft vormerken</button></div>
+<div class="albot-row"><label><input id="albot-h16-quest-optin" type="checkbox" style="flex:none"> Quest/Event für diese Aktion explizit erlauben</label></div>
+<div class="albot-small">Die Opt-in-Checkbox ist absichtlich nicht vorausgewählt. Alle Quellitems und Definitionen werden unmittelbar vor Dispatch erneut geprüft.</div>
+</div>
+
+<div class="albot-card"><b>Produktionsgraph</b>
+<div class="albot-row"><input id="albot-h16-production-name" placeholder="Ziel-Item-ID"><input id="albot-h16-production-qty" type="number" min="1" step="1" value="1" style="max-width:90px"><button id="albot-h16-production-plan" class="albot-btn">Produktionsplan</button></div>
+<div class="albot-small">Der Plan nutzt lokales Inventar und gemounteten Bankbestand. Fehlende Blätter zeigen Bank-, NPC- und Marktquellen; die eigentliche gemeinsame Economy-Autonomie folgt in H17.</div>
+</div>
+
+<div class="albot-card"><b>Safety Policy</b>
+<div class="albot-row"><label>Exchange-Risiko max <input id="albot-h16-ex-risk" type="number" min="0" value="${esc(policy.maxExchangeValueAtRisk == null ? 100000 : policy.maxExchangeValueAtRisk)}"></label><label>Craft-Gold max <input id="albot-h16-craft-cost" type="number" min="0" value="${esc(policy.maxCraftGoldCost == null ? 250000 : policy.maxCraftGoldCost)}"></label></div>
+<div class="albot-row"><label>Craft-Input-Risiko max <input id="albot-h16-craft-risk" type="number" min="0" value="${esc(policy.maxCraftInputValueAtRisk == null ? 250000 : policy.maxCraftInputValueAtRisk)}"></label><label>Goldreserve <input id="albot-h16-reserve" type="number" min="0" value="${esc(policy.goldReserve == null ? 10000 : policy.goldReserve)}"></label></div>
+<div class="albot-row"><button id="albot-h16-policy-save" class="albot-btn">Policy speichern</button></div>
+</div>
+
+<div class="albot-card"><b>Steuerung</b>
+<div class="albot-row"><button id="albot-h16-plan" class="albot-btn">Plan</button><button id="albot-h16-tick" class="albot-btn">Tick</button><button id="albot-h16-best" class="albot-btn">Sichersten Kandidaten vormerken</button><button id="albot-h16-reset" class="albot-btn warn" ${ec.suspended ? '' : 'disabled'}>Safety zurücksetzen</button></div>
+<div class="albot-small">Pending: ${ec.pending ? esc(ec.pending.kind) : 'nein'} · Request: ${ec.request ? esc(ec.request.kind) : 'keiner'}</div>
+</div>
+
+<div class="albot-card"><b>Letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.exchangeCraftResult = fn(); }
+        catch (error) { this.exchangeCraftResult = { ok: false, reason: String(error && error.message || error) }; }
+        this.renderExchangeCraft(this.runtime.status());
+      };
+      const questAllowed = () => !!(panel.querySelector('#albot-h16-quest-optin') && panel.querySelector('#albot-h16-quest-optin').checked);
+      const planButton = panel.querySelector('#albot-h16-plan');
+      if (planButton) planButton.onclick = () => run(() => this.runtime.exchangeCraft.plan());
+      const tickButton = panel.querySelector('#albot-h16-tick');
+      if (tickButton) tickButton.onclick = () => run(() => this.runtime.exchangeCraft.tick());
+      const bestButton = panel.querySelector('#albot-h16-best');
+      if (bestButton) bestButton.onclick = () => run(() => this.runtime.exchangeCraft.queueBest());
+      const resetButton = panel.querySelector('#albot-h16-reset');
+      if (resetButton) resetButton.onclick = () => run(() => this.runtime.exchangeCraft.resetSafety('GUI_H16_RESET'));
+      const exchangeButton = panel.querySelector('#albot-h16-exchange-run');
+      if (exchangeButton) exchangeButton.onclick = () => {
+        const slot = Number(panel.querySelector('#albot-h16-exchange').value);
+        run(() => Number.isInteger(slot)
+          ? this.runtime.exchangeCraft.queueExchange(slot, { allowQuestEvent: questAllowed() })
+          : { accepted: false, reason: 'H16_GUI_NO_EXCHANGE_CANDIDATE' });
+      };
+      const craftButton = panel.querySelector('#albot-h16-craft-run');
+      if (craftButton) craftButton.onclick = () => {
+        const name = panel.querySelector('#albot-h16-craft').value || '';
+        run(() => name
+          ? this.runtime.exchangeCraft.queueCraft(name, { allowQuestEvent: questAllowed() })
+          : { accepted: false, reason: 'H16_GUI_NO_CRAFT_CANDIDATE' });
+      };
+      const productionButton = panel.querySelector('#albot-h16-production-plan');
+      if (productionButton) productionButton.onclick = () => {
+        const name = panel.querySelector('#albot-h16-production-name').value.trim();
+        const quantity = Math.max(1, Math.floor(Number(panel.querySelector('#albot-h16-production-qty').value) || 1));
+        run(() => name
+          ? this.runtime.exchangeCraft.productionPlan(name, quantity, { allowQuestEvent: questAllowed() })
+          : { state: 'BLOCKED', reason: 'H16_GUI_PRODUCTION_TARGET_REQUIRED' });
+      };
+      const policyButton = panel.querySelector('#albot-h16-policy-save');
+      if (policyButton) policyButton.onclick = () => run(() => this.runtime.exchangeCraft.policy({
+        maxExchangeValueAtRisk: Number(panel.querySelector('#albot-h16-ex-risk').value),
+        maxCraftGoldCost: Number(panel.querySelector('#albot-h16-craft-cost').value),
+        maxCraftInputValueAtRisk: Number(panel.querySelector('#albot-h16-craft-risk').value),
+        goldReserve: Number(panel.querySelector('#albot-h16-reserve').value)
       }));
     }
 
