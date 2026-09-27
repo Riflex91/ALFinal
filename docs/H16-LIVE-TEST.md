@@ -418,3 +418,59 @@ Append-only Evidence vom 2026-09-27:
 - Branch beim technischen Gate: `behind_by=0`
 - `src/runtime.js` im committed `dist/al-bot.js` vollständig synchron enthalten
 - keine Safety-Lockerung und kein neuer Mutation-Pfad
+
+## Suite v5 Live-Evidence → Suite v6 Bank-Material-Discovery
+
+Append-only Evidence vom 2026-09-27:
+
+Der erste echte Lauf mit der strukturierten v5-Diagnostik endete weiterhin korrekt fail-closed mit
+`H16_NEEDS_LOW_RISK_CRAFT_OR_ACQUIRABLE_MATERIALS`.
+
+Die v5-Diagnostik isolierte den verbleibenden Materialpfad-Blocker:
+
+- `MISSING_LEAF_NO_NPC_OR_MARKET_SOURCE`: **31**
+- `QUEST_EVENT_RECIPE`: **28**
+- `CRAFT_COST_OVER_CAP`: **15**
+- `INPUT_RISK_OVER_CAP`: **9**
+- `NESTED_OR_MULTI_STAGE_RECIPE`: **7**
+- `OUTPUT_QUEST_OR_CASH_BLOCKED`: **2**
+- `MISSING_LEAF_LEVEL_NONZERO`: **1**
+
+Mehrere Top-Near-Matches hatten einen bekannten NPC-Grundpreis, aber weder eine live nutzbare NPC-Location noch einen sichtbaren Market-Ask. Beispiele waren fehlende Level-0-Leaves wie `whiteegg`, `spidersilk`, `carrot`, `elixirdex0` und `elixirint0`.
+
+Damit war die nächste Änderung **keine weitere Limit-Erhöhung**, sondern das Einbeziehen des bereits vorhandenen H12-Bankpfads als zusätzliche Live-Materialquelle.
+
+### Suite v6
+
+PR #20 ergänzt:
+
+- H12 `queueMount()` als read-only Bank-Discovery: nur Bank-Movement und Snapshot-Sichtbarkeit, kein `bank_store`, `bank_retrieve` oder Gold-Write während des Discovery-Schritts;
+- H16-Suite-Version **6** mit `bank-discovery` vor dem Material-Fallback;
+- Nicht-Merchants überspringen Bank-Discovery, damit vorhandene lokale Craft-/Exchange-Pfade weiterhin testbar bleiben;
+- Bankmaterialien werden nur geplant, wenn der Stack:
+  - auf der aktuell gemounteten Bank-Map liegt,
+  - nicht locked/gift/giveaway/expiring ist,
+  - aktive H12-Reservierungen nicht verletzt,
+  - groß genug für einen nach dem Withdraw tatsächlich craftbaren Einzelstack ist,
+  - und ein eigener freier Inventar-Slot für den H12-Withdraw reserviert werden kann;
+- mehrere geplante Bank-Withdrawals verbrauchen die verfügbare Slot-Kapazität bereits im Preflight;
+- ist BANK nicht ausführbar, kann ein vorhandener NPC-/Market-Pfad weiter als bezahlter Fallback gewählt werden;
+- tatsächliche BANK-Materialbeschaffung delegiert ausschließlich über den bestehenden H16 → H12-Pfad;
+- NPC-/Market-Beschaffung bleibt beim bestehenden H16 → H13-Pfad;
+- keine Erhöhung von Risiko-, Gold-, Material- oder Missing-Leaf-Caps.
+
+Technischer Stand vor der finalen Evidence-Doku:
+
+- Head: `c96b01d50dcd91f93ad76f3b56c145e0c336b077`
+- Exact-Head-CI Run #417: **222/222 PASS, 0 FAIL, 0 SKIP, completed/success**
+- Branch beim letzten technischen Check: `behind_by=0`
+- PR #20: `mergeable=true`
+- Bundle: `src/bank.js`, `src/exchange-craft.js` und `src/runtime.js` im committed `dist/al-bot.js` source-synchron
+- alle bis dahin gefundenen Review-Threads adressiert und resolved
+- kein Safety-Limit gelockert
+
+### Offener externer Gate-Punkt
+
+Ein weiterer frischer Codex-Review auf dem technischen Head `c96b01d5...` konnte nicht ausgeführt werden, weil der GitHub-Codex-Connector ausdrücklich **„reached your Codex usage limits for code reviews“** meldete.
+
+Daher bleibt PR #20 trotz grünem CI **ungeMerged**, bis ein frischer Codex-Review auf dem dann aktuellen finalen Head wieder möglich und clean ist. Dieser Quota-Blocker wird nicht durch einen manuellen Merge umgangen.
