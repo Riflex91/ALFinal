@@ -80,7 +80,9 @@
       }
       this.configure(options);
       const initialOnline = this._onlineNames();
-      if (initialOnline.length !== this.config.expectedOnlineCount) {
+      const waitForRoster = options.waitForRoster === true;
+      if (initialOnline.length > this.config.expectedOnlineCount
+          || (!waitForRoster && initialOnline.length !== this.config.expectedOnlineCount)) {
         return {
           accepted: false,
           reason: 'FULL_AUTONOMY_EXPECTED_ONLINE_COUNT_MISMATCH',
@@ -89,7 +91,9 @@
           status: this.status()
         };
       }
-      this.desiredCharacterNames = initialOnline.slice().sort();
+      this.desiredCharacterNames = initialOnline.length === this.config.expectedOnlineCount
+        ? initialOnline.slice().sort()
+        : [];
       this.lifecycleArmed = false;
       this.enabled = true;
       this.startedAt = new Date().toISOString();
@@ -166,11 +170,6 @@
 
     _ensureLifecycle(plan, readiness) {
       const lifecycle = this.runtime.lifecycle;
-      const status = lifecycle.status();
-      if (status.suspended || status.currentAction && status.currentAction.unknownRecorded === true) {
-        return { ok: false, reason: status.suspendedReason || 'H19_SUSPENDED' };
-      }
-
       const local = this._local();
       if (!local || !local.name) return { ok: false, reason: 'CHARACTER_UNAVAILABLE' };
       const localName = String(local.name);
@@ -185,9 +184,22 @@
         .filter(name => stableDesired.includes(String(name)))
         .slice(0, 4)
         .sort();
-      const leader = plan.leaderName && desiredPartyAll.includes(plan.leaderName)
+
+      let party = null;
+      try { party = this.runtime.party && this.runtime.party.snapshot ? this.runtime.party.snapshot() : null; } catch (_) {}
+      const memberNames = new Set(party && Array.isArray(party.memberNames) ? party.memberNames.map(String) : []);
+      const foreignNames = party && Array.isArray(party.foreignMemberNames)
+        ? party.foreignMemberNames.map(String)
+        : [];
+      const currentLeader = cleanText(party && party.leader || '', 120) || null;
+      const preferredLeader = plan.leaderName && desiredPartyAll.includes(plan.leaderName)
         ? plan.leaderName
         : (desiredPartyAll[0] || null);
+      const leader = currentLeader
+        && desiredPartyAll.includes(currentLeader)
+        && foreignNames.length === 0
+        ? currentLeader
+        : preferredLeader;
       if (!leader) return { ok: false, reason: 'FULL_AUTONOMY_PARTY_LEADER_UNAVAILABLE' };
 
       const coordinator = localName === String(leader);
@@ -198,7 +210,6 @@
       const desiredPartyMembers = desiredPartyAll
         .filter(name => coordinator || onlineSet.has(String(name)))
         .sort();
-
       const desiredRuntimeRunningNames = coordinator
         ? readiness.profiles
           .filter(row => row && row.peerFresh && !row.local && stableDesired.includes(String(row.name)))
@@ -220,15 +231,26 @@
         return { ok: false, reason: policy && policy.reason || 'FULL_AUTONOMY_LIFECYCLE_POLICY_REJECTED' };
       }
 
-      let party = null;
-      try { party = this.runtime.party && this.runtime.party.snapshot ? this.runtime.party.snapshot() : null; } catch (_) {}
-      const memberNames = new Set(party && Array.isArray(party.memberNames) ? party.memberNames.map(String) : []);
-      const localPartyHealthy = memberNames.has(localName)
-        && effectiveLeader
-        && String(party && party.leader || '') === String(effectiveLeader);
-      const shouldRunLifecycle = coordinator || !localPartyHealthy;
-
+      const desiredSet = new Set(desiredPartyMembers.map(String));
+      const partyTopologyHealthy = !!party
+        && party.available !== false
+        && foreignNames.length === 0
+        && memberNames.size === desiredSet.size
+        && [...desiredSet].every(name => memberNames.has(name))
+        && !!effectiveLeader
+        && String(party.leader || '') === String(effectiveLeader);
+      const localInParty = memberNames.has(localName);
+      const shouldRunLifecycle = coordinator ? !partyTopologyHealthy : !localInParty;
       const current = lifecycle.status();
+      const recoverySafetyBlocked = current.suspended === true
+        || !!(current.currentAction && current.currentAction.unknownRecorded === true);
+      const recoveryBlockReason = current.suspendedReason
+        || (current.currentAction && current.currentAction.unknownRecorded === true ? 'H19_ACTION_UNKNOWN' : null);
+
+      if (shouldRunLifecycle && recoverySafetyBlocked) {
+        return { ok: false, reason: recoveryBlockReason || 'H19_SUSPENDED' };
+      }
+
       if (shouldRunLifecycle && this.lifecycleArmed && current.autonomyEnabled !== true) {
         return {
           ok: false,
@@ -246,11 +268,9 @@
         }
         this.started.lifecycle = true;
         this.lifecycleArmed = true;
-      } else if (this.started.lifecycle && current.autonomyEnabled === true) {
+      } else if (!coordinator && this.started.lifecycle && current.autonomyEnabled === true) {
         try { lifecycle.stopAutonomy('FULL_AUTONOMY_PARTY_HEALTHY_NON_COORDINATOR'); } catch (_) {}
         this.started.lifecycle = false;
-        this.lifecycleArmed = false;
-      } else if (!shouldRunLifecycle) {
         this.lifecycleArmed = false;
       }
 
@@ -261,7 +281,11 @@
         desiredActiveNames,
         desiredRuntimeRunningNames,
         partyNames: desiredPartyMembers,
-        leader: effectiveLeader
+        leader: effectiveLeader,
+        partyTopologyHealthy,
+        recoveryRequired: shouldRunLifecycle,
+        recoverySafetyBlocked,
+        recoveryBlockReason
       };
     }
 
@@ -373,6 +397,19 @@
             onlineCharacterNames: readiness.online
           };
         }
+        if (readiness.online.length < this.config.expectedOnlineCount) {
+          this.strategy.recordTraining(false);
+          return this.lastDecision = {
+            at: new Date().toISOString(),
+            state: 'WARMING',
+            reason: 'FULL_AUTONOMY_WAITING_FOR_EXPECTED_ONLINE_COUNT',
+            expectedOnlineCount: this.config.expectedOnlineCount,
+            onlineCharacterNames: readiness.online
+          };
+        }
+        if (!this.desiredCharacterNames.length) {
+          this.desiredCharacterNames = readiness.online.slice().sort();
+        }
         if (readiness.missing.length) {
           this.strategy.recordTraining(false);
           return this.lastDecision = {
@@ -436,6 +473,10 @@
           leader: lifecycle.leader,
           lifecycleCoordinator: lifecycle.coordinatorName,
           localLifecycleCoordinator: lifecycle.coordinator === true,
+          lifecycleRecoveryRequired: lifecycle.recoveryRequired === true,
+          lifecycleRecoveryBlocked: lifecycle.recoverySafetyBlocked === true,
+          lifecycleRecoveryBlockReason: lifecycle.recoveryBlockReason || null,
+          partyTopologyHealthy: lifecycle.partyTopologyHealthy === true,
           missingDesiredCharacters: this.desiredCharacterNames.filter(name => !readiness.online.includes(name)),
           progressionTarget: plan.progression && plan.progression.selectedCharacterName || null
         };

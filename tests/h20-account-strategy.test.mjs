@@ -130,7 +130,7 @@ test('optional farm work includes the current catch-up character and stays bound
   assert.equal(plan.selected.memberNames.includes('My_Merchant'), false);
 });
 
-function loadFullAutonomy({ missingPeer = false, localName = 'My_Warrior', partyHealthy = true, selectedMembers = ['My_Priest', 'My_Ranger1', 'My_Warrior'], leaderName = 'My_Warrior' } = {}) {
+function loadFullAutonomy({ missingPeer = false, localName = 'My_Warrior', partyHealthy = true, partyLeader = 'My_Warrior', selectedMembers = ['My_Priest', 'My_Ranger1', 'My_Warrior'], leaderName = 'My_Warrior', lifecycleSuspended = false, lifecycleSuspendedReason = null, onlineNames = ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior'] } = {}) {
   const source = fs.readFileSync(path.resolve(here, '../src/full-autonomy.js'), 'utf8');
   const clone = value => value == null ? value : JSON.parse(JSON.stringify(value));
   const ctx = {
@@ -149,6 +149,9 @@ function loadFullAutonomy({ missingPeer = false, localName = 'My_Warrior', party
     lifecyclePolicy: null,
     lifecycleStarts: 0,
     lifecycleAutonomyEnabled: false,
+    lifecycleSuspended,
+    lifecycleSuspendedReason,
+    onlineNames: onlineNames.slice(),
     farmStarts: 0,
     economyStarts: 0,
     logisticsStarts: 0,
@@ -186,8 +189,9 @@ function loadFullAutonomy({ missingPeer = false, localName = 'My_Warrior', party
     setPolicy: value => { state.lifecyclePolicy = clone(value); return { accepted: true }; },
     status: () => ({
       autonomyEnabled: state.lifecycleAutonomyEnabled,
-      suspended: false,
-      currentAction: null,
+      suspended: state.lifecycleSuspended,
+      suspendedReason: state.lifecycleSuspendedReason,
+      currentAction: state.lifecycleCurrentAction || null,
       lastAction: state.lifecycleLastAction || null,
       actionsThisSession: state.lifecycleActionsThisSession || 0
     }),
@@ -235,7 +239,7 @@ function loadFullAutonomy({ missingPeer = false, localName = 'My_Warrior', party
       snapshot: () => partyHealthy
         ? {
           available: true,
-          leader: 'My_Warrior',
+          leader: partyLeader,
           memberNames: ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior'],
           size: 4
         }
@@ -243,7 +247,7 @@ function loadFullAutonomy({ missingPeer = false, localName = 'My_Warrior', party
     },
     roster: {
       refresh: () => ({
-        onlineCharacterNames: ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior']
+        onlineCharacterNames: state.onlineNames.slice()
       })
     },
     lifecycle,
@@ -272,7 +276,7 @@ test('full autonomy applies one shared party policy and starts the selected comb
   const started = controller.startAutonomy({ taskType: 'FARM' });
   assert.equal(started.accepted, true);
   assert.equal(started.tick.state, 'RUNNING');
-  assert.equal(state.lifecycleStarts, 1);
+  assert.equal(state.lifecycleStarts, 0);
   assert.equal(state.farmStarts, 1);
   assert.equal(state.lifecyclePolicy.desiredPartyLeader, 'My_Warrior');
   assert.deepEqual(
@@ -309,8 +313,61 @@ test('full autonomy refuses to start unless the configured four-character live r
 });
 
 
+test('healthy full-live roles continue while lifecycle recovery remains safely suspended', () => {
+  const { controller, state } = loadFullAutonomy({
+    localName: 'My_Ranger1',
+    partyLeader: 'My_Priest',
+    selectedMembers: ['My_Ranger1', 'My_Warrior'],
+    lifecycleSuspended: true,
+    lifecycleSuspendedReason: 'H19_STOP_UNVERIFIED_TIMEOUT'
+  });
+  const started = controller.startAutonomy({ taskType: 'FARM' });
+  assert.equal(started.accepted, true);
+  assert.equal(started.tick.state, 'RUNNING');
+  assert.equal(started.tick.partyTopologyHealthy, true);
+  assert.equal(started.tick.lifecycleCoordinator, 'My_Priest');
+  assert.equal(started.tick.lifecycleRecoveryRequired, false);
+  assert.equal(started.tick.lifecycleRecoveryBlocked, true);
+  assert.equal(started.tick.lifecycleRecoveryBlockReason, 'H19_STOP_UNVERIFIED_TIMEOUT');
+  assert.equal(state.lifecycleStarts, 0);
+  assert.equal(state.farmStarts, 1);
+});
+
+test('merchant economy continues in a healthy party while lifecycle recovery is suspended', () => {
+  const { controller, state } = loadFullAutonomy({
+    localName: 'My_Merchant',
+    partyLeader: 'My_Priest',
+    selectedMembers: ['My_Ranger1', 'My_Warrior'],
+    lifecycleSuspended: true,
+    lifecycleSuspendedReason: 'H19_STOP_UNVERIFIED_TIMEOUT'
+  });
+  const started = controller.startAutonomy({ taskType: 'FARM' });
+  assert.equal(started.accepted, true);
+  assert.equal(started.tick.state, 'RUNNING');
+  assert.equal(started.tick.localRole, 'economy');
+  assert.equal(state.lifecycleStarts, 0);
+  assert.equal(state.economyStarts, 1);
+});
+
+test('autostart can arm safely before all four characters are online and waits without acting', () => {
+  const { controller, state } = loadFullAutonomy({
+    onlineNames: ['My_Priest', 'My_Ranger1', 'My_Warrior']
+  });
+  const started = controller.startAutonomy({ taskType: 'FARM', waitForRoster: true });
+  assert.equal(started.accepted, true);
+  assert.equal(started.tick.state, 'WARMING');
+  assert.equal(started.tick.reason, 'FULL_AUTONOMY_WAITING_FOR_EXPECTED_ONLINE_COUNT');
+  assert.equal(state.lifecycleStarts, 0);
+  assert.equal(state.farmStarts, 0);
+
+  state.onlineNames = ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior'];
+  const next = controller.tick();
+  assert.equal(next.state, 'RUNNING');
+  assert.equal(state.farmStarts, 1);
+});
+
 test('full autonomy honors a lifecycle self-stop and does not restart it on the next tick', () => {
-  const { controller, state } = loadFullAutonomy();
+  const { controller, state } = loadFullAutonomy({ partyHealthy: false });
   const started = controller.startAutonomy({ taskType: 'FARM' });
   assert.equal(started.accepted, true);
   assert.equal(state.lifecycleStarts, 1);
@@ -365,7 +422,7 @@ test('all windows keep the same pinned four-character desired party while FARM r
 });
 
 test('full autonomy arms an already-active lifecycle and blocks if it later stops', () => {
-  const { controller, state } = loadFullAutonomy();
+  const { controller, state } = loadFullAutonomy({ partyHealthy: false });
   state.lifecycleAutonomyEnabled = true;
 
   const started = controller.startAutonomy({ taskType: 'FARM' });
@@ -381,4 +438,12 @@ test('full autonomy arms an already-active lifecycle and blocks if it later stop
   assert.equal(next.state, 'BLOCKED');
   assert.equal(next.reason, 'FULL_AUTONOMY_LIFECYCLE_STOP_REQUIRES_EXPLICIT_RESTART');
   assert.equal(state.lifecycleStarts, 0);
+});
+
+test('entry auto-starts runtime and arms FARM full autonomy only on live Adventure Land pages', () => {
+  const entry = fs.readFileSync(path.resolve(here, '../src/entry.js'), 'utf8');
+  assert.ok(entry.includes("host === 'adventure.land'"));
+  assert.match(entry, /await runtime\.start\(\)/);
+  assert.match(entry, /startAutonomy\(\{ taskType: 'FARM', waitForRoster: true \}\)/);
+  assert.match(entry, /__ALBOT_DISABLE_AUTOSTART__/);
 });
