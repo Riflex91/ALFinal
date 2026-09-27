@@ -370,9 +370,9 @@ test('H19 late settlement from stopped controller cannot resurrect pending stora
 test('H19 captureDesiredActive drives bounded missing-character recovery', async () => {
   const { controller, state } = fixture({ activeNames: ['My_Ranger', 'My_Priest'] });
   assert.equal(controller.captureDesiredActive().accepted, true);
-  state.active.add('My_Merchant');
+  state.online.add('My_Merchant');
   assert.equal(controller.captureDesiredActive().accepted, true);
-  state.active.delete('My_Merchant');
+  state.online.delete('My_Merchant');
 
   assert.equal(controller.startAutonomy({ maxActions: 1 }).accepted, true);
   const dispatched = controller.tick();
