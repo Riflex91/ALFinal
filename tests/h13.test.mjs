@@ -240,6 +240,20 @@ test('H13 market analysis sorts asks low-to-high and bids high-to-low without di
   assert.equal(f.state.dispatches.length, 0);
 });
 
+test('H13 global market analysis does not invent a spread across different items', () => {
+  const f = fixture({
+    listings: [
+      { playerId:'A', playerName:'A', slot:'trade1', rid:'a', name:'seashell', level:0, quantity:1, price:960, buying:false, giveaway:false },
+      { playerId:'B', playerName:'B', slot:'trade2', rid:'b', name:'frozenkey', level:0, quantity:1, price:4000000, buying:true, giveaway:false }
+    ]
+  });
+  const analysis = f.controller.marketAnalysis(null);
+  assert.equal(analysis.bestAsk.name, 'seashell');
+  assert.equal(analysis.bestBid.name, 'frozenkey');
+  assert.equal(analysis.spread, null);
+  assert.equal(f.state.dispatches.length, 0);
+});
+
 test('H13 NPC buy requires an explicit price cap and respects gold reserve', () => {
   const f = fixture();
   assert.equal(f.controller.queueNpcBuy('hpot0', 1, {}).reason, 'H13_MAX_UNIT_PRICE_REQUIRED');
