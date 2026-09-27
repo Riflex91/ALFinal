@@ -176,6 +176,7 @@
       stopCharacter: name => runtime.lifecycle.queueStop(name),
       respawn: () => runtime.lifecycle.queueRespawn(),
       cancel: requestId => runtime.lifecycle.cancelQueued(requestId),
+      acknowledgeUnknown: reason => runtime.lifecycle.acknowledgeUnknown(reason || 'API_H19_UNKNOWN_ACK'),
       start: options => runtime.lifecycle.startAutonomy(options || {}),
       stop: reason => runtime.lifecycle.stopAutonomy(reason || 'API_H19_AUTONOMY_STOP'),
       reset: reason => runtime.lifecycle.resetSafety(reason || 'API_H19_RESET')
