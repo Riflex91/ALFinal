@@ -584,6 +584,15 @@ H15-Live-Gate ist bestanden. Nach den Evidence-Dokucommits ist nur noch der neue
 
 **🟦 IMPLEMENTIERT · LIVE V1 FAIL-CLOSED · V2 TECHNISCH/REVIEW GRÜN · FINALER DOKU-CI OFFEN · LIVE V2 OFFEN**
 
+PR #19 / Suite v5 Diagnose-Hardening, technischer Gate-Stand vom 2026-09-27:
+- technischer Head `c923147b9d3eda0d132b63d441c25c29aea525d7`
+- CI #393: **216/216 PASS**
+- frischer Codex-Review auf exakt diesem technischen Head: **keine major issues**
+- alle Review-Threads resolved
+- zusätzliche Diagnose für lokale READY-Pairing-Blocker sowie nicht betretbaren Material-Fallback
+- keine Safety-Lockerung, kein neuer Mutation-Pfad
+- nach den anschließenden Dokucommits ist erneut Exact-Head-CI + vollständiger Merge-Gate erforderlich
+
 **BAU**
 - eigener `ExchangeCraftController`
 - Exchange-/Craft-Writes ausschließlich über ActionBoundary
