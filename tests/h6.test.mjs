@@ -200,7 +200,7 @@ test('H6 exposes class skill API, module and recommended live suite', async t =>
   assert.equal(ctx.ALBot.version, '0.15.0-h15');
   assert.equal(typeof ctx.ALBot.classSkills.status, 'function');
   assert.equal(typeof ctx.ALBot.classSkills.preview, 'function');
-  assert.equal(ctx.ALBot.liveTests.status().recommendedId, 'h14-gear');
+  assert.equal(ctx.ALBot.liveTests.status().recommendedId, 'h15-upgrade-compound');
 
   const module = ctx.ALBot.modules.list().find(row => row.id === 'class-skills');
   assert.equal(module.state, 'ACTIVE');
