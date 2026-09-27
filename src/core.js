@@ -327,7 +327,7 @@
     _local() {
       const c = this.root && (this.root.character || this.root.parent && this.root.parent.character);
       if (!c || !c.name) return null;
-      return { name: cleanText(c.name, 80), ctype: cleanText(c.ctype || c.type || '', 40).toLowerCase(), online: true, state: 'self' };
+      return { name: cleanText(c.name, 80), ctype: cleanText(c.ctype || c.type || '', 40).toLowerCase(), level: Number.isFinite(Number(c.level)) ? Number(c.level) : null, online: true, state: 'self' };
     }
     _accountRows() {
       const fn = readFn(this.root, 'get_characters');
@@ -338,6 +338,7 @@
         return { available: raw != null, rows: rows.map(row => ({
           name: cleanText(row && row.name || '', 80),
           ctype: cleanText(row && (row.ctype || row.type) || '', 40).toLowerCase(),
+          level: Number.isFinite(Number(row && row.level)) ? Number(row.level) : null,
           online: onlineFlag(row && row.online)
         })).filter(row => row.name) };
       } catch (_) { return { available: false, rows: [] }; }
