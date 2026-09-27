@@ -209,7 +209,7 @@ test('H12 deposit travels to bank once before dispatching and never repeats the 
 });
 
 test('H12 withdraw respects bank reservations', () => {
-  const f = fixture({ bankRows: [{ pack: 'items0', slot: 1, ...item({ name: 'reserved', quantity: 5 }) }] });
+  const f = fixture({ bankRows: [{ ...item({ name: 'reserved', quantity: 5 }), pack: 'items0', slot: 1 }] });
   f.controller.setReservations({ reserved: 5 });
   const blocked = f.controller.queueWithdraw('items0', 1, { inventorySlot: 3 });
   assert.equal(blocked.accepted, false);
