@@ -592,3 +592,35 @@ Bei Readiness-FAIL erfolgt **keine** Remote-Lifecycle-Mutation. Relevante Fehler
 - `H19_READINESS_CROSS_WINDOW_TARGET_UNAVAILABLE`
 
 Bei einem solchen Fail wird zuerst der Diagnoseexport ausgewertet; kein Blind-Rerun des mutierenden Remote-Recovery-Tests.
+
+
+
+## Live-Versuch 7 – Party-Recovery PASS
+
+Stand: 2026-09-27
+
+Der letzte dedizierte H19-Live-Gate wurde auf `My_Priest` als lokalem Party-Leader gegen das separat geoeffnete eigene Nicht-Leader-Ziel `My_Merchant` ausgefuehrt.
+
+Live-Evidence:
+
+- Suite: `h19-party-recovery` v1;
+- Ergebnis: `PASSED / ALL_STEPS_PASSED`;
+- Start: `2026-09-27T19:35:11.772Z`;
+- Ende: `2026-09-27T19:35:18.386Z`;
+- Ausgangs- und Soll-Party: `My_Priest`, `My_Ranger1`, `My_Warrior`, `My_Merchant`;
+- geschuetzter Leader: `My_Priest`;
+- kontrolliertes Ziel: `My_Merchant`;
+- Preflight PASS mit laufender Zielruntime und passender Cross-Window-Session;
+- Controlled Party Loss PASS: `My_Merchant` wurde genau einmal entfernt, die Zielruntime blieb `running=true`, terminaler Grund `H19_CROSS_WINDOW_PARTY_LEFT`;
+- Party Recovery PASS: die exakte Vierer-Topologie mit `My_Priest` als Leader wurde wiederhergestellt;
+- genau 1 Lifecycle-Dispatch / 1 Lifecycle-Confirm;
+- genau 1 bestaetigter Party-Accept;
+- CM: 2 Commands / 2 ACKs / 2 Settlements;
+- 0 Rejects / 0 UNKNOWNs;
+- Stability PASS ueber 5 Sekunden ohne weiteren Lifecycle-Dispatch oder CM-Retry;
+- Cleanup PASS: Autonomie aus, `currentAction=null`, Queue-Laenge 0, nicht suspendiert, Zielruntime weiter aktiv;
+- globales Cleanup: `attempted=true`, `ok=true`, kein Cleanup-Fehler.
+
+Zusammen mit dem bereits erfolgreich bestaetigten `h19-remote-recovery`-Lauf sind damit die dedizierten H19-Cross-Window- und Party-Recovery-Live-Gates vollstaendig PASSED.
+
+H20 bleibt bis zum Merge der append-only H19-Evidence blockiert. Nach deren Merge ist H19 abgeschlossen und H20 darf beginnen.
