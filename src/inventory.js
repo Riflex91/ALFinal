@@ -19,6 +19,7 @@
       this.game = options.game || null;
       this.actions = options.actions || null;
       this.goals = options.goals || null;
+      this.partyLogistics = options.partyLogistics || null;
       this.moduleActive = false;
       this.scope = null;
       this.pendingLoot = null;
@@ -275,6 +276,12 @@
       if (!this.moduleActive) return { state: 'IDLE', plan };
       if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason, plan };
       if (this.pendingLoot) return { state: 'LOOT_PENDING', chestId: this.pendingLoot.chestId, plan };
+      let logistics = null;
+      try { logistics = this.partyLogistics && typeof this.partyLogistics.status === 'function' ? this.partyLogistics.status() : null; } catch (_) {}
+      if (logistics && ((Array.isArray(logistics.queue) && logistics.queue.length)
+          || logistics.currentAction && ['SUPPLY','GOLD','APPROACH'].includes(String(logistics.currentAction.kind || '')))) {
+        return { state: 'WAITING', reason: 'H10_PARTY_LOGISTICS_OWNERSHIP', plan };
+      }
       if (plan.state !== 'READY') return { state: plan.state, reason: plan.reason, plan };
 
       const freeSlots = finite(plan.inventory.freeSlots);

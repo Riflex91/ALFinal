@@ -564,6 +564,24 @@
       const support = partyStatus.support || {};
       const metrics = partyStatus.metrics || {};
       const members = Array.isArray(party.members) ? party.members : [];
+      const logistics = status.partyLogistics || {};
+      const logisticsMetrics = logistics.metrics || {};
+      const logisticsPolicy = logistics.config || {};
+      const logisticsPlan = logistics.lastPlan || null;
+      const logisticsAction = logistics.currentAction || null;
+      const logisticsQueue = Array.isArray(logistics.queue) ? logistics.queue : [];
+      const catalog = Array.isArray(logistics.supplyCatalog) ? logistics.supplyCatalog : [];
+      const ownedTargets = members.filter(member => member.owned && !member.local);
+      const targetOptions = ownedTargets.length
+        ? ownedTargets.map(member => '<option value="'+esc(member.name)+'">'+esc(member.name)+' · '+esc(member.ctype || '-')+(member.visible ? '' : ' · nicht sichtbar')+'</option>').join('')
+        : '<option value="">kein eigenes Party-Ziel</option>';
+      const supplyOptions = catalog.length
+        ? catalog.slice(0, 30).map(row => '<option value="'+esc(row.name)+'">'+esc(row.name)+' x'+esc(row.quantity)+' · '+esc(row.type || '-')+(row.utility ? ' · Utility' : '')+'</option>').join('')
+        : '<option value="">kein sicheres Supply-Item</option>';
+      const resultText = this.partyLogisticsResult
+        ? JSON.stringify(this.partyLogisticsResult, null, 2)
+        : 'Noch keine manuelle H18-Aktion.';
+
       panel.innerHTML = `<div class="albot-card"><b>H7 Party</b>
 <div class="albot-small">Koordination ist nur aktiv, wenn mindestens zwei eigene Party-Mitglieder erkannt wurden und kein fremdes Mitglied enthalten ist. Focus Fire basiert auf frischen sichtbaren Targets; Healing/Revive laufen nur über bestätigte Live-Readiness.</div>
 <div class="albot-grid" style="margin-top:8px">
@@ -584,7 +602,80 @@ ${members.length ? members.map(member => '<div class="albot-small"><b>'+esc(memb
 <div class="albot-small">Heal Dispatches: ${esc(metrics.healsDispatched || 0)} · Party Heal: ${esc(metrics.partyHealsDispatched || 0)} · Revive: ${esc(metrics.revivesDispatched || 0)} · UNKNOWN: ${esc(metrics.supportUnknown || 0)} · Focus-Pingpong: ${esc(metrics.focusPingPongs || 0)}</div>
 ${party.foreignMemberNames && party.foreignMemberNames.length ? '<div class="albot-small albot-bad">Fremde Party-Mitglieder blockieren automatische Koordination: '+party.foreignMemberNames.map(esc).join(', ')+'</div>' : ''}
 ${support.suspended ? '<div class="albot-small albot-bad">Support suspendiert: '+esc(support.suspendedReason || '-')+'</div>' : ''}
-</div>`;
+</div>
+
+<div class="albot-card"><b>H18 Party Logistics</b>
+<div class="albot-small">Supply-Items und Gold gehen nur an eigene Party-Mitglieder. Transfers werden nur aus Sender-Deltas bestätigt; Promise-/Movement-UNKNOWN suspendiert H18 ohne Blind-Retry. Regrouping besitzt Movement exklusiv über <code>party-logistics-h18</code>.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${logistics.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Autonomie</span><div class="albot-v">${logistics.autonomyEnabled ? 'AKTIV' : 'AUS'}</div></div>
+<div><span class="albot-k">Plan</span><div class="albot-v">${esc(logisticsPlan && logisticsPlan.state || '-')} · ${esc(logisticsPlan && logisticsPlan.reason || '-')}</div></div>
+<div><span class="albot-k">Queue</span><div class="albot-v">${esc(logisticsQueue.length)}</div></div>
+<div><span class="albot-k">Aktive Aktion</span><div class="albot-v">${logisticsAction ? esc(logisticsAction.kind)+' · '+esc(logisticsAction.targetName || '-') : 'keine'}</div></div>
+<div><span class="albot-k">Session-Aktionen</span><div class="albot-v">${esc(logistics.actionsThisSession || 0)} / ${esc(logisticsPolicy.maxActionsPerSession || '-')}</div></div>
+<div><span class="albot-k">Supply bestätigt / UNKNOWN</span><div class="albot-v">${esc(logisticsMetrics.suppliesConfirmed || 0)} / ${esc(logisticsMetrics.suppliesUnknown || 0)}</div></div>
+<div><span class="albot-k">Gold bestätigt / UNKNOWN</span><div class="albot-v">${esc(logisticsMetrics.goldConfirmed || 0)} / ${esc(logisticsMetrics.goldUnknown || 0)}</div></div>
+<div><span class="albot-k">Regroups bestätigt / UNKNOWN</span><div class="albot-v">${esc(logisticsMetrics.regroupsConfirmed || 0)} / ${esc(logisticsMetrics.regroupsUnknown || 0)}</div></div>
+<div><span class="albot-k">Suspendiert</span><div class="albot-v">${logistics.suspended ? 'JA · '+esc(logistics.suspendedReason || '-') : 'NEIN'}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Supply / Gold vormerken</b>
+<div class="albot-row"><select id="albot-h18-target">${targetOptions}</select></div>
+<div class="albot-row"><select id="albot-h18-item">${supplyOptions}</select><input id="albot-h18-quantity" type="number" min="1" step="1" value="1" style="max-width:90px"><button id="albot-h18-supply" class="albot-btn">Supply vormerken</button></div>
+<div class="albot-row"><input id="albot-h18-gold" type="number" min="1" step="1" value="10000" placeholder="Gold"><button id="albot-h18-gold-queue" class="albot-btn">Gold vormerken</button></div>
+<div class="albot-small">Goldreserve aktuell: ${esc(logisticsPolicy.goldReserve == null ? '-' : logisticsPolicy.goldReserve)}. Leveled/gelockte/Gift/Quest/Cash/Equipment-Items sind vom Supply-Pfad ausgeschlossen.</div>
+</div>
+
+<div class="albot-card"><b>H18 Steuerung</b>
+<div class="albot-row"><label>Max Aktionen <input id="albot-h18-max-actions" type="number" min="1" max="50" value="${esc(logisticsPolicy.maxActionsPerSession == null ? 6 : logisticsPolicy.maxActionsPerSession)}"></label><label>Regroup Distanz <input id="albot-h18-regroup-distance" type="number" min="100" max="5000" value="${esc(logisticsPolicy.regroupDistance == null ? 700 : logisticsPolicy.regroupDistance)}"></label></div>
+<div class="albot-row"><button id="albot-h18-start" class="albot-btn" ${logistics.autonomyEnabled || logisticsAction ? 'disabled' : ''}>Autonomie starten</button><button id="albot-h18-stop" class="albot-btn warn" ${logistics.autonomyEnabled ? '' : 'disabled'}>Autonomie stoppen</button><button id="albot-h18-plan" class="albot-btn">Plan</button><button id="albot-h18-tick" class="albot-btn">Tick</button></div>
+<div class="albot-row"><button id="albot-h18-cancel" class="albot-btn warn" ${logisticsAction ? 'disabled' : ''}>Queue leeren</button><button id="albot-h18-reset" class="albot-btn warn" ${logistics.suspended && !logisticsAction ? '' : 'disabled'}>Safety zurücksetzen</button></div>
+</div>
+
+<div class="albot-card"><b>H18 letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.partyLogisticsResult = fn(); }
+        catch (error) { this.partyLogisticsResult = { ok: false, reason: String(error && error.message || error) }; }
+        this.renderParty(this.runtime.status());
+      };
+      const targetValue = () => {
+        const el = panel.querySelector('#albot-h18-target');
+        return el ? el.value : '';
+      };
+      const supplyButton = panel.querySelector('#albot-h18-supply');
+      if (supplyButton) supplyButton.onclick = () => {
+        const item = panel.querySelector('#albot-h18-item');
+        const quantity = panel.querySelector('#albot-h18-quantity');
+        run(() => this.runtime.partyLogistics.queueSupply(
+          targetValue(),
+          item ? item.value : '',
+          Math.max(1, Math.floor(Number(quantity && quantity.value) || 1))
+        ));
+      };
+      const goldButton = panel.querySelector('#albot-h18-gold-queue');
+      if (goldButton) goldButton.onclick = () => {
+        const amount = panel.querySelector('#albot-h18-gold');
+        run(() => this.runtime.partyLogistics.queueGold(targetValue(), Math.floor(Number(amount && amount.value) || 0)));
+      };
+      const startButton = panel.querySelector('#albot-h18-start');
+      if (startButton) startButton.onclick = () => run(() => this.runtime.partyLogistics.startAutonomy({
+        maxActions: Math.max(1, Math.floor(Number(panel.querySelector('#albot-h18-max-actions').value) || 1))
+      }));
+      const stopButton = panel.querySelector('#albot-h18-stop');
+      if (stopButton) stopButton.onclick = () => run(() => this.runtime.partyLogistics.stopAutonomy('GUI_H18_AUTONOMY_STOP'));
+      const planButton = panel.querySelector('#albot-h18-plan');
+      if (planButton) planButton.onclick = () => run(() => this.runtime.partyLogistics.plan());
+      const tickButton = panel.querySelector('#albot-h18-tick');
+      if (tickButton) tickButton.onclick = () => run(() => this.runtime.partyLogistics.tick());
+      const cancelButton = panel.querySelector('#albot-h18-cancel');
+      if (cancelButton) cancelButton.onclick = () => run(() => this.runtime.partyLogistics.cancelQueue('GUI_H18_QUEUE_CANCEL'));
+      const resetButton = panel.querySelector('#albot-h18-reset');
+      if (resetButton) resetButton.onclick = () => run(() => this.runtime.partyLogistics.resetSafety('GUI_H18_RESET'));
+      const regroupInput = panel.querySelector('#albot-h18-regroup-distance');
+      if (regroupInput) regroupInput.onchange = () => run(() => this.runtime.partyLogistics.policy({
+        regroupDistance: Number(regroupInput.value)
+      }));
     }
 
     renderFarmIntelligence(status) {

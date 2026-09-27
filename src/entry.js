@@ -50,7 +50,7 @@
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.17.0-h17',
+    version: '0.18.0-h18',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -150,6 +150,20 @@
       status: () => runtime.party.status(),
       snapshot: () => runtime.party.snapshot(),
       focusTarget: () => runtime.party.preferredTargetId()
+    },
+
+    partyLogistics: {
+      status: () => runtime.partyLogistics.status(),
+      plan: () => runtime.partyLogistics.plan(),
+      tick: () => runtime.partyLogistics.tick(),
+      policy: value => runtime.partyLogistics.policy(value),
+      catalog: () => runtime.partyLogistics.supplyCatalog(),
+      supply: (targetName, itemName, quantity) => runtime.partyLogistics.queueSupply(targetName, itemName, quantity),
+      gold: (targetName, amount) => runtime.partyLogistics.queueGold(targetName, amount),
+      cancel: reason => runtime.partyLogistics.cancelQueue(reason || 'API_H18_QUEUE_CANCEL'),
+      start: options => runtime.partyLogistics.startAutonomy(options || {}),
+      stop: reason => runtime.partyLogistics.stopAutonomy(reason || 'API_H18_AUTONOMY_STOP'),
+      reset: reason => runtime.partyLogistics.resetSafety(reason || 'API_H18_RESET')
     },
 
     farming: {
@@ -316,6 +330,7 @@
   Object.freeze(api.combat);
   Object.freeze(api.classSkills);
   Object.freeze(api.party);
+  Object.freeze(api.partyLogistics);
   Object.freeze(api.farming);
   Object.freeze(api.farmIntelligence);
   Object.freeze(api.inventory);
@@ -343,7 +358,7 @@
     };
   } catch (_) {}
 
-  runtime.logger.info('AL Bot H17 geladen', {
+  runtime.logger.info('AL Bot H18 geladen', {
     version: api.version,
     bootCount,
     hotReload: !!previous,

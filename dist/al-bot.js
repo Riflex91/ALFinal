@@ -1,4 +1,4 @@
-/* AL Bot 0.17.0-h17 | generated file | do not edit dist directly */
+/* AL Bot 0.18.0-h18 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -2769,6 +2769,7 @@
     change_target: Object.freeze({ publicName: 'change_target', family: 'combat-target' }),
     loot: Object.freeze({ publicName: 'loot', family: 'loot' }),
     send_item: Object.freeze({ publicName: 'send_item', family: 'merchant-logistics' }),
+    send_gold: Object.freeze({ publicName: 'send_gold', family: 'party-logistics' }),
     bank_store: Object.freeze({ publicName: 'bank_store', family: 'bank' }),
     bank_retrieve: Object.freeze({ publicName: 'bank_retrieve', family: 'bank' }),
     bank_deposit: Object.freeze({ publicName: 'bank_deposit', family: 'bank-gold' }),
@@ -4816,6 +4817,827 @@
   }
 
   ns.PartyCoordinator = PartyCoordinator;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+(function (root) {
+  'use strict';
+
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns) throw new Error('ALBOT_INTERNALS_MISSING');
+
+  const clone = ns.helpers.clone;
+  const cleanText = ns.helpers.cleanText;
+
+  const EQUIPMENT_TYPES = new Set([
+    'weapon','shield','helmet','hat','gloves','shoes','pants','chest','armor','cape',
+    'ring','earring','amulet','orb','belt','offhand','source','quiver'
+  ]);
+
+  function finite(value) {
+    if (value == null) return null;
+    if (typeof value === 'string' && !value.trim()) return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function nowIso() {
+    return new Date().toISOString();
+  }
+
+  class PartyLogisticsController {
+    constructor(options = {}) {
+      this.root = options.root || root;
+      this.logger = options.logger || null;
+      this.game = options.game || null;
+      this.actions = options.actions || null;
+      this.party = options.party || null;
+      this.movement = options.movement || null;
+      this.combat = options.combat || null;
+      this.inventory = options.inventory || null;
+      this.merchant = options.merchant || null;
+      this.bank = options.bank || null;
+      this.trade = options.trade || null;
+      this.gear = options.gear || null;
+      this.upgrade = options.upgrade || null;
+      this.exchangeCraft = options.exchangeCraft || null;
+      this.economy = options.economy || null;
+      this.canAct = typeof options.canAct === 'function' ? options.canAct : null;
+
+      this.moduleActive = false;
+      this.scope = null;
+      this.autonomyEnabled = false;
+      this.suspendedReason = null;
+      this.queue = [];
+      this.currentAction = null;
+      this.lastPlan = null;
+      this.lastAction = null;
+      this.sequence = 0;
+      this.actionsThisSession = 0;
+
+      this.config = {
+        tickMs: Math.max(250, Math.min(5000, Math.floor(finite(options.tickMs) == null ? 750 : finite(options.tickMs)))),
+        transferRange: Math.max(80, Math.min(600, finite(options.transferRange) == null ? 320 : finite(options.transferRange))),
+        regroupDistance: Math.max(100, Math.min(5000, finite(options.regroupDistance) == null ? 700 : finite(options.regroupDistance))),
+        regroupArrivalRadius: Math.max(20, Math.min(180, finite(options.regroupArrivalRadius) == null ? 80 : finite(options.regroupArrivalRadius))),
+        outcomeTimeoutMs: Math.max(2000, Math.min(60000, Math.floor(finite(options.outcomeTimeoutMs) == null ? 8000 : finite(options.outcomeTimeoutMs)))),
+        movementTimeoutMs: Math.max(3000, Math.min(120000, Math.floor(finite(options.movementTimeoutMs) == null ? 60000 : finite(options.movementTimeoutMs)))),
+        maxActionsPerSession: Math.max(1, Math.min(50, Math.floor(finite(options.maxActionsPerSession) == null ? 6 : finite(options.maxActionsPerSession)))),
+        maxQueue: Math.max(1, Math.min(50, Math.floor(finite(options.maxQueue) == null ? 12 : finite(options.maxQueue)))),
+        goldReserve: Math.max(0, Math.floor(finite(options.goldReserve) == null ? 100000 : finite(options.goldReserve))),
+        allowRegroup: options.allowRegroup !== false
+      };
+
+      this.metrics = {
+        ticks: 0,
+        plans: 0,
+        suppliesQueued: 0,
+        suppliesDispatched: 0,
+        suppliesConfirmed: 0,
+        suppliesRejected: 0,
+        suppliesUnknown: 0,
+        goldQueued: 0,
+        goldDispatched: 0,
+        goldConfirmed: 0,
+        goldRejected: 0,
+        goldUnknown: 0,
+        regroupPlanned: 0,
+        regroupRequests: 0,
+        regroupsConfirmed: 0,
+        regroupsRejected: 0,
+        regroupsUnknown: 0,
+        movementBlocks: 0,
+        foreignPartyBlocks: 0,
+        combatBlocks: 0,
+        ownershipBlocks: 0,
+        sessionBudgetBlocks: 0,
+        actionsQueued: 0
+      };
+    }
+
+    start(context = {}) {
+      if (this.moduleActive) return { started: false, reason: 'H18_ALREADY_ACTIVE' };
+      const resumedInFlight = !!(this.currentAction && ['SUPPLY','GOLD'].includes(String(this.currentAction.kind || '')));
+      this.moduleActive = true;
+      this.scope = context.scope || null;
+      this.autonomyEnabled = false;
+      if (!resumedInFlight) {
+        this.suspendedReason = null;
+        this.currentAction = null;
+        this.actionsThisSession = 0;
+      }
+      if (this.scope && typeof this.scope.interval === 'function') {
+        this.scope.interval('party-logistics-tick', () => this.tick(), this.config.tickMs, { immediate: true });
+      }
+      return { started: true, resumedInFlight };
+    }
+
+    stop(reason = 'H18_MODULE_STOP') {
+      const preserveInFlight = !!(this.currentAction && ['SUPPLY','GOLD'].includes(String(this.currentAction.kind || '')));
+      this.moduleActive = false;
+      this.autonomyEnabled = false;
+      this.scope = null;
+      if (!preserveInFlight) {
+        this._cancelOwnedMovement(reason);
+        this.currentAction = null;
+      }
+      this.lastAction = {
+        at: nowIso(),
+        type: preserveInFlight ? 'STOP_WITH_INFLIGHT_PRESERVED' : 'STOP',
+        reason: cleanText(reason, 240),
+        currentAction: preserveInFlight ? clone(this.currentAction) : null
+      };
+      return { stopped: true, inFlightPreserved: preserveInFlight };
+    }
+
+    startAutonomy(options = {}) {
+      if (!this.moduleActive) return { accepted: false, reason: 'H18_MODULE_NOT_ACTIVE' };
+      if (this.suspendedReason) return { accepted: false, reason: this.suspendedReason };
+      if (this.currentAction) return { accepted: false, reason: 'H18_ACTION_ACTIVE' };
+      if (this.canAct && this.canAct('party-logistics') !== true) return { accepted: false, reason: 'H18_RUNTIME_ACTION_BLOCKED' };
+      if (options.maxActions != null) {
+        this.config.maxActionsPerSession = Math.max(1, Math.min(50, Math.floor(Number(options.maxActions) || 1)));
+      }
+      this.actionsThisSession = 0;
+      this.autonomyEnabled = true;
+      this.lastAction = { at: nowIso(), type: 'AUTONOMY_STARTED', maxActions: this.config.maxActionsPerSession };
+      return { accepted: true, status: this.status() };
+    }
+
+    stopAutonomy(reason = 'H18_AUTONOMY_STOP') {
+      this.autonomyEnabled = false;
+      this.lastAction = { at: nowIso(), type: 'AUTONOMY_STOPPED', reason: cleanText(reason, 240) };
+      return this.status();
+    }
+
+    resetSafety(reason = 'H18_EXPLICIT_RESET') {
+      if (this.currentAction) return { ...this.status(), reset: false, reason: 'H18_ACTION_ACTIVE' };
+      this.suspendedReason = null;
+      this.autonomyEnabled = false;
+      this.actionsThisSession = 0;
+      this.lastAction = { at: nowIso(), type: 'RESET', reason: cleanText(reason, 240) };
+      return { ...this.status(), reset: true };
+    }
+
+    policy(value = null) {
+      if (value == null) return clone(this.config);
+      if (!value || typeof value !== 'object') throw new Error('H18_POLICY_MUST_BE_OBJECT');
+      const number = (key, min, max, integer = false) => {
+        if (value[key] == null) return;
+        const parsed = finite(value[key]);
+        if (parsed == null) throw new Error('H18_POLICY_' + key.toUpperCase() + '_INVALID');
+        this.config[key] = Math.max(min, Math.min(max, integer ? Math.floor(parsed) : parsed));
+      };
+      number('transferRange', 80, 600);
+      number('regroupDistance', 100, 5000);
+      number('regroupArrivalRadius', 20, 180);
+      number('outcomeTimeoutMs', 2000, 60000, true);
+      number('movementTimeoutMs', 3000, 120000, true);
+      number('maxActionsPerSession', 1, 50, true);
+      number('maxQueue', 1, 50, true);
+      number('goldReserve', 0, Number.MAX_SAFE_INTEGER, true);
+      if (value.allowRegroup != null) this.config.allowRegroup = value.allowRegroup === true;
+      return clone(this.config);
+    }
+
+    _snapshot() {
+      try { return this.game && typeof this.game.snapshot === 'function' ? this.game.snapshot() : null; }
+      catch (_) { return null; }
+    }
+
+    _inventory() {
+      try { return this.game && typeof this.game.inventorySnapshot === 'function' ? this.game.inventorySnapshot() : null; }
+      catch (_) { return null; }
+    }
+
+    _partySnapshot() {
+      try { return this.party && typeof this.party.snapshot === 'function' ? this.party.snapshot() : null; }
+      catch (_) { return null; }
+    }
+
+    _movementStatus() {
+      try { return this.movement && typeof this.movement.status === 'function' ? this.movement.status() : null; }
+      catch (_) { return null; }
+    }
+
+    _combatActive() {
+      try {
+        const status = this.combat && typeof this.combat.status === 'function' ? this.combat.status() : null;
+        return !!(status && (status.active || status.state && !['IDLE', 'STOPPED'].includes(String(status.state))));
+      } catch (_) {
+        return false;
+      }
+    }
+
+    _ownedTarget(name, snapshot = null) {
+      const wanted = cleanText(name || '', 120);
+      const party = snapshot || this._partySnapshot();
+      if (!wanted || !party || !Array.isArray(party.ownedMembers)) return null;
+      return party.ownedMembers.find(member => String(member.name || '') === wanted && !member.local) || null;
+    }
+
+    _safeSupplyRow(row) {
+      if (!row || !row.name || row.locked || row.giveaway || row.gift || row.expiresAt) return false;
+      if (Math.max(0, Number(row.level) || 0) > 0) return false;
+      const definition = row.definition;
+      if (!definition || typeof definition !== 'object') return false;
+      const type = cleanText(definition.type || '', 80).toLowerCase();
+      if (!type) return false;
+      if (definition.quest === true || definition.cash === true || definition.upgrade === true || definition.compound === true) return false;
+      if (EQUIPMENT_TYPES.has(type)) return false;
+      return true;
+    }
+
+    supplyCatalog() {
+      const inventory = this._inventory();
+      if (!inventory || inventory.available === false) return [];
+      return (inventory.items || [])
+        .filter(row => this._safeSupplyRow(row))
+        .map(row => ({
+          slot: Number(row.slot),
+          name: String(row.name),
+          quantity: Math.max(1, Math.floor(Number(row.quantity) || 1)),
+          type: cleanText(row.definition && row.definition.type || '', 80) || null,
+          utility: ['pot','elixir','food','scroll','uscroll','cscroll','booster'].includes(cleanText(row.definition && row.definition.type || '', 80).toLowerCase())
+        }))
+        .sort((a, b) => Number(b.utility) - Number(a.utility) || String(a.name).localeCompare(String(b.name)) || a.slot - b.slot);
+    }
+
+    _findSupplyRow(itemName, minQuantity = 1) {
+      const wanted = cleanText(itemName || '', 160);
+      const required = Math.max(1, Math.floor(Number(minQuantity) || 1));
+      if (!wanted) return null;
+      const inventory = this._inventory();
+      if (!inventory || inventory.available === false) return null;
+      return (inventory.items || [])
+        .filter(row => String(row.name || '') === wanted
+          && this._safeSupplyRow(row)
+          && Math.max(1, Math.floor(Number(row.quantity) || 1)) >= required)
+        .sort((a, b) => Number(a.slot || 0) - Number(b.slot || 0))[0] || null;
+    }
+
+    _supplyRowAt(slot, itemName) {
+      const inventory = this._inventory();
+      if (!inventory || inventory.available === false) return null;
+      return (inventory.items || []).find(row =>
+        Number(row.slot) === Number(slot)
+        && String(row.name || '') === String(itemName || '')
+        && this._safeSupplyRow(row)) || null;
+    }
+
+    _externalBusy() {
+      const rows = [
+        ['inventory', this.inventory],
+        ['merchant', this.merchant],
+        ['bank', this.bank],
+        ['trade', this.trade],
+        ['gear', this.gear],
+        ['upgrade', this.upgrade],
+        ['exchangeCraft', this.exchangeCraft]
+      ];
+      const blockers = [];
+      for (const [name, controller] of rows) {
+        let status = null;
+        try { status = controller && typeof controller.status === 'function' ? controller.status() : null; } catch (_) {}
+        if (status && (status.pending || status.request || status.delivery || status.pendingLoot || status.currentAction)) {
+          blockers.push({ module: name, reason: 'BUSY' });
+        }
+        if (status && status.suspended) blockers.push({ module: name, reason: status.suspendedReason || 'SUSPENDED' });
+      }
+      let economy = null;
+      try { economy = this.economy && typeof this.economy.status === 'function' ? this.economy.status() : null; } catch (_) {}
+      if (economy && (economy.currentAction || economy.autonomyEnabled)) {
+        blockers.push({ module: 'economy', reason: economy.currentAction ? 'BUSY' : 'AUTONOMY_ACTIVE' });
+      }
+      return blockers;
+    }
+
+    queueSupply(targetName, itemName, quantity = 1) {
+      if (!this.moduleActive) return { accepted: false, reason: 'H18_MODULE_NOT_ACTIVE' };
+      if (this.suspendedReason) return { accepted: false, reason: this.suspendedReason };
+      if (this.queue.length >= this.config.maxQueue) return { accepted: false, reason: 'H18_QUEUE_FULL' };
+      const party = this._partySnapshot();
+      if (!party || !party.coordinationEnabled) return { accepted: false, reason: 'H18_OWNED_PARTY_REQUIRED' };
+      const target = this._ownedTarget(targetName, party);
+      if (!target) return { accepted: false, reason: 'H18_TARGET_NOT_OWNED_PARTY_MEMBER' };
+      const rawQuantity = finite(quantity);
+      if (rawQuantity == null || rawQuantity <= 0 || !Number.isInteger(rawQuantity)) {
+        return { accepted: false, reason: 'H18_SUPPLY_QUANTITY_INVALID' };
+      }
+      const wanted = rawQuantity;
+      const anyRow = this._findSupplyRow(itemName, 1);
+      if (!anyRow) return { accepted: false, reason: 'H18_SUPPLY_ITEM_NOT_SAFE_OR_AVAILABLE' };
+      const row = this._findSupplyRow(itemName, wanted);
+      if (!row) return { accepted: false, reason: 'H18_SUPPLY_QUANTITY_UNAVAILABLE' };
+      const available = Math.max(1, Math.floor(Number(row.quantity) || 1));
+      const request = {
+        id: 'h18-request-' + (++this.sequence),
+        kind: 'SUPPLY',
+        targetName: String(target.name),
+        itemName: String(row.name),
+        quantity: wanted,
+        createdAt: nowIso()
+      };
+      this.queue.push(request);
+      this.metrics.suppliesQueued += 1;
+      this.lastAction = { at: nowIso(), type: 'SUPPLY_QUEUED', request: clone(request) };
+      return { accepted: true, request: clone(request) };
+    }
+
+    queueGold(targetName, amount) {
+      if (!this.moduleActive) return { accepted: false, reason: 'H18_MODULE_NOT_ACTIVE' };
+      if (this.suspendedReason) return { accepted: false, reason: this.suspendedReason };
+      if (this.queue.length >= this.config.maxQueue) return { accepted: false, reason: 'H18_QUEUE_FULL' };
+      const party = this._partySnapshot();
+      if (!party || !party.coordinationEnabled) return { accepted: false, reason: 'H18_OWNED_PARTY_REQUIRED' };
+      const target = this._ownedTarget(targetName, party);
+      if (!target) return { accepted: false, reason: 'H18_TARGET_NOT_OWNED_PARTY_MEMBER' };
+      const rawAmount = finite(amount);
+      if (rawAmount == null || rawAmount <= 0 || !Number.isInteger(rawAmount)) {
+        return { accepted: false, reason: 'H18_GOLD_AMOUNT_INVALID' };
+      }
+      const wanted = rawAmount;
+      const snap = this._snapshot();
+      const gold = snap && snap.character ? finite(snap.character.gold) : null;
+      if (gold == null || gold - wanted < this.config.goldReserve) return { accepted: false, reason: 'H18_GOLD_RESERVE_BLOCKED' };
+      const request = {
+        id: 'h18-request-' + (++this.sequence),
+        kind: 'GOLD',
+        targetName: String(target.name),
+        amount: wanted,
+        createdAt: nowIso()
+      };
+      this.queue.push(request);
+      this.metrics.goldQueued += 1;
+      this.lastAction = { at: nowIso(), type: 'GOLD_QUEUED', request: clone(request) };
+      return { accepted: true, request: clone(request) };
+    }
+
+    cancelQueue(reason = 'H18_QUEUE_CANCELLED') {
+      if (this.currentAction) return { cancelled: false, reason: 'H18_ACTION_ACTIVE' };
+      const count = this.queue.length;
+      this.queue = [];
+      this.lastAction = { at: nowIso(), type: 'QUEUE_CANCELLED', reason: cleanText(reason, 240), count };
+      return { cancelled: count > 0, count };
+    }
+
+    _distance(a, b) {
+      if (!a || !b || !a.map || !b.map || String(a.map) !== String(b.map)) return null;
+      const ax = finite(a.x), ay = finite(a.y), bx = finite(b.x), by = finite(b.y);
+      if ([ax, ay, bx, by].some(value => value == null)) return null;
+      return Math.hypot(ax - bx, ay - by);
+    }
+
+    _regroupCandidate(party, snap) {
+      if (!this.config.allowRegroup || !party || !party.coordinationEnabled || !snap || !snap.character) return null;
+      const local = (party.ownedMembers || []).find(member => member.local);
+      if (!local || local.rip) return null;
+      const others = (party.ownedMembers || [])
+        .filter(member => !member.local && !member.rip && member.visible && member.map && finite(member.x) != null && finite(member.y) != null);
+      if (!others.length) return null;
+      const leader = others.find(member => String(member.name) === String(party.leader || ''));
+      const anchor = leader || others.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)))[0];
+      const distance = this._distance(snap.character, anchor);
+      if (String(snap.character.map || '') === String(anchor.map || '') && distance != null && distance <= this.config.regroupDistance) return null;
+      return {
+        kind: 'REGROUP',
+        targetName: anchor.name,
+        destination: { map: anchor.map, x: anchor.x, y: anchor.y },
+        distance
+      };
+    }
+
+    _requestPlan(request, party, snap) {
+      const target = request && this._ownedTarget(request.targetName, party);
+      if (!target) return { state: 'BLOCKED', reason: 'H18_TARGET_NOT_OWNED_PARTY_MEMBER', selected: null };
+      if (target.rip) return { state: 'WAITING', reason: 'H18_TARGET_DEAD', selected: null };
+      if (!target.visible || !target.map || finite(target.x) == null || finite(target.y) == null) {
+        return { state: 'WAITING', reason: 'H18_TARGET_NOT_VISIBLE', selected: null };
+      }
+      const distance = this._distance(snap.character, target);
+      if (String(snap.character.map || '') !== String(target.map || '') || distance == null || distance > this.config.transferRange) {
+        return {
+          state: 'READY',
+          reason: 'H18_APPROACH_REQUIRED',
+          selected: {
+            kind: 'APPROACH',
+            requestId: request.id,
+            targetName: target.name,
+            destination: { map: target.map, x: target.x, y: target.y },
+            distance
+          }
+        };
+      }
+
+      if (request.kind === 'SUPPLY') {
+        const row = this._findSupplyRow(request.itemName, request.quantity);
+        if (!row) return { state: 'BLOCKED', reason: 'H18_SUPPLY_ITEM_NOT_SAFE_OR_AVAILABLE', selected: null };
+        const available = Math.max(1, Math.floor(Number(row.quantity) || 1));
+        if (available < request.quantity) return { state: 'BLOCKED', reason: 'H18_SUPPLY_QUANTITY_UNAVAILABLE', selected: null };
+        if (!this.actions || typeof this.actions.available !== 'function' || !this.actions.available('send_item')) {
+          return { state: 'BLOCKED', reason: 'H18_SEND_ITEM_UNAVAILABLE', selected: null };
+        }
+        return {
+          state: 'READY',
+          reason: 'H18_SUPPLY_READY',
+          selected: {
+            kind: 'SUPPLY',
+            requestId: request.id,
+            targetName: target.name,
+            itemName: request.itemName,
+            quantity: request.quantity,
+            slot: Number(row.slot),
+            beforeQuantity: available
+          }
+        };
+      }
+
+      if (request.kind === 'GOLD') {
+        if (!this.actions || typeof this.actions.available !== 'function' || !this.actions.available('send_gold')) {
+          return { state: 'BLOCKED', reason: 'H18_SEND_GOLD_UNAVAILABLE', selected: null };
+        }
+        const gold = finite(snap.character.gold);
+        if (gold == null || gold - request.amount < this.config.goldReserve) {
+          return { state: 'BLOCKED', reason: 'H18_GOLD_RESERVE_BLOCKED', selected: null };
+        }
+        return {
+          state: 'READY',
+          reason: 'H18_GOLD_READY',
+          selected: {
+            kind: 'GOLD',
+            requestId: request.id,
+            targetName: target.name,
+            amount: request.amount,
+            beforeGold: gold
+          }
+        };
+      }
+
+      return { state: 'BLOCKED', reason: 'H18_REQUEST_KIND_INVALID', selected: null };
+    }
+
+    plan() {
+      this.metrics.plans += 1;
+      const snap = this._snapshot();
+      const party = this._partySnapshot();
+      const movement = this._movementStatus();
+
+      const base = {
+        autonomyEnabled: this.autonomyEnabled,
+        actionsThisSession: this.actionsThisSession,
+        maxActionsPerSession: this.config.maxActionsPerSession,
+        queue: clone(this.queue),
+        party: clone(party)
+      };
+
+      if (this.suspendedReason) {
+        return this.lastPlan = { ...base, state: 'SUSPENDED', reason: this.suspendedReason, selected: null };
+      }
+      if (!snap || !snap.available || !snap.character) {
+        return this.lastPlan = { ...base, state: 'BLOCKED', reason: 'H18_CHARACTER_UNAVAILABLE', selected: null };
+      }
+      if (snap.character.rip === true) {
+        return this.lastPlan = { ...base, state: 'BLOCKED', reason: 'H18_CHARACTER_DEAD', selected: null };
+      }
+      if (this.canAct && this.canAct('party-logistics') !== true) {
+        return this.lastPlan = { ...base, state: 'BLOCKED', reason: 'H18_RUNTIME_ACTION_BLOCKED', selected: null };
+      }
+      if (!party || !party.coordinationEnabled) {
+        if (party && Array.isArray(party.foreignMemberNames) && party.foreignMemberNames.length) this.metrics.foreignPartyBlocks += 1;
+        return this.lastPlan = { ...base, state: 'BLOCKED', reason: 'H18_OWNED_PARTY_REQUIRED', selected: null };
+      }
+      if (this._combatActive()) {
+        this.metrics.combatBlocks += 1;
+        return this.lastPlan = { ...base, state: 'BLOCKED', reason: 'H18_COMBAT_ACTIVE', selected: null };
+      }
+      const externalBlockers = this._externalBusy();
+      if (externalBlockers.length) {
+        this.metrics.ownershipBlocks += 1;
+        return this.lastPlan = { ...base, state: 'WAITING', reason: 'H18_EXTERNAL_OWNERSHIP_BUSY', selected: null, blockers: externalBlockers };
+      }
+      if (this.currentAction) {
+        return this.lastPlan = { ...base, state: 'ACTIVE', reason: 'H18_ACTION_ACTIVE', selected: clone(this.currentAction) };
+      }
+      if (movement && movement.activeOrder) {
+        const owner = String(movement.activeOrder.owner || '');
+        if (owner === 'party-logistics-h18') {
+          return this.lastPlan = { ...base, state: 'WAITING', reason: 'H18_MOVEMENT_OWNED', selected: null };
+        }
+        this.metrics.movementBlocks += 1;
+        return this.lastPlan = { ...base, state: 'WAITING', reason: 'H18_MOVEMENT_BUSY', selected: null };
+      }
+
+      const request = this.queue[0] || null;
+      if (request) {
+        const requestPlan = this._requestPlan(request, party, snap);
+        return this.lastPlan = { ...base, ...requestPlan };
+      }
+
+      const regroup = this._regroupCandidate(party, snap);
+      if (regroup) {
+        this.metrics.regroupPlanned += 1;
+        return this.lastPlan = { ...base, state: 'READY', reason: 'H18_REGROUP_READY', selected: regroup };
+      }
+
+      return this.lastPlan = { ...base, state: 'IDLE', reason: 'H18_NO_LOGISTICS_WORK', selected: null };
+    }
+
+    _watch(value, action) {
+      if (!value || typeof value.then !== 'function') {
+        action.settlement = 'RETURNED';
+        action.response = value == null ? null : clone(value);
+        return;
+      }
+      Promise.resolve(value).then(response => {
+        if (!this.currentAction || this.currentAction.id !== action.id) return;
+        this.currentAction.settlement = 'RESOLVED';
+        this.currentAction.response = response == null ? null : clone(response);
+      }, error => {
+        if (!this.currentAction || this.currentAction.id !== action.id) return;
+        this.currentAction.settlement = 'REJECTED';
+        this.currentAction.error = cleanText(error && (error.reason || error.message) || error || 'H18_ACTION_REJECTED', 500);
+      }).catch(() => {});
+    }
+
+    _dequeueRequest(requestId) {
+      if (!requestId) return;
+      if (this.queue[0] && String(this.queue[0].id) === String(requestId)) this.queue.shift();
+      else this.queue = this.queue.filter(row => String(row.id) !== String(requestId));
+    }
+
+    _finishCurrent(outcome, details = {}) {
+      const current = this.currentAction;
+      this.currentAction = null;
+      if (outcome === 'CONFIRMED') {
+        this.actionsThisSession += current && current.kind !== 'APPROACH' ? 1 : 0;
+        if (current && current.kind === 'SUPPLY') this.metrics.suppliesConfirmed += 1;
+        if (current && current.kind === 'GOLD') this.metrics.goldConfirmed += 1;
+        if (current && current.kind === 'REGROUP') this.metrics.regroupsConfirmed += 1;
+        if (current && ['SUPPLY','GOLD'].includes(current.kind)) this._dequeueRequest(current.requestId);
+      } else if (outcome === 'REJECTED') {
+        if (current && current.kind === 'SUPPLY') this.metrics.suppliesRejected += 1;
+        if (current && current.kind === 'GOLD') this.metrics.goldRejected += 1;
+        if (current && current.kind === 'REGROUP') this.metrics.regroupsRejected += 1;
+        if (current && ['SUPPLY','GOLD'].includes(current.kind)) this._dequeueRequest(current.requestId);
+      } else {
+        if (current && current.kind === 'SUPPLY') this.metrics.suppliesUnknown += 1;
+        if (current && current.kind === 'GOLD') this.metrics.goldUnknown += 1;
+        if (current && ['REGROUP','APPROACH'].includes(current.kind)) this.metrics.regroupsUnknown += 1;
+      }
+      this.lastAction = {
+        at: nowIso(),
+        type: 'ACTION_' + outcome,
+        action: current ? clone(current) : null,
+        details: clone(details)
+      };
+      return clone(this.lastAction);
+    }
+
+    _suspend(reason, details = {}) {
+      this.suspendedReason = cleanText(reason || 'H18_UNKNOWN', 300) || 'H18_UNKNOWN';
+      const result = this._finishCurrent('UNKNOWN', details);
+      this.autonomyEnabled = false;
+      this._cancelOwnedMovement(this.suspendedReason);
+      return { state: 'SUSPENDED', reason: this.suspendedReason, result };
+    }
+
+    _observeMovement(current) {
+      const movement = this._movementStatus();
+      if (movement && movement.activeOrder
+          && String(movement.activeOrder.id || '') === String(current.orderId || '')
+          && String(movement.activeOrder.owner || '') === 'party-logistics-h18') {
+        return { state: 'WAITING', action: clone(current) };
+      }
+      const last = movement && movement.lastOrder || null;
+      if (last && String(last.id || '') === String(current.orderId || '')
+          && String(last.owner || '') === 'party-logistics-h18') {
+        const state = String(last.state || '');
+        if (state === 'COMPLETED') {
+          return { state: 'CONFIRMED', result: this._finishCurrent('CONFIRMED', { movement: clone(last) }) };
+        }
+        if (['CANCELLED','REJECTED'].includes(state)) {
+          return { state: 'REJECTED', result: this._finishCurrent('REJECTED', { movement: clone(last) }) };
+        }
+        if (['STUCK','UNKNOWN','FAILED_SAFE'].includes(state)) {
+          return this._suspend('H18_MOVEMENT_' + state, { movement: clone(last) });
+        }
+      }
+      if (Date.now() >= current.deadlineAtMs) return this._suspend('H18_MOVEMENT_TIMEOUT', { orderId: current.orderId });
+      return { state: 'WAITING', action: clone(current) };
+    }
+
+    _observeCurrent() {
+      const current = this.currentAction;
+      if (!current) return { state: 'IDLE' };
+      if (current.kind === 'APPROACH' || current.kind === 'REGROUP') return this._observeMovement(current);
+
+      if (current.settlement === 'REJECTED') {
+        return this._suspend('H18_DISPATCH_REJECTED_WITHOUT_OUTCOME', { error: current.error || null });
+      }
+      if (current.response && current.response.failed === true) {
+        return { state: 'REJECTED', result: this._finishCurrent('REJECTED', { response: clone(current.response) }) };
+      }
+
+      const settlementFinished = current.settlement !== 'PENDING';
+      if (current.kind === 'SUPPLY') {
+        const row = this._supplyRowAt(current.slot, current.itemName);
+        const after = row ? Math.max(1, Math.floor(Number(row.quantity) || 1)) : 0;
+        if (settlementFinished && current.beforeQuantity - after >= current.quantity) {
+          return { state: 'CONFIRMED', result: this._finishCurrent('CONFIRMED', {
+            evidence: 'SENDER_INVENTORY_DELTA',
+            beforeQuantity: current.beforeQuantity,
+            afterQuantity: after
+          }) };
+        }
+      }
+      if (current.kind === 'GOLD') {
+        const snap = this._snapshot();
+        const afterGold = snap && snap.character ? finite(snap.character.gold) : null;
+        if (settlementFinished && afterGold != null && current.beforeGold - afterGold >= current.amount) {
+          return { state: 'CONFIRMED', result: this._finishCurrent('CONFIRMED', {
+            evidence: 'SENDER_GOLD_DELTA',
+            beforeGold: current.beforeGold,
+            afterGold
+          }) };
+        }
+      }
+
+      if (Date.now() >= current.deadlineAtMs) return this._suspend('H18_' + current.kind + '_UNVERIFIED_TIMEOUT');
+      return { state: 'WAITING', action: clone(current) };
+    }
+
+    _startMovement(selected) {
+      if (!selected || !selected.destination || !this.movement || typeof this.movement.smartMove !== 'function') {
+        return { accepted: false, reason: 'H18_MOVEMENT_UNAVAILABLE' };
+      }
+      let moved = null;
+      try {
+        moved = this.movement.smartMove(selected.destination, {
+          owner: 'party-logistics-h18',
+          arrivalRadius: this.config.regroupArrivalRadius
+        });
+      } catch (error) {
+        return { accepted: false, reason: cleanText(error && error.message || error, 300) };
+      }
+      if (!moved || moved.accepted !== true || !moved.order || !moved.order.id) {
+        this.metrics.movementBlocks += 1;
+        return { accepted: false, reason: moved && moved.reason || 'H18_MOVEMENT_REJECTED' };
+      }
+      const now = Date.now();
+      const current = {
+        id: 'h18-action-' + (++this.sequence),
+        kind: selected.kind,
+        requestId: selected.requestId || null,
+        targetName: selected.targetName || null,
+        orderId: moved.order.id,
+        startedAt: nowIso(),
+        startedAtMs: now,
+        deadlineAtMs: now + this.config.movementTimeoutMs
+      };
+      this.currentAction = current;
+      this.metrics.regroupRequests += 1;
+      this.lastAction = { at: current.startedAt, type: selected.kind + '_STARTED', action: clone(current) };
+      return { accepted: true, action: clone(current), movement: clone(moved) };
+    }
+
+    _dispatchSelected(selected) {
+      if (!selected || !this.actions || typeof this.actions.dispatch !== 'function') {
+        return { accepted: false, reason: 'H18_ACTION_BOUNDARY_UNAVAILABLE' };
+      }
+      let actionName;
+      let args;
+      if (selected.kind === 'SUPPLY') {
+        actionName = 'send_item';
+        args = [selected.targetName, selected.slot, selected.quantity];
+      } else if (selected.kind === 'GOLD') {
+        actionName = 'send_gold';
+        args = [selected.targetName, selected.amount];
+      } else {
+        return { accepted: false, reason: 'H18_SELECTED_KIND_UNSUPPORTED' };
+      }
+
+      let dispatch;
+      try { dispatch = this.actions.dispatch(actionName, args); }
+      catch (error) { return { accepted: false, reason: cleanText(error && error.message || error, 300) }; }
+      if (!dispatch || dispatch.state !== 'DISPATCHED') {
+        if (dispatch && dispatch.state === 'UNKNOWN') {
+          this.currentAction = {
+            id: 'h18-action-' + (++this.sequence),
+            kind: selected.kind,
+            requestId: selected.requestId || null,
+            targetName: selected.targetName || null
+          };
+          return this._suspend('H18_' + selected.kind + '_DISPATCH_UNKNOWN', { error: dispatch.error || null });
+        }
+        return { accepted: false, reason: dispatch && dispatch.state || 'H18_ACTION_REJECTED' };
+      }
+
+      const now = Date.now();
+      const current = {
+        id: 'h18-action-' + (++this.sequence),
+        kind: selected.kind,
+        requestId: selected.requestId || null,
+        targetName: selected.targetName,
+        itemName: selected.itemName || null,
+        quantity: selected.quantity || null,
+        slot: selected.slot == null ? null : Number(selected.slot),
+        amount: selected.amount || null,
+        beforeQuantity: selected.beforeQuantity == null ? null : Number(selected.beforeQuantity),
+        beforeGold: selected.beforeGold == null ? null : Number(selected.beforeGold),
+        dispatchedAt: nowIso(),
+        dispatchedAtMs: now,
+        deadlineAtMs: now + this.config.outcomeTimeoutMs,
+        settlement: 'PENDING',
+        response: null,
+        error: null
+      };
+      this.currentAction = current;
+      if (selected.kind === 'SUPPLY') this.metrics.suppliesDispatched += 1;
+      if (selected.kind === 'GOLD') this.metrics.goldDispatched += 1;
+      this.lastAction = { at: current.dispatchedAt, type: selected.kind + '_DISPATCHED', action: clone(current) };
+      this._watch(dispatch.value, current);
+      return { accepted: true, action: clone(current) };
+    }
+
+    _cancelOwnedMovement(reason) {
+      try {
+        const status = this._movementStatus();
+        if (status && status.activeOrder && String(status.activeOrder.owner || '') === 'party-logistics-h18'
+            && this.movement && typeof this.movement.cancel === 'function') {
+          this.movement.cancel(cleanText(reason, 180) || 'H18_CANCEL');
+        }
+      } catch (_) {}
+    }
+
+    tick() {
+      this.metrics.ticks += 1;
+      if (!this.moduleActive) return { state: 'IDLE', reason: 'H18_MODULE_INACTIVE' };
+      if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason };
+
+      if (this.currentAction) {
+        const observed = this._observeCurrent();
+        if (observed.state !== 'IDLE') return observed;
+      }
+
+      const plan = this.plan();
+      if (!this.autonomyEnabled) return { state: 'OBSERVE', plan };
+      if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason, plan };
+      if (this.actionsThisSession >= this.config.maxActionsPerSession) {
+        this.metrics.sessionBudgetBlocks += 1;
+        this.autonomyEnabled = false;
+        this.lastAction = { at: nowIso(), type: 'SESSION_BUDGET_REACHED', actions: this.actionsThisSession };
+        return { state: 'COMPLETE', reason: 'H18_SESSION_ACTION_BUDGET_REACHED', plan };
+      }
+      if (!plan || plan.state !== 'READY' || !plan.selected) {
+        return { state: plan && plan.state || 'IDLE', reason: plan && plan.reason || 'H18_NO_LOGISTICS_WORK', plan };
+      }
+
+      let result;
+      if (plan.selected.kind === 'APPROACH' || plan.selected.kind === 'REGROUP') {
+        result = this._startMovement(plan.selected);
+      } else {
+        result = this._dispatchSelected(plan.selected);
+      }
+
+      if (!result || result.accepted !== true) {
+        if (result && result.state === 'SUSPENDED') return result;
+        const selected = plan.selected || {};
+        if (selected.kind === 'SUPPLY') this.metrics.suppliesRejected += 1;
+        if (selected.kind === 'GOLD') this.metrics.goldRejected += 1;
+        if (selected.kind === 'REGROUP') this.metrics.regroupsRejected += 1;
+        if (selected.requestId && ['SUPPLY','GOLD'].includes(selected.kind)) this._dequeueRequest(selected.requestId);
+        this.lastAction = {
+          at: nowIso(),
+          type: 'ACTION_QUEUE_REJECTED',
+          selected: clone(selected),
+          reason: result && result.reason || 'H18_ACTION_REJECTED'
+        };
+        return { state: 'REJECTED', reason: this.lastAction.reason, plan, result: clone(result) };
+      }
+
+      if (plan.selected.kind !== 'APPROACH') this.metrics.actionsQueued = Number(this.metrics.actionsQueued || 0) + 1;
+      return { state: 'QUEUED', plan, result };
+    }
+
+    status() {
+      return {
+        schemaVersion: 1,
+        moduleActive: this.moduleActive,
+        autonomyEnabled: this.autonomyEnabled,
+        suspended: !!this.suspendedReason,
+        suspendedReason: this.suspendedReason,
+        queue: clone(this.queue),
+        currentAction: clone(this.currentAction),
+        actionsThisSession: this.actionsThisSession,
+        lastPlan: clone(this.lastPlan),
+        lastAction: clone(this.lastAction),
+        config: clone(this.config),
+        metrics: clone(this.metrics),
+        supplyCatalog: this.supplyCatalog()
+      };
+    }
+  }
+
+  ns.PartyLogisticsController = PartyLogisticsController;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
 
 
@@ -7117,6 +7939,7 @@
       this.game = options.game || null;
       this.actions = options.actions || null;
       this.goals = options.goals || null;
+      this.partyLogistics = options.partyLogistics || null;
       this.moduleActive = false;
       this.scope = null;
       this.pendingLoot = null;
@@ -7373,6 +8196,12 @@
       if (!this.moduleActive) return { state: 'IDLE', plan };
       if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason, plan };
       if (this.pendingLoot) return { state: 'LOOT_PENDING', chestId: this.pendingLoot.chestId, plan };
+      let logistics = null;
+      try { logistics = this.partyLogistics && typeof this.partyLogistics.status === 'function' ? this.partyLogistics.status() : null; } catch (_) {}
+      if (logistics && ((Array.isArray(logistics.queue) && logistics.queue.length)
+          || logistics.currentAction && ['SUPPLY','GOLD','APPROACH'].includes(String(logistics.currentAction.kind || '')))) {
+        return { state: 'WAITING', reason: 'H10_PARTY_LOGISTICS_OWNERSHIP', plan };
+      }
       if (plan.state !== 'READY') return { state: plan.state, reason: plan.reason, plan };
 
       const freeSlots = finite(plan.inventory.freeSlots);
@@ -7468,6 +8297,7 @@
       this.roster = options.roster || null;
       this.movement = options.movement || null;
       this.inventory = options.inventory || null;
+      this.partyLogistics = options.partyLogistics || null;
       this.moduleActive = false;
       this.scope = null;
       this.suspendedReason = null;
@@ -8106,6 +8936,13 @@
       if (this.pending) return { state: 'PENDING', pending: clone(this.pending), plan };
       if (this.backoffUntilMs && Date.now() < this.backoffUntilMs) {
         return { state: 'BACKOFF', untilMs: this.backoffUntilMs, plan };
+      }
+      let logistics = null;
+      try { logistics = this.partyLogistics && typeof this.partyLogistics.status === 'function' ? this.partyLogistics.status() : null; } catch (_) {}
+      if (logistics && (logistics.autonomyEnabled || logistics.currentAction
+          || Array.isArray(logistics.queue) && logistics.queue.length)) {
+        this.metrics.ownershipBlocks += 1;
+        return { state: 'WAITING', reason: 'H11_PARTY_LOGISTICS_OWNERSHIP', plan };
       }
 
       if (plan.pressure.state === 'CRITICAL') this.metrics.pressureCritical += 1;
@@ -12638,6 +13475,7 @@
       this.gear = options.gear || null;
       this.upgrade = options.upgrade || null;
       this.exchangeCraft = options.exchangeCraft || null;
+      this.partyLogistics = options.partyLogistics || null;
       this.canAct = typeof options.canAct === 'function' ? options.canAct : null;
 
       this.moduleActive = false;
@@ -12808,7 +13646,8 @@
         { name: 'trade', controller: this.trade },
         { name: 'gear', controller: this.gear },
         { name: 'upgrade', controller: this.upgrade },
-        { name: 'exchangeCraft', controller: this.exchangeCraft }
+        { name: 'exchangeCraft', controller: this.exchangeCraft },
+        { name: 'partyLogistics', controller: this.partyLogistics }
       ];
     }
 
@@ -12819,7 +13658,15 @@
     }
 
     _childBusy(child) {
-      return !!(child && (child.pending || child.request || child.delivery || child.pendingLoot));
+      return !!(child && (
+        child.pending
+        || child.request
+        || child.delivery
+        || child.pendingLoot
+        || child.currentAction
+        || child.autonomyEnabled
+        || Array.isArray(child.queue) && child.queue.length
+      ));
     }
 
     _proposal(kind, module, details = {}) {
@@ -13636,7 +14483,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.17.0-h17';
+      this.version = options.version || '0.18.0-h18';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -13783,6 +14630,27 @@
         exchangeCraft: this.exchangeCraft,
         canAct: action => this.actionAllowed(action)
       });
+      this.partyLogistics = new ns.PartyLogisticsController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        party: this.party,
+        movement: this.movement,
+        combat: this.combat,
+        inventory: this.inventory,
+        merchant: this.merchant,
+        bank: this.bank,
+        trade: this.trade,
+        gear: this.gear,
+        upgrade: this.upgrade,
+        exchangeCraft: this.exchangeCraft,
+        economy: this.economy,
+        canAct: action => this.actionAllowed(action)
+      });
+      this.inventory.partyLogistics = this.partyLogistics;
+      this.merchant.partyLogistics = this.partyLogistics;
+      this.economy.partyLogistics = this.partyLogistics;
       this.liveTests = new ns.LiveTestRunner({
         runtime: this,
         logger: this.logger,
@@ -13800,6 +14668,7 @@
       this._registerH15LiveTest();
       this._registerH16LiveTest();
       this._registerH17LiveTest();
+      this._registerH18LiveTest();
       this._installErrorCapture();
       this.logger.info('AL Bot Runtime erstellt', {
         version: this.version,
@@ -13956,6 +14825,15 @@
         start: context => this.economy.start(context),
         stop: reason => this.economy.stop(reason),
         status: () => this.economy.status()
+      });
+
+      this.modules.register({
+        id: 'party-logistics',
+        title: 'Party Logistics',
+        version: '0.18.0',
+        start: context => this.partyLogistics.start(context),
+        stop: reason => this.partyLogistics.stop(reason),
+        status: () => this.partyLogistics.status()
       });
     }
 
@@ -17553,6 +18431,233 @@
       });
     }
 
+
+    _registerH18LiveTest() {
+      let baseline = null;
+      let previousPolicy = null;
+      let liveTarget = null;
+      let liveSupply = null;
+
+      const distance = (a, b) => {
+        if (!a || !b || !a.map || !b.map || String(a.map) !== String(b.map)) return null;
+        const ax = Number(a.x), ay = Number(a.y), bx = Number(b.x), by = Number(b.y);
+        if (![ax, ay, bx, by].every(Number.isFinite)) return null;
+        return Math.hypot(ax - bx, ay - by);
+      };
+
+      this.liveTests.register({
+        id: 'h18-party-logistics',
+        title: 'H18 – Party Logistics',
+        description: 'Begrenzter Live-Test für eigene Party, optionales Regrouping und einen bestätigten sicheren Supply-Transfer ohne UNKNOWN.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.partyLogistics.stopAutonomy('H18_LIVE_TEST_RESET'); } catch (_) {}
+          const current = runtime.partyLogistics.status();
+          if (current.currentAction) throw new Error('H18_ACTIVE_ACTION_BEFORE_LIVE_TEST');
+          try { runtime.partyLogistics.cancelQueue('H18_LIVE_TEST_RESET'); } catch (_) {}
+          try {
+            if (!current.suspended) runtime.partyLogistics.resetSafety('H18_LIVE_TEST_RESET');
+          } catch (_) {}
+          previousPolicy = runtime.partyLogistics.policy();
+          runtime.partyLogistics.policy({
+            maxActionsPerSession: 2,
+            transferRange: 320,
+            regroupDistance: 100,
+            regroupArrivalRadius: 80,
+            outcomeTimeoutMs: 10000,
+            movementTimeoutMs: 60000,
+            allowRegroup: true
+          });
+          const status = runtime.partyLogistics.status();
+          baseline = {
+            suppliesDispatched: Number(status.metrics.suppliesDispatched || 0),
+            suppliesConfirmed: Number(status.metrics.suppliesConfirmed || 0),
+            suppliesRejected: Number(status.metrics.suppliesRejected || 0),
+            suppliesUnknown: Number(status.metrics.suppliesUnknown || 0),
+            regroupsConfirmed: Number(status.metrics.regroupsConfirmed || 0),
+            regroupsUnknown: Number(status.metrics.regroupsUnknown || 0)
+          };
+          liveTarget = null;
+          liveSupply = null;
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.partyLogistics.stopAutonomy('H18_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try {
+            const current = runtime.partyLogistics.status();
+            if (!current.currentAction) runtime.partyLogistics.cancelQueue('H18_LIVE_TEST_CLEANUP');
+            if (!current.suspended && !current.currentAction) runtime.partyLogistics.resetSafety('H18_LIVE_TEST_CLEANUP');
+          } catch (_) {}
+          if (previousPolicy) {
+            try { runtime.partyLogistics.policy(previousPolicy); } catch (_) {}
+          }
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Eigene Party und sicheren Supply-Pfad prüfen',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, note }) => {
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(game.character.rip !== true, 'CHARACTER_DEAD');
+              const module = runtime.modules.describe('party-logistics');
+              assert(module && module.state === 'ACTIVE', 'H18_MODULE_NOT_ACTIVE');
+
+              const party = runtime.party.snapshot();
+              assert(party && party.coordinationEnabled === true, 'H18_NEEDS_OWNED_PARTY_WITHOUT_FOREIGN_MEMBERS');
+              const candidates = (party.ownedMembers || [])
+                .filter(member => !member.local && !member.rip && member.visible)
+                .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+              assert(candidates.length > 0, 'H18_NEEDS_VISIBLE_OWNED_PARTY_MEMBER');
+              liveTarget = candidates[0];
+
+              const catalog = runtime.partyLogistics.supplyCatalog();
+              liveSupply = catalog.find(row => row.utility === true && Number(row.quantity || 0) >= 1)
+                || catalog.find(row => Number(row.quantity || 0) >= 1)
+                || null;
+              assert(liveSupply, 'H18_NEEDS_SAFE_SUPPLY_ITEM');
+              assert(runtime.actions.available('send_item'), 'H18_SEND_ITEM_UNAVAILABLE');
+
+              const status = runtime.partyLogistics.status();
+              assert(status.suspended === false, status.suspendedReason || 'H18_SUSPENDED');
+              assert(status.currentAction == null, 'H18_ACTION_ACTIVE_BEFORE_PREFLIGHT');
+              note({
+                target: liveTarget,
+                supply: liveSupply,
+                partySize: party.size,
+                local: game.character.name
+              });
+              return {
+                target: liveTarget.name,
+                supply: liveSupply,
+                partySize: party.size,
+                distance: distance(game.character, liveTarget)
+              };
+            }
+          },
+          {
+            id: 'regroup',
+            title: 'Party bei Bedarf kontrolliert regroupen',
+            timeoutMs: 65000,
+            run: async ({ runtime, assert, waitFor }) => {
+              const game = runtime.game.snapshot();
+              const party = runtime.party.snapshot();
+              const target = (party.ownedMembers || []).find(member => liveTarget && member.name === liveTarget.name) || liveTarget;
+              const beforeDistance = distance(game.character, target);
+              if (beforeDistance != null && beforeDistance <= 100) {
+                return { alreadyGrouped: true, beforeDistance, regroupsConfirmed: 0 };
+              }
+
+              const started = runtime.partyLogistics.startAutonomy({ maxActions: 1 });
+              assert(started && started.accepted === true, started && started.reason || 'H18_REGROUP_START_FAILED');
+              await waitFor(() => {
+                const status = runtime.partyLogistics.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H18_SUSPENDED_DURING_REGROUP');
+                if (Number(status.metrics.regroupsUnknown || 0) > baseline.regroupsUnknown) throw new Error('H18_REGROUP_UNKNOWN');
+                return Number(status.metrics.regroupsConfirmed || 0) > baseline.regroupsConfirmed && status.currentAction == null
+                  ? status
+                  : null;
+              }, { timeoutMs: 60000, pollMs: 200, label: 'h18-regroup' });
+              runtime.partyLogistics.stopAutonomy('H18_REGROUP_COMPLETE');
+              const after = runtime.partyLogistics.status();
+              return {
+                alreadyGrouped: false,
+                beforeDistance,
+                regroupsConfirmed: Number(after.metrics.regroupsConfirmed || 0) - baseline.regroupsConfirmed,
+                regroupsUnknown: Number(after.metrics.regroupsUnknown || 0) - baseline.regroupsUnknown
+              };
+            }
+          },
+          {
+            id: 'supply',
+            title: 'Einen sicheren Supply-Transfer bestätigen',
+            timeoutMs: 75000,
+            run: async ({ runtime, assert, waitFor }) => {
+              const queued = runtime.partyLogistics.queueSupply(liveTarget.name, liveSupply.name, 1);
+              assert(queued && queued.accepted === true, queued && queued.reason || 'H18_SUPPLY_QUEUE_FAILED');
+              const started = runtime.partyLogistics.startAutonomy({ maxActions: 1 });
+              assert(started && started.accepted === true, started && started.reason || 'H18_SUPPLY_START_FAILED');
+
+              await waitFor(() => {
+                const status = runtime.partyLogistics.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H18_SUSPENDED_DURING_SUPPLY');
+                if (Number(status.metrics.suppliesUnknown || 0) > baseline.suppliesUnknown) throw new Error('H18_SUPPLY_UNKNOWN');
+                return Number(status.metrics.suppliesConfirmed || 0) > baseline.suppliesConfirmed
+                  && status.currentAction == null
+                  && status.queue.length === 0
+                  ? status
+                  : null;
+              }, { timeoutMs: 70000, pollMs: 200, label: 'h18-supply' });
+
+              runtime.partyLogistics.stopAutonomy('H18_SUPPLY_COMPLETE');
+              const status = runtime.partyLogistics.status();
+              const dispatched = Number(status.metrics.suppliesDispatched || 0) - baseline.suppliesDispatched;
+              const confirmed = Number(status.metrics.suppliesConfirmed || 0) - baseline.suppliesConfirmed;
+              const rejected = Number(status.metrics.suppliesRejected || 0) - baseline.suppliesRejected;
+              const unknown = Number(status.metrics.suppliesUnknown || 0) - baseline.suppliesUnknown;
+              assert(dispatched === 1, 'H18_SUPPLY_DISPATCH_COUNT_INVALID');
+              assert(confirmed === 1, 'H18_SUPPLY_CONFIRM_COUNT_INVALID');
+              assert(rejected === 0, 'H18_SUPPLY_REJECTED');
+              assert(unknown === 0, 'H18_SUPPLY_UNKNOWN');
+              return {
+                target: liveTarget.name,
+                itemName: liveSupply.name,
+                dispatched,
+                confirmed,
+                rejected,
+                unknown
+              };
+            }
+          },
+          {
+            id: 'stability',
+            title: 'Fünf Sekunden ohne Retry oder UNKNOWN beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              const before = runtime.partyLogistics.status();
+              const beforeDispatch = Number(before.metrics.suppliesDispatched || 0);
+              await sleep(5000);
+              const after = runtime.partyLogistics.status();
+              assert(after.autonomyEnabled === false, 'H18_AUTONOMY_RESTARTED');
+              assert(after.currentAction == null, 'H18_ACTION_REMAINS');
+              assert(after.suspended === false, after.suspendedReason || 'H18_SUSPENDED_DURING_STABILITY');
+              assert(Number(after.metrics.suppliesDispatched || 0) === beforeDispatch, 'H18_SUPPLY_RETRY_AFTER_STOP');
+              assert(Number(after.metrics.suppliesUnknown || 0) === baseline.suppliesUnknown, 'H18_SUPPLY_UNKNOWN_DURING_STABILITY');
+              assert(Number(after.metrics.regroupsUnknown || 0) === baseline.regroupsUnknown, 'H18_REGROUP_UNKNOWN_DURING_STABILITY');
+              return {
+                suppliesConfirmed: Number(after.metrics.suppliesConfirmed || 0) - baseline.suppliesConfirmed,
+                suppliesUnknown: Number(after.metrics.suppliesUnknown || 0) - baseline.suppliesUnknown,
+                regroupsConfirmed: Number(after.metrics.regroupsConfirmed || 0) - baseline.regroupsConfirmed,
+                regroupsUnknown: Number(after.metrics.regroupsUnknown || 0) - baseline.regroupsUnknown
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'Party-Logistik stoppen und Ownership freigeben',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.partyLogistics.stopAutonomy('H18_LIVE_TEST_COMPLETE');
+              const status = runtime.partyLogistics.status();
+              assert(status.autonomyEnabled === false, 'H18_AUTONOMY_STILL_ENABLED');
+              assert(status.currentAction == null, 'H18_CURRENT_ACTION_REMAINS');
+              assert(status.queue.length === 0, 'H18_QUEUE_REMAINS');
+              assert(status.suspended === false, status.suspendedReason || 'H18_SUSPENDED_AT_CLEANUP');
+              return {
+                autonomyEnabled: status.autonomyEnabled,
+                currentAction: status.currentAction,
+                queueLength: status.queue.length,
+                suspended: status.suspended
+              };
+            }
+          }
+        ]
+      });
+    }
+
     _installErrorCapture() {
       if (!this.root || typeof this.root.addEventListener !== 'function') return;
       this._errorHandler = event => {
@@ -17707,6 +18812,7 @@
         upgrade: this.upgrade.status(),
         exchangeCraft: this.exchangeCraft.status(),
         economy: this.economy.status(),
+        partyLogistics: this.partyLogistics.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
         roster,
@@ -17739,6 +18845,7 @@
         upgrade: this.upgrade.status(),
         exchangeCraft: this.exchangeCraft.status(),
         economy: this.economy.status(),
+        partyLogistics: this.partyLogistics.status(),
         liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
         logs: this.logger.list(160),
@@ -17770,6 +18877,7 @@
       push('upgrade-compound-controller', !!this.upgrade.status() && typeof this.upgrade.plan === 'function' && typeof this.upgrade.queueBest === 'function', this.upgrade.status());
       push('exchange-craft-controller', !!this.exchangeCraft.status() && typeof this.exchangeCraft.plan === 'function' && typeof this.exchangeCraft.productionPlan === 'function', this.exchangeCraft.status());
       push('economy-controller', !!this.economy.status() && typeof this.economy.plan === 'function' && typeof this.economy.startAutonomy === 'function', this.economy.status());
+      push('party-logistics-controller', !!this.partyLogistics.status() && typeof this.partyLogistics.plan === 'function' && typeof this.partyLogistics.queueSupply === 'function', this.partyLogistics.status());
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
       push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);
@@ -18436,6 +19544,24 @@
       const support = partyStatus.support || {};
       const metrics = partyStatus.metrics || {};
       const members = Array.isArray(party.members) ? party.members : [];
+      const logistics = status.partyLogistics || {};
+      const logisticsMetrics = logistics.metrics || {};
+      const logisticsPolicy = logistics.config || {};
+      const logisticsPlan = logistics.lastPlan || null;
+      const logisticsAction = logistics.currentAction || null;
+      const logisticsQueue = Array.isArray(logistics.queue) ? logistics.queue : [];
+      const catalog = Array.isArray(logistics.supplyCatalog) ? logistics.supplyCatalog : [];
+      const ownedTargets = members.filter(member => member.owned && !member.local);
+      const targetOptions = ownedTargets.length
+        ? ownedTargets.map(member => '<option value="'+esc(member.name)+'">'+esc(member.name)+' · '+esc(member.ctype || '-')+(member.visible ? '' : ' · nicht sichtbar')+'</option>').join('')
+        : '<option value="">kein eigenes Party-Ziel</option>';
+      const supplyOptions = catalog.length
+        ? catalog.slice(0, 30).map(row => '<option value="'+esc(row.name)+'">'+esc(row.name)+' x'+esc(row.quantity)+' · '+esc(row.type || '-')+(row.utility ? ' · Utility' : '')+'</option>').join('')
+        : '<option value="">kein sicheres Supply-Item</option>';
+      const resultText = this.partyLogisticsResult
+        ? JSON.stringify(this.partyLogisticsResult, null, 2)
+        : 'Noch keine manuelle H18-Aktion.';
+
       panel.innerHTML = `<div class="albot-card"><b>H7 Party</b>
 <div class="albot-small">Koordination ist nur aktiv, wenn mindestens zwei eigene Party-Mitglieder erkannt wurden und kein fremdes Mitglied enthalten ist. Focus Fire basiert auf frischen sichtbaren Targets; Healing/Revive laufen nur über bestätigte Live-Readiness.</div>
 <div class="albot-grid" style="margin-top:8px">
@@ -18456,7 +19582,80 @@ ${members.length ? members.map(member => '<div class="albot-small"><b>'+esc(memb
 <div class="albot-small">Heal Dispatches: ${esc(metrics.healsDispatched || 0)} · Party Heal: ${esc(metrics.partyHealsDispatched || 0)} · Revive: ${esc(metrics.revivesDispatched || 0)} · UNKNOWN: ${esc(metrics.supportUnknown || 0)} · Focus-Pingpong: ${esc(metrics.focusPingPongs || 0)}</div>
 ${party.foreignMemberNames && party.foreignMemberNames.length ? '<div class="albot-small albot-bad">Fremde Party-Mitglieder blockieren automatische Koordination: '+party.foreignMemberNames.map(esc).join(', ')+'</div>' : ''}
 ${support.suspended ? '<div class="albot-small albot-bad">Support suspendiert: '+esc(support.suspendedReason || '-')+'</div>' : ''}
-</div>`;
+</div>
+
+<div class="albot-card"><b>H18 Party Logistics</b>
+<div class="albot-small">Supply-Items und Gold gehen nur an eigene Party-Mitglieder. Transfers werden nur aus Sender-Deltas bestätigt; Promise-/Movement-UNKNOWN suspendiert H18 ohne Blind-Retry. Regrouping besitzt Movement exklusiv über <code>party-logistics-h18</code>.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${logistics.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Autonomie</span><div class="albot-v">${logistics.autonomyEnabled ? 'AKTIV' : 'AUS'}</div></div>
+<div><span class="albot-k">Plan</span><div class="albot-v">${esc(logisticsPlan && logisticsPlan.state || '-')} · ${esc(logisticsPlan && logisticsPlan.reason || '-')}</div></div>
+<div><span class="albot-k">Queue</span><div class="albot-v">${esc(logisticsQueue.length)}</div></div>
+<div><span class="albot-k">Aktive Aktion</span><div class="albot-v">${logisticsAction ? esc(logisticsAction.kind)+' · '+esc(logisticsAction.targetName || '-') : 'keine'}</div></div>
+<div><span class="albot-k">Session-Aktionen</span><div class="albot-v">${esc(logistics.actionsThisSession || 0)} / ${esc(logisticsPolicy.maxActionsPerSession || '-')}</div></div>
+<div><span class="albot-k">Supply bestätigt / UNKNOWN</span><div class="albot-v">${esc(logisticsMetrics.suppliesConfirmed || 0)} / ${esc(logisticsMetrics.suppliesUnknown || 0)}</div></div>
+<div><span class="albot-k">Gold bestätigt / UNKNOWN</span><div class="albot-v">${esc(logisticsMetrics.goldConfirmed || 0)} / ${esc(logisticsMetrics.goldUnknown || 0)}</div></div>
+<div><span class="albot-k">Regroups bestätigt / UNKNOWN</span><div class="albot-v">${esc(logisticsMetrics.regroupsConfirmed || 0)} / ${esc(logisticsMetrics.regroupsUnknown || 0)}</div></div>
+<div><span class="albot-k">Suspendiert</span><div class="albot-v">${logistics.suspended ? 'JA · '+esc(logistics.suspendedReason || '-') : 'NEIN'}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Supply / Gold vormerken</b>
+<div class="albot-row"><select id="albot-h18-target">${targetOptions}</select></div>
+<div class="albot-row"><select id="albot-h18-item">${supplyOptions}</select><input id="albot-h18-quantity" type="number" min="1" step="1" value="1" style="max-width:90px"><button id="albot-h18-supply" class="albot-btn">Supply vormerken</button></div>
+<div class="albot-row"><input id="albot-h18-gold" type="number" min="1" step="1" value="10000" placeholder="Gold"><button id="albot-h18-gold-queue" class="albot-btn">Gold vormerken</button></div>
+<div class="albot-small">Goldreserve aktuell: ${esc(logisticsPolicy.goldReserve == null ? '-' : logisticsPolicy.goldReserve)}. Leveled/gelockte/Gift/Quest/Cash/Equipment-Items sind vom Supply-Pfad ausgeschlossen.</div>
+</div>
+
+<div class="albot-card"><b>H18 Steuerung</b>
+<div class="albot-row"><label>Max Aktionen <input id="albot-h18-max-actions" type="number" min="1" max="50" value="${esc(logisticsPolicy.maxActionsPerSession == null ? 6 : logisticsPolicy.maxActionsPerSession)}"></label><label>Regroup Distanz <input id="albot-h18-regroup-distance" type="number" min="100" max="5000" value="${esc(logisticsPolicy.regroupDistance == null ? 700 : logisticsPolicy.regroupDistance)}"></label></div>
+<div class="albot-row"><button id="albot-h18-start" class="albot-btn" ${logistics.autonomyEnabled || logisticsAction ? 'disabled' : ''}>Autonomie starten</button><button id="albot-h18-stop" class="albot-btn warn" ${logistics.autonomyEnabled ? '' : 'disabled'}>Autonomie stoppen</button><button id="albot-h18-plan" class="albot-btn">Plan</button><button id="albot-h18-tick" class="albot-btn">Tick</button></div>
+<div class="albot-row"><button id="albot-h18-cancel" class="albot-btn warn" ${logisticsAction ? 'disabled' : ''}>Queue leeren</button><button id="albot-h18-reset" class="albot-btn warn" ${logistics.suspended && !logisticsAction ? '' : 'disabled'}>Safety zurücksetzen</button></div>
+</div>
+
+<div class="albot-card"><b>H18 letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.partyLogisticsResult = fn(); }
+        catch (error) { this.partyLogisticsResult = { ok: false, reason: String(error && error.message || error) }; }
+        this.renderParty(this.runtime.status());
+      };
+      const targetValue = () => {
+        const el = panel.querySelector('#albot-h18-target');
+        return el ? el.value : '';
+      };
+      const supplyButton = panel.querySelector('#albot-h18-supply');
+      if (supplyButton) supplyButton.onclick = () => {
+        const item = panel.querySelector('#albot-h18-item');
+        const quantity = panel.querySelector('#albot-h18-quantity');
+        run(() => this.runtime.partyLogistics.queueSupply(
+          targetValue(),
+          item ? item.value : '',
+          Math.max(1, Math.floor(Number(quantity && quantity.value) || 1))
+        ));
+      };
+      const goldButton = panel.querySelector('#albot-h18-gold-queue');
+      if (goldButton) goldButton.onclick = () => {
+        const amount = panel.querySelector('#albot-h18-gold');
+        run(() => this.runtime.partyLogistics.queueGold(targetValue(), Math.floor(Number(amount && amount.value) || 0)));
+      };
+      const startButton = panel.querySelector('#albot-h18-start');
+      if (startButton) startButton.onclick = () => run(() => this.runtime.partyLogistics.startAutonomy({
+        maxActions: Math.max(1, Math.floor(Number(panel.querySelector('#albot-h18-max-actions').value) || 1))
+      }));
+      const stopButton = panel.querySelector('#albot-h18-stop');
+      if (stopButton) stopButton.onclick = () => run(() => this.runtime.partyLogistics.stopAutonomy('GUI_H18_AUTONOMY_STOP'));
+      const planButton = panel.querySelector('#albot-h18-plan');
+      if (planButton) planButton.onclick = () => run(() => this.runtime.partyLogistics.plan());
+      const tickButton = panel.querySelector('#albot-h18-tick');
+      if (tickButton) tickButton.onclick = () => run(() => this.runtime.partyLogistics.tick());
+      const cancelButton = panel.querySelector('#albot-h18-cancel');
+      if (cancelButton) cancelButton.onclick = () => run(() => this.runtime.partyLogistics.cancelQueue('GUI_H18_QUEUE_CANCEL'));
+      const resetButton = panel.querySelector('#albot-h18-reset');
+      if (resetButton) resetButton.onclick = () => run(() => this.runtime.partyLogistics.resetSafety('GUI_H18_RESET'));
+      const regroupInput = panel.querySelector('#albot-h18-regroup-distance');
+      if (regroupInput) regroupInput.onchange = () => run(() => this.runtime.partyLogistics.policy({
+        regroupDistance: Number(regroupInput.value)
+      }));
     }
 
     renderFarmIntelligence(status) {
@@ -19504,7 +20703,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.17.0-h17',
+    version: '0.18.0-h18',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -19604,6 +20803,20 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
       status: () => runtime.party.status(),
       snapshot: () => runtime.party.snapshot(),
       focusTarget: () => runtime.party.preferredTargetId()
+    },
+
+    partyLogistics: {
+      status: () => runtime.partyLogistics.status(),
+      plan: () => runtime.partyLogistics.plan(),
+      tick: () => runtime.partyLogistics.tick(),
+      policy: value => runtime.partyLogistics.policy(value),
+      catalog: () => runtime.partyLogistics.supplyCatalog(),
+      supply: (targetName, itemName, quantity) => runtime.partyLogistics.queueSupply(targetName, itemName, quantity),
+      gold: (targetName, amount) => runtime.partyLogistics.queueGold(targetName, amount),
+      cancel: reason => runtime.partyLogistics.cancelQueue(reason || 'API_H18_QUEUE_CANCEL'),
+      start: options => runtime.partyLogistics.startAutonomy(options || {}),
+      stop: reason => runtime.partyLogistics.stopAutonomy(reason || 'API_H18_AUTONOMY_STOP'),
+      reset: reason => runtime.partyLogistics.resetSafety(reason || 'API_H18_RESET')
     },
 
     farming: {
@@ -19770,6 +20983,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
   Object.freeze(api.combat);
   Object.freeze(api.classSkills);
   Object.freeze(api.party);
+  Object.freeze(api.partyLogistics);
   Object.freeze(api.farming);
   Object.freeze(api.farmIntelligence);
   Object.freeze(api.inventory);
@@ -19797,7 +21011,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
     };
   } catch (_) {}
 
-  runtime.logger.info('AL Bot H17 geladen', {
+  runtime.logger.info('AL Bot H18 geladen', {
     version: api.version,
     bootCount,
     hotReload: !!previous,
