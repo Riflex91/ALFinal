@@ -18,17 +18,17 @@
 
   const ROLE_CAPABILITIES = Object.freeze({
     warrior: ['TANK', 'DPS', 'MELEE'],
-    priest: ['HEALER', 'HEAL', 'REVIVE', 'SUPPORT'],
+    priest: ['HEALER', 'HEAL', 'REVIVE', 'SUPPORT', 'DPS', 'RANGED'],
     ranger: ['DPS', 'RANGED'],
     mage: ['DPS', 'AOE', 'RANGED', 'SUPPORT'],
     rogue: ['DPS', 'MELEE'],
-    paladin: ['TANK', 'HEAL', 'SUPPORT', 'MELEE'],
+    paladin: ['TANK', 'HEAL', 'SUPPORT', 'DPS', 'MELEE'],
     merchant: ['ECONOMY', 'LOGISTICS']
   });
 
   const TASK_DEFAULTS = Object.freeze({
-    FARM: { minMembers: 1, maxMembers: 3, required: ['DPS'], combatOnly: true, progressionWeight: 0.20 },
-    QUEST: { minMembers: 1, maxMembers: 3, required: ['DPS'], combatOnly: true, progressionWeight: 0.16 },
+    FARM: { minMembers: 1, maxMembers: 2, required: ['DPS'], combatOnly: true, progressionWeight: 0.20 },
+    QUEST: { minMembers: 1, maxMembers: 2, required: ['DPS'], combatOnly: true, progressionWeight: 0.16 },
     BOSS: { minMembers: 3, maxMembers: 4, required: ['TANK', 'HEALER', 'DPS'], combatOnly: true, progressionWeight: 0 },
     EVENT: { minMembers: 3, maxMembers: 4, required: ['TANK', 'HEALER', 'DPS'], combatOnly: true, progressionWeight: 0 },
     SPECIAL: { minMembers: 2, maxMembers: 4, required: ['HEALER', 'DPS'], combatOnly: true, progressionWeight: 0.04 },
@@ -332,6 +332,11 @@
       for (const members of groups) {
         const capabilities = new Set(members.flatMap(member => member.capabilities || []));
         if (!required.every(capability => capabilities.has(capability))) continue;
+        const memberNameSet = new Set(members.map(member => String(member.name)));
+        const progressionRequired = (taskType === 'FARM' || taskType === 'QUEST')
+          && progression.selectedCharacterName
+          && scored.some(row => String(row.name) === String(progression.selectedCharacterName));
+        if (progressionRequired && !memberNameSet.has(String(progression.selectedCharacterName))) continue;
         const memberNames = members.map(member => member.name).sort();
         const baseStrength = members.reduce((sum, member) => sum + member.strength, 0);
         const roleDiversity = capabilities.size / 10;
