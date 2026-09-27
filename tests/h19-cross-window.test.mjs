@@ -79,16 +79,28 @@ function makeContext(name, names, network, state, nowRef) {
       running: state.running,
       runEpoch: state.runEpoch,
       emergencyStopLatched: state.emergencyStopLatched,
+      lifecycleAutonomyEnabled: state.autonomyEnabled === true,
       version: '0.19.0-h19'
     }),
     startRuntime: async () => {
       if (state.emergencyStopLatched) throw new Error('ALBOT_START_BLOCKED_BY_EMERGENCY_STOP');
-      if (!state.running) {
-        state.running = true;
-        state.runEpoch += 1;
-      }
+      if (!state.running) { state.running = true; state.runEpoch += 1; }
     },
-    stopRuntime: async () => { state.running = false; }
+    stopRuntime: async () => { state.running = false; },
+    getPartyState: () => clone(state.party || { available: false, partyId: null, leader: null, memberNames: [], foreignMemberNames: [], size: 0 }),
+    leavePartyLocal: async () => {
+      const party = state.party;
+      if (!party || !party.partyId) throw new Error('NOT_IN_PARTY');
+      state.partyActions = state.partyActions || [];
+      state.partyActions.push({ action: 'leave_party' });
+      state.previousPartyId = party.partyId;
+      state.party = { available: false, partyId: null, leader: null, memberNames: [], foreignMemberNames: [], size: 0 };
+    },
+    requestPartyJoinLocal: async leaderName => {
+      state.partyActions = state.partyActions || [];
+      state.partyActions.push({ action: 'send_party_request', leaderName: String(leaderName) });
+      state.party = { available: true, partyId: state.previousPartyId || 'party-test', leader: String(leaderName), memberNames: [String(leaderName), name], foreignMemberNames: [], size: 2 };
+    }
   });
   network.set(name, ctx);
   return { ctx, transport, intervals, timeouts };
@@ -141,6 +153,7 @@ test('H19 cross-window transport discovers separate browser runtimes by CM heart
   assert.equal(peer.sessionId, 'session-My_Merchant');
   assert.equal(peer.running, true);
   assert.equal(peer.runEpoch, 4);
+  assert.equal(peer.lifecycleAutonomyEnabled, false);
   assert.equal(a.transport.status().freshPeers.length, 1);
 
   a.transport.destroy();
@@ -231,4 +244,94 @@ test('H19 cross-window CM handler preserves an existing non-H19 on_cm handler', 
   assert.equal(typeof a.ctx.on_cm, 'function');
   assert.equal(a.ctx.on_cm('Other', {}), 'previous');
   assert.equal(previousCalls, 2);
+});
+
+
+test('H19 cross-window party recovery leaves only a nonleader and consumes one-shot rejoin authority', async () => {
+  const names = ['My_Ranger1', 'My_Merchant'], network = new Map(), nowRef = { value: 5000 };
+  const aState = { running: true, runEpoch: 2, emergencyStopLatched: false };
+  const bState = { running: true, runEpoch: 3, emergencyStopLatched: false, party: { available: true, partyId: 'party-1', leader: 'My_Ranger1', memberNames: ['My_Ranger1', 'My_Merchant'], foreignMemberNames: [], size: 2 }, partyActions: [] };
+  const a = makeContext('My_Ranger1', names, network, aState, nowRef), b = makeContext('My_Merchant', names, network, bState, nowRef);
+  a.transport.install(); b.transport.install(); a.transport.broadcastHeartbeat(); b.transport.broadcastHeartbeat();
+  const leave = a.transport.requestPartyLeave('My_Merchant');
+  assert.equal(leave.state, 'DISPATCHED');
+  const leaveSettlement = await leave.value; await flush();
+  assert.equal(leaveSettlement.success, true); assert.equal(leaveSettlement.reason, 'H19_CROSS_WINDOW_PARTY_LEFT');
+  assert.equal(bState.party.partyId, null); assert.deepEqual(bState.partyActions, [{ action: 'leave_party' }]);
+  assert.equal(b.transport.status().partyRecoveryLease.leader, 'My_Ranger1');
+  const join = a.transport.requestPartyJoin('My_Merchant');
+  assert.equal(join.state, 'DISPATCHED');
+  const joinSettlement = await join.value; await flush();
+  assert.equal(joinSettlement.success, true); assert.equal(joinSettlement.reason, 'H19_CROSS_WINDOW_PARTY_JOINED');
+  assert.equal(bState.party.leader, 'My_Ranger1'); assert.deepEqual(bState.party.memberNames, ['My_Ranger1', 'My_Merchant']);
+  assert.equal(b.transport.status().partyRecoveryLease, null);
+  assert.deepEqual(bState.partyActions, [{ action: 'leave_party' }, { action: 'send_party_request', leaderName: 'My_Ranger1' }]);
+  const retry = a.transport.requestPartyJoin('My_Merchant');
+  assert.equal(retry.state, 'DISPATCHED');
+  const retrySettlement = await retry.value; await flush();
+  assert.equal(retrySettlement.success, false); assert.equal(retrySettlement.reason, 'H19_CROSS_WINDOW_PARTY_RECOVERY_AUTHORITY_UNAVAILABLE');
+  assert.equal(bState.partyActions.filter(row => row.action === 'send_party_request').length, 1);
+  a.transport.destroy(); b.transport.destroy();
+});
+
+test('H19 cross-window party loss command protects the party leader', async () => {
+  const names = ['My_Ranger1', 'My_Merchant'], network = new Map(), nowRef = { value: 6000 };
+  const aState = { running: true, runEpoch: 1, emergencyStopLatched: false };
+  const bState = { running: true, runEpoch: 1, emergencyStopLatched: false, party: { available: true, partyId: 'party-2', leader: 'My_Merchant', memberNames: ['My_Merchant', 'My_Ranger1'], foreignMemberNames: [], size: 2 }, partyActions: [] };
+  const a = makeContext('My_Ranger1', names, network, aState, nowRef), b = makeContext('My_Merchant', names, network, bState, nowRef);
+  a.transport.install(); b.transport.install(); a.transport.broadcastHeartbeat(); b.transport.broadcastHeartbeat();
+  const leave = a.transport.requestPartyLeave('My_Merchant');
+  assert.equal(leave.state, 'DISPATCHED');
+  const settlement = await leave.value; await flush();
+  assert.equal(settlement.success, false); assert.equal(settlement.reason, 'H19_CROSS_WINDOW_PARTY_LEADER_PROTECTED');
+  assert.equal(bState.party.partyId, 'party-2'); assert.deepEqual(bState.partyActions, []);
+  a.transport.destroy(); b.transport.destroy();
+});
+
+
+test('H19 cross-window party loss rejects a remote target with lifecycle autonomy enabled', async () => {
+  const names = ['My_Ranger1', 'My_Merchant'], network = new Map(), nowRef = { value: 7000 };
+  const aState = { running: true, runEpoch: 1, emergencyStopLatched: false, autonomyEnabled: false };
+  const bState = {
+    running: true, runEpoch: 1, emergencyStopLatched: false, autonomyEnabled: true,
+    party: { available: true, partyId: 'party-3', leader: 'My_Ranger1', memberNames: ['My_Ranger1', 'My_Merchant'], foreignMemberNames: [], size: 2 },
+    partyActions: []
+  };
+  const a = makeContext('My_Ranger1', names, network, aState, nowRef), b = makeContext('My_Merchant', names, network, bState, nowRef);
+  a.transport.install(); b.transport.install(); a.transport.broadcastHeartbeat(); b.transport.broadcastHeartbeat();
+  assert.equal(a.transport.freshPeer('My_Merchant').lifecycleAutonomyEnabled, true);
+
+  const leave = a.transport.requestPartyLeave('My_Merchant');
+  assert.equal(leave.state, 'DISPATCHED');
+  const settlement = await leave.value; await flush();
+  assert.equal(settlement.success, false);
+  assert.equal(settlement.reason, 'H19_CROSS_WINDOW_PARTY_AUTONOMY_ACTIVE');
+  assert.equal(bState.party.partyId, 'party-3');
+  assert.deepEqual(bState.partyActions, []);
+  a.transport.destroy(); b.transport.destroy();
+});
+
+test('H19 cross-window preserves recovery authority after an UNKNOWN leave dispatch', async () => {
+  const names = ['My_Ranger1', 'My_Merchant'], network = new Map(), nowRef = { value: 8000 };
+  const aState = { running: true, runEpoch: 1, emergencyStopLatched: false, autonomyEnabled: false };
+  const bState = {
+    running: true, runEpoch: 1, emergencyStopLatched: false, autonomyEnabled: false,
+    party: { available: true, partyId: 'party-4', leader: 'My_Ranger1', memberNames: ['My_Ranger1', 'My_Merchant'], foreignMemberNames: [], size: 2 },
+    partyActions: []
+  };
+  const a = makeContext('My_Ranger1', names, network, aState, nowRef), b = makeContext('My_Merchant', names, network, bState, nowRef);
+  b.transport.leavePartyLocal = () => { throw new Error('H19_CROSS_WINDOW_PARTY_ACTION_UNKNOWN:leave_party'); };
+  a.transport.install(); b.transport.install(); a.transport.broadcastHeartbeat(); b.transport.broadcastHeartbeat();
+
+  const leave = a.transport.requestPartyLeave('My_Merchant');
+  assert.equal(leave.state, 'DISPATCHED');
+  const settlement = await leave.value; await flush();
+  assert.equal(settlement.success, false);
+  assert.equal(settlement.reason, 'H19_CROSS_WINDOW_PARTY_ACTION_UNKNOWN:leave_party');
+  const lease = b.transport.status().partyRecoveryLease;
+  assert.ok(lease);
+  assert.equal(lease.leader, 'My_Ranger1');
+  assert.equal(lease.targetName, 'My_Merchant');
+  assert.equal(bState.party.partyId, 'party-4');
+  a.transport.destroy(); b.transport.destroy();
 });

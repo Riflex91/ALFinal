@@ -747,12 +747,33 @@ test('H19 cross-window readiness suite is non-mutating and gates complete peer r
   assert.doesNotMatch(readiness, /startAutonomy\(/);
 });
 
+test('H19 party recovery live suite is bounded, leader-protected and fail-closed', () => {
+  const runtime = fs.readFileSync(path.resolve(here, '../src/runtime.js'), 'utf8');
+  const start = runtime.indexOf("id: 'h19-party-recovery'");
+  const end = runtime.indexOf('_installErrorCapture()', start);
+  assert.ok(start >= 0); assert.ok(end > start);
+  const suite = runtime.slice(start, end);
+  assert.match(suite, /recommended: false/);
+  assert.match(suite, /H19_PARTY_TEST_REQUIRES_LOCAL_LEADER/);
+  assert.match(suite, /H19_PARTY_FOREIGN_MEMBER_PRESENT/);
+  assert.match(suite, /lifecycleAutonomyEnabled === false/);
+  assert.match(suite, /requestPartyLeave\(targetName\)/);
+  assert.match(suite, /requestPartyJoin\(targetName\)/);
+  assert.match(suite, /startAutonomy\(\{ maxActions: 1 \}\)/);
+  assert.match(suite, /H19_PARTY_INVITE_PINGPONG_DETECTED/);
+  assert.match(suite, /H19_PARTY_CM_COMMAND_COUNT_INVALID/);
+  assert.match(suite, /H19_PARTY_CLEANUP_MANUAL_RESTORE_REQUIRED/);
+  assert.doesNotMatch(suite, /queueStop\(/);
+  assert.doesNotMatch(suite, /queueStart\(/);
+});
+
 test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired', () => {
   const runtime = fs.readFileSync(path.resolve(here, '../src/runtime.js'), 'utf8');
   const entry = fs.readFileSync(path.resolve(here, '../src/entry.js'), 'utf8');
   const ui = fs.readFileSync(path.resolve(here, '../src/ui.js'), 'utf8');
   const boundary = fs.readFileSync(path.resolve(here, '../src/action-boundary.js'), 'utf8');
   const core = fs.readFileSync(path.resolve(here, '../src/core.js'), 'utf8');
+  const crossWindow = fs.readFileSync(path.resolve(here, '../src/cross-window-lifecycle.js'), 'utf8');
   const build = fs.readFileSync(path.resolve(here, '../scripts/build.mjs'), 'utf8');
   const dist = fs.readFileSync(path.resolve(here, '../dist/al-bot.js'), 'utf8');
   const pkg = JSON.parse(fs.readFileSync(path.resolve(here, '../package.json'), 'utf8'));
@@ -764,7 +785,9 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(runtime, /id: 'h19-character-lifecycle'/);
   assert.match(runtime, /id: 'h19-cross-window-readiness'/);
   assert.match(runtime, /id: 'h19-remote-recovery'/);
+  assert.match(runtime, /id: 'h19-party-recovery'/);
   assert.match(runtime, /_registerH19RemoteRecoveryLiveTest\(\)/);
+  assert.match(runtime, /_registerH19PartyRecoveryLiveTest\(\)/);
   assert.match(runtime, /const runnerActive = runnerActiveSet\(liveRoster\)/);
   assert.match(runtime, /online\.has\(row\.name\)/);
   assert.match(runtime, /runnerActive\.has\(name\)/);
@@ -812,6 +835,13 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(core, /onlineCharacterNames/);
   assert.match(core, /runnerActiveCharacterNames/);
   assert.match(core, /activeCharacterNames/);
+  assert.match(crossWindow, /requestPartyLeave\(targetName\)/);
+  assert.match(crossWindow, /requestPartyJoin\(targetName\)/);
+  assert.match(crossWindow, /H19_CROSS_WINDOW_PARTY_LEADER_PROTECTED/);
+  assert.match(crossWindow, /H19_CROSS_WINDOW_PARTY_AUTONOMY_ACTIVE/);
+  assert.match(crossWindow, /H19_CROSS_WINDOW_PARTY_ACTION_UNKNOWN/);
+  assert.match(crossWindow, /H19_CROSS_WINDOW_PARTY_RECOVERY_AUTHORITY_UNAVAILABLE/);
+  assert.match(crossWindow, /partyRecoveryLease/);
   assert.match(build, /src\/cross-window-lifecycle\.js/);
   assert.match(build, /src\/lifecycle-recovery\.js/);
   assert.match(build, /AL Bot 0\.19\.0-h19/);
@@ -819,6 +849,9 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(dist, /class H19CrossWindowLifecycleTransport/);
   assert.match(dist, /albot-h19-cross-window-v1/);
   assert.match(dist, /h19-cross-window-readiness/);
+  assert.match(dist, /h19-party-recovery/);
+  assert.match(dist, /requestPartyLeave\(targetName\)/);
+  assert.match(dist, /requestPartyJoin\(targetName\)/);
   assert.match(dist, /class CharacterLifecycleController/);
   assert.match(dist, /H19_REMOTE_TARGET_NOT_RUNNER_CONTROLLABLE/);
   assert.match(dist, /H19_REMOTE_CONTROLLABLE_TARGET_UNAVAILABLE/);
