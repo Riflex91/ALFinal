@@ -152,6 +152,7 @@
       this._registerH13LiveTest();
       this._registerH14LiveTest();
       this._registerH15LiveTest();
+      this._registerH16LiveTest();
       this._installErrorCapture();
       this.logger.info('AL Bot Runtime erstellt', {
         version: this.version,
@@ -2813,6 +2814,277 @@
                 pending: !!status.pending,
                 request: !!status.request,
                 outcome: status.lastAction && status.lastAction.type || null
+              };
+            }
+          }
+        ]
+      });
+    }
+
+    _registerH16LiveTest() {
+      let baseline = null;
+      let testPlan = null;
+      let previousPolicy = null;
+
+      const inventoryQuantity = (runtime, name, level = 0) => {
+        const inventory = runtime.game.inventorySnapshot();
+        if (!inventory || inventory.available === false) return 0;
+        return (inventory.items || []).reduce((sum, row) =>
+          String(row.name) === String(name) && Math.max(0, Number(row.level) || 0) === Math.max(0, Number(level) || 0)
+            ? sum + Math.max(1, Number(row.quantity) || 1)
+            : sum, 0);
+      };
+
+      this.liveTests.register({
+        id: 'h16-exchange-craft',
+        title: 'H16 – Exchange & Craft',
+        description: 'Ein-Klick-Live-Test für eine kleine, niedrig riskante Craft- und Exchange-Sequenz mit Live-Outcome-Evidence und Produktionsgraph.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.exchangeCraft.resetSafety('H16_LIVE_TEST_RESET'); } catch (_) {}
+          try { runtime.exchangeCraft.cancelRequest('H16_LIVE_TEST_RESET'); } catch (_) {}
+          previousPolicy = runtime.exchangeCraft.policy();
+          runtime.exchangeCraft.policy({
+            maxAttemptsPerSession: 2,
+            maxExchangeValueAtRisk: 20000,
+            maxCraftGoldCost: 10000,
+            maxCraftInputValueAtRisk: 20000,
+            goldReserve: 10000,
+            maxProductionDepth: 6,
+            allowQuestEvent: false
+          });
+          const metrics = runtime.exchangeCraft.status().metrics;
+          baseline = {
+            exchangesDispatched: metrics.exchangesDispatched,
+            exchangesConfirmed: metrics.exchangesConfirmed,
+            exchangesRejected: metrics.exchangesRejected,
+            exchangesUnknown: metrics.exchangesUnknown,
+            craftsDispatched: metrics.craftsDispatched,
+            craftsConfirmed: metrics.craftsConfirmed,
+            craftsRejected: metrics.craftsRejected,
+            craftsUnknown: metrics.craftsUnknown
+          };
+          testPlan = null;
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.exchangeCraft.cancelRequest('H16_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try { runtime.exchangeCraft.resetSafety('H16_LIVE_TEST_CLEANUP'); } catch (_) {}
+          if (previousPolicy) {
+            try { runtime.exchangeCraft.policy(previousPolicy); } catch (_) {}
+          }
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Niedrig riskante Craft-/Exchange-Sequenz und Live-APIs prüfen',
+            timeoutMs: 6000,
+            run: async ({ runtime, assert }) => {
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(game.character.rip !== true, 'CHARACTER_DEAD');
+              const module = runtime.modules.describe('exchange-craft');
+              assert(module && module.state === 'ACTIVE', 'H16_MODULE_NOT_ACTIVE');
+              assert(runtime.actions.available('auto_craft'), 'AUTO_CRAFT_API_UNAVAILABLE');
+              assert(runtime.actions.available('exchange'), 'EXCHANGE_API_UNAVAILABLE');
+
+              const plan = runtime.exchangeCraft.plan();
+              assert(plan && plan.state === 'READY', plan && plan.reason || 'H16_PLAN_UNAVAILABLE');
+              const crafts = (plan.craftCandidates || []).filter(row =>
+                row.safe === true
+                && row.questEvent !== true
+                && Number(row.cost || 0) <= 10000
+                && Number(row.inputValueAtRisk || 0) <= 20000);
+              const exchanges = (plan.exchangeCandidates || []).filter(row =>
+                row.safe === true
+                && row.questEvent !== true
+                && Number(row.valueAtRisk || 0) <= 20000);
+
+              let selectedCraft = null;
+              let selectedExchange = null;
+              let mode = null;
+
+              for (const craft of crafts) {
+                const outputDef = craft.definition || runtime.game.itemDefinition(craft.itemName);
+                const required = outputDef && Number(outputDef.e);
+                if (!Number.isFinite(required) || required <= 0 || outputDef.quest === true || outputDef.cash === true) continue;
+                const existing = inventoryQuantity(runtime, craft.itemName, 0);
+                if (existing + 1 < required) continue;
+                selectedCraft = craft;
+                selectedExchange = {
+                  itemName: craft.itemName,
+                  level: 0,
+                  requiredQuantity: required,
+                  afterCraft: true
+                };
+                mode = 'CRAFT_TO_EXCHANGE_CHAIN';
+                break;
+              }
+
+              if (!selectedCraft) {
+                for (const craft of crafts) {
+                  const sourceSlots = new Set((craft.sources || []).map(row => Number(row.slot)));
+                  const exchange = exchanges.find(row => !sourceSlots.has(Number(row.inventorySlot)));
+                  if (!exchange) continue;
+                  selectedCraft = craft;
+                  selectedExchange = {
+                    itemName: exchange.itemName,
+                    level: exchange.level,
+                    requiredQuantity: exchange.requiredQuantity,
+                    inventorySlot: exchange.inventorySlot,
+                    fingerprint: exchange.fingerprint,
+                    valueAtRisk: exchange.valueAtRisk,
+                    afterCraft: false
+                  };
+                  mode = 'CRAFT_AND_EXCHANGE_COVERAGE';
+                  break;
+                }
+              }
+
+              assert(selectedCraft && selectedExchange,
+                'H16_NEEDS_LOW_RISK_CRAFT_AND_EXCHANGE_CANDIDATES');
+
+              testPlan = {
+                mode,
+                craft: {
+                  itemName: selectedCraft.itemName,
+                  cost: selectedCraft.cost,
+                  inputValueAtRisk: selectedCraft.inputValueAtRisk,
+                  sources: selectedCraft.sources
+                },
+                exchange: selectedExchange
+              };
+
+              return {
+                character: game.character.name,
+                ctype: game.character.ctype,
+                mode,
+                craft: testPlan.craft,
+                exchange: testPlan.exchange,
+                safeCraftCandidates: crafts.length,
+                safeExchangeCandidates: exchanges.length
+              };
+            }
+          },
+          {
+            id: 'planning',
+            title: 'Produktionsgraph, Budgets und lokale Materialdeckung prüfen',
+            timeoutMs: 6000,
+            run: async ({ runtime, assert }) => {
+              assert(testPlan, 'H16_LIVE_TEST_PLAN_MISSING');
+              const production = runtime.exchangeCraft.productionPlan(testPlan.craft.itemName, 1, { includeBank: false });
+              assert(production && production.state === 'READY',
+                production && production.reason || 'H16_LIVE_PRODUCTION_NOT_READY');
+              assert((production.missing || []).length === 0, 'H16_LIVE_PRODUCTION_HAS_MISSING_MATERIALS');
+              assert((production.protectedRecipes || []).length === 0, 'H16_LIVE_PRODUCTION_HAS_PROTECTED_RECIPE');
+              const policy = runtime.exchangeCraft.policy();
+              assert(policy.maxAttemptsPerSession === 2, 'H16_LIVE_ATTEMPT_BUDGET_NOT_TWO');
+              assert(policy.allowQuestEvent === false, 'H16_LIVE_QUEST_EVENT_MUST_BE_DISABLED');
+              return {
+                mode: testPlan.mode,
+                production,
+                policy
+              };
+            }
+          },
+          {
+            id: 'craft',
+            title: 'Eine echte niedrig riskante Craft-Aktion ausführen und bestätigen',
+            timeoutMs: 90000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(testPlan, 'H16_LIVE_TEST_PLAN_MISSING');
+              const queued = runtime.exchangeCraft.queueCraft(testPlan.craft.itemName);
+              assert(queued && queued.accepted === true, queued && queued.reason || 'H16_CRAFT_QUEUE_FAILED');
+
+              const status = await waitFor(() => {
+                const tick = runtime.exchangeCraft.tick();
+                const current = runtime.exchangeCraft.status();
+                if (current.suspended) throw new Error(current.suspendedReason || 'H16_SUSPENDED');
+                if (current.metrics.craftsUnknown > baseline.craftsUnknown) throw new Error('H16_CRAFT_UNKNOWN');
+                return current.metrics.craftsConfirmed > baseline.craftsConfirmed ? current : null;
+              }, { timeoutMs: 85000, pollMs: 150, label: 'h16-craft-confirmed' });
+
+              return {
+                itemName: testPlan.craft.itemName,
+                craftsDispatched: status.metrics.craftsDispatched - baseline.craftsDispatched,
+                craftsConfirmed: status.metrics.craftsConfirmed - baseline.craftsConfirmed,
+                evidence: status.lastAction && status.lastAction.evidence || null
+              };
+            }
+          },
+          {
+            id: 'exchange',
+            title: 'Eine echte niedrig riskante Exchange-Aktion ausführen und bestätigen',
+            timeoutMs: 90000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(testPlan, 'H16_LIVE_TEST_PLAN_MISSING');
+              const candidates = runtime.exchangeCraft.exchangeCandidates();
+              const selected = candidates.find(row =>
+                row.safe === true
+                && row.questEvent !== true
+                && String(row.itemName) === String(testPlan.exchange.itemName)
+                && Math.max(0, Number(row.level) || 0) === Math.max(0, Number(testPlan.exchange.level) || 0));
+              assert(selected, testPlan.mode === 'CRAFT_TO_EXCHANGE_CHAIN'
+                ? 'H16_CRAFT_OUTPUT_NOT_EXCHANGE_READY'
+                : 'H16_EXCHANGE_CANDIDATE_CHANGED');
+
+              const queued = runtime.exchangeCraft.queueExchange(selected.inventorySlot);
+              assert(queued && queued.accepted === true, queued && queued.reason || 'H16_EXCHANGE_QUEUE_FAILED');
+
+              const status = await waitFor(() => {
+                runtime.exchangeCraft.tick();
+                const current = runtime.exchangeCraft.status();
+                if (current.suspended) throw new Error(current.suspendedReason || 'H16_SUSPENDED');
+                if (current.metrics.exchangesUnknown > baseline.exchangesUnknown) throw new Error('H16_EXCHANGE_UNKNOWN');
+                return current.metrics.exchangesConfirmed > baseline.exchangesConfirmed ? current : null;
+              }, { timeoutMs: 85000, pollMs: 150, label: 'h16-exchange-confirmed' });
+
+              return {
+                itemName: selected.itemName,
+                requiredQuantity: selected.requiredQuantity,
+                valueAtRisk: selected.valueAtRisk,
+                exchangesDispatched: status.metrics.exchangesDispatched - baseline.exchangesDispatched,
+                exchangesConfirmed: status.metrics.exchangesConfirmed - baseline.exchangesConfirmed,
+                evidence: status.lastAction && status.lastAction.evidence || null
+              };
+            }
+          },
+          {
+            id: 'stability',
+            title: 'Fünf Sekunden ohne UNKNOWN, Retry oder Suspension beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              await sleep(5000);
+              const status = runtime.exchangeCraft.status();
+              assert(status.suspended === false, status.suspendedReason || 'H16_SUSPENDED');
+              assert(status.metrics.exchangesUnknown === baseline.exchangesUnknown, 'H16_EXCHANGE_UNKNOWN_DURING_STABILITY');
+              assert(status.metrics.craftsUnknown === baseline.craftsUnknown, 'H16_CRAFT_UNKNOWN_DURING_STABILITY');
+              assert(status.attemptsThisSession === 2, 'H16_LIVE_ATTEMPT_COUNT_NOT_TWO');
+              assert(status.pending == null, 'H16_PENDING_REMAINS_DURING_STABILITY');
+              assert(status.request == null, 'H16_REQUEST_REMAINS_DURING_STABILITY');
+              return {
+                attempts: status.attemptsThisSession,
+                exchangeUnknown: status.metrics.exchangesUnknown - baseline.exchangesUnknown,
+                craftUnknown: status.metrics.craftsUnknown - baseline.craftsUnknown,
+                suspended: status.suspended
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'H16 Request/Pending freigeben und Test-Policy zurücksetzen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.exchangeCraft.cancelRequest('H16_LIVE_TEST_COMPLETE');
+              const status = runtime.exchangeCraft.status();
+              assert(status.pending == null, 'H16_PENDING_REMAINS');
+              assert(status.request == null, 'H16_REQUEST_REMAINS');
+              return {
+                pending: !!status.pending,
+                request: !!status.request,
+                mode: testPlan && testPlan.mode || null
               };
             }
           }
