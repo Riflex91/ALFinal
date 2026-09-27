@@ -50,7 +50,7 @@
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.16.0-h16',
+    version: '0.17.0-h17',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -258,6 +258,17 @@
       acquire: (itemName, quantity, options) => runtime.exchangeCraft.queueMaterialAcquire(itemName, quantity, options || {})
     },
 
+    economy: {
+      status: () => runtime.economy.status(),
+      plan: () => runtime.economy.plan(),
+      tick: () => runtime.economy.tick(),
+      policy: value => runtime.economy.policy(value),
+      start: options => runtime.economy.startAutonomy(options || {}),
+      stop: reason => runtime.economy.stopAutonomy(reason || 'API_H17_AUTONOMY_STOP'),
+      reset: reason => runtime.economy.resetSafety(reason || 'API_H17_RESET'),
+      queueSelected: () => runtime.economy.queueSelected()
+    },
+
     liveTests: {
       status: () => runtime.liveTests.status(),
       list: () => runtime.liveTests.list(),
@@ -331,7 +342,7 @@
     };
   } catch (_) {}
 
-  runtime.logger.info('AL Bot H16 geladen', {
+  runtime.logger.info('AL Bot H17 geladen', {
     version: api.version,
     bootCount,
     hotReload: !!previous,
