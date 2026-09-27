@@ -300,6 +300,16 @@ test('H14 Gear Goals distinguish local equip, remote delivery and acquisition ga
   assert.equal(goals.find(row => row.id === 'missing').state, 'NEEDS_ACQUISITION');
 });
 
+test('H14 locked gift giveaway or expiring gear is excluded from automated equip planning', () => {
+  const f = fixture();
+  const plan = f.controller.plan();
+  const gloves = plan.local.slots.find(row => row.slot === 'gloves');
+  assert.equal(gloves.bestInventory.item.name, 'gloves_new');
+  assert.equal(f.controller.queueEquip(2, 'gloves').accepted, false);
+  assert.equal(f.controller.queueEquip(2, 'gloves').reason, 'H14_EQUIP_ITEM_NOT_AUTOMATION_SAFE');
+  assert.equal(f.state.dispatches.length, 0);
+});
+
 test('H14 two-hand candidate is fail-closed when it would displace an offhand', () => {
   const f = fixture({ ctype: 'warrior', localName: 'My_Warrior' });
   const result = f.controller.queueEquip(1, 'mainhand');
