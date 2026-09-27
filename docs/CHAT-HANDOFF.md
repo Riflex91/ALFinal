@@ -1057,3 +1057,78 @@ Ab jetzt ist der nächste Entwicklungsblock **H17 – Economy Autonomy**:
 - Writes ausschließlich über bestehende sichere Modulpfade/ActionBoundary;
 - Supabase weiterhin nur READ-ONLY;
 - Codex-Review ist nicht mehr verpflichtendes Merge-Gate.
+
+## H17 – Economy Autonomy technischer Gate-Stand
+
+Stand 2026-09-27, PR #22 `H17: Add bounded economy autonomy planner`.
+
+H17 baut auf dem vollständig live bestandenen H16 auf und führt einen gemeinsamen Economy-Planner ein.
+
+### Implementierter Scope
+
+- Planner für Bank Mount/Deposit, Market/NPC Sell, Gear Equip, Upgrade, Compound, Exchange und Craft;
+- H17 selbst dispatcht keine Adventure-Land-Aktion direkt;
+- alle Mutationen laufen über vorhandene H12–H16-Controller und deren ActionBoundary-/UNKNOWN-/Movement-/Budget-Safety;
+- Autonomie nach Modulstart standardmäßig AUS;
+- genau eine aktive delegierte Child-Aktion;
+- deterministische Prioritäten und Conflict Gates;
+- Inventory `pendingLoot` blockiert Economy;
+- Combat und fremde Movement-Ownership blockieren Economy;
+- Child-Suspension blockiert Economy;
+- UNKNOWN suspendiert H17 und wird nicht blind wiederholt;
+- bekannte terminale Child-Zustände `BLOCKED/REJECTED/FAILED/CANCELLED` werden als Reject abgeschlossen;
+- CONFIRMED/REJECTED beendet den aktuellen Scheduler-Tick;
+- bekannte Queue-Rejects erhalten proposal-spezifischen Backoff;
+- Session-Budget begrenzt autonome Aktionen;
+- manuelles `queueSelected()` ist bei gestopptem Economy-Modul blockiert.
+
+### Oberflächen
+
+- Runtime-Modul `economy`, Version `0.17.0`;
+- Runtime/Bundle `0.17.0-h17`;
+- Headless API `ALBot.economy`;
+- eigener Economy-Tab im Control Center;
+- Live-Suite `h17-economy-autonomy` Version 1.
+
+### Bounded Live-Gate
+
+Der erste echte H17-Live-Test erlaubt maximal drei Aktionen. Gear Equip, Upgrade und Compound sind in diesem Live-Gate deaktiviert; erlaubt bleiben Bank Mount/Deposit, Market/NPC Sell, Exchange und Craft.
+
+Schritte:
+
+1. `preflight`
+2. `bounded-autonomy` – 30 Sekunden, max. 3 Aktionen
+3. `stability` – 10 Sekunden ohne neue Aktion/UNKNOWN
+4. `cleanup`
+
+### Technischer Evidence-Stand
+
+Technischer Head vor finalen Dokucommits:
+
+`4f8c6fb3733dcf83006611242c74a4ebbc813a99`
+
+CI #465:
+
+- 237 tests
+- 237 pass
+- 0 fail
+- 0 cancelled
+- 0 skipped
+- 0 todo
+
+Weitere Gates:
+
+- `behind_by=0` beim technischen Check;
+- PR #22 `mergeable=true`;
+- vier konkrete Review-Funde behoben;
+- alle vier Review-Threads resolved;
+- kein `CHANGES_REQUESTED`;
+- Bundle source-synchron;
+- historische Runtime-Version-, Package-Version-, Recommended-Suite- und Scheduler-Resource-Erwartungen auf H17 fortgeschrieben;
+- Codex-Review nicht verpflichtend gemäß aktueller Projektregel.
+
+### Nächster Schritt
+
+Finalen Doku-Head durch Exact-Head-CI laufen lassen und den vollständigen Merge-Gate frisch prüfen. Wenn alles grün bleibt, PR #22 ausschließlich per `merge` mit exaktem aktuellem `expected_head_sha` mergen und `main` verifizieren.
+
+Danach Nutzer genau einmal `h17-economy-autonomy` auf dem Merchant starten lassen und den vollständigen Bericht auswerten. Bei FAIL kein Blind-Rerun.
