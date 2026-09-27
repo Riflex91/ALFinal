@@ -117,7 +117,7 @@ test('H4 exposes bounded movement API and action boundary', async () => {
   assert.equal(status.movement.state, 'IDLE');
   assert.equal(status.actions.availability.move, true);
   assert.equal(status.actions.availability.smart_move, true);
-  assert.equal(ctx.ALBot.scheduler.status().totalResources, 12);
+  assert.equal(ctx.ALBot.scheduler.status().totalResources, 13);
   await ctx.ALBot.stop('DONE');
 });
 
@@ -135,7 +135,7 @@ test('local movement completes only from observed position and leaks no observer
   assert.equal(movement.lastOrder.state, 'COMPLETED');
   assert.equal(movement.lastOrder.reason, 'ARRIVAL_VERIFIED');
   assert.equal(ctx.ALBot.scheduler.owner('module:movement').resources.length, 0);
-  assert.equal(ctx.ALBot.scheduler.status().totalResources, 12);
+  assert.equal(ctx.ALBot.scheduler.status().totalResources, 13);
 
   await ctx.ALBot.stop('DONE');
 });
