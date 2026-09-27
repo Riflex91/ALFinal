@@ -518,7 +518,15 @@ test('H16 runtime, API, UI, build, adapter and ActionBoundary are wired', () => 
   assert.match(runtime, /maxExchangeValueAtRisk: 2000000/);
   assert.match(runtime, /maxCraftGoldCost: 1000000/);
   assert.match(runtime, /maxCraftInputValueAtRisk: 2000000/);
-  assert.match(runtime, /version: '4'/);
+  assert.match(runtime, /version: '5'/);
+  assert.match(runtime, /localCraftRejects/);
+  assert.match(runtime, /fallbackRejects/);
+  assert.match(runtime, /topNearMatches: nearMatches\.slice\(0, 5\)/);
+  assert.match(runtime, /note\(preflightDiagnostics\)/);
+  assert.match(runtime, /TOO_MANY_MISSING_LEAVES/);
+  assert.match(runtime, /MISSING_LEAF_NO_NPC_OR_MARKET_SOURCE/);
+  assert.match(runtime, /MATERIAL_ACQUISITION_OVER_CAP/);
+  assert.match(runtime, /GOLD_RESERVE_AFTER_ACQUISITION_AND_CRAFT/);
   assert.match(runtime, /acquisitionGold > 1000000/);
   assert.match(runtime, /materialAcquisitionGold <= 1000000/);
   assert.match(runtime, /outputRisk == null \|\| outputRisk > 2000000/);
