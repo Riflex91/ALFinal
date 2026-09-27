@@ -218,6 +218,7 @@
 
     _childRows() {
       return [
+        { name: 'inventory', controller: this.inventory },
         { name: 'merchant', controller: this.merchant },
         { name: 'bank', controller: this.bank },
         { name: 'trade', controller: this.trade },
@@ -234,7 +235,7 @@
     }
 
     _childBusy(child) {
-      return !!(child && (child.pending || child.request || child.delivery));
+      return !!(child && (child.pending || child.request || child.delivery || child.pendingLoot));
     }
 
     _proposal(kind, module, details = {}) {
@@ -568,6 +569,7 @@
     }
 
     queueSelected() {
+      if (!this.moduleActive) return { accepted: false, reason: 'H17_MODULE_NOT_ACTIVE' };
       if (this.suspendedReason) return { accepted: false, reason: this.suspendedReason };
       if (this.currentAction) return { accepted: false, reason: 'H17_ACTION_ACTIVE' };
       if (this.canAct && this.canAct('economy') !== true) return { accepted: false, reason: 'H17_RUNTIME_ACTION_BLOCKED' };
@@ -625,7 +627,7 @@
         if (type.includes('CONFIRMED') || type.includes('SUCCEEDED') || type === 'BANK_ALREADY_MOUNTED' || type === 'BANK_MOUNTED') {
           return { state: 'CONFIRMED', result: this._finishCurrent('CONFIRMED', { childLastAction: clone(child.lastAction) }) };
         }
-        if (type.includes('REJECTED') || type.includes('FAILED') || type.includes('CANCELLED')) {
+        if (type.includes('REJECTED') || type.includes('FAILED') || type.includes('CANCELLED') || type.includes('BLOCKED')) {
           return { state: 'REJECTED', result: this._finishCurrent('REJECTED', { childLastAction: clone(child.lastAction) }) };
         }
       }
@@ -645,7 +647,7 @@
 
       if (this.currentAction) {
         const observed = this._observeCurrent();
-        if (observed.state === 'WAITING' || observed.state === 'SUSPENDED') return observed;
+        if (observed.state !== 'IDLE') return observed;
       }
 
       const plan = this.plan();
