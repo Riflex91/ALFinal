@@ -464,22 +464,54 @@ H13 basiert nach bestandenem und gemergtem H12 direkt auf dem aktuellen `main`.
 - Post-Live Hardening: globaler Spread nur bei gleichem Item+Level; Goldreserve vor Buy-Dispatch erneut geprüft; NPC-/Market-Sell-Safety und exakte Bid-Variante unmittelbar vor Dispatch erneut geprüft
 - finale Evidence in `docs/H13-LIVE-TEST.md`
 
-Vor Merge: neuen Exact-Head-CI und vollständigen Merge-Gate erneut prüfen.
+H13 wurde nach bestandenem Live-Test, Post-Live-Hardening und sauberem Exact-Head-Gate als PR #14 gemergt.
+Merge-Commit: `5238d4af8bfb99e6f6fe04d13029b80f77a9f420`.
 ---
 
 ## H14 – Gear
 
-**🟦 BAU**
-- beste Ausrüstung pro Charakter
-- Gruppenprioritäten
-- Gear Goals
-- Farmer vor Merchant
-- Swaps
-- Replacement-/Upgrade-Planung
+**🟦 IMPLEMENTIERT · PRE-LIVE TESTS GRÜN · FINALER EXACT-HEAD-CI LÄUFT/NOCH OFFEN**
 
-**🟧 LIVE-TEST**
-- Bot erkennt bessere Ausrüstung
-- verteilt/switcht Gear korrekt
+**BAU**
+- Live-Equipment-Snapshot aus Character-/Player-Slots
+- Equipment-Definitionen und Klassenprofile aus Live-`G`
+- klassenabhängiges Gear-Ranking
+- sichere lokale Equip-/Unequip-Swaps via ActionBoundary
+- Zielslot-Revalidation unmittelbar vor Equip
+- Combat-Block
+- Zwei-Hand-/Offhand-Konflikte fail-closed
+- locked/gift/giveaway/expiring Gear aus Automation ausgeschlossen
+- Farmer-vor-Merchant-Gruppenpriorität
+- Merchant-only Remote-Proposals mit transfer-sicherem Gear
+- Gear Goals: `ACHIEVED`, `READY_TO_EQUIP`, `READY_TO_DELIVER`, `NEEDS_ACQUISITION`
+- explizite Merchant→eigener-Farmer-Gear-Delivery
+- Replacement-Planung
+- Upgrade-/Compound-Kandidaten read-only für H15
+- beobachtete Equipment-/Inventar-Deltas als Bestätigung
+- bounded UNKNOWN + Suspension, kein Blind-Retry
+- Headless API `ALBot.gear.*`
+- Control-Center-Tab **Gear**
+- H14-Ein-Klick-Suite `h14-gear`
+- `docs/H14-LIVE-TEST.md`
+
+**🟩 PRE-LIVE TESTS**
+- Run #276: 179 Tests, 178 PASS, 1 echter Safety-Fund
+- Fund behoben: locked Gear wird nicht mehr automatisch geplant/ausgerüstet
+- Run #279: `npm test` 180/180 PASS, 0 FAIL, 0 SKIP
+- Workflow #279 wurde nach erfolgreichem Testjob von GitHub als `cancelled` markiert und zählt deshalb nicht als finaler Gate-Lauf
+- `dist/al-bot.js` source-synchron auf `0.14.0-h14`
+
+**🟧 LIVE-TEST NOCH AUSSTEHEND**
+- reversibler echter Gear-Swap
+- bevorzugt echte Verbesserung; sonst kompatibler Roundtrip-Kandidat
+- Kandidat ausrüsten und Live-Deltas bestätigen
+- ursprüngliches Gear exakt zurückrüsten
+- Gear Goal und Farmer-vor-Merchant-Planung prüfen
+- 5-Sekunden-Stabilität ohne H14-UNKNOWN
+- Cleanup + Auto-Restore
+- Nutzer klickt nur **Test starten**
+
+H14 wird erst nach `completed/success` Exact-Head-CI, sauberem Review-Gate und echtem Adventure-Land-Live-PASS gemergt.
 
 ---
 
