@@ -474,3 +474,22 @@ Technischer Stand vor der finalen Evidence-Doku:
 Ein weiterer frischer Codex-Review auf dem technischen Head `c96b01d5...` konnte nicht ausgeführt werden, weil der GitHub-Codex-Connector ausdrücklich **„reached your Codex usage limits for code reviews“** meldete.
 
 Daher bleibt PR #20 trotz grünem CI **ungeMerged**, bis ein frischer Codex-Review auf dem dann aktuellen finalen Head wieder möglich und clean ist. Dieser Quota-Blocker wird nicht durch einen manuellen Merge umgangen.
+
+### Gate-Policy-Update
+
+Ab 2026-09-27 ist ein frischer Codex-Code-Review **keine verpflichtende Merge-Voraussetzung mehr** für PR #20.
+
+Diese Entscheidung ersetzt ausschließlich den zuvor dokumentierten externen Codex-Quota-Blocker. Die übrigen Gates bleiben unverändert verpflichtend:
+
+- exakter aktueller Head;
+- `behind_by=0`;
+- alle relevanten CI-Runs abgeschlossen;
+- nur `success/skipped/neutral`;
+- keine pending/failing Checks;
+- keine offenen Review-Threads;
+- kein `CHANGES_REQUESTED`;
+- `mergeable=true`;
+- Merge nur mit Methode `merge` und exaktem `expected_head_sha`;
+- anschließende Verifikation von `main`.
+
+Die historische Codex-Evidence oben bleibt unverändert erhalten und wird nicht rückwirkend umgeschrieben.
