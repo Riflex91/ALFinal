@@ -70,6 +70,7 @@ function fixture(options = {}) {
   const movement = {
     status: () => clone(state.movement),
     smartMove: (destination, opts) => {
+      if (options.movementReject) return { accepted: false, reason: 'TEST_MOVEMENT_REJECTED' };
       const order = {
         id: 'move-' + (++state.movementSequence),
         owner: opts && opts.owner,
@@ -126,8 +127,17 @@ function fixture(options = {}) {
   ctx.globalThis = ctx;
   vm.runInNewContext(source, ctx, { filename: 'party-logistics.js' });
   const Controller = ctx.__ALBOT_INTERNALS__.PartyLogisticsController;
+  const statusController = value => ({ status: () => clone(value || {}) });
   const controller = new Controller({
     root: ctx, game, actions, party, movement, combat,
+    inventory: statusController(options.inventoryStatus),
+    merchant: statusController(options.merchantStatus),
+    bank: statusController(options.bankStatus),
+    trade: statusController(options.tradeStatus),
+    gear: statusController(options.gearStatus),
+    upgrade: statusController(options.upgradeStatus),
+    exchangeCraft: statusController(options.exchangeStatus),
+    economy: statusController(options.economyStatus),
     canAct: () => options.actionBlocked !== true,
     transferRange: options.transferRange == null ? 320 : options.transferRange,
     regroupDistance: options.regroupDistance == null ? 700 : options.regroupDistance,
@@ -197,6 +207,51 @@ test('H18 retains supply ownership while the dispatch promise is still pending',
   assert.ok(controller.status().currentAction);
   assert.equal(controller.status().metrics.suppliesConfirmed, 0);
   assert.equal(state.inventory.find(row => row.name === 'hpot0').quantity, 95);
+});
+
+test('H18 confirms the exact sent slot when duplicate item stacks exist', async () => {
+  const { controller, state } = fixture({
+    inventory: [
+      { slot: 0, name: 'hpot0', quantity: 2, level: 0, locked: false, giveaway: false, gift: false, expiresAt: null, definition: { type: 'pot', quest: false, cash: false, upgrade: false, compound: false } },
+      { slot: 1, name: 'hpot0', quantity: 50, level: 0, locked: false, giveaway: false, gift: false, expiresAt: null, definition: { type: 'pot', quest: false, cash: false, upgrade: false, compound: false } }
+    ]
+  });
+  assert.equal(controller.queueSupply('My_Priest', 'hpot0', 2).accepted, true);
+  controller.startAutonomy({ maxActions: 1 });
+  assert.equal(controller.tick().state, 'QUEUED');
+  assert.deepEqual(state.dispatches[0].args, ['My_Priest', 0, 2]);
+  await Promise.resolve();
+  assert.equal(controller.tick().state, 'CONFIRMED');
+  assert.equal(controller.status().metrics.suppliesConfirmed, 1);
+  assert.equal(state.inventory.some(row => Number(row.slot) === 0), false);
+  assert.equal(state.inventory.find(row => Number(row.slot) === 1).quantity, 50);
+});
+
+test('H18 keeps an explicit supply request when approach movement is rejected', () => {
+  const { controller, state } = fixture({ targetX: 1200, transferRange: 300, movementReject: true });
+  controller.queueSupply('My_Priest', 'hpot0', 2);
+  controller.startAutonomy({ maxActions: 1 });
+  const result = controller.tick();
+  assert.equal(result.state, 'REJECTED');
+  assert.equal(result.reason, 'TEST_MOVEMENT_REJECTED');
+  assert.equal(controller.status().queue.length, 1);
+  assert.equal(state.dispatches.length, 0);
+});
+
+test('H18 blocks while another inventory or economy owner is active', () => {
+  const loot = fixture({ inventoryStatus: { pendingLoot: { id: 'loot-1' } } });
+  loot.controller.startAutonomy();
+  const lootTick = loot.controller.tick();
+  assert.equal(lootTick.state, 'WAITING');
+  assert.equal(lootTick.reason, 'H18_EXTERNAL_OWNERSHIP_BUSY');
+  assert.equal(loot.state.dispatches.length, 0);
+
+  const economy = fixture({ economyStatus: { autonomyEnabled: true, currentAction: null } });
+  economy.controller.startAutonomy();
+  const economyTick = economy.controller.tick();
+  assert.equal(economyTick.state, 'WAITING');
+  assert.equal(economyTick.reason, 'H18_EXTERNAL_OWNERSHIP_BUSY');
+  assert.equal(economy.state.dispatches.length, 0);
 });
 
 test('H18 sends gold only above the configured reserve and confirms sender gold delta', async () => {
@@ -305,6 +360,9 @@ test('H18 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(entry, /Object\.freeze\(api\.partyLogistics\)/);
   assert.match(ui, /H18 Party Logistics/);
   assert.match(boundary, /send_gold: Object\.freeze/);
+  assert.match(fs.readFileSync(path.resolve(here, '../src/inventory.js'), 'utf8'), /H10_PARTY_LOGISTICS_OWNERSHIP/);
+  assert.match(fs.readFileSync(path.resolve(here, '../src/merchant.js'), 'utf8'), /H11_PARTY_LOGISTICS_OWNERSHIP/);
+  assert.match(fs.readFileSync(path.resolve(here, '../src/economy.js'), 'utf8'), /partyLogistics/);
   assert.match(build, /src\/party-logistics\.js/);
   assert.match(build, /AL Bot 0\.18\.0-h18/);
   assert.match(dist, /AL Bot 0\.18\.0-h18/);
