@@ -352,6 +352,26 @@
       return null;
     }
 
+    queueMount() {
+      if (this.suspendedReason) return { accepted: false, reason: this.suspendedReason };
+      if (this.request || this.pending) return { accepted: false, reason: 'H12_BUSY' };
+      if (!this._localMerchant()) return { accepted: false, reason: 'H12_REQUIRES_LIVE_MERCHANT' };
+      const bank = this._bankSnapshot();
+      if (bank && bank.available !== false) {
+        this.lastAction = { at: nowIso(), type: 'BANK_ALREADY_MOUNTED', map: bank.map || null };
+        return { accepted: true, state: 'READY', alreadyMounted: true, bank: clone(bank) };
+      }
+      this.request = {
+        id: 'bank-request-' + (++this.sequence),
+        kind: 'MOUNT',
+        travelRequested: false,
+        bankTravelStartedAtMs: null,
+        createdAt: nowIso()
+      };
+      this.lastAction = { at: nowIso(), type: 'MOUNT_QUEUED' };
+      return { accepted: true, request: clone(this.request) };
+    }
+
     queueDeposit(itemName, options = {}) {
       if (this.suspendedReason) return { accepted: false, reason: this.suspendedReason };
       if (this.request || this.pending) return { accepted: false, reason: 'H12_BUSY' };
@@ -678,6 +698,26 @@
       if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason };
       if (!mounted || mounted.ready !== true) return { state: 'WAITING_BANK', reason: mounted && mounted.reason || 'H12_BANK_TRAVEL' };
       const bank = mounted.bank;
+      if (request.kind === 'MOUNT') {
+        this.request = null;
+        this.lastAction = {
+          at: nowIso(),
+          type: 'BANK_MOUNTED',
+          map: bank.map || null,
+          packs: (bank.packs || []).length,
+          usedSlots: Number(bank.usedSlots || 0)
+        };
+        return {
+          state: 'READY',
+          reason: 'H12_BANK_READY',
+          bank: {
+            map: bank.map || null,
+            packs: (bank.packs || []).length,
+            usedSlots: Number(bank.usedSlots || 0),
+            freeSlots: Number(bank.freeSlots || 0)
+          }
+        };
+      }
       const inventory = this._inventorySnapshot();
       if (!inventory || inventory.available === false) {
         return { state: 'BLOCKED', reason: 'H12_INVENTORY_UNAVAILABLE' };

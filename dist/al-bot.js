@@ -8527,6 +8527,26 @@
       return null;
     }
 
+    queueMount() {
+      if (this.suspendedReason) return { accepted: false, reason: this.suspendedReason };
+      if (this.request || this.pending) return { accepted: false, reason: 'H12_BUSY' };
+      if (!this._localMerchant()) return { accepted: false, reason: 'H12_REQUIRES_LIVE_MERCHANT' };
+      const bank = this._bankSnapshot();
+      if (bank && bank.available !== false) {
+        this.lastAction = { at: nowIso(), type: 'BANK_ALREADY_MOUNTED', map: bank.map || null };
+        return { accepted: true, state: 'READY', alreadyMounted: true, bank: clone(bank) };
+      }
+      this.request = {
+        id: 'bank-request-' + (++this.sequence),
+        kind: 'MOUNT',
+        travelRequested: false,
+        bankTravelStartedAtMs: null,
+        createdAt: nowIso()
+      };
+      this.lastAction = { at: nowIso(), type: 'MOUNT_QUEUED' };
+      return { accepted: true, request: clone(this.request) };
+    }
+
     queueDeposit(itemName, options = {}) {
       if (this.suspendedReason) return { accepted: false, reason: this.suspendedReason };
       if (this.request || this.pending) return { accepted: false, reason: 'H12_BUSY' };
@@ -8853,6 +8873,26 @@
       if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason };
       if (!mounted || mounted.ready !== true) return { state: 'WAITING_BANK', reason: mounted && mounted.reason || 'H12_BANK_TRAVEL' };
       const bank = mounted.bank;
+      if (request.kind === 'MOUNT') {
+        this.request = null;
+        this.lastAction = {
+          at: nowIso(),
+          type: 'BANK_MOUNTED',
+          map: bank.map || null,
+          packs: (bank.packs || []).length,
+          usedSlots: Number(bank.usedSlots || 0)
+        };
+        return {
+          state: 'READY',
+          reason: 'H12_BANK_READY',
+          bank: {
+            map: bank.map || null,
+            packs: (bank.packs || []).length,
+            usedSlots: Number(bank.usedSlots || 0),
+            freeSlots: Number(bank.freeSlots || 0)
+          }
+        };
+      }
       const inventory = this._inventorySnapshot();
       if (!inventory || inventory.available === false) {
         return { state: 'BLOCKED', reason: 'H12_INVENTORY_UNAVAILABLE' };
@@ -11879,18 +11919,61 @@
       return map;
     }
 
-    _materialSource(name, level, quantity) {
+    _bankMaterialRows(name, level = 0) {
       const bank = this._bankSnapshot();
-      const bankRows = [];
-      if (bank && bank.available !== false) {
-        for (const pack of bank.packs || []) {
-          for (const row of pack.items || []) {
-            if (String(row.name) === String(name) && Math.max(0, Number(row.level) || 0) === Math.max(0, Number(level) || 0)) {
-              bankRows.push({ pack: pack.name, slot: row.slot, quantity: Math.max(1, Number(row.quantity) || 1) });
-            }
-          }
+      if (!bank || bank.available === false) return [];
+      let reservations = {};
+      try {
+        const status = this.bank && typeof this.bank.status === 'function' ? this.bank.status() : null;
+        reservations = status && status.reservations && typeof status.reservations === 'object'
+          ? status.reservations
+          : {};
+      } catch (_) {}
+      const wantedLevel = Math.max(0, Number(level) || 0);
+      const rows = [];
+      for (const pack of bank.packs || []) {
+        for (const row of pack.items || []) {
+          if (String(row.name) !== String(name)
+              || Math.max(0, Number(row.level) || 0) !== wantedLevel) continue;
+          rows.push({
+            pack: pack.name,
+            map: pack.map || null,
+            slot: row.slot,
+            quantity: Math.max(1, Number(row.quantity) || 1),
+            fingerprint: this._fingerprint(row),
+            safe: this._safeItem(row),
+            locked: row.locked === true,
+            giveaway: row.giveaway === true,
+            gift: row.gift === true,
+            expiresAt: row.expiresAt == null ? null : row.expiresAt
+          });
         }
       }
+      const reservedQuantity = Math.max(0, Math.floor(Number(reservations[name]) || 0));
+      const totals = new Map();
+      for (const row of rows) {
+        const key = String(row.fingerprint || '');
+        totals.set(key, (totals.get(key) || 0) + row.quantity);
+      }
+      return rows.map(row => {
+        const fingerprintQuantity = totals.get(String(row.fingerprint || '')) || 0;
+        const remainingAfterWholeStack = Math.max(0, fingerprintQuantity - row.quantity);
+        const mountedMapMatch = !!(row.map && bank.map && String(row.map) === String(bank.map));
+        return {
+          ...row,
+          reservedQuantity,
+          fingerprintQuantity,
+          remainingAfterWholeStack,
+          mountedMapMatch,
+          withdrawable: row.safe === true
+            && mountedMapMatch
+            && remainingAfterWholeStack >= reservedQuantity
+        };
+      });
+    }
+
+    _materialSource(name, level, quantity) {
+      const bankRows = this._bankMaterialRows(name, level);
       let npcSources = [];
       try { npcSources = this.game && this.game.npcShopSources ? this.game.npcShopSources(name) || [] : []; } catch (_) {}
       let market = null;
@@ -12133,35 +12216,42 @@
       }
       const q = rawQuantity;
 
-      const bank = this._bankSnapshot();
       let lastRecoverableBankReject = null;
-      if (options.allowBank !== false && bank && bank.available !== false && this.bank && typeof this.bank.queueWithdraw === 'function') {
+      if (options.allowBank !== false && this.bank && typeof this.bank.queueWithdraw === 'function') {
         const recoverableBankReasons = new Set([
           'H12_WITHDRAW_WRONG_OR_UNKNOWN_BANK_MAP',
           'H12_BANK_RESERVATION_BLOCKED',
           'H12_WITHDRAW_ITEM_NOT_FOUND'
         ]);
-        for (const pack of bank.packs || []) {
-          const rows = (pack.items || []).filter(item =>
-            String(item.name) === name
-            && Math.max(0, Number(item.level) || 0) === Math.max(0, Number(options.level) || 0)
-            && Math.max(1, Number(item.quantity) || 1) >= q);
-          for (const row of rows) {
-            const result = this.bank.queueWithdraw(pack.name, row.slot);
-            if (result && result.accepted) {
-              this.metrics.materialDelegations += 1;
-              return { ...clone(result), delegatedTo: 'bank', source: { pack: pack.name, slot: row.slot } };
-            }
-            const reason = result && result.reason || 'H16_BANK_WITHDRAW_REJECTED';
-            if (!recoverableBankReasons.has(String(reason))) {
-              return { ...clone(result || { accepted: false, reason }), delegatedTo: 'bank', source: { pack: pack.name, slot: row.slot } };
-            }
-            lastRecoverableBankReject = {
-              ...clone(result || { accepted: false, reason }),
+        const minBankStackQuantity = Math.max(
+          q,
+          Math.floor(finite(options.minBankStackQuantity) == null ? q : finite(options.minBankStackQuantity))
+        );
+        const bankRows = this._bankMaterialRows(name, options.level || 0)
+          .filter(row => row.withdrawable === true && row.quantity >= minBankStackQuantity);
+        for (const row of bankRows) {
+          const result = this.bank.queueWithdraw(row.pack, row.slot);
+          if (result && result.accepted) {
+            this.metrics.materialDelegations += 1;
+            return {
+              ...clone(result),
               delegatedTo: 'bank',
-              source: { pack: pack.name, slot: row.slot }
+              source: { pack: row.pack, map: row.map || null, slot: row.slot }
             };
           }
+          const reason = result && result.reason || 'H16_BANK_WITHDRAW_REJECTED';
+          if (!recoverableBankReasons.has(String(reason))) {
+            return {
+              ...clone(result || { accepted: false, reason }),
+              delegatedTo: 'bank',
+              source: { pack: row.pack, map: row.map || null, slot: row.slot }
+            };
+          }
+          lastRecoverableBankReject = {
+            ...clone(result || { accepted: false, reason }),
+            delegatedTo: 'bank',
+            source: { pack: row.pack, map: row.map || null, slot: row.slot }
+          };
         }
       }
 
@@ -15665,6 +15755,23 @@
         return Number(metrics.npcBuysUnknown || 0) + Number(metrics.marketBuysUnknown || 0);
       };
 
+      const bankUnknownTotal = status => {
+        const metrics = status && status.metrics || {};
+        return Number(metrics.withdrawalsUnknown || 0)
+          + Number(metrics.depositsUnknown || 0)
+          + Number(metrics.goldWithdrawalsUnknown || 0)
+          + Number(metrics.goldDepositsUnknown || 0)
+          + Number(metrics.movementUnknown || 0);
+      };
+
+      const bankWriteTotal = status => {
+        const metrics = status && status.metrics || {};
+        return Number(metrics.withdrawalsDispatched || 0)
+          + Number(metrics.depositsDispatched || 0)
+          + Number(metrics.goldWithdrawalsDispatched || 0)
+          + Number(metrics.goldDepositsDispatched || 0);
+      };
+
       const recipeInputRisk = (runtime, recipe) => {
         let total = 0;
         for (const ingredient of recipe && recipe.items || []) {
@@ -15682,7 +15789,7 @@
         id: 'h16-exchange-craft',
         title: 'H16 – Exchange & Craft',
         description: 'Ein-Klick-Live-Test für Materialbeschaffung, eine kleine niedrig riskante Craft- und Exchange-Sequenz, Live-Outcome-Evidence und Produktionsgraph.',
-        version: '5',
+        version: '6',
         recommended: true,
         autoStartRuntime: true,
         restoreRuntimeState: true,
@@ -15690,6 +15797,7 @@
           try { runtime.exchangeCraft.resetSafety('H16_LIVE_TEST_RESET'); } catch (_) {}
           try { runtime.exchangeCraft.cancelRequest('H16_LIVE_TEST_RESET'); } catch (_) {}
           try { runtime.trade.cancelRequest('H16_LIVE_TEST_RESET'); } catch (_) {}
+          try { runtime.bank.cancelRequest('H16_LIVE_TEST_RESET'); } catch (_) {}
           previousPolicy = runtime.exchangeCraft.policy();
           runtime.exchangeCraft.policy({
             maxAttemptsPerSession: 2,
@@ -15702,6 +15810,7 @@
           });
           const metrics = runtime.exchangeCraft.status().metrics;
           const tradeStatus = runtime.trade.status();
+          const bankStatus = runtime.bank.status();
           baseline = {
             exchangesDispatched: metrics.exchangesDispatched,
             exchangesConfirmed: metrics.exchangesConfirmed,
@@ -15712,6 +15821,8 @@
             craftsRejected: metrics.craftsRejected,
             craftsUnknown: metrics.craftsUnknown,
             tradeUnknown: tradeUnknownTotal(tradeStatus),
+            bankUnknown: bankUnknownTotal(bankStatus),
+            bankWrites: bankWriteTotal(bankStatus),
             materialDelegations: metrics.materialDelegations
           };
           testPlan = null;
@@ -15719,6 +15830,7 @@
         cleanup: async ({ runtime }) => {
           try { runtime.exchangeCraft.cancelRequest('H16_LIVE_TEST_CLEANUP'); } catch (_) {}
           try { runtime.trade.cancelRequest('H16_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try { runtime.bank.cancelRequest('H16_LIVE_TEST_CLEANUP'); } catch (_) {}
           try {
             const current = runtime.exchangeCraft.status();
             if (!current.suspended) runtime.exchangeCraft.resetSafety('H16_LIVE_TEST_CLEANUP');
@@ -15728,6 +15840,68 @@
           }
         },
         steps: [
+          {
+            id: 'bank-discovery',
+            title: 'Bankbestand read-only sichtbar machen',
+            timeoutMs: 120000,
+            run: async ({ runtime, assert, waitFor }) => {
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(game.character.rip !== true, 'CHARACTER_DEAD');
+              if (String(game.character.ctype || '').toLowerCase() !== 'merchant') {
+                return {
+                  skipped: true,
+                  reason: 'H16_BANK_DISCOVERY_NOT_REQUIRED_FOR_NON_MERCHANT',
+                  ctype: game.character.ctype || null,
+                  movementRequests: 0
+                };
+              }
+
+              const beforeStatus = runtime.bank.status();
+              assert(beforeStatus && beforeStatus.suspended !== true,
+                beforeStatus && beforeStatus.suspendedReason || 'H12_SUSPENDED_BEFORE_H16_BANK_DISCOVERY');
+              const beforeWrites = bankWriteTotal(beforeStatus);
+              const beforeUnknown = bankUnknownTotal(beforeStatus);
+              const existing = runtime.game.bankSnapshot();
+              if (existing && existing.available !== false) {
+                assert(bankWriteTotal(runtime.bank.status()) === beforeWrites, 'H16_BANK_DISCOVERY_WRITE_DETECTED');
+                return {
+                  alreadyMounted: true,
+                  map: existing.map || null,
+                  packCount: (existing.packs || []).length,
+                  usedSlots: Number(existing.usedSlots || 0),
+                  movementRequests: 0
+                };
+              }
+
+              const movementBefore = Number(beforeStatus.metrics && beforeStatus.metrics.movementRequests || 0);
+              const queued = runtime.bank.queueMount();
+              assert(queued && queued.accepted === true,
+                queued && queued.reason || 'H16_BANK_DISCOVERY_QUEUE_FAILED');
+
+              const bank = await waitFor(() => {
+                const tick = runtime.bank.tick();
+                const current = runtime.bank.status();
+                if (current.suspended) throw new Error(current.suspendedReason || 'H12_SUSPENDED_DURING_H16_BANK_DISCOVERY');
+                if (bankUnknownTotal(current) > beforeUnknown) throw new Error('H16_BANK_DISCOVERY_UNKNOWN');
+                if (bankWriteTotal(current) !== beforeWrites) throw new Error('H16_BANK_DISCOVERY_WRITE_DETECTED');
+                const snapshot = runtime.game.bankSnapshot();
+                return snapshot && snapshot.available !== false && !current.pending && !current.request
+                  ? snapshot
+                  : null;
+              }, { timeoutMs: 110000, pollMs: 150, label: 'h16-bank-discovery' });
+
+              const afterStatus = runtime.bank.status();
+              assert(bankWriteTotal(afterStatus) === beforeWrites, 'H16_BANK_DISCOVERY_WRITE_DETECTED');
+              return {
+                alreadyMounted: false,
+                map: bank.map || null,
+                packCount: (bank.packs || []).length,
+                usedSlots: Number(bank.usedSlots || 0),
+                movementRequests: Number(afterStatus.metrics && afterStatus.metrics.movementRequests || 0) - movementBefore
+              };
+            }
+          },
           {
             id: 'preflight',
             title: 'Sicheren Craft-/Exchange-Pfad inklusive beschaffbarer Materialien prüfen',
@@ -15793,7 +15967,7 @@
                     - Number(b.craftCost == null ? Number.MAX_SAFE_INTEGER : b.craftCost)
                   || String(a.itemName || '').localeCompare(String(b.itemName || '')));
                 return {
-                  suiteVersion: 5,
+                  suiteVersion: 6,
                   selectedMode: mode,
                   totalCraftCandidates: (plan.craftCandidates || []).length,
                   safeCraftCandidates: crafts.length,
@@ -15980,6 +16154,11 @@
                   let viabilityReason = null;
                   let viabilityDetails = null;
                   let acquisitionGold = 0;
+                  const inventoryForAcquisition = runtime.game.inventorySnapshot();
+                  const availableInventorySlots = inventoryForAcquisition && inventoryForAcquisition.available !== false
+                    ? Math.max(0, Math.floor(Number(inventoryForAcquisition.freeSlots) || 0))
+                    : 0;
+                  let plannedBankWithdrawals = 0;
                   const plannedMaterials = [];
                   for (const row of missing) {
                     const quantity = Math.max(1, Math.floor(Number(row.quantity) || 1));
@@ -15992,6 +16171,33 @@
                     }
 
                     const offers = [];
+                    const recipeIngredientQuantity = (recipe.items || [])
+                      .filter(ingredient =>
+                        String(ingredient.name) === String(row.itemName)
+                        && Math.max(0, Number(ingredient.level) || 0) === level)
+                      .reduce((max, ingredient) =>
+                        Math.max(max, Math.max(1, Math.floor(Number(ingredient.quantity) || 1))), quantity);
+                    const minBankStackQuantity = Math.max(quantity, recipeIngredientQuantity);
+                    const bankSlotAvailable = plannedBankWithdrawals < availableInventorySlots;
+                    const bankRow = bankSlotAvailable
+                      ? (row.bankRows || []).find(source =>
+                        source
+                        && source.withdrawable === true
+                        && Math.max(1, Math.floor(Number(source.quantity) || 1)) >= minBankStackQuantity)
+                      : null;
+                    if (bankRow) {
+                      offers.push({
+                        source: 'BANK',
+                        unitPrice: 0,
+                        bankRow: {
+                          pack: bankRow.pack,
+                          map: bankRow.map,
+                          slot: bankRow.slot,
+                          quantity: bankRow.quantity
+                        }
+                      });
+                    }
+
                     const npcPrice = Number(row.npcPrice);
                     const npcAvailable = Number.isFinite(npcPrice) && npcPrice > 0
                       && (row.npcSources || []).some(source => source && source.location);
@@ -16008,11 +16214,26 @@
                     const chosen = offers[0];
                     if (!chosen) {
                       viable = false;
-                      viabilityReason = 'MISSING_LEAF_NO_NPC_OR_MARKET_SOURCE';
+                      viabilityReason = 'MISSING_LEAF_NO_BANK_NPC_OR_MARKET_SOURCE';
                       viabilityDetails = {
                         missingItemName: row.itemName,
                         level,
                         quantity,
+                        bankRows: (row.bankRows || []).slice(0, 4).map(source => ({
+                          pack: source.pack,
+                          map: source.map || null,
+                          slot: source.slot,
+                          quantity: source.quantity,
+                          safe: source.safe === true,
+                          mountedMapMatch: source.mountedMapMatch === true,
+                          reservedQuantity: Number(source.reservedQuantity || 0),
+                          remainingAfterWholeStack: Number(source.remainingAfterWholeStack || 0),
+                          withdrawable: source.withdrawable === true,
+                          minBankStackQuantity,
+                          availableInventorySlots,
+                          plannedBankWithdrawals,
+                          bankSlotAvailable
+                        })),
                         npcPrice: Number.isFinite(npcPrice) ? npcPrice : null,
                         npcSources: (row.npcSources || []).slice(0, 4).map(source => ({
                           npcId: source.npcId,
@@ -16025,12 +16246,16 @@
 
                     const estimatedCost = chosen.unitPrice * quantity;
                     acquisitionGold += estimatedCost;
+                    if (chosen.source === 'BANK') plannedBankWithdrawals += 1;
                     plannedMaterials.push({
                       itemName: row.itemName,
                       level,
                       quantity,
-                      maxUnitPrice: chosen.unitPrice,
+                      maxUnitPrice: chosen.source === 'BANK' ? null : chosen.unitPrice,
                       expectedSource: chosen.source,
+                      bankSource: chosen.bankRow || null,
+                      minBankStackQuantity: chosen.source === 'BANK' ? minBankStackQuantity : null,
+                      inventorySlotReservation: chosen.source === 'BANK' ? plannedBankWithdrawals : null,
                       estimatedCost
                     });
                   }
@@ -16189,33 +16414,54 @@
               const acquired = [];
               for (const material of testPlan.materials) {
                 const before = inventoryQuantity(runtime, material.itemName, material.level);
+                const bankExpected = material.expectedSource === 'BANK';
                 const queued = runtime.exchangeCraft.queueMaterialAcquire(material.itemName, material.quantity, {
                   level: material.level,
                   maxUnitPrice: material.maxUnitPrice,
-                  allowBank: false
+                  allowBank: bankExpected,
+                  minBankStackQuantity: material.minBankStackQuantity
                 });
                 assert(queued && queued.accepted === true,
                   queued && queued.reason || 'H16_MATERIAL_ACQUIRE_QUEUE_FAILED');
-                assert(queued.delegatedTo === 'trade', 'H16_MATERIAL_ACQUIRE_NOT_DELEGATED_TO_TRADE');
+                assert(queued.delegatedTo === (bankExpected ? 'bank' : 'trade'),
+                  bankExpected ? 'H16_MATERIAL_ACQUIRE_NOT_DELEGATED_TO_BANK' : 'H16_MATERIAL_ACQUIRE_NOT_DELEGATED_TO_TRADE');
 
-                const tradeStatus = await waitFor(() => {
-                  try { runtime.trade.tick(); } catch (_) {}
-                  const current = runtime.trade.status();
-                  if (current.suspended) throw new Error(current.suspendedReason || 'H13_SUSPENDED_DURING_H16_MATERIALS');
-                  if (tradeUnknownTotal(current) > baseline.tradeUnknown) throw new Error('H16_MATERIAL_ACQUIRE_UNKNOWN');
-                  const after = inventoryQuantity(runtime, material.itemName, material.level);
-                  return after >= before + material.quantity && !current.pending && !current.request
-                    ? current
-                    : null;
-                }, { timeoutMs: 80000, pollMs: 150, label: 'h16-material-' + material.itemName });
+                let delegationStatus = null;
+                if (bankExpected) {
+                  const bankUnknownBefore = bankUnknownTotal(runtime.bank.status());
+                  delegationStatus = await waitFor(() => {
+                    try { runtime.bank.tick(); } catch (_) {}
+                    const current = runtime.bank.status();
+                    if (current.suspended) throw new Error(current.suspendedReason || 'H12_SUSPENDED_DURING_H16_MATERIALS');
+                    if (bankUnknownTotal(current) > bankUnknownBefore) throw new Error('H16_BANK_MATERIAL_ACQUIRE_UNKNOWN');
+                    const after = inventoryQuantity(runtime, material.itemName, material.level);
+                    return after >= before + material.quantity && !current.pending && !current.request
+                      ? current
+                      : null;
+                  }, { timeoutMs: 80000, pollMs: 150, label: 'h16-bank-material-' + material.itemName });
+                } else {
+                  delegationStatus = await waitFor(() => {
+                    try { runtime.trade.tick(); } catch (_) {}
+                    const current = runtime.trade.status();
+                    if (current.suspended) throw new Error(current.suspendedReason || 'H13_SUSPENDED_DURING_H16_MATERIALS');
+                    if (tradeUnknownTotal(current) > baseline.tradeUnknown) throw new Error('H16_MATERIAL_ACQUIRE_UNKNOWN');
+                    const after = inventoryQuantity(runtime, material.itemName, material.level);
+                    return after >= before + material.quantity && !current.pending && !current.request
+                      ? current
+                      : null;
+                  }, { timeoutMs: 80000, pollMs: 150, label: 'h16-material-' + material.itemName });
+                }
 
                 acquired.push({
                   itemName: material.itemName,
                   quantity: material.quantity,
                   expectedSource: material.expectedSource,
                   maxUnitPrice: material.maxUnitPrice,
+                  bankSource: material.bankSource || null,
+                  minBankStackQuantity: material.minBankStackQuantity == null ? null : material.minBankStackQuantity,
                   estimatedCost: material.estimatedCost,
-                  tradeLastAction: tradeStatus.lastAction || null
+                  delegatedTo: queued.delegatedTo,
+                  delegationLastAction: delegationStatus.lastAction || null
                 });
                 await sleep(1800);
               }

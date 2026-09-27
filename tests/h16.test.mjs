@@ -151,6 +151,7 @@ function fixture(options = {}) {
   };
 
   const bank = {
+    status: () => ({ reservations: clone(options.bankReservations || {}) }),
     queueWithdraw: (pack, slot) => {
       state.bankCalls.push({ pack, slot });
       if (typeof options.bankWithdraw === 'function') return options.bankWithdraw(pack, slot);
@@ -338,9 +339,10 @@ test('H16 rejects invalid material acquisition quantities without bank or trade 
 test('H16 material acquisition skips a recoverably unusable bank stack and uses a later valid stack', () => {
   const bank = {
     available: true,
+    map: 'bank',
     packs: [
-      { name: 'items0', items: [{ pack: 'items0', slot: 1, name: 'spidersilk', level: 0, quantity: 1000 }] },
-      { name: 'items1', items: [{ pack: 'items1', slot: 2, name: 'spidersilk', level: 0, quantity: 1000 }] }
+      { name: 'items0', map: 'bank', items: [{ pack: 'items0', slot: 1, name: 'spidersilk', level: 0, quantity: 1000 }] },
+      { name: 'items1', map: 'bank', items: [{ pack: 'items1', slot: 2, name: 'spidersilk', level: 0, quantity: 1000 }] }
     ]
   };
   const { controller, state } = fixture({
@@ -361,7 +363,8 @@ test('H16 material acquisition skips a recoverably unusable bank stack and uses 
 test('H16 material acquisition stops on a non-recoverable bank rejection instead of racing trade', () => {
   const bank = {
     available: true,
-    packs: [{ name: 'items0', items: [{ pack: 'items0', slot: 1, name: 'spidersilk', level: 0, quantity: 1000 }] }]
+    map: 'bank',
+    packs: [{ name: 'items0', map: 'bank', items: [{ pack: 'items0', slot: 1, name: 'spidersilk', level: 0, quantity: 1000 }] }]
   };
   const { controller, state } = fixture({
     bank,
@@ -378,7 +381,8 @@ test('H16 material acquisition stops on a non-recoverable bank rejection instead
 test('H16 material acquisition prefers mounted bank before trade', () => {
   const bank = {
     available: true,
-    packs: [{ name: 'items0', items: [{ pack: 'items0', slot: 2, name: 'spidersilk', level: 0, quantity: 1000 }] }]
+    map: 'bank',
+    packs: [{ name: 'items0', map: 'bank', items: [{ pack: 'items0', slot: 2, name: 'spidersilk', level: 0, quantity: 1000 }] }]
   };
   const { controller, state } = fixture({ bank });
   const result = controller.queueMaterialAcquire('spidersilk', 100);
@@ -391,10 +395,104 @@ test('H16 material acquisition prefers mounted bank before trade', () => {
 test('H16 material acquisition can explicitly bypass mounted bank for live-test trade evidence', () => {
   const bank = {
     available: true,
-    packs: [{ name: 'items0', items: [{ pack: 'items0', slot: 2, name: 'spidersilk', level: 0, quantity: 1000 }] }]
+    map: 'bank',
+    packs: [{ name: 'items0', map: 'bank', items: [{ pack: 'items0', slot: 2, name: 'spidersilk', level: 0, quantity: 1000 }] }]
   };
   const { controller, state } = fixture({ bank });
   const result = controller.queueMaterialAcquire('spidersilk', 100, { maxUnitPrice: 50, allowBank: false });
+  assert.equal(result.accepted, true);
+  assert.equal(result.delegatedTo, 'trade');
+  assert.equal(state.bankCalls.length, 0);
+  assert.equal(state.tradeCalls.length, 1);
+});
+
+test('H16 production plan exposes mounted bank rows while includeBank false keeps them as acquisition needs', () => {
+  const bank = {
+    available: true,
+    map: 'bank',
+    packs: [{ name: 'items0', map: 'bank', items: [{ pack: 'items0', slot: 2, name: 'spidersilk', level: 0, quantity: 1000 }] }]
+  };
+  const { controller } = fixture({ rows: [], bank });
+  const plan = controller.productionPlan('cocoon', 1, { includeBank: false });
+  assert.equal(plan.state, 'NEEDS_MATERIALS');
+  assert.equal(plan.missing.length, 1);
+  assert.equal(plan.missing[0].itemName, 'spidersilk');
+  assert.equal(plan.missing[0].bankRows.length, 1);
+  assert.equal(plan.missing[0].bankRows[0].pack, 'items0');
+  assert.equal(plan.missing[0].bankRows[0].map, 'bank');
+  assert.equal(plan.missing[0].bankRows[0].quantity, 1000);
+  assert.equal(plan.missing[0].bankRows[0].safe, true);
+  assert.equal(plan.missing[0].bankRows[0].mountedMapMatch, true);
+  assert.equal(plan.missing[0].bankRows[0].withdrawable, true);
+});
+
+test('H16 material acquisition ignores protected bank stacks and uses a safe stack', () => {
+  const bank = {
+    available: true,
+    map: 'bank',
+    packs: [{
+      name: 'items0',
+      map: 'bank',
+      items: [
+        { pack: 'items0', slot: 1, name: 'spidersilk', level: 0, quantity: 1000, locked: true },
+        { pack: 'items0', slot: 2, name: 'spidersilk', level: 0, quantity: 1000, locked: false }
+      ]
+    }]
+  };
+  const { controller, state } = fixture({ bank });
+  const result = controller.queueMaterialAcquire('spidersilk', 100);
+  assert.equal(result.accepted, true);
+  assert.equal(result.delegatedTo, 'bank');
+  assert.deepEqual(state.bankCalls, [{ pack: 'items0', slot: 2 }]);
+  assert.equal(state.tradeCalls.length, 0);
+});
+
+test('H16 bank reservations make reserved stacks non-withdrawable and preserve trade fallback', () => {
+  const bank = {
+    available: true,
+    map: 'bank',
+    packs: [{
+      name: 'items0',
+      map: 'bank',
+      items: [{ pack: 'items0', slot: 2, name: 'spidersilk', level: 0, quantity: 1000 }]
+    }]
+  };
+  const { controller, state } = fixture({
+    rows: [],
+    bank,
+    bankReservations: { spidersilk: 1000 },
+    bestAsk: { playerName: 'Seller', slot: 'trade1', name: 'spidersilk', level: 0, quantity: 1000, price: 7 }
+  });
+  const plan = controller.productionPlan('cocoon', 1, { includeBank: false });
+  assert.equal(plan.missing[0].bankRows[0].reservedQuantity, 1000);
+  assert.equal(plan.missing[0].bankRows[0].remainingAfterWholeStack, 0);
+  assert.equal(plan.missing[0].bankRows[0].withdrawable, false);
+
+  const result = controller.queueMaterialAcquire('spidersilk', 100, { maxUnitPrice: 7 });
+  assert.equal(result.accepted, true);
+  assert.equal(result.delegatedTo, 'trade');
+  assert.equal(state.bankCalls.length, 0);
+  assert.equal(state.tradeCalls.length, 1);
+});
+
+test('H16 material acquisition skips a deficit-sized bank stack when craft needs one larger stack', () => {
+  const bank = {
+    available: true,
+    map: 'bank',
+    packs: [{
+      name: 'items0',
+      map: 'bank',
+      items: [{ pack: 'items0', slot: 2, name: 'spidersilk', level: 0, quantity: 500 }]
+    }]
+  };
+  const { controller, state } = fixture({
+    bank,
+    bestAsk: { playerName: 'Seller', slot: 'trade1', name: 'spidersilk', level: 0, quantity: 1000, price: 7 }
+  });
+  const result = controller.queueMaterialAcquire('spidersilk', 500, {
+    maxUnitPrice: 7,
+    minBankStackQuantity: 1000
+  });
   assert.equal(result.accepted, true);
   assert.equal(result.delegatedTo, 'trade');
   assert.equal(state.bankCalls.length, 0);
@@ -514,11 +612,28 @@ test('H16 runtime, API, UI, build, adapter and ActionBoundary are wired', () => 
   assert.match(runtime, /id: 'h16-exchange-craft'/);
   assert.match(runtime, /H16_NEEDS_LOW_RISK_CRAFT_OR_ACQUIRABLE_MATERIALS/);
   assert.match(runtime, /ACQUIRE_CRAFT_AND_EXCHANGE_COVERAGE/);
-  assert.match(runtime, /allowBank: false/);
+  assert.match(runtime, /allowBank: bankExpected/);
   assert.match(runtime, /maxExchangeValueAtRisk: 2000000/);
   assert.match(runtime, /maxCraftGoldCost: 1000000/);
   assert.match(runtime, /maxCraftInputValueAtRisk: 2000000/);
-  assert.match(runtime, /version: '5'/);
+  assert.match(runtime, /version: '6'/);
+  const h16SuiteStart = runtime.indexOf("    _registerH16LiveTest() {");
+  assert.ok(h16SuiteStart > -1);
+  const h16Suite = runtime.slice(h16SuiteStart);
+  assert.match(h16Suite, /id: 'bank-discovery'/);
+  assert.match(h16Suite, /runtime\.bank\.queueMount\(\)/);
+  assert.match(h16Suite, /H16_BANK_DISCOVERY_WRITE_DETECTED/);
+  assert.match(h16Suite, /H16_BANK_DISCOVERY_NOT_REQUIRED_FOR_NON_MERCHANT/);
+  assert.doesNotMatch(h16Suite, /H16_BANK_DISCOVERY_REQUIRES_MERCHANT/);
+  const bankDiscoveryStart = h16Suite.indexOf("id: 'bank-discovery'");
+  const h16PreflightStart = h16Suite.indexOf("id: 'preflight'");
+  const bankDiscovery = h16Suite.slice(bankDiscoveryStart, h16PreflightStart);
+  assert.ok(bankDiscovery.indexOf("H16_BANK_DISCOVERY_NOT_REQUIRED_FOR_NON_MERCHANT") < bankDiscovery.indexOf("runtime.bank.queueMount()"));
+  assert.ok(bankDiscoveryStart < h16PreflightStart);
+  const h5Start = runtime.indexOf("id: 'h5-combat'");
+  const h6Start = runtime.indexOf("id: 'h6-class-logic'");
+  assert.ok(h5Start > -1 && h6Start > h5Start);
+  assert.doesNotMatch(runtime.slice(h5Start, h6Start), /id: 'bank-discovery'/);
   assert.match(runtime, /localCraftRejects/);
   assert.match(runtime, /fallbackRejects/);
   assert.match(runtime, /topNearMatches: nearMatches\.slice\(0, 5\)/);
@@ -541,7 +656,30 @@ test('H16 runtime, API, UI, build, adapter and ActionBoundary are wired', () => 
   assert.match(runtime, /NESTED_OR_MULTI_STAGE_RECIPE/);
   assert.match(runtime, /TOO_MANY_MISSING_LEAVES/);
   assert.match(runtime, /MISSING_LEAF_LEVEL_NONZERO/);
-  assert.match(runtime, /MISSING_LEAF_NO_NPC_OR_MARKET_SOURCE/);
+  assert.match(runtime, /MISSING_LEAF_NO_BANK_NPC_OR_MARKET_SOURCE/);
+  assert.match(runtime, /source: 'BANK'/);
+  assert.match(runtime, /source\.withdrawable === true/);
+  assert.match(runtime, /reservedQuantity/);
+  assert.match(runtime, /remainingAfterWholeStack/);
+  assert.match(runtime, /withdrawable: source\.withdrawable === true/);
+  assert.match(runtime, /expectedSource: chosen\.source/);
+  assert.match(source, /_bankMaterialRows\(name, level = 0\)/);
+  assert.match(source, /safe: this\._safeItem\(row\)/);
+  assert.match(source, /remainingAfterWholeStack >= reservedQuantity/);
+  assert.match(source, /minBankStackQuantity/);
+  assert.match(source, /row\.withdrawable === true && row\.quantity >= minBankStackQuantity/);
+  assert.match(runtime, /recipeIngredientQuantity/);
+  assert.match(runtime, /minBankStackQuantity: material\.minBankStackQuantity/);
+  assert.match(runtime, /availableInventorySlots/);
+  assert.match(runtime, /plannedBankWithdrawals/);
+  assert.match(runtime, /bankSlotAvailable = plannedBankWithdrawals < availableInventorySlots/);
+  assert.match(runtime, /if \(chosen\.source === 'BANK'\) plannedBankWithdrawals \+= 1/);
+  assert.match(runtime, /inventorySlotReservation: chosen\.source === 'BANK' \? plannedBankWithdrawals : null/);
+  const bankOfferStart = runtime.indexOf("const bankSlotAvailable = plannedBankWithdrawals < availableInventorySlots");
+  const bankChoiceStart = runtime.indexOf("offers.sort((a, b) => a.unitPrice - b.unitPrice)", bankOfferStart);
+  const bankReservationIncrement = runtime.indexOf("if (chosen.source === 'BANK') plannedBankWithdrawals += 1", bankChoiceStart);
+  assert.ok(bankOfferStart > -1 && bankChoiceStart > bankOfferStart && bankReservationIncrement > bankChoiceStart);
+  assert.match(runtime, /queued\.delegatedTo === \(bankExpected \? 'bank' : 'trade'\)/);
   assert.match(runtime, /MATERIAL_ACQUISITION_OVER_CAP/);
   assert.match(runtime, /GOLD_RESERVE_AFTER_ACQUISITION_AND_CRAFT/);
   assert.match(runtime, /MATERIAL_ACQUISITION_REQUIRES_MERCHANT/);

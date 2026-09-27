@@ -375,18 +375,61 @@
       return map;
     }
 
-    _materialSource(name, level, quantity) {
+    _bankMaterialRows(name, level = 0) {
       const bank = this._bankSnapshot();
-      const bankRows = [];
-      if (bank && bank.available !== false) {
-        for (const pack of bank.packs || []) {
-          for (const row of pack.items || []) {
-            if (String(row.name) === String(name) && Math.max(0, Number(row.level) || 0) === Math.max(0, Number(level) || 0)) {
-              bankRows.push({ pack: pack.name, slot: row.slot, quantity: Math.max(1, Number(row.quantity) || 1) });
-            }
-          }
+      if (!bank || bank.available === false) return [];
+      let reservations = {};
+      try {
+        const status = this.bank && typeof this.bank.status === 'function' ? this.bank.status() : null;
+        reservations = status && status.reservations && typeof status.reservations === 'object'
+          ? status.reservations
+          : {};
+      } catch (_) {}
+      const wantedLevel = Math.max(0, Number(level) || 0);
+      const rows = [];
+      for (const pack of bank.packs || []) {
+        for (const row of pack.items || []) {
+          if (String(row.name) !== String(name)
+              || Math.max(0, Number(row.level) || 0) !== wantedLevel) continue;
+          rows.push({
+            pack: pack.name,
+            map: pack.map || null,
+            slot: row.slot,
+            quantity: Math.max(1, Number(row.quantity) || 1),
+            fingerprint: this._fingerprint(row),
+            safe: this._safeItem(row),
+            locked: row.locked === true,
+            giveaway: row.giveaway === true,
+            gift: row.gift === true,
+            expiresAt: row.expiresAt == null ? null : row.expiresAt
+          });
         }
       }
+      const reservedQuantity = Math.max(0, Math.floor(Number(reservations[name]) || 0));
+      const totals = new Map();
+      for (const row of rows) {
+        const key = String(row.fingerprint || '');
+        totals.set(key, (totals.get(key) || 0) + row.quantity);
+      }
+      return rows.map(row => {
+        const fingerprintQuantity = totals.get(String(row.fingerprint || '')) || 0;
+        const remainingAfterWholeStack = Math.max(0, fingerprintQuantity - row.quantity);
+        const mountedMapMatch = !!(row.map && bank.map && String(row.map) === String(bank.map));
+        return {
+          ...row,
+          reservedQuantity,
+          fingerprintQuantity,
+          remainingAfterWholeStack,
+          mountedMapMatch,
+          withdrawable: row.safe === true
+            && mountedMapMatch
+            && remainingAfterWholeStack >= reservedQuantity
+        };
+      });
+    }
+
+    _materialSource(name, level, quantity) {
+      const bankRows = this._bankMaterialRows(name, level);
       let npcSources = [];
       try { npcSources = this.game && this.game.npcShopSources ? this.game.npcShopSources(name) || [] : []; } catch (_) {}
       let market = null;
@@ -629,35 +672,42 @@
       }
       const q = rawQuantity;
 
-      const bank = this._bankSnapshot();
       let lastRecoverableBankReject = null;
-      if (options.allowBank !== false && bank && bank.available !== false && this.bank && typeof this.bank.queueWithdraw === 'function') {
+      if (options.allowBank !== false && this.bank && typeof this.bank.queueWithdraw === 'function') {
         const recoverableBankReasons = new Set([
           'H12_WITHDRAW_WRONG_OR_UNKNOWN_BANK_MAP',
           'H12_BANK_RESERVATION_BLOCKED',
           'H12_WITHDRAW_ITEM_NOT_FOUND'
         ]);
-        for (const pack of bank.packs || []) {
-          const rows = (pack.items || []).filter(item =>
-            String(item.name) === name
-            && Math.max(0, Number(item.level) || 0) === Math.max(0, Number(options.level) || 0)
-            && Math.max(1, Number(item.quantity) || 1) >= q);
-          for (const row of rows) {
-            const result = this.bank.queueWithdraw(pack.name, row.slot);
-            if (result && result.accepted) {
-              this.metrics.materialDelegations += 1;
-              return { ...clone(result), delegatedTo: 'bank', source: { pack: pack.name, slot: row.slot } };
-            }
-            const reason = result && result.reason || 'H16_BANK_WITHDRAW_REJECTED';
-            if (!recoverableBankReasons.has(String(reason))) {
-              return { ...clone(result || { accepted: false, reason }), delegatedTo: 'bank', source: { pack: pack.name, slot: row.slot } };
-            }
-            lastRecoverableBankReject = {
-              ...clone(result || { accepted: false, reason }),
+        const minBankStackQuantity = Math.max(
+          q,
+          Math.floor(finite(options.minBankStackQuantity) == null ? q : finite(options.minBankStackQuantity))
+        );
+        const bankRows = this._bankMaterialRows(name, options.level || 0)
+          .filter(row => row.withdrawable === true && row.quantity >= minBankStackQuantity);
+        for (const row of bankRows) {
+          const result = this.bank.queueWithdraw(row.pack, row.slot);
+          if (result && result.accepted) {
+            this.metrics.materialDelegations += 1;
+            return {
+              ...clone(result),
               delegatedTo: 'bank',
-              source: { pack: pack.name, slot: row.slot }
+              source: { pack: row.pack, map: row.map || null, slot: row.slot }
             };
           }
+          const reason = result && result.reason || 'H16_BANK_WITHDRAW_REJECTED';
+          if (!recoverableBankReasons.has(String(reason))) {
+            return {
+              ...clone(result || { accepted: false, reason }),
+              delegatedTo: 'bank',
+              source: { pack: row.pack, map: row.map || null, slot: row.slot }
+            };
+          }
+          lastRecoverableBankReject = {
+            ...clone(result || { accepted: false, reason }),
+            delegatedTo: 'bank',
+            source: { pack: row.pack, map: row.map || null, slot: row.slot }
+          };
         }
       }
 

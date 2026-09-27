@@ -180,6 +180,32 @@ test('H12 deposit fails closed for KEEP and PROTECT inventory items', () => {
   assert.equal(f.state.dispatches.length, 0);
 });
 
+test('H12 read-only mount travels to bank without any ActionBoundary write', () => {
+  const f = fixture({ mounted: false });
+  const queued = f.controller.queueMount();
+  assert.equal(queued.accepted, true);
+  const first = f.controller.tick();
+  assert.equal(first.state, 'WAITING_BANK');
+  assert.equal(f.state.movementCalls, 1);
+  assert.equal(f.state.dispatches.length, 0);
+  const second = f.controller.tick();
+  assert.equal(second.state, 'READY');
+  assert.equal(second.reason, 'H12_BANK_READY');
+  assert.equal(f.controller.status().request, null);
+  assert.equal(f.controller.status().lastAction.type, 'BANK_MOUNTED');
+  assert.equal(f.state.dispatches.length, 0);
+});
+
+test('H12 read-only mount is a no-op when bank is already mounted', () => {
+  const f = fixture();
+  const queued = f.controller.queueMount();
+  assert.equal(queued.accepted, true);
+  assert.equal(queued.state, 'READY');
+  assert.equal(queued.alreadyMounted, true);
+  assert.equal(f.state.movementCalls, 0);
+  assert.equal(f.state.dispatches.length, 0);
+});
+
 test('H12 controlled deposit dispatches bank_store and confirms inventory plus bank delta', async () => {
   const f = fixture();
   assert.equal(f.controller.queueDeposit('material', { inventorySlot: 0 }).accepted, true);
@@ -314,6 +340,8 @@ test('H12 runtime, API, UI, build, adapter and ActionBoundary are wired', () => 
   assert.match(runtime, /id: 'bank'/);
   assert.match(runtime, /id: 'h12-bank'/);
   assert.match(runtime, /H12_LIVE_TEST_REQUIRES_MERCHANT/);
+  assert.match(bankSource, /queueMount\(\)/);
+  assert.match(bankSource, /type: 'BANK_MOUNTED'/);
   assert.match(entry, /0\.16\.0-h16/);
   assert.match(entry, /runtime\.bank\.queueDeposit/);
   assert.match(ui, /data-tab="bank"/);
