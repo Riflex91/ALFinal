@@ -160,8 +160,19 @@
         party: this.party,
         movement: this.movement,
         combat: this.combat,
+        inventory: this.inventory,
+        merchant: this.merchant,
+        bank: this.bank,
+        trade: this.trade,
+        gear: this.gear,
+        upgrade: this.upgrade,
+        exchangeCraft: this.exchangeCraft,
+        economy: this.economy,
         canAct: action => this.actionAllowed(action)
       });
+      this.inventory.partyLogistics = this.partyLogistics;
+      this.merchant.partyLogistics = this.partyLogistics;
+      this.economy.partyLogistics = this.partyLogistics;
       this.liveTests = new ns.LiveTestRunner({
         runtime: this,
         logger: this.logger,
