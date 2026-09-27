@@ -450,29 +450,49 @@
 
         const transferRows = inventoryRows.filter(row =>
           !row.locked && !row.giveaway && !row.gift && !row.expiresAt);
-        const candidateRows = [];
-        for (const slot of GEAR_SLOTS) {
-          const slotPlan = this._slotPlan(slot, target.ctype, equipment, transferRows, usedInventorySlots);
-          if (!slotPlan.improvement || !slotPlan.bestInventory) continue;
-          candidateRows.push({
-            targetName: target.name,
-            targetCtype: target.ctype,
-            role: target.role,
-            priority: target.priority,
-            slot,
-            inventorySlot: slotPlan.bestInventory.inventorySlot,
-            item: clone(slotPlan.bestInventory.item),
-            fingerprint: slotPlan.bestInventory.fingerprint,
-            score: slotPlan.bestInventory.score,
-            currentScore: slotPlan.currentScore,
-            delta: slotPlan.delta
-          });
-        }
-        candidateRows.sort((a, b) => (b.delta || 0) - (a.delta || 0));
-        for (const proposal of candidateRows) {
-          if (usedInventorySlots.has(proposal.inventorySlot)) continue;
-          usedInventorySlots.add(proposal.inventorySlot);
-          proposals.push(proposal);
+        const slotPlans = GEAR_SLOTS.map(slot =>
+          this._slotPlan(slot, target.ctype, equipment, transferRows, usedInventorySlots));
+        const assignedTargetSlots = new Set();
+
+        while (true) {
+          let bestChoice = null;
+          for (const slotPlan of slotPlans) {
+            if (assignedTargetSlots.has(slotPlan.slot)) continue;
+            let choice = null;
+            for (const candidate of slotPlan.candidates || []) {
+              if (usedInventorySlots.has(candidate.inventorySlot)) continue;
+              const conflict = this._handConflict(candidate.item, slotPlan.slot, equipment, target.ctype);
+              if (conflict.blocked) continue;
+              const delta = slotPlan.current == null
+                ? candidate.score
+                : candidate.score - Number(slotPlan.currentScore || 0);
+              if (slotPlan.current != null && delta <= this.config.improvementEpsilon) continue;
+              choice = {
+                targetName: target.name,
+                targetCtype: target.ctype,
+                role: target.role,
+                priority: target.priority,
+                slot: slotPlan.slot,
+                inventorySlot: candidate.inventorySlot,
+                item: clone(candidate.item),
+                fingerprint: candidate.fingerprint,
+                score: candidate.score,
+                currentScore: slotPlan.currentScore,
+                delta: Number(delta.toFixed(4))
+              };
+              break;
+            }
+            if (!choice) continue;
+            if (!bestChoice
+              || choice.delta > bestChoice.delta
+              || (choice.delta === bestChoice.delta && choice.inventorySlot < bestChoice.inventorySlot)) {
+              bestChoice = choice;
+            }
+          }
+          if (!bestChoice) break;
+          assignedTargetSlots.add(bestChoice.slot);
+          usedInventorySlots.add(bestChoice.inventorySlot);
+          proposals.push(bestChoice);
         }
       }
       proposals.sort((a, b) => b.priority - a.priority || (b.delta || 0) - (a.delta || 0));
