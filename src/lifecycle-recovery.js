@@ -47,6 +47,7 @@
       this.lastPlan = null;
       this.lastAction = null;
       this.sequence = 0;
+      this.settlementGeneration = 0;
       this.restoredPending = false;
       this.partySignals = [];
       this.previousPartyInviteHandler = null;
@@ -289,6 +290,7 @@
     }
 
     start(context) {
+      this.settlementGeneration += 1;
       this.moduleActive = true;
       this.scope = context && context.scope || null;
       this._restoreState();
@@ -302,6 +304,12 @@
     stop(reason = 'H19_MODULE_STOP') {
       this.moduleActive = false;
       this.autonomyEnabled = false;
+      this.settlementGeneration += 1;
+      if (this.currentAction && (this.currentAction.settlement === 'PENDING' || this.currentAction.settlement === 'PREPARED')) {
+        this.currentAction.settlement = 'INTERRUPTED';
+        this.currentAction.interruptedAt = nowIso();
+        this._persistCurrent();
+      }
       this._restorePartyHooks();
       this.scope = null;
       this.lastAction = {
@@ -506,6 +514,31 @@
       return { accepted: true, status: this.status() };
     }
 
+    acknowledgeUnknown(reason = 'H19_EXPLICIT_UNKNOWN_ACK') {
+      const current = this.currentAction;
+      if (!this.suspended || !current || current.unknownRecorded !== true) {
+        return { accepted: false, reason: 'H19_NO_UNKNOWN_ACTION_TO_ACKNOWLEDGE' };
+      }
+      const acknowledged = clone(current);
+      this.settlementGeneration += 1;
+      this.currentAction = null;
+      this._removeStorage('pending');
+      this.lastAction = {
+        at: nowIso(),
+        type: 'UNKNOWN_ACKNOWLEDGED',
+        reason: cleanText(reason, 200),
+        actionId: acknowledged.id || null,
+        kind: acknowledged.kind || null,
+        targetName: acknowledged.targetName || null
+      };
+      return {
+        accepted: true,
+        acknowledged,
+        safetyResetRequired: true,
+        status: this.status()
+      };
+    }
+
     _proposalPartySignal(roster) {
       const party = this._partySnapshot();
       const members = this._partyMemberSet(party);
@@ -666,18 +699,22 @@
     }
 
     _watchSettlement(value, action) {
+      const generation = this.settlementGeneration;
       if (!value || typeof value.then !== 'function') {
+        if (!this.moduleActive || generation !== this.settlementGeneration) return;
         action.settlement = 'RETURNED';
         action.response = value == null ? null : clone(value);
         this._persistCurrent();
         return;
       }
       Promise.resolve(value).then(response => {
+        if (!this.moduleActive || generation !== this.settlementGeneration) return;
         if (!this.currentAction || this.currentAction.id !== action.id) return;
         this.currentAction.settlement = 'RESOLVED';
         this.currentAction.response = response == null ? null : clone(response);
         this._persistCurrent();
       }).catch(error => {
+        if (!this.moduleActive || generation !== this.settlementGeneration) return;
         if (!this.currentAction || this.currentAction.id !== action.id) return;
         this.currentAction.settlement = 'REJECTED';
         this.currentAction.error = errorReason(error, 'H19_ACTION_PROMISE_REJECTED');
