@@ -16,7 +16,11 @@
     heal: Object.freeze({ publicName: 'heal', family: 'party-heal' }),
     change_target: Object.freeze({ publicName: 'change_target', family: 'combat-target' }),
     loot: Object.freeze({ publicName: 'loot', family: 'loot' }),
-    send_item: Object.freeze({ publicName: 'send_item', family: 'merchant-logistics' })
+    send_item: Object.freeze({ publicName: 'send_item', family: 'merchant-logistics' }),
+    bank_store: Object.freeze({ publicName: 'bank_store', family: 'bank' }),
+    bank_retrieve: Object.freeze({ publicName: 'bank_retrieve', family: 'bank' }),
+    bank_deposit: Object.freeze({ publicName: 'bank_deposit', family: 'bank-gold' }),
+    bank_withdraw: Object.freeze({ publicName: 'bank_withdraw', family: 'bank-gold' })
   });
 
   function errorDetails(error) {
