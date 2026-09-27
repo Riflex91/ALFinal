@@ -15685,7 +15685,10 @@
         cleanup: async ({ runtime }) => {
           try { runtime.exchangeCraft.cancelRequest('H16_LIVE_TEST_CLEANUP'); } catch (_) {}
           try { runtime.trade.cancelRequest('H16_LIVE_TEST_CLEANUP'); } catch (_) {}
-          try { runtime.exchangeCraft.resetSafety('H16_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try {
+            const current = runtime.exchangeCraft.status();
+            if (!current.suspended) runtime.exchangeCraft.resetSafety('H16_LIVE_TEST_CLEANUP');
+          } catch (_) {}
           if (previousPolicy) {
             try { runtime.exchangeCraft.policy(previousPolicy); } catch (_) {}
           }
@@ -15728,7 +15731,12 @@
               for (const craft of crafts) {
                 const outputDef = craft.definition || runtime.game.itemDefinition(craft.itemName);
                 const required = outputDef && Number(outputDef.e);
+                const outputUnitValue = outputDef && Number(outputDef.g);
+                const outputRisk = Number.isFinite(outputUnitValue) && Number.isFinite(required)
+                  ? outputUnitValue * required
+                  : null;
                 if (!Number.isFinite(required) || required <= 0 || outputDef.quest === true || outputDef.cash === true) continue;
+                if (outputRisk == null || outputRisk > 20000) continue;
                 const existing = inventoryQuantity(runtime, craft.itemName, 0);
                 if (existing + 1 < required) continue;
                 selectedCraft = craft;
@@ -15736,6 +15744,7 @@
                   itemName: craft.itemName,
                   level: 0,
                   requiredQuantity: required,
+                  valueAtRisk: outputRisk,
                   afterCraft: true
                 };
                 production = runtime.exchangeCraft.productionPlan(craft.itemName, 1, { includeBank: false });
@@ -15764,7 +15773,9 @@
                 }
               }
 
-              if (!selectedCraft) {
+              if (!selectedCraft
+                  && String(game.character.ctype || '').toLowerCase() === 'merchant'
+                  && !(runtime.trade.status() && runtime.trade.status().suspended)) {
                 const acquisitionCandidates = [];
                 const catalog = runtime.game.craftCatalog();
                 for (const recipe of catalog || []) {
