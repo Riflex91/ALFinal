@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.15.0-h15';
+      this.version = options.version || '0.16.0-h16';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -124,6 +124,17 @@
         logger: this.logger,
         game: this.game,
         actions: this.actions,
+        combat: this.combat
+      });
+      this.exchangeCraft = new ns.ExchangeCraftController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        movement: this.movement,
+        inventory: this.inventory,
+        bank: this.bank,
+        trade: this.trade,
         combat: this.combat
       });
       this.liveTests = new ns.LiveTestRunner({
@@ -279,6 +290,15 @@
         start: context => this.upgrade.start(context),
         stop: reason => this.upgrade.stop(reason),
         status: () => this.upgrade.status()
+      });
+
+      this.modules.register({
+        id: 'exchange-craft',
+        title: 'Exchange & Craft',
+        version: '0.16.0',
+        start: context => this.exchangeCraft.start(context),
+        stop: reason => this.exchangeCraft.stop(reason),
+        status: () => this.exchangeCraft.status()
       });
     }
 
@@ -2952,6 +2972,7 @@
         trade: this.trade.status(),
         gear: this.gear.status(),
         upgrade: this.upgrade.status(),
+        exchangeCraft: this.exchangeCraft.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
         roster,
@@ -2982,6 +3003,7 @@
         trade: this.trade.status(),
         gear: this.gear.status(),
         upgrade: this.upgrade.status(),
+        exchangeCraft: this.exchangeCraft.status(),
         liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
         logs: this.logger.list(160),
@@ -3011,6 +3033,7 @@
       push('trade-controller', !!this.trade.status() && typeof this.trade.marketAnalysis === 'function' && typeof this.trade.queueAcquire === 'function', this.trade.status());
       push('gear-controller', !!this.gear.status() && typeof this.gear.plan === 'function' && typeof this.gear.queueBestLocal === 'function', this.gear.status());
       push('upgrade-compound-controller', !!this.upgrade.status() && typeof this.upgrade.plan === 'function' && typeof this.upgrade.queueBest === 'function', this.upgrade.status());
+      push('exchange-craft-controller', !!this.exchangeCraft.status() && typeof this.exchangeCraft.plan === 'function' && typeof this.exchangeCraft.productionPlan === 'function', this.exchangeCraft.status());
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
       push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);
