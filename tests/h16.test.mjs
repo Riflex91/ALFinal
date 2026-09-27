@@ -731,5 +731,5 @@ test('H16 runtime, API, UI, build, adapter and ActionBoundary are wired', () => 
   assert.match(adapter, /craftCatalog\(\)/);
   assert.match(dist, /AL Bot 0\.18\.0-h18/);
   assert.match(dist, /class ExchangeCraftController/);
-  assert.equal(pkg.version, '0.18.0');
+  assert.equal(pkg.version, '0.19.0');
 });
