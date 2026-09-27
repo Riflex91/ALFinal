@@ -3045,6 +3045,11 @@
                     });
                   }
                   if (!viable || acquisitionGold > 10000) continue;
+                  const recipeCost = Number(recipe.cost || 0);
+                  const currentGold = Number(game.character.gold);
+                  const totalEstimatedGold = acquisitionGold + recipeCost;
+                  if (!Number.isFinite(currentGold)
+                      || currentGold - totalEstimatedGold < 10000) continue;
 
                   acquisitionCandidates.push({
                     recipe,
@@ -3053,7 +3058,9 @@
                     acquisitionGold,
                     materials: plannedMaterials,
                     exchange,
-                    totalEstimatedGold: acquisitionGold + Number(recipe.cost || 0)
+                    currentGold,
+                    requiredGoldWithReserve: totalEstimatedGold + 10000,
+                    totalEstimatedGold
                   });
                 }
 
@@ -3084,6 +3091,8 @@
                   materials = chosen.materials;
                   materialAcquisitionGold = chosen.acquisitionGold;
                   mode = 'ACQUIRE_CRAFT_AND_EXCHANGE_COVERAGE';
+                  selectedCraft.currentGold = chosen.currentGold;
+                  selectedCraft.requiredGoldWithReserve = chosen.requiredGoldWithReserve;
                 }
               }
 
@@ -3096,7 +3105,9 @@
                   itemName: selectedCraft.itemName,
                   cost: selectedCraft.cost,
                   inputValueAtRisk: selectedCraft.inputValueAtRisk,
-                  sources: selectedCraft.sources || []
+                  sources: selectedCraft.sources || [],
+                  currentGold: selectedCraft.currentGold == null ? null : selectedCraft.currentGold,
+                  requiredGoldWithReserve: selectedCraft.requiredGoldWithReserve == null ? null : selectedCraft.requiredGoldWithReserve
                 },
                 exchange: selectedExchange,
                 production,
