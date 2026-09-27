@@ -746,7 +746,7 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(runtime, /_registerH19RemoteRecoveryLiveTest\(\)/);
   assert.match(runtime, /const runnerActive = runnerActiveSet\(liveRoster\)/);
   assert.match(runtime, /online\.has\(row\.name\)/);
-  assert.match(runtime, /runnerActive\.has\(row\.name\)/);
+  assert.match(runtime, /runnerActive\.has\(name\)/);
   assert.match(runtime, /H19_REMOTE_CONTROLLABLE_TARGET_UNAVAILABLE/);
   assert.match(runtime, /safeFirstStartRecovery/);
   assert.match(runtime, /targetName = null;\s*targetControlMode = null;\s*baseline = null;\s*originalPolicy = null;/);
