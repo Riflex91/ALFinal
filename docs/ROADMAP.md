@@ -522,17 +522,44 @@ H14 ist live bestanden. Vor Merge bleiben nur neuer Exact-Head-CI und der vollst
 
 ## H15 – Upgrade & Compound
 
-**🟦 BAU**
-- Upgrade-/Compound-Planung
-- Scrollwahl
-- Offering-Regeln
-- Kosten-/Risikobudget
-- Workspace
-- Ergebnisprüfung
+**🟦 IMPLEMENTIERT · CI/REVIEW IN ARBEIT · LIVE-TEST OFFEN**
 
-**🟧 LIVE-TEST**
-- zunächst wenige reale Gegenstände
-- Auswahl und Ergebnisverarbeitung prüfen
+**BAU**
+- eigener `UpgradeCompoundController`
+- Upgrade-/Compound-Writes ausschließlich über ActionBoundary
+- Live-Inventar-Revalidation unmittelbar vor Dispatch
+- protected Items aus Automation ausgeschlossen
+- Grade-basierte Scrollwahl: `scroll0/1/2` und `cscroll0/1/2`
+- Offering-Policy `DISABLED / OPTIONAL / REQUIRED`
+- Level-, Itemwert-, Consumable- und Session-Attempt-Budgets
+- logischer Workspace mit reservierten Slots
+- exakt drei identische Items pro Compound
+- Combat-Block
+- beobachtete Inventar-/Consumable-Deltas als Ergebnis-Wahrheit
+- bekannte Outcomes `SUCCEEDED / FAILED`
+- bounded UNKNOWN + Suspension ohne Blind-Retry
+- Headless API `ALBot.upgrade.*`
+- Control-Center-Tab **Upgrade & Compound**
+- H15-Ein-Klick-Suite `h15-upgrade-compound`
+- `docs/H15-LIVE-TEST.md`
+- H15-Regressionen für Safety, Budget, Offering, Source-Drift und Outcome-Prüfung
+
+**🟧 LIVE-TEST NOCH AUSSTEHEND**
+- genau eine echte niedrig riskante Upgrade- oder Compound-Aktion
+- temporäres Live-Test-Risikobudget: Itemwert ≤ 25.000 Gold, Consumables ≤ 10.000 Gold
+- maximal ein Versuch
+- Offering im Live-Test deaktiviert
+- serverseitiges `SUCCEEDED` oder bekanntes `FAILED` ist zulässiges Ergebnis
+- UNKNOWN ist immer FAIL
+- 5-Sekunden-Stabilität ohne Retry/Suspension
+- Cleanup + Runtime Auto-Restore
+
+Falls kein geeigneter Kandidat vorhanden ist:
+`H15_NEEDS_LOW_RISK_UPGRADE_OR_COMPOUND_CANDIDATE`
+
+Dann wird nichts verändert.
+
+H15 wird erst nach grünem Exact-Head-CI, sauberem Review-Gate und echtem Adventure-Land-Live-PASS gemergt.
 
 ---
 
