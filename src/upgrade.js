@@ -48,14 +48,14 @@
         tickMs: Math.max(250, Math.min(5000, Number(options.tickMs) || 750)),
         outcomeTimeoutMs: Math.max(1000, Math.min(60000, Number(options.outcomeTimeoutMs) || 8000)),
         settleGraceMs: Math.max(100, Math.min(3000, Number(options.settleGraceMs) || 500)),
-        maxAttemptsPerSession: Math.max(1, Math.min(100, Number(options.maxAttemptsPerSession) || 12)),
-        maxUpgradeLevel: Math.max(0, Math.min(20, Number(options.maxUpgradeLevel) || 8)),
-        maxCompoundLevel: Math.max(0, Math.min(20, Number(options.maxCompoundLevel) || 4)),
-        maxItemValueAtRisk: Math.max(0, Number(options.maxItemValueAtRisk) || 250000),
-        maxConsumableCost: Math.max(0, Number(options.maxConsumableCost) || 250000),
+        maxAttemptsPerSession: Math.max(1, Math.min(100, finite(options.maxAttemptsPerSession) == null ? 12 : finite(options.maxAttemptsPerSession))),
+        maxUpgradeLevel: Math.max(0, Math.min(20, finite(options.maxUpgradeLevel) == null ? 8 : finite(options.maxUpgradeLevel))),
+        maxCompoundLevel: Math.max(0, Math.min(20, finite(options.maxCompoundLevel) == null ? 4 : finite(options.maxCompoundLevel))),
+        maxItemValueAtRisk: Math.max(0, finite(options.maxItemValueAtRisk) == null ? 250000 : finite(options.maxItemValueAtRisk)),
+        maxConsumableCost: Math.max(0, finite(options.maxConsumableCost) == null ? 250000 : finite(options.maxConsumableCost)),
         offeringMode: ['DISABLED', 'OPTIONAL', 'REQUIRED'].includes(String(options.offeringMode || '').toUpperCase())
           ? String(options.offeringMode).toUpperCase() : 'DISABLED',
-        offeringFromLevel: Math.max(0, Math.min(20, Number(options.offeringFromLevel) || 7)),
+        offeringFromLevel: Math.max(0, Math.min(20, finite(options.offeringFromLevel) == null ? 7 : finite(options.offeringFromLevel))),
         offeringNames: Array.isArray(options.offeringNames) && options.offeringNames.length
           ? options.offeringNames.map(value => cleanText(value, 80)).filter(Boolean)
           : ['offeringp', 'offering']
@@ -174,6 +174,10 @@
       return !!(row && row.name && row.locked !== true && row.giveaway !== true && row.gift !== true && !row.expiresAt);
     }
 
+    _safeDefinition(definition) {
+      return !!(definition && definition.quest !== true && definition.cash !== true);
+    }
+
     _propertyKey(row) {
       return [
         cleanText(row && row.name || '', 160),
@@ -248,13 +252,13 @@
       return Math.round(base * Math.pow(1.75, level));
     }
 
-    _budget(row, definition, scroll, offering, targetLevel) {
-      const itemValueAtRisk = this._estimatedItemValue(row, definition);
+    _budget(row, definition, scroll, offering, targetLevel, kind = 'UPGRADE', itemCount = 1) {
+      const itemValueAtRisk = this._estimatedItemValue(row, definition) * Math.max(1, Math.floor(Number(itemCount) || 1));
       const scrollDef = scroll ? this._definition(scroll.name) : null;
       const offeringDef = offering ? this._definition(offering.name) : null;
       const consumableCost = Math.max(0, finite(scrollDef && scrollDef.g) || 0)
         + Math.max(0, finite(offeringDef && offeringDef.g) || 0);
-      const maxLevel = definition && definition.compoundable ? this.config.maxCompoundLevel : this.config.maxUpgradeLevel;
+      const maxLevel = kind === 'COMPOUND' ? this.config.maxCompoundLevel : this.config.maxUpgradeLevel;
       if (Number(targetLevel) > maxLevel) return { ok: false, reason: 'H15_TARGET_LEVEL_OVER_BUDGET', itemValueAtRisk, consumableCost };
       if (itemValueAtRisk > this.config.maxItemValueAtRisk) return { ok: false, reason: 'H15_ITEM_VALUE_OVER_BUDGET', itemValueAtRisk, consumableCost };
       if (consumableCost > this.config.maxConsumableCost) return { ok: false, reason: 'H15_CONSUMABLE_COST_OVER_BUDGET', itemValueAtRisk, consumableCost };
@@ -265,6 +269,7 @@
       if (!this._safeItem(row)) return { ok: false, reason: 'H15_ITEM_NOT_AUTOMATION_SAFE' };
       const definition = this._definition(row.name);
       if (!definition || definition.upgradeable !== true) return { ok: false, reason: 'H15_ITEM_NOT_UPGRADEABLE' };
+      if (!this._safeDefinition(definition)) return { ok: false, reason: 'H15_ITEM_DEFINITION_PROTECTED' };
       const level = Math.max(0, Number(row.level) || 0);
       const targetLevel = level + 1;
       const grade = this._grade(definition, level);
@@ -275,7 +280,7 @@
       excluded.add(Number(scroll.slot));
       const offering = this._offeringFor(inventory, level, excluded, options.useOffering == null ? null : options.useOffering === true);
       if (offering.required && !offering.row) return { ok: false, reason: 'H15_REQUIRED_OFFERING_MISSING', scrollName, grade };
-      const budget = this._budget(row, definition, scroll, offering.row, targetLevel);
+      const budget = this._budget(row, definition, scroll, offering.row, targetLevel, 'UPGRADE', 1);
       if (!budget.ok) return { ok: false, reason: budget.reason, budget, scrollName, grade };
       return {
         ok: true,
@@ -304,6 +309,7 @@
       }
       const definition = this._definition(rows[0].name);
       if (!definition || definition.compoundable !== true) return { ok: false, reason: 'H15_ITEM_NOT_COMPOUNDABLE' };
+      if (!this._safeDefinition(definition)) return { ok: false, reason: 'H15_ITEM_DEFINITION_PROTECTED' };
       const level = Math.max(0, Number(rows[0].level) || 0);
       const targetLevel = level + 1;
       const grade = this._grade(definition, level);
@@ -315,7 +321,7 @@
       excluded.add(Number(scroll.slot));
       const offering = this._offeringFor(inventory, level, excluded, options.useOffering == null ? null : options.useOffering === true);
       if (offering.required && !offering.row) return { ok: false, reason: 'H15_REQUIRED_OFFERING_MISSING', scrollName, grade };
-      const budget = this._budget(rows[0], definition, scroll, offering.row, targetLevel);
+      const budget = this._budget(rows[0], definition, scroll, offering.row, targetLevel, 'COMPOUND', 3);
       if (!budget.ok) return { ok: false, reason: budget.reason, budget, scrollName, grade };
       return {
         ok: true,
@@ -640,9 +646,10 @@
       }
 
       const definition = this._definition(rows[0].name);
+      if (!this._safeDefinition(definition)) return { ok: false, reason: 'H15_ITEM_DEFINITION_PROTECTED' };
       const budget = this._budget(rows[0], definition, scroll,
         request.offeringSlot == null ? null : this._rowAt(inventory, request.offeringSlot),
-        request.targetLevel);
+        request.targetLevel, request.kind, request.kind === 'COMPOUND' ? 3 : 1);
       if (!budget.ok) return { ok: false, reason: budget.reason };
       return { ok: true };
     }
