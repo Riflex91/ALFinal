@@ -8527,6 +8527,26 @@
       return null;
     }
 
+    queueMount() {
+      if (this.suspendedReason) return { accepted: false, reason: this.suspendedReason };
+      if (this.request || this.pending) return { accepted: false, reason: 'H12_BUSY' };
+      if (!this._localMerchant()) return { accepted: false, reason: 'H12_REQUIRES_LIVE_MERCHANT' };
+      const bank = this._bankSnapshot();
+      if (bank && bank.available !== false) {
+        this.lastAction = { at: nowIso(), type: 'BANK_ALREADY_MOUNTED', map: bank.map || null };
+        return { accepted: true, state: 'READY', alreadyMounted: true, bank: clone(bank) };
+      }
+      this.request = {
+        id: 'bank-request-' + (++this.sequence),
+        kind: 'MOUNT',
+        travelRequested: false,
+        bankTravelStartedAtMs: null,
+        createdAt: nowIso()
+      };
+      this.lastAction = { at: nowIso(), type: 'MOUNT_QUEUED' };
+      return { accepted: true, request: clone(this.request) };
+    }
+
     queueDeposit(itemName, options = {}) {
       if (this.suspendedReason) return { accepted: false, reason: this.suspendedReason };
       if (this.request || this.pending) return { accepted: false, reason: 'H12_BUSY' };
@@ -8853,6 +8873,26 @@
       if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason };
       if (!mounted || mounted.ready !== true) return { state: 'WAITING_BANK', reason: mounted && mounted.reason || 'H12_BANK_TRAVEL' };
       const bank = mounted.bank;
+      if (request.kind === 'MOUNT') {
+        this.request = null;
+        this.lastAction = {
+          at: nowIso(),
+          type: 'BANK_MOUNTED',
+          map: bank.map || null,
+          packs: (bank.packs || []).length,
+          usedSlots: Number(bank.usedSlots || 0)
+        };
+        return {
+          state: 'READY',
+          reason: 'H12_BANK_READY',
+          bank: {
+            map: bank.map || null,
+            packs: (bank.packs || []).length,
+            usedSlots: Number(bank.usedSlots || 0),
+            freeSlots: Number(bank.freeSlots || 0)
+          }
+        };
+      }
       const inventory = this._inventorySnapshot();
       if (!inventory || inventory.available === false) {
         return { state: 'BLOCKED', reason: 'H12_INVENTORY_UNAVAILABLE' };
@@ -13167,6 +13207,62 @@
         },
         steps: [
           {
+            id: 'bank-discovery',
+            title: 'Bankbestand read-only sichtbar machen',
+            timeoutMs: 120000,
+            run: async ({ runtime, assert, waitFor }) => {
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(game.character.rip !== true, 'CHARACTER_DEAD');
+              assert(String(game.character.ctype || '').toLowerCase() === 'merchant',
+                'H16_BANK_DISCOVERY_REQUIRES_MERCHANT');
+
+              const beforeStatus = runtime.bank.status();
+              assert(beforeStatus && beforeStatus.suspended !== true,
+                beforeStatus && beforeStatus.suspendedReason || 'H12_SUSPENDED_BEFORE_H16_BANK_DISCOVERY');
+              const beforeWrites = bankWriteTotal(beforeStatus);
+              const beforeUnknown = bankUnknownTotal(beforeStatus);
+              const existing = runtime.game.bankSnapshot();
+              if (existing && existing.available !== false) {
+                assert(bankWriteTotal(runtime.bank.status()) === beforeWrites, 'H16_BANK_DISCOVERY_WRITE_DETECTED');
+                return {
+                  alreadyMounted: true,
+                  map: existing.map || null,
+                  packCount: (existing.packs || []).length,
+                  usedSlots: Number(existing.usedSlots || 0),
+                  movementRequests: 0
+                };
+              }
+
+              const movementBefore = Number(beforeStatus.metrics && beforeStatus.metrics.movementRequests || 0);
+              const queued = runtime.bank.queueMount();
+              assert(queued && queued.accepted === true,
+                queued && queued.reason || 'H16_BANK_DISCOVERY_QUEUE_FAILED');
+
+              const bank = await waitFor(() => {
+                const tick = runtime.bank.tick();
+                const current = runtime.bank.status();
+                if (current.suspended) throw new Error(current.suspendedReason || 'H12_SUSPENDED_DURING_H16_BANK_DISCOVERY');
+                if (bankUnknownTotal(current) > beforeUnknown) throw new Error('H16_BANK_DISCOVERY_UNKNOWN');
+                if (bankWriteTotal(current) !== beforeWrites) throw new Error('H16_BANK_DISCOVERY_WRITE_DETECTED');
+                const snapshot = runtime.game.bankSnapshot();
+                return snapshot && snapshot.available !== false && !current.pending && !current.request
+                  ? snapshot
+                  : null;
+              }, { timeoutMs: 110000, pollMs: 150, label: 'h16-bank-discovery' });
+
+              const afterStatus = runtime.bank.status();
+              assert(bankWriteTotal(afterStatus) === beforeWrites, 'H16_BANK_DISCOVERY_WRITE_DETECTED');
+              return {
+                alreadyMounted: false,
+                map: bank.map || null,
+                packCount: (bank.packs || []).length,
+                usedSlots: Number(bank.usedSlots || 0),
+                movementRequests: Number(afterStatus.metrics && afterStatus.metrics.movementRequests || 0) - movementBefore
+              };
+            }
+          },
+          {
             id: 'preflight',
             title: 'Combat-Sicherheit und sichtbares Ziel prüfen',
             timeoutMs: 5000,
@@ -15665,6 +15761,23 @@
         return Number(metrics.npcBuysUnknown || 0) + Number(metrics.marketBuysUnknown || 0);
       };
 
+      const bankUnknownTotal = status => {
+        const metrics = status && status.metrics || {};
+        return Number(metrics.withdrawalsUnknown || 0)
+          + Number(metrics.depositsUnknown || 0)
+          + Number(metrics.goldWithdrawalsUnknown || 0)
+          + Number(metrics.goldDepositsUnknown || 0)
+          + Number(metrics.movementUnknown || 0);
+      };
+
+      const bankWriteTotal = status => {
+        const metrics = status && status.metrics || {};
+        return Number(metrics.withdrawalsDispatched || 0)
+          + Number(metrics.depositsDispatched || 0)
+          + Number(metrics.goldWithdrawalsDispatched || 0)
+          + Number(metrics.goldDepositsDispatched || 0);
+      };
+
       const recipeInputRisk = (runtime, recipe) => {
         let total = 0;
         for (const ingredient of recipe && recipe.items || []) {
@@ -15682,7 +15795,7 @@
         id: 'h16-exchange-craft',
         title: 'H16 – Exchange & Craft',
         description: 'Ein-Klick-Live-Test für Materialbeschaffung, eine kleine niedrig riskante Craft- und Exchange-Sequenz, Live-Outcome-Evidence und Produktionsgraph.',
-        version: '5',
+        version: '6',
         recommended: true,
         autoStartRuntime: true,
         restoreRuntimeState: true,
@@ -15690,6 +15803,7 @@
           try { runtime.exchangeCraft.resetSafety('H16_LIVE_TEST_RESET'); } catch (_) {}
           try { runtime.exchangeCraft.cancelRequest('H16_LIVE_TEST_RESET'); } catch (_) {}
           try { runtime.trade.cancelRequest('H16_LIVE_TEST_RESET'); } catch (_) {}
+          try { runtime.bank.cancelRequest('H16_LIVE_TEST_RESET'); } catch (_) {}
           previousPolicy = runtime.exchangeCraft.policy();
           runtime.exchangeCraft.policy({
             maxAttemptsPerSession: 2,
@@ -15702,6 +15816,7 @@
           });
           const metrics = runtime.exchangeCraft.status().metrics;
           const tradeStatus = runtime.trade.status();
+          const bankStatus = runtime.bank.status();
           baseline = {
             exchangesDispatched: metrics.exchangesDispatched,
             exchangesConfirmed: metrics.exchangesConfirmed,
@@ -15712,6 +15827,8 @@
             craftsRejected: metrics.craftsRejected,
             craftsUnknown: metrics.craftsUnknown,
             tradeUnknown: tradeUnknownTotal(tradeStatus),
+            bankUnknown: bankUnknownTotal(bankStatus),
+            bankWrites: bankWriteTotal(bankStatus),
             materialDelegations: metrics.materialDelegations
           };
           testPlan = null;
@@ -15719,6 +15836,7 @@
         cleanup: async ({ runtime }) => {
           try { runtime.exchangeCraft.cancelRequest('H16_LIVE_TEST_CLEANUP'); } catch (_) {}
           try { runtime.trade.cancelRequest('H16_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try { runtime.bank.cancelRequest('H16_LIVE_TEST_CLEANUP'); } catch (_) {}
           try {
             const current = runtime.exchangeCraft.status();
             if (!current.suspended) runtime.exchangeCraft.resetSafety('H16_LIVE_TEST_CLEANUP');
@@ -15793,7 +15911,7 @@
                     - Number(b.craftCost == null ? Number.MAX_SAFE_INTEGER : b.craftCost)
                   || String(a.itemName || '').localeCompare(String(b.itemName || '')));
                 return {
-                  suiteVersion: 5,
+                  suiteVersion: 6,
                   selectedMode: mode,
                   totalCraftCandidates: (plan.craftCandidates || []).length,
                   safeCraftCandidates: crafts.length,
@@ -15992,6 +16110,16 @@
                     }
 
                     const offers = [];
+                    const bankRow = (row.bankRows || []).find(source =>
+                      source && Math.max(1, Math.floor(Number(source.quantity) || 1)) >= quantity);
+                    if (bankRow) {
+                      offers.push({
+                        source: 'BANK',
+                        unitPrice: 0,
+                        bankRow: { pack: bankRow.pack, slot: bankRow.slot, quantity: bankRow.quantity }
+                      });
+                    }
+
                     const npcPrice = Number(row.npcPrice);
                     const npcAvailable = Number.isFinite(npcPrice) && npcPrice > 0
                       && (row.npcSources || []).some(source => source && source.location);
@@ -16008,11 +16136,16 @@
                     const chosen = offers[0];
                     if (!chosen) {
                       viable = false;
-                      viabilityReason = 'MISSING_LEAF_NO_NPC_OR_MARKET_SOURCE';
+                      viabilityReason = 'MISSING_LEAF_NO_BANK_NPC_OR_MARKET_SOURCE';
                       viabilityDetails = {
                         missingItemName: row.itemName,
                         level,
                         quantity,
+                        bankRows: (row.bankRows || []).slice(0, 4).map(source => ({
+                          pack: source.pack,
+                          slot: source.slot,
+                          quantity: source.quantity
+                        })),
                         npcPrice: Number.isFinite(npcPrice) ? npcPrice : null,
                         npcSources: (row.npcSources || []).slice(0, 4).map(source => ({
                           npcId: source.npcId,
@@ -16029,8 +16162,9 @@
                       itemName: row.itemName,
                       level,
                       quantity,
-                      maxUnitPrice: chosen.unitPrice,
+                      maxUnitPrice: chosen.source === 'BANK' ? null : chosen.unitPrice,
                       expectedSource: chosen.source,
+                      bankSource: chosen.bankRow || null,
                       estimatedCost
                     });
                   }
@@ -16189,33 +16323,52 @@
               const acquired = [];
               for (const material of testPlan.materials) {
                 const before = inventoryQuantity(runtime, material.itemName, material.level);
+                const bankExpected = material.expectedSource === 'BANK';
                 const queued = runtime.exchangeCraft.queueMaterialAcquire(material.itemName, material.quantity, {
                   level: material.level,
                   maxUnitPrice: material.maxUnitPrice,
-                  allowBank: false
+                  allowBank: bankExpected
                 });
                 assert(queued && queued.accepted === true,
                   queued && queued.reason || 'H16_MATERIAL_ACQUIRE_QUEUE_FAILED');
-                assert(queued.delegatedTo === 'trade', 'H16_MATERIAL_ACQUIRE_NOT_DELEGATED_TO_TRADE');
+                assert(queued.delegatedTo === (bankExpected ? 'bank' : 'trade'),
+                  bankExpected ? 'H16_MATERIAL_ACQUIRE_NOT_DELEGATED_TO_BANK' : 'H16_MATERIAL_ACQUIRE_NOT_DELEGATED_TO_TRADE');
 
-                const tradeStatus = await waitFor(() => {
-                  try { runtime.trade.tick(); } catch (_) {}
-                  const current = runtime.trade.status();
-                  if (current.suspended) throw new Error(current.suspendedReason || 'H13_SUSPENDED_DURING_H16_MATERIALS');
-                  if (tradeUnknownTotal(current) > baseline.tradeUnknown) throw new Error('H16_MATERIAL_ACQUIRE_UNKNOWN');
-                  const after = inventoryQuantity(runtime, material.itemName, material.level);
-                  return after >= before + material.quantity && !current.pending && !current.request
-                    ? current
-                    : null;
-                }, { timeoutMs: 80000, pollMs: 150, label: 'h16-material-' + material.itemName });
+                let delegationStatus = null;
+                if (bankExpected) {
+                  const bankUnknownBefore = bankUnknownTotal(runtime.bank.status());
+                  delegationStatus = await waitFor(() => {
+                    try { runtime.bank.tick(); } catch (_) {}
+                    const current = runtime.bank.status();
+                    if (current.suspended) throw new Error(current.suspendedReason || 'H12_SUSPENDED_DURING_H16_MATERIALS');
+                    if (bankUnknownTotal(current) > bankUnknownBefore) throw new Error('H16_BANK_MATERIAL_ACQUIRE_UNKNOWN');
+                    const after = inventoryQuantity(runtime, material.itemName, material.level);
+                    return after >= before + material.quantity && !current.pending && !current.request
+                      ? current
+                      : null;
+                  }, { timeoutMs: 80000, pollMs: 150, label: 'h16-bank-material-' + material.itemName });
+                } else {
+                  delegationStatus = await waitFor(() => {
+                    try { runtime.trade.tick(); } catch (_) {}
+                    const current = runtime.trade.status();
+                    if (current.suspended) throw new Error(current.suspendedReason || 'H13_SUSPENDED_DURING_H16_MATERIALS');
+                    if (tradeUnknownTotal(current) > baseline.tradeUnknown) throw new Error('H16_MATERIAL_ACQUIRE_UNKNOWN');
+                    const after = inventoryQuantity(runtime, material.itemName, material.level);
+                    return after >= before + material.quantity && !current.pending && !current.request
+                      ? current
+                      : null;
+                  }, { timeoutMs: 80000, pollMs: 150, label: 'h16-material-' + material.itemName });
+                }
 
                 acquired.push({
                   itemName: material.itemName,
                   quantity: material.quantity,
                   expectedSource: material.expectedSource,
                   maxUnitPrice: material.maxUnitPrice,
+                  bankSource: material.bankSource || null,
                   estimatedCost: material.estimatedCost,
-                  tradeLastAction: tradeStatus.lastAction || null
+                  delegatedTo: queued.delegatedTo,
+                  delegationLastAction: delegationStatus.lastAction || null
                 });
                 await sleep(1800);
               }
