@@ -2765,3 +2765,2081 @@
     validateNormalizedSnapshot
   };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
+
+
+(function (root) {
+  'use strict';
+
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns) throw new Error('ALBOT_INTERNALS_MISSING');
+
+  const clone = ns.helpers.clone;
+  const cleanText = ns.helpers.cleanText;
+
+  const ACTIONS = Object.freeze({
+    move: Object.freeze({ publicName: 'move', family: 'movement' }),
+    smart_move: Object.freeze({ publicName: 'smart_move', family: 'movement' }),
+    stop: Object.freeze({ publicName: 'stop', family: 'movement-cleanup' }),
+    use_skill: Object.freeze({ publicName: 'use_skill', family: 'skill' }),
+    attack: Object.freeze({ publicName: 'attack', family: 'combat' }),
+    heal: Object.freeze({ publicName: 'heal', family: 'party-heal' }),
+    change_target: Object.freeze({ publicName: 'change_target', family: 'combat-target' }),
+    loot: Object.freeze({ publicName: 'loot', family: 'loot' }),
+    send_item: Object.freeze({ publicName: 'send_item', family: 'merchant-logistics' }),
+    send_gold: Object.freeze({ publicName: 'send_gold', family: 'party-logistics' }),
+    bank_store: Object.freeze({ publicName: 'bank_store', family: 'bank' }),
+    bank_retrieve: Object.freeze({ publicName: 'bank_retrieve', family: 'bank' }),
+    bank_deposit: Object.freeze({ publicName: 'bank_deposit', family: 'bank-gold' }),
+    bank_withdraw: Object.freeze({ publicName: 'bank_withdraw', family: 'bank-gold' }),
+    buy_with_gold: Object.freeze({ publicName: 'buy_with_gold', family: 'npc-trade' }),
+    sell: Object.freeze({ publicName: 'sell', family: 'npc-trade' }),
+    trade_buy: Object.freeze({ publicName: 'trade_buy', family: 'player-trade' }),
+    trade_sell: Object.freeze({ publicName: 'trade_sell', family: 'player-trade' }),
+    equip: Object.freeze({ publicName: 'equip', family: 'gear' }),
+    unequip: Object.freeze({ publicName: 'unequip', family: 'gear' }),
+    upgrade: Object.freeze({ publicName: 'upgrade', family: 'upgrade-compound' }),
+    compound: Object.freeze({ publicName: 'compound', family: 'upgrade-compound' }),
+    exchange: Object.freeze({ publicName: 'exchange', family: 'exchange-craft' }),
+    auto_craft: Object.freeze({ publicName: 'auto_craft', family: 'exchange-craft' }),
+    start_character: Object.freeze({ publicName: 'start_character', family: 'character-lifecycle' }),
+    stop_character: Object.freeze({ publicName: 'stop_character', family: 'character-lifecycle' }),
+    respawn: Object.freeze({ publicName: 'respawn', family: 'character-recovery' }),
+    send_party_invite: Object.freeze({ publicName: 'send_party_invite', family: 'party-recovery' }),
+    send_party_request: Object.freeze({ publicName: 'send_party_request', family: 'party-recovery' }),
+    accept_party_invite: Object.freeze({ publicName: 'accept_party_invite', family: 'party-recovery' }),
+    accept_party_request: Object.freeze({ publicName: 'accept_party_request', family: 'party-recovery' }),
+    leave_party: Object.freeze({ publicName: 'leave_party', family: 'party-recovery' })
+  });
+
+  function errorDetails(error) {
+    return {
+      name: cleanText(error && error.name || 'Error', 80),
+      message: cleanText(error && error.message || error || 'Unknown error', 500),
+      stack: error && error.stack ? String(error.stack).slice(0, 3000) : null
+    };
+  }
+
+  class GameActionBoundary {
+    constructor(options = {}) {
+      this.root = options.root || root;
+      this.logger = options.logger || null;
+      this.assertAllowed = typeof options.assertAllowed === 'function'
+        ? options.assertAllowed
+        : () => true;
+      this.sequence = 0;
+      this.lastAction = null;
+      this.metrics = {
+        attempted: 0,
+        dispatched: 0,
+        unavailable: 0,
+        blocked: 0,
+        synchronousErrors: 0,
+        cleanupDispatches: 0
+      };
+    }
+
+    _roots() {
+      const out = [];
+      let current = this.root;
+      for (let depth = 0; depth < 8 && current; depth += 1) {
+        if (!out.includes(current)) out.push(current);
+        let parentWindow = null;
+        try {
+          parentWindow = current.parent && current.parent !== current ? current.parent : null;
+          if (parentWindow) void parentWindow.document;
+        } catch (_) {
+          parentWindow = null;
+        }
+        if (!parentWindow) break;
+        current = parentWindow;
+      }
+      return out;
+    }
+
+    _resolve(publicName) {
+      for (const candidate of this._roots()) {
+        try {
+          if (candidate && typeof candidate[publicName] === 'function') {
+            return { owner: candidate, fn: candidate[publicName] };
+          }
+        } catch (_) {}
+        try {
+          if (candidate && candidate.parent && typeof candidate.parent[publicName] === 'function') {
+            return { owner: candidate.parent, fn: candidate.parent[publicName] };
+          }
+        } catch (_) {}
+      }
+      return null;
+    }
+
+    available(action) {
+      const def = ACTIONS[action];
+      if (!def) return false;
+      return !!this._resolve(def.publicName);
+    }
+
+    _normalizedCallArgs(action, resolved, args) {
+      if (!['trade_buy', 'trade_sell'].includes(action) || !Array.isArray(args) || args.length < 4) return args;
+      const target = args[0];
+      const tradeSlot = cleanText(args[1] || '', 80);
+      const rid = cleanText(args[2] || '', 160);
+      const quantity = Number(args[3]);
+      if (!target || !target.id || !tradeSlot || !rid || !Number.isFinite(quantity) || quantity <= 0) {
+        throw new Error('ALBOT_PLAYER_TRADE_ARGS_INVALID:' + action);
+      }
+      const live = target.slots && target.slots[tradeSlot];
+      if (!live || String(live.rid || '') !== rid) {
+        throw new Error('ALBOT_PLAYER_TRADE_RID_MISMATCH:' + action);
+      }
+
+      // Adventure Land exposes two compatible layers:
+      // CODE wrapper: trade_buy(target, slot, quantity)
+      // native parent: trade_buy(slot, id, rid, quantity)
+      // Keep one logical boundary contract and adapt only at dispatch time.
+      if (Number(resolved && resolved.fn && resolved.fn.length) >= 4) {
+        return [tradeSlot, target.id, rid, quantity];
+      }
+      return [target, tradeSlot, quantity];
+    }
+
+    dispatch(action, args = [], options = {}) {
+      const def = ACTIONS[action];
+      if (!def) throw new Error('ALBOT_ACTION_UNKNOWN:' + cleanText(action, 80));
+      if (!Array.isArray(args)) throw new Error('ALBOT_ACTION_ARGS_INVALID:' + action);
+
+      const cleanup = options.cleanup === true;
+      if (cleanup && action !== 'stop' && action !== 'use_skill' && action !== 'change_target') {
+        throw new Error('ALBOT_CLEANUP_ACTION_NOT_ALLOWED:' + action);
+      }
+      if (cleanup && action === 'change_target' && args[0] != null) {
+        throw new Error('ALBOT_CLEANUP_TARGET_MUST_CLEAR');
+      }
+
+      this.metrics.attempted += 1;
+      const id = 'act-' + (++this.sequence);
+      const at = new Date().toISOString();
+
+      if (!cleanup) {
+        try {
+          this.assertAllowed(action);
+        } catch (error) {
+          this.metrics.blocked += 1;
+          this.lastAction = {
+            id, at, action, family: def.family, state: 'BLOCKED',
+            cleanup: false, error: errorDetails(error)
+          };
+          throw error;
+        }
+      }
+
+      const resolved = this._resolve(def.publicName);
+      if (!resolved) {
+        this.metrics.unavailable += 1;
+        const result = {
+          id, at, action, family: def.family, state: 'UNAVAILABLE',
+          cleanup, dispatched: false, value: null,
+          error: { name: 'Error', message: 'ALBOT_ACTION_API_UNAVAILABLE:' + def.publicName, stack: null }
+        };
+        this.lastAction = clone(result);
+        return result;
+      }
+
+      try {
+        const callArgs = this._normalizedCallArgs(action, resolved, args);
+        const value = resolved.fn.apply(resolved.owner, callArgs);
+        this.metrics.dispatched += 1;
+        if (cleanup) this.metrics.cleanupDispatches += 1;
+        const result = {
+          id, at, action, family: def.family, state: 'DISPATCHED',
+          cleanup, dispatched: true, value,
+          error: null
+        };
+        this.lastAction = {
+          id, at, action, family: def.family, state: 'DISPATCHED',
+          cleanup, dispatched: true, error: null
+        };
+        if (this.logger) this.logger.info('Game-Aktion gesendet', {
+          id, action, family: def.family, cleanup
+        });
+        return result;
+      } catch (error) {
+        this.metrics.synchronousErrors += 1;
+        const result = {
+          id, at, action, family: def.family, state: 'UNKNOWN',
+          cleanup, dispatched: true, value: null, error: errorDetails(error)
+        };
+        this.lastAction = clone(result);
+        if (this.logger) this.logger.error('Game-Aktion endete synchron unklar', {
+          id, action, family: def.family, cleanup, error: result.error
+        });
+        return result;
+      }
+    }
+
+    status() {
+      return {
+        schemaVersion: 1,
+        supportedActions: Object.keys(ACTIONS),
+        availability: Object.fromEntries(Object.keys(ACTIONS).map(action => [action, this.available(action)])),
+        metrics: clone(this.metrics),
+        lastAction: clone(this.lastAction)
+      };
+    }
+  }
+
+  ns.GameActionBoundary = GameActionBoundary;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+
+(function (root) {
+  'use strict';
+
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns) throw new Error('ALBOT_INTERNALS_MISSING');
+
+  const clone = ns.helpers.clone;
+  const cleanText = ns.helpers.cleanText;
+
+  function finite(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function distance(a, b) {
+    if (!a || !b) return null;
+    const ax = finite(a.x), ay = finite(a.y), bx = finite(b.x), by = finite(b.y);
+    if (ax == null || ay == null || bx == null || by == null) return null;
+    return Math.hypot(ax - bx, ay - by);
+  }
+
+  function errorReason(value, fallback = 'MOVEMENT_UNKNOWN') {
+    if (value && typeof value === 'object') {
+      const raw = value.reason || value.code || value.message;
+      if (raw) return cleanText(raw, 180);
+    }
+    const text = cleanText(value, 180);
+    return text || fallback;
+  }
+
+  class MovementController {
+    constructor(options = {}) {
+      this.root = options.root || root;
+      this.logger = options.logger || null;
+      this.game = options.game;
+      this.actions = options.actions;
+      this.now = typeof options.now === 'function' ? options.now : () => Date.now();
+
+      this.config = {
+        pollMs: Math.max(100, Math.min(1000, Number(options.pollMs) || 200)),
+        localTimeoutMs: Math.max(3000, Math.min(60000, Number(options.localTimeoutMs) || 15000)),
+        smartTimeoutMs: Math.max(10000, Math.min(10 * 60 * 1000, Number(options.smartTimeoutMs) || 120000)),
+        stuckMs: Math.max(1500, Math.min(30000, Number(options.stuckMs) || 6000)),
+        progressEpsilon: Math.max(0.5, Math.min(20, Number(options.progressEpsilon) || 2)),
+        arrivalRadius: Math.max(2, Math.min(100, Number(options.arrivalRadius) || 12)),
+        retargetMinAgeMs: Math.max(250, Math.min(10000, Number(options.retargetMinAgeMs) || 1000)),
+        rapidSwitchMs: Math.max(250, Math.min(10000, Number(options.rapidSwitchMs) || 1500)),
+        pingPongWindowMs: Math.max(1000, Math.min(30000, Number(options.pingPongWindowMs) || 6000)),
+        destinationBucket: Math.max(5, Math.min(100, Number(options.destinationBucket) || 20))
+      };
+
+      this.enabled = false;
+      this.scope = null;
+      this.heartbeat = null;
+      this.pollResourceId = null;
+      this.sequence = 0;
+      this.activeOrder = null;
+      this.lastOrder = null;
+      this.safePoint = null;
+      this.destinationHistory = [];
+      this.metrics = {
+        localMoves: 0,
+        smartMoves: 0,
+        approaches: 0,
+        retargets: 0,
+        safeReturns: 0,
+        completed: 0,
+        cancelled: 0,
+        stuck: 0,
+        failedSafe: 0,
+        unknown: 0,
+        rejected: 0,
+        pingPongBlocks: 0,
+        rapidSwitchBlocks: 0,
+        cleanupStops: 0
+      };
+    }
+
+    start(context) {
+      this.enabled = true;
+      this.scope = context && context.scope || null;
+      this.heartbeat = context && typeof context.heartbeat === 'function' ? context.heartbeat : null;
+      this.captureSafePoint('RUNTIME_START');
+      if (this.heartbeat) this.heartbeat({ phase: 'movement-start', active: false });
+      return this.status();
+    }
+
+    stop(reason = 'MOVEMENT_MODULE_STOP') {
+      this.enabled = false;
+      this._cancelActive(reason, { cleanup: true });
+      this.scope = null;
+      this.heartbeat = null;
+      return this.status();
+    }
+
+    _snapshot() {
+      return this.game && typeof this.game.snapshot === 'function' ? this.game.snapshot() : null;
+    }
+
+    _character() {
+      const snap = this._snapshot();
+      return snap && snap.available ? snap.character : null;
+    }
+
+    _canMoveTo(x, y) {
+      const wantedX = finite(x);
+      const wantedY = finite(y);
+      if (wantedX == null || wantedY == null) return false;
+      const candidates = [];
+      let current = this.root;
+      for (let depth = 0; depth < 8 && current; depth += 1) {
+        if (!candidates.includes(current)) candidates.push(current);
+        let parentWindow = null;
+        try {
+          parentWindow = current.parent && current.parent !== current ? current.parent : null;
+          if (parentWindow) void parentWindow.document;
+        } catch (_) { parentWindow = null; }
+        if (!parentWindow) break;
+        current = parentWindow;
+      }
+      for (const candidate of candidates) {
+        try {
+          if (candidate && typeof candidate.can_move_to === 'function') {
+            return candidate.can_move_to(wantedX, wantedY) !== false;
+          }
+        } catch (_) {
+          return false;
+        }
+        try {
+          if (candidate && candidate.parent && typeof candidate.parent.can_move_to === 'function') {
+            return candidate.parent.can_move_to(wantedX, wantedY) !== false;
+          }
+        } catch (_) {
+          return false;
+        }
+      }
+      return null;
+    }
+
+    _normalizeDestination(destination, currentMap) {
+      if (typeof destination === 'string') {
+        const map = cleanText(destination, 120);
+        if (!map) throw new Error('MOVEMENT_DESTINATION_INVALID');
+        return { map, x: null, y: null };
+      }
+      if (!destination || typeof destination !== 'object') throw new Error('MOVEMENT_DESTINATION_INVALID');
+      const map = cleanText(destination.map || currentMap || '', 120) || null;
+      const x = finite(destination.x);
+      const y = finite(destination.y);
+      if (!map && (x == null || y == null)) throw new Error('MOVEMENT_DESTINATION_INVALID');
+      if ((x == null) !== (y == null)) throw new Error('MOVEMENT_DESTINATION_COORDINATES_INCOMPLETE');
+      return { map, x, y };
+    }
+
+    _destinationKey(destination) {
+      const bucket = this.config.destinationBucket;
+      const x = destination.x == null ? '*' : Math.round(destination.x / bucket);
+      const y = destination.y == null ? '*' : Math.round(destination.y / bucket);
+      return String(destination.map || '*') + ':' + x + ':' + y;
+    }
+
+    _trimHistory(now = this.now()) {
+      const cutoff = now - this.config.pingPongWindowMs;
+      this.destinationHistory = this.destinationHistory.filter(row => row.atMs >= cutoff).slice(-8);
+    }
+
+    _antiPingPong(destination, options = {}) {
+      const now = this.now();
+      this._trimHistory(now);
+      const key = this._destinationKey(destination);
+      if (options.safety === true) return { ok: true, key };
+      const last = this.destinationHistory[this.destinationHistory.length - 1] || null;
+
+      if (last && last.key !== key && !options.retarget && now - last.atMs < this.config.rapidSwitchMs) {
+        this.metrics.rapidSwitchBlocks += 1;
+        return { ok: false, reason: 'MOVEMENT_RAPID_SWITCH_BLOCKED', key, previousKey: last.key };
+      }
+
+      if (last && last.key !== key) {
+        const olderSame = this.destinationHistory.slice(0, -1).reverse().find(row => row.key === key);
+        if (olderSame && now - olderSame.atMs < this.config.pingPongWindowMs) {
+          this.metrics.pingPongBlocks += 1;
+          return { ok: false, reason: 'MOVEMENT_PINGPONG_BLOCKED', key, previousKey: last.key };
+        }
+      }
+      return { ok: true, key };
+    }
+
+    _recordDestination(key, kind) {
+      const now = this.now();
+      this._trimHistory(now);
+      this.destinationHistory.push({ key, kind, atMs: now });
+      this._trimHistory(now);
+    }
+
+    _preflight(kind, destination, options = {}) {
+      if (!this.enabled) return { ok: false, reason: 'MOVEMENT_MODULE_NOT_ACTIVE' };
+      if (this.activeOrder && options.allowActive !== true) return { ok: false, reason: 'MOVEMENT_BUSY' };
+
+      const snap = this._snapshot();
+      const character = snap && snap.character;
+      if (!snap || !snap.available || !character) return { ok: false, reason: 'CHARACTER_UNAVAILABLE' };
+      if (character.rip === true) return { ok: false, reason: 'CHARACTER_DEAD' };
+
+      let normalized;
+      try { normalized = this._normalizeDestination(destination, character.map); }
+      catch (error) { return { ok: false, reason: errorReason(error, 'MOVEMENT_DESTINATION_INVALID') }; }
+
+      if (kind === 'local') {
+        if (normalized.map && character.map && String(normalized.map) !== String(character.map)) {
+          return { ok: false, reason: 'LOCAL_MOVE_CROSS_MAP_REJECTED' };
+        }
+        if (normalized.x == null || normalized.y == null) return { ok: false, reason: 'LOCAL_MOVE_COORDINATES_REQUIRED' };
+        const passable = this._canMoveTo(normalized.x, normalized.y);
+        if (passable === false) return { ok: false, reason: 'LOCAL_DESTINATION_NOT_WALKABLE' };
+      }
+
+      if (kind === 'smart'
+        && normalized.x == null
+        && normalized.y == null
+        && normalized.map
+        && character.map
+        && String(normalized.map) === String(character.map)) {
+        return { ok: false, reason: 'SMART_MOVE_SAME_MAP_NEEDS_COORDINATES' };
+      }
+
+      const anti = this._antiPingPong(normalized, options);
+      if (!anti.ok) return { ...anti, destination: normalized };
+      return { ok: true, character, destination: normalized, key: anti.key };
+    }
+
+    _publicOrder(order) {
+      if (!order) return null;
+      const copy = clone(order);
+      delete copy.promise;
+      return copy;
+    }
+
+    _cancelPoll(reason) {
+      if (this.pollResourceId && this.scope) {
+        try { this.scope.cancel(this.pollResourceId, reason || 'MOVEMENT_POLL_CANCEL'); } catch (_) {}
+      }
+      this.pollResourceId = null;
+    }
+
+    _bestEffortStop(reason, options = {}) {
+      const results = [];
+      const smart = options.smart !== false;
+      const local = options.local !== false;
+      if (smart && this.actions) {
+        try {
+          const result = this.actions.dispatch('stop', ['smart'], { cleanup: true });
+          results.push({ action: 'stop-smart', state: result.state });
+          if (result.dispatched) this.metrics.cleanupStops += 1;
+        } catch (_) {}
+      }
+      if (local && this.actions && this.actions.available('use_skill')) {
+        try {
+          const result = this.actions.dispatch('use_skill', ['stop'], { cleanup: true });
+          results.push({ action: 'use-skill-stop', state: result.state });
+          if (result.dispatched) this.metrics.cleanupStops += 1;
+        } catch (_) {}
+      }
+      if (this.logger && results.length) this.logger.warn('Bewegung bestmöglich gestoppt', { reason, results });
+      return results;
+    }
+
+    _finish(state, reason, options = {}) {
+      const order = this.activeOrder;
+      if (!order) return null;
+      this._cancelPoll('MOVEMENT_' + state);
+
+      order.state = state;
+      order.reason = reason;
+      order.finishedAt = new Date().toISOString();
+      order.finishedAtMs = this.now();
+      order.lastObserved = options.lastObserved || order.lastObserved || null;
+
+      if (state === 'COMPLETED') this.metrics.completed += 1;
+      else if (state === 'CANCELLED') this.metrics.cancelled += 1;
+      else if (state === 'STUCK') this.metrics.stuck += 1;
+      else if (state === 'UNKNOWN') this.metrics.unknown += 1;
+      else if (state === 'FAILED_SAFE') this.metrics.failedSafe += 1;
+
+      if (options.stop !== false && state !== 'COMPLETED') {
+        this._bestEffortStop(reason, { smart: order.kind === 'smart', local: true });
+      } else if (options.stopOnArrival === true && order.kind === 'smart') {
+        this._bestEffortStop('ARRIVAL_VERIFIED', { smart: true, local: false });
+      }
+
+      this.lastOrder = this._publicOrder(order);
+      this.activeOrder = null;
+      if (this.heartbeat) this.heartbeat({ phase: 'movement-terminal', state, reason, orderId: order.id });
+
+      if (this.logger) {
+        const data = { id: order.id, kind: order.kind, state, reason, destination: order.destination };
+        if (state === 'COMPLETED') this.logger.info('Bewegungsauftrag abgeschlossen', data);
+        else this.logger.warn('Bewegungsauftrag beendet', data);
+      }
+      return this.lastOrder;
+    }
+
+    _observeOrder() {
+      const order = this.activeOrder;
+      if (!order) return;
+      const snap = this._snapshot();
+      const character = snap && snap.character;
+      const now = this.now();
+
+      if (!snap || !snap.available || !character) {
+        this._finish('UNKNOWN', 'CHARACTER_OBSERVATION_LOST');
+        return;
+      }
+      if (character.rip === true) {
+        this._finish('FAILED_SAFE', 'CHARACTER_DEAD', { lastObserved: character });
+        return;
+      }
+
+      const sameMap = !order.destination.map || String(character.map || '') === String(order.destination.map);
+      const currentDistance = sameMap && order.destination.x != null
+        ? distance(character, order.destination)
+        : null;
+
+      const observed = {
+        at: new Date().toISOString(),
+        atMs: now,
+        map: character.map || null,
+        x: finite(character.x),
+        y: finite(character.y),
+        moving: character.moving === true,
+        distance: currentDistance
+      };
+      order.lastObserved = observed;
+
+      const arrivedByPosition = sameMap
+        && currentDistance != null
+        && currentDistance <= order.arrivalRadius;
+      const arrivedByMap = sameMap
+        && order.destination.x == null
+        && order.destination.y == null
+        && String(character.map || '') === String(order.destination.map || '');
+
+      if (arrivedByPosition || arrivedByMap) {
+        this._finish('COMPLETED', 'ARRIVAL_VERIFIED', {
+          lastObserved: observed,
+          stop: false,
+          stopOnArrival: true
+        });
+        return;
+      }
+
+      let progress = false;
+      if (order.lastMap != null && String(character.map || '') !== String(order.lastMap)) progress = true;
+      if (currentDistance != null && (order.bestDistance == null || currentDistance < order.bestDistance - this.config.progressEpsilon)) {
+        order.bestDistance = currentDistance;
+        progress = true;
+      }
+      if (progress) {
+        order.lastProgressAtMs = now;
+        order.progressEvents += 1;
+      }
+      order.lastMap = character.map || null;
+
+      if (now >= order.deadlineAtMs) {
+        this._finish('FAILED_SAFE', 'MOVEMENT_TIMEOUT', { lastObserved: observed });
+        return;
+      }
+
+      if (now - order.lastProgressAtMs >= this.config.stuckMs) {
+        this._finish('STUCK', 'MOVEMENT_STUCK_NO_PROGRESS', { lastObserved: observed });
+        return;
+      }
+
+      if (this.heartbeat) this.heartbeat({
+        phase: 'movement-active',
+        orderId: order.id,
+        kind: order.kind,
+        distance: currentDistance,
+        progressEvents: order.progressEvents
+      });
+    }
+
+    _watchCommand(order, dispatch) {
+      if (!dispatch || dispatch.state !== 'DISPATCHED') return;
+      const value = dispatch.value;
+      if (!value || typeof value.then !== 'function') {
+        order.commandSettlement = 'RETURNED';
+        return;
+      }
+
+      order.commandSettlement = 'PENDING';
+      Promise.resolve(value).then(response => {
+        if (!this.activeOrder || this.activeOrder.id !== order.id) return;
+        order.commandResponse = response == null ? null : clone(response);
+        if (response && response.failed === true) {
+          order.commandSettlement = 'FAILED';
+          this._finish('FAILED_SAFE', errorReason(response.reason || response, 'MOVEMENT_COMMAND_FAILED'));
+          return;
+        }
+        order.commandSettlement = 'RESOLVED';
+        // Return/resolve is not arrival evidence. Observation decides completion.
+      }, error => {
+        if (!this.activeOrder || this.activeOrder.id !== order.id) return;
+        order.commandSettlement = 'REJECTED';
+        order.commandError = errorReason(error, 'MOVEMENT_COMMAND_REJECTED');
+        this._finish('UNKNOWN', order.commandError);
+      }).catch(() => {});
+    }
+
+    _startOrder(kind, destination, options = {}) {
+      const check = this._preflight(kind, destination, options);
+      if (!check.ok) {
+        this.metrics.rejected += 1;
+        if (this.logger) this.logger.warn('Bewegungsauftrag abgelehnt', { kind, reason: check.reason, destination: check.destination || destination });
+        return { accepted: false, reason: check.reason, status: this.status() };
+      }
+
+      const now = this.now();
+      const character = check.character;
+      const arrivalRadius = Math.max(2, Math.min(100, Number(options.arrivalRadius) || this.config.arrivalRadius));
+      const timeoutMs = kind === 'local'
+        ? Math.max(1000, Number(options.timeoutMs) || this.config.localTimeoutMs)
+        : Math.max(3000, Number(options.timeoutMs) || this.config.smartTimeoutMs);
+
+      const order = {
+        id: 'move-' + (++this.sequence),
+        kind,
+        owner: cleanText(options.owner || 'manual', 80) || 'manual',
+        state: 'STARTING',
+        reason: null,
+        destination: check.destination,
+        destinationKey: check.key,
+        arrivalRadius,
+        startedAt: new Date().toISOString(),
+        startedAtMs: now,
+        deadlineAtMs: now + timeoutMs,
+        lastProgressAtMs: now,
+        progressEvents: 0,
+        bestDistance: distance(character, check.destination),
+        lastMap: character.map || null,
+        lastObserved: {
+          at: new Date().toISOString(),
+          atMs: now,
+          map: character.map || null,
+          x: finite(character.x),
+          y: finite(character.y),
+          moving: character.moving === true,
+          distance: distance(character, check.destination)
+        },
+        commandSettlement: 'NOT_SENT',
+        commandResponse: null,
+        commandError: null,
+        retargetedFrom: options.retargetedFrom || null
+      };
+
+      this.activeOrder = order;
+      this._recordDestination(check.key, kind);
+
+      const action = kind === 'local' ? 'move' : 'smart_move';
+      const args = kind === 'local'
+        ? [check.destination.x, check.destination.y]
+        : [check.destination.x == null
+          ? check.destination.map
+          : { map: check.destination.map, x: check.destination.x, y: check.destination.y }];
+
+      let dispatch;
+      try {
+        dispatch = this.actions.dispatch(action, args);
+      } catch (error) {
+        order.commandSettlement = 'BLOCKED';
+        this._finish('FAILED_SAFE', errorReason(error, 'MOVEMENT_ACTION_BLOCKED'), { stop: false });
+        return { accepted: false, reason: this.lastOrder.reason, order: clone(this.lastOrder) };
+      }
+
+      if (!dispatch || dispatch.state === 'UNAVAILABLE') {
+        order.commandSettlement = 'UNAVAILABLE';
+        this._finish('FAILED_SAFE', 'MOVEMENT_API_UNAVAILABLE', { stop: false });
+        return { accepted: false, reason: 'MOVEMENT_API_UNAVAILABLE', order: clone(this.lastOrder) };
+      }
+      if (dispatch.state === 'UNKNOWN') {
+        order.commandSettlement = 'UNKNOWN';
+        this._finish('UNKNOWN', errorReason(dispatch.error, 'MOVEMENT_DISPATCH_UNKNOWN'));
+        return { accepted: false, reason: this.lastOrder.reason, order: clone(this.lastOrder) };
+      }
+
+      order.state = 'ACTIVE';
+      order.commandSettlement = 'DISPATCHED';
+      if (kind === 'local') this.metrics.localMoves += 1;
+      else this.metrics.smartMoves += 1;
+
+      if (!this.scope) {
+        this._finish('UNKNOWN', 'MOVEMENT_SCOPE_UNAVAILABLE');
+        return { accepted: false, reason: 'MOVEMENT_SCOPE_UNAVAILABLE', order: clone(this.lastOrder) };
+      }
+
+      this.pollResourceId = this.scope.interval(
+        'movement-observer:' + order.id,
+        () => this._observeOrder(),
+        this.config.pollMs,
+        { immediate: false }
+      );
+      this._observeOrder();
+      this._watchCommand(order, dispatch);
+
+      if (this.logger) this.logger.warn('Bewegungsauftrag gestartet', {
+        id: order.id,
+        kind,
+        owner: order.owner,
+        destination: order.destination,
+        arrivalRadius
+      });
+      return { accepted: true, order: this._publicOrder(order) };
+    }
+
+    moveLocal(x, y, options = {}) {
+      const character = this._character();
+      return this._startOrder('local', {
+        map: character && character.map || null,
+        x,
+        y
+      }, options);
+    }
+
+    smartMove(destination, options = {}) {
+      return this._startOrder('smart', destination, options);
+    }
+
+    approachCurrentTarget(options = {}) {
+      const snap = this._snapshot();
+      const character = snap && snap.character;
+      const target = snap && snap.target;
+      if (!character || !target || target.dead === true) {
+        this.metrics.rejected += 1;
+        return { accepted: false, reason: 'MOVEMENT_TARGET_UNAVAILABLE', status: this.status() };
+      }
+      if (target.map && character.map && String(target.map) !== String(character.map)) {
+        this.metrics.rejected += 1;
+        return { accepted: false, reason: 'MOVEMENT_TARGET_CROSS_MAP', status: this.status() };
+      }
+      const d = distance(character, target);
+      if (d == null || d <= 0) {
+        this.metrics.rejected += 1;
+        return { accepted: false, reason: 'MOVEMENT_TARGET_DISTANCE_UNAVAILABLE', status: this.status() };
+      }
+      const desired = Math.max(0, Math.min(d, Number(options.distance) || Math.max(10, Number(character.range) * 0.8 || 40)));
+      if (d <= desired + this.config.arrivalRadius) {
+        return { accepted: true, completed: true, reason: 'ALREADY_IN_APPROACH_RANGE', distance: d };
+      }
+      const dx = Number(target.x) - Number(character.x);
+      const dy = Number(target.y) - Number(character.y);
+      const x = Number(target.x) - (dx / d) * desired;
+      const y = Number(target.y) - (dy / d) * desired;
+      this.metrics.approaches += 1;
+
+      const localAllowed = this._canMoveTo(x, y);
+      if (localAllowed !== false) {
+        return this._startOrder('local', { map: character.map, x, y }, {
+          ...options,
+          owner: options.owner || 'target-approach'
+        });
+      }
+      return this._startOrder('smart', { map: character.map, x, y }, {
+        ...options,
+        owner: options.owner || 'target-approach'
+      });
+    }
+
+    retarget(destination, options = {}) {
+      const active = this.activeOrder;
+      if (!active) {
+        return options.local === true
+          ? this.moveLocal(destination && destination.x, destination && destination.y, options)
+          : this.smartMove(destination, options);
+      }
+
+      const now = this.now();
+      if (now - active.startedAtMs < this.config.retargetMinAgeMs) {
+        this.metrics.rejected += 1;
+        return { accepted: false, reason: 'MOVEMENT_RETARGET_TOO_SOON', status: this.status() };
+      }
+
+      let normalized;
+      try {
+        const character = this._character();
+        normalized = this._normalizeDestination(destination, character && character.map);
+      } catch (error) {
+        this.metrics.rejected += 1;
+        return { accepted: false, reason: errorReason(error, 'MOVEMENT_DESTINATION_INVALID'), status: this.status() };
+      }
+      const key = this._destinationKey(normalized);
+      if (key === active.destinationKey) {
+        return { accepted: true, changed: false, reason: 'MOVEMENT_DESTINATION_UNCHANGED', order: this._publicOrder(active) };
+      }
+
+      const anti = this._antiPingPong(normalized, { retarget: true });
+      if (!anti.ok) {
+        this.metrics.rejected += 1;
+        return { accepted: false, reason: anti.reason, status: this.status() };
+      }
+
+      const previousId = active.id;
+      this._cancelActive('RETARGET', { cleanup: true });
+      this.metrics.retargets += 1;
+      return options.local === true
+        ? this._startOrder('local', normalized, { ...options, retarget: true, retargetedFrom: previousId })
+        : this._startOrder('smart', normalized, { ...options, retarget: true, retargetedFrom: previousId });
+    }
+
+    _cancelActive(reason, options = {}) {
+      if (!this.activeOrder) {
+        if (options.forceCleanup === true) this._bestEffortStop(reason, { smart: true, local: true });
+        return { cancelled: false, reason: 'NO_ACTIVE_MOVEMENT' };
+      }
+      const id = this.activeOrder.id;
+      const order = this._finish('CANCELLED', cleanText(reason || 'MOVEMENT_CANCELLED', 180), {
+        stop: options.cleanup !== false
+      });
+      return { cancelled: true, orderId: id, order };
+    }
+
+    cancel(reason = 'MANUAL_CANCEL') {
+      return this._cancelActive(reason, { cleanup: true });
+    }
+
+    emergencyStop(reason = 'EMERGENCY_STOP') {
+      return this._cancelActive(reason, { cleanup: true, forceCleanup: true });
+    }
+
+    captureSafePoint(source = 'MANUAL') {
+      const character = this._character();
+      if (!character || !character.map || finite(character.x) == null || finite(character.y) == null) {
+        return { captured: false, reason: 'CHARACTER_POSITION_UNAVAILABLE' };
+      }
+      this.safePoint = {
+        map: character.map,
+        x: finite(character.x),
+        y: finite(character.y),
+        capturedAt: new Date().toISOString(),
+        source: cleanText(source, 80)
+      };
+      return { captured: true, safePoint: clone(this.safePoint) };
+    }
+
+    safeReturn(options = {}) {
+      if (!this.safePoint) return { accepted: false, reason: 'SAFE_POINT_UNAVAILABLE' };
+      this.metrics.safeReturns += 1;
+      const character = this._character();
+      if (character && String(character.map || '') === String(this.safePoint.map || '')) {
+        const can = this._canMoveTo(this.safePoint.x, this.safePoint.y);
+        if (can !== false) {
+          return this._startOrder('local', this.safePoint, {
+            ...options,
+            owner: options.owner || 'safe-return',
+            safety: true
+          });
+        }
+      }
+      return this._startOrder('smart', this.safePoint, {
+        ...options,
+        owner: options.owner || 'safe-return',
+        safety: true
+      });
+    }
+
+    status() {
+      return {
+        schemaVersion: 1,
+        enabled: this.enabled,
+        state: this.activeOrder ? this.activeOrder.state : 'IDLE',
+        active: !!this.activeOrder,
+        activeOrder: this._publicOrder(this.activeOrder),
+        lastOrder: clone(this.lastOrder),
+        safePoint: clone(this.safePoint),
+        config: clone(this.config),
+        recentDestinations: clone(this.destinationHistory.slice(-5)),
+        metrics: clone(this.metrics)
+      };
+    }
+  }
+
+  ns.MovementController = MovementController;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+
+(function (root) {
+  'use strict';
+
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns) throw new Error('ALBOT_INTERNALS_MISSING');
+
+  const clone = ns.helpers.clone;
+  const cleanText = ns.helpers.cleanText;
+
+  const SUPPORTED_CLASSES = Object.freeze(['warrior', 'ranger', 'mage', 'priest', 'rogue', 'paladin']);
+  const CLASS_SKILLS = Object.freeze({
+    warrior: Object.freeze(['hardshell', 'charge', 'taunt', 'warcry']),
+    ranger: Object.freeze(['huntersmark', 'supershot']),
+    mage: Object.freeze(['burst']),
+    priest: Object.freeze(['curse', 'darkblessing']),
+    rogue: Object.freeze(['invis', 'mentalburst', 'quickpunch']),
+    paladin: Object.freeze(['selfheal', 'smash'])
+  });
+
+  function finite(value) {
+    if (value == null || value === '') return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function ratio(value, max) {
+    const current = finite(value);
+    const total = finite(max);
+    if (current == null || total == null || total <= 0) return null;
+    return Math.max(0, Math.min(1, current / total));
+  }
+
+  function errorReason(value, fallback = 'CLASS_SKILL_UNKNOWN') {
+    if (value && typeof value === 'object') {
+      const raw = value.reason || value.code || value.message;
+      if (raw) return cleanText(raw, 240);
+    }
+    const text = cleanText(value, 240);
+    return text || fallback;
+  }
+
+  class ClassSkillController {
+    constructor(options = {}) {
+      this.root = options.root || root;
+      this.logger = options.logger || null;
+      this.game = options.game;
+      this.actions = options.actions;
+      this.now = typeof options.now === 'function' ? options.now : () => Date.now();
+      this.config = {
+        minGlobalIntervalMs: Math.max(150, Math.min(2000, Number(options.minGlobalIntervalMs) || 350)),
+        rejectionBackoffMs: Math.max(1000, Math.min(30000, Number(options.rejectionBackoffMs) || 5000)),
+        mpReserveRatio: Math.max(0, Math.min(0.8, Number(options.mpReserveRatio) || 0.20)),
+        defensiveHpRatio: Math.max(0.35, Math.min(0.8, Number(options.defensiveHpRatio) || 0.50)),
+        paladinHealHpRatio: Math.max(0.40, Math.min(0.9, Number(options.paladinHealHpRatio) || 0.70)),
+        longFightHpFactor: Math.max(2, Math.min(20, Number(options.longFightHpFactor) || 4))
+      };
+
+      this.active = false;
+      this.sessionId = null;
+      this.pending = null;
+      this.pendingGeneration = 0;
+      this.suspendedSessionId = null;
+      this.suspendedReason = null;
+      this.lastAttemptAtMs = 0;
+      this.lastDecision = null;
+      this.lastUse = null;
+      this.suppression = new Map();
+      this.metrics = {
+        decisions: 0,
+        dispatched: 0,
+        confirmed: 0,
+        rejected: 0,
+        unknown: 0,
+        damageSkills: 0,
+        supportSkills: 0,
+        defensiveSkills: 0,
+        mobilitySkills: 0,
+        skillKillsConfirmed: 0,
+        cooldownSkips: 0,
+        mpSkips: 0,
+        rangeSkips: 0,
+        spamSkips: 0,
+        overkillSkips: 0,
+        unavailableSkips: 0,
+        activeConditionSkips: 0
+      };
+    }
+
+    start() {
+      this.active = true;
+      return this.status();
+    }
+
+    stop(reason = 'CLASS_SKILLS_STOP') {
+      this.active = false;
+      this.endSession(reason);
+      return this.status();
+    }
+
+    beginSession(sessionId) {
+      const id = cleanText(sessionId || '', 120) || null;
+      if (id && id !== this.sessionId) {
+        this.sessionId = id;
+        this.suspendedSessionId = null;
+        this.suspendedReason = null;
+        this.pendingGeneration += 1;
+        this.pending = null;
+      }
+      return this.status();
+    }
+
+    endSession(reason = 'COMBAT_SESSION_END') {
+      this.pendingGeneration += 1;
+      this.pending = null;
+      this.sessionId = null;
+      this.suspendedSessionId = null;
+      this.suspendedReason = null;
+      this.lastDecision = this.lastDecision ? { ...this.lastDecision, sessionEndReason: cleanText(reason, 180) } : null;
+      return this.status();
+    }
+
+    supportedSkills(ctype) {
+      const key = cleanText(ctype || '', 60).toLowerCase();
+      return (CLASS_SKILLS[key] || []).slice();
+    }
+
+    liveSkillSummary(ctype) {
+      return this.supportedSkills(ctype).map(id => {
+        const definition = this.game && typeof this.game.skillDefinition === 'function'
+          ? this.game.skillDefinition(id)
+          : null;
+        return { id, available: !!definition, definition };
+      });
+    }
+
+    _suppressionKey(skillId, targetId) {
+      return String(skillId) + ':' + (targetId == null ? '*' : String(targetId));
+    }
+
+    _isSuppressed(skillId, targetId) {
+      const key = this._suppressionKey(skillId, targetId);
+      const until = this.suppression.get(key) || 0;
+      if (until <= this.now()) {
+        if (until) this.suppression.delete(key);
+        return false;
+      }
+      return true;
+    }
+
+    _suppress(skillId, targetId, ms) {
+      const duration = Math.max(0, Number(ms) || 0);
+      if (!duration) return;
+      this.suppression.set(this._suppressionKey(skillId, targetId), this.now() + duration);
+      if (this.suppression.size > 80) {
+        const now = this.now();
+        for (const [key, until] of this.suppression.entries()) {
+          if (until <= now) this.suppression.delete(key);
+        }
+      }
+    }
+
+    _skillCandidate(skillId, target, game, options = {}) {
+      const targetId = options.targeted === false ? null : (target && target.id);
+      if (this._isSuppressed(skillId, targetId)) {
+        this.metrics.spamSkips += 1;
+        return null;
+      }
+
+      const readiness = this.game.skillReadiness(skillId, targetId);
+      if (!readiness || !readiness.available) {
+        this.metrics.unavailableSkips += 1;
+        return null;
+      }
+      if (readiness.activeCondition && options.skipIfActive !== false) {
+        this.metrics.activeConditionSkips += 1;
+        return null;
+      }
+      if (!readiness.allowed) {
+        const reasons = readiness.reasons || [];
+        if (reasons.includes('SKILL_COOLDOWN') || reasons.includes('SKILL_CAN_USE_FALSE')) this.metrics.cooldownSkips += 1;
+        if (reasons.includes('SKILL_MP_TOO_LOW')) this.metrics.mpSkips += 1;
+        if (reasons.includes('SKILL_OUT_OF_RANGE') || reasons.includes('SKILL_TARGET_UNAVAILABLE')) this.metrics.rangeSkips += 1;
+        return null;
+      }
+
+      const character = game && game.character;
+      const cost = finite(readiness.definition && readiness.definition.mp) || 0;
+      const mp = finite(character && character.mp);
+      const maxMp = finite(character && character.maxMp);
+      const reserveRatio = options.mpReserveRatio == null ? this.config.mpReserveRatio : Number(options.mpReserveRatio);
+      if (mp != null && maxMp != null && maxMp > 0 && mp - cost < maxMp * reserveRatio) {
+        this.metrics.mpSkips += 1;
+        return null;
+      }
+
+      return {
+        id: skillId,
+        targetId,
+        readiness,
+        args: targetId == null ? [skillId] : [skillId, String(targetId)],
+        kind: options.kind || 'support',
+        reason: options.reason || 'CLASS_SKILL_SELECTED',
+        recastMs: Math.max(0, Number(options.recastMs) || 0),
+        baselineHp: target && finite(target.hp),
+        utility: Number(options.utility) || 0
+      };
+    }
+
+    _choose(game, target) {
+      const character = game && game.character;
+      if (!character || !target) return null;
+      const ctype = String(character.ctype || '').toLowerCase();
+      if (!SUPPORTED_CLASSES.includes(ctype)) return null;
+
+      const hpRatio = ratio(character.hp, character.maxHp);
+      const mpRatio = ratio(character.mp, character.maxMp);
+      const attack = Math.max(1, finite(character.attack) || 100);
+      const targetHp = finite(target.hp);
+      const distance = finite(target.distance);
+      const range = Math.max(1, finite(character.range) || 40);
+      const longFight = targetHp != null && targetHp >= attack * this.config.longFightHpFactor;
+
+      if (ctype === 'warrior') {
+        if (hpRatio != null && hpRatio <= this.config.defensiveHpRatio) {
+          const defensive = this._skillCandidate('hardshell', target, game, {
+            targeted: false,
+            kind: 'defensive',
+            reason: 'WARRIOR_LOW_HP_HARDSHELL',
+            recastMs: 12000,
+            utility: 300
+          });
+          if (defensive) return defensive;
+        }
+        if (distance != null && distance > Math.max(35, range * 1.4)) {
+          const charge = this._skillCandidate('charge', target, game, {
+            targeted: false,
+            kind: 'mobility',
+            reason: 'WARRIOR_CLOSE_DISTANCE_CHARGE',
+            recastMs: 30000,
+            utility: 220
+          });
+          if (charge) return charge;
+        }
+        if (target.targetId !== character.name) {
+          const taunt = this._skillCandidate('taunt', target, game, {
+            kind: 'support',
+            reason: target.targetId ? 'WARRIOR_RECLAIM_AGGRO' : 'WARRIOR_CONTROLLED_ENGAGE_TAUNT',
+            recastMs: 12000,
+            utility: 180
+          });
+          if (taunt) return taunt;
+        }
+        if (longFight && mpRatio != null && mpRatio >= 0.65) {
+          const warcry = this._skillCandidate('warcry', target, game, {
+            targeted: false,
+            kind: 'support',
+            reason: 'WARRIOR_LONG_FIGHT_WARCRY',
+            recastMs: 55000,
+            utility: 120
+          });
+          if (warcry) return warcry;
+        }
+      }
+
+      if (ctype === 'ranger') {
+        if (longFight && mpRatio != null && mpRatio >= 0.50) {
+          const mark = this._skillCandidate('huntersmark', target, game, {
+            kind: 'support',
+            reason: 'RANGER_LONG_FIGHT_HUNTERSMARK',
+            recastMs: 10000,
+            utility: 220
+          });
+          if (mark) return mark;
+        }
+        if (targetHp != null && targetHp > Math.max(150, attack * 1.5)) {
+          const shot = this._skillCandidate('supershot', target, game, {
+            kind: 'damage',
+            reason: 'RANGER_SUPERSHOT_SAFE_DAMAGE',
+            recastMs: 25000,
+            utility: 180
+          });
+          if (shot) return shot;
+        } else if (targetHp != null) {
+          this.metrics.overkillSkips += 1;
+        }
+      }
+
+      if (ctype === 'mage') {
+        if (targetHp != null && targetHp > Math.max(100, attack * 1.3)) {
+          const burst = this._skillCandidate('burst', target, game, {
+            kind: 'damage',
+            reason: 'MAGE_BURST_SAFE_DAMAGE',
+            recastMs: 5000,
+            utility: 180
+          });
+          if (burst) return burst;
+        } else if (targetHp != null) {
+          this.metrics.overkillSkips += 1;
+        }
+      }
+
+      if (ctype === 'priest') {
+        if (longFight && mpRatio != null && mpRatio >= 0.80) {
+          const blessing = this._skillCandidate('darkblessing', target, game, {
+            targeted: false,
+            kind: 'support',
+            reason: 'PRIEST_LONG_FIGHT_DARKBLESSING',
+            recastMs: 55000,
+            utility: 200
+          });
+          if (blessing) return blessing;
+        }
+        if (targetHp != null && targetHp > Math.max(300, attack * 3) && mpRatio != null && mpRatio >= 0.55) {
+          const curse = this._skillCandidate('curse', target, game, {
+            kind: 'support',
+            reason: 'PRIEST_LONG_FIGHT_CURSE',
+            recastMs: 5000,
+            utility: 170
+          });
+          if (curse) return curse;
+        }
+      }
+
+      if (ctype === 'rogue') {
+        if (hpRatio != null && hpRatio <= this.config.defensiveHpRatio) {
+          const invis = this._skillCandidate('invis', target, game, {
+            targeted: false,
+            kind: 'defensive',
+            reason: 'ROGUE_LOW_HP_INVIS',
+            recastMs: 10000,
+            utility: 300
+          });
+          if (invis) return invis;
+        }
+        if (targetHp != null && targetHp > Math.max(140, attack * 1.5)) {
+          const burst = this._skillCandidate('mentalburst', target, game, {
+            kind: 'damage',
+            reason: 'ROGUE_MENTALBURST_SAFE_DAMAGE',
+            recastMs: 750,
+            utility: 190
+          });
+          if (burst) return burst;
+        }
+        if (targetHp != null && targetHp > Math.max(90, attack * 1.15)) {
+          const punch = this._skillCandidate('quickpunch', target, game, {
+            kind: 'damage',
+            reason: 'ROGUE_QUICKPUNCH_SAFE_DAMAGE',
+            recastMs: 300,
+            utility: 150
+          });
+          if (punch) return punch;
+        } else if (targetHp != null) {
+          this.metrics.overkillSkips += 1;
+        }
+      }
+
+      if (ctype === 'paladin') {
+        if (hpRatio != null && hpRatio <= this.config.paladinHealHpRatio) {
+          const heal = this._skillCandidate('selfheal', target, game, {
+            targeted: false,
+            kind: 'defensive',
+            reason: 'PALADIN_SELFHEAL_THRESHOLD',
+            recastMs: 1000,
+            utility: 280,
+            mpReserveRatio: 0.05
+          });
+          if (heal) return heal;
+        }
+        if (targetHp != null && targetHp > Math.max(150, attack * 1.5)) {
+          const smash = this._skillCandidate('smash', target, game, {
+            kind: 'damage',
+            reason: 'PALADIN_SMASH_SAFE_DAMAGE',
+            recastMs: 400,
+            utility: 170
+          });
+          if (smash) return smash;
+        } else if (targetHp != null) {
+          this.metrics.overkillSkips += 1;
+        }
+      }
+
+      return null;
+    }
+
+    preview(targetId) {
+      const game = this.game && typeof this.game.snapshot === 'function' ? this.game.snapshot() : null;
+      if (!game || !game.character) return null;
+      const targets = this.game && typeof this.game.visibleMonsters === 'function' ? this.game.visibleMonsters() : [];
+      const target = targetId == null
+        ? (game.target || targets[0] || null)
+        : targets.find(row => String(row.id) === String(targetId)) || (game.target && String(game.target.id) === String(targetId) ? game.target : null);
+      if (!target) return null;
+      const decision = this._choose(game, target);
+      return decision ? clone({
+        skillId: decision.id,
+        targetId: decision.targetId,
+        kind: decision.kind,
+        reason: decision.reason,
+        recastMs: decision.recastMs
+      }) : null;
+    }
+
+    _knownRejection(reason) {
+      const value = String(reason || '').toLowerCase();
+      if (!value) return false;
+      if (value.includes('disconnect') || value.includes('timeout') || value.includes('network')) return false;
+      return [
+        'cooldown', 'no_mp', 'mp', 'too_far', 'range', 'not_found', 'cant_use',
+        'cannot_use', 'level', 'weapon', 'requirements', 'disabled', 'stunned'
+      ].some(token => value.includes(token));
+    }
+
+    _settleConfirmed(pending, response) {
+      if (!pending) return;
+      this.metrics.confirmed += 1;
+      if (pending.kind === 'damage') this.metrics.damageSkills += 1;
+      else if (pending.kind === 'defensive') this.metrics.defensiveSkills += 1;
+      else if (pending.kind === 'mobility') this.metrics.mobilitySkills += 1;
+      else this.metrics.supportSkills += 1;
+
+      const damage = response && typeof response === 'object' ? finite(response.damage) : null;
+      const lethal = damage != null && pending.baselineHp != null && damage >= pending.baselineHp;
+      if (lethal) this.metrics.skillKillsConfirmed += 1;
+
+      this.lastUse = {
+        at: new Date().toISOString(),
+        sessionId: pending.sessionId,
+        skillId: pending.skillId,
+        targetId: pending.targetId,
+        kind: pending.kind,
+        reason: pending.reason,
+        state: 'CONFIRMED',
+        damage,
+        lethal,
+        response: response == null ? null : clone(response)
+      };
+      this.pending = null;
+      if (this.logger) this.logger.info('Klassen-Skill bestätigt', {
+        skillId: pending.skillId,
+        targetId: pending.targetId,
+        kind: pending.kind,
+        reason: pending.reason,
+        damage,
+        lethal
+      });
+    }
+
+    _settleRejected(pending, reason, response) {
+      if (!pending) return;
+      this.metrics.rejected += 1;
+      this._suppress(pending.skillId, pending.targetId, this.config.rejectionBackoffMs);
+      this.lastUse = {
+        at: new Date().toISOString(),
+        sessionId: pending.sessionId,
+        skillId: pending.skillId,
+        targetId: pending.targetId,
+        kind: pending.kind,
+        reason: pending.reason,
+        state: 'REJECTED',
+        error: cleanText(reason, 240),
+        response: response == null ? null : clone(response)
+      };
+      this.pending = null;
+      if (this.logger) this.logger.warn('Klassen-Skill serverseitig abgelehnt', {
+        skillId: pending.skillId,
+        targetId: pending.targetId,
+        error: reason
+      });
+    }
+
+    _settleUnknown(pending, reason, details) {
+      if (!pending) return;
+      this.metrics.unknown += 1;
+      this.suspendedSessionId = pending.sessionId;
+      this.suspendedReason = cleanText(reason, 240);
+      this.lastUse = {
+        at: new Date().toISOString(),
+        sessionId: pending.sessionId,
+        skillId: pending.skillId,
+        targetId: pending.targetId,
+        kind: pending.kind,
+        reason: pending.reason,
+        state: 'UNKNOWN',
+        error: this.suspendedReason,
+        response: details == null ? null : clone(details)
+      };
+      this.pending = null;
+      if (this.logger) this.logger.error('Klassen-Skill Outcome unklar; Skills für Combat-Session suspendiert', {
+        skillId: pending.skillId,
+        targetId: pending.targetId,
+        error: this.suspendedReason
+      });
+    }
+
+    _watch(dispatch, pending, generation) {
+      const value = dispatch && dispatch.value;
+      if (!value || typeof value.then !== 'function') {
+        const response = value;
+        if (response && typeof response === 'object' && response.failed === true) {
+          this._settleRejected(pending, errorReason(response, 'SKILL_REJECTED'), response);
+        } else if (response && typeof response === 'object' && (response.success === true || response.place || response.response)) {
+          this._settleConfirmed(pending, response);
+        } else {
+          this._settleUnknown(pending, 'SKILL_RESULT_UNCONFIRMED', response);
+        }
+        return;
+      }
+
+      Promise.resolve(value).then(response => {
+        if (generation !== this.pendingGeneration) return;
+        if (!this.pending || this.pending.id !== pending.id) return;
+        if (response && typeof response === 'object' && response.failed === true) {
+          this._settleRejected(pending, errorReason(response, 'SKILL_REJECTED'), response);
+          return;
+        }
+        this._settleConfirmed(pending, response);
+      }, error => {
+        if (generation !== this.pendingGeneration) return;
+        if (!this.pending || this.pending.id !== pending.id) return;
+        const reason = errorReason(error, 'SKILL_PROMISE_REJECTED');
+        if (this._knownRejection(reason)) this._settleRejected(pending, reason, error);
+        else this._settleUnknown(pending, reason, error);
+      }).catch(() => {});
+    }
+
+    maybeUse(context = {}) {
+      if (!this.active) return { handled: false, reason: 'CLASS_SKILLS_INACTIVE' };
+      const session = context.session || null;
+      const game = context.game || (this.game && this.game.snapshot ? this.game.snapshot() : null);
+      const target = context.target || (game && game.target) || null;
+      if (!session || !session.id || !game || !game.character || !target) return { handled: false, reason: 'CLASS_SKILL_CONTEXT_INCOMPLETE' };
+
+      this.beginSession(session.id);
+      if (this.suspendedSessionId === session.id) {
+        return { handled: false, suspended: true, reason: this.suspendedReason || 'CLASS_SKILLS_SUSPENDED' };
+      }
+      if (this.pending) return { handled: true, pending: true, skillId: this.pending.skillId };
+
+      const now = this.now();
+      if (now - this.lastAttemptAtMs < this.config.minGlobalIntervalMs) {
+        this.metrics.spamSkips += 1;
+        return { handled: false, reason: 'CLASS_SKILL_GLOBAL_INTERVAL' };
+      }
+
+      this.metrics.decisions += 1;
+      const decision = this._choose(game, target);
+      this.lastDecision = decision ? {
+        at: new Date().toISOString(),
+        sessionId: session.id,
+        characterClass: game.character.ctype,
+        skillId: decision.id,
+        targetId: decision.targetId,
+        kind: decision.kind,
+        reason: decision.reason
+      } : {
+        at: new Date().toISOString(),
+        sessionId: session.id,
+        characterClass: game.character.ctype,
+        skillId: null,
+        targetId: target.id || null,
+        kind: null,
+        reason: 'NO_CLASS_SKILL_SELECTED'
+      };
+      if (!decision) return { handled: false, reason: 'NO_CLASS_SKILL_SELECTED' };
+
+      let dispatch;
+      try {
+        dispatch = this.actions.dispatch('use_skill', decision.args);
+      } catch (error) {
+        return { handled: false, reason: errorReason(error, 'CLASS_SKILL_ACTION_BLOCKED') };
+      }
+
+      this.lastAttemptAtMs = now;
+      this._suppress(decision.id, decision.targetId, decision.recastMs);
+
+      if (!dispatch || dispatch.state === 'UNAVAILABLE') {
+        this.metrics.unavailableSkips += 1;
+        return { handled: false, reason: 'USE_SKILL_API_UNAVAILABLE' };
+      }
+      if (dispatch.state === 'UNKNOWN') {
+        const pseudo = {
+          id: dispatch.id || ('skill-' + now),
+          sessionId: session.id,
+          skillId: decision.id,
+          targetId: decision.targetId,
+          kind: decision.kind,
+          reason: decision.reason,
+          baselineHp: decision.baselineHp
+        };
+        this._settleUnknown(pseudo, errorReason(dispatch.error, 'SKILL_DISPATCH_UNKNOWN'), dispatch);
+        return { handled: true, unknown: true, skillId: decision.id };
+      }
+
+      const pending = {
+        id: dispatch.id,
+        sessionId: session.id,
+        skillId: decision.id,
+        targetId: decision.targetId,
+        kind: decision.kind,
+        reason: decision.reason,
+        baselineHp: decision.baselineHp,
+        dispatchedAt: new Date().toISOString(),
+        dispatchedAtMs: now
+      };
+      this.pending = pending;
+      this.metrics.dispatched += 1;
+      const generation = this.pendingGeneration;
+      this._watch(dispatch, pending, generation);
+
+      if (this.logger) this.logger.info('Klassen-Skill gesendet', {
+        id: dispatch.id,
+        sessionId: session.id,
+        skillId: decision.id,
+        targetId: decision.targetId,
+        kind: decision.kind,
+        reason: decision.reason
+      });
+
+      return {
+        handled: true,
+        pending: !!this.pending,
+        skillId: decision.id,
+        targetId: decision.targetId,
+        kind: decision.kind,
+        reason: decision.reason
+      };
+    }
+
+    status() {
+      const game = this.game && typeof this.game.snapshot === 'function' ? this.game.snapshot() : null;
+      const ctype = game && game.character && game.character.ctype || null;
+      return {
+        schemaVersion: 1,
+        active: this.active,
+        supportedClasses: SUPPORTED_CLASSES.slice(),
+        currentClass: ctype,
+        supportedSkills: this.supportedSkills(ctype),
+        liveSkills: this.liveSkillSummary(ctype),
+        sessionId: this.sessionId,
+        suspended: !!(this.sessionId && this.suspendedSessionId === this.sessionId),
+        suspendedReason: this.suspendedReason,
+        pending: clone(this.pending),
+        lastDecision: clone(this.lastDecision),
+        lastUse: clone(this.lastUse),
+        config: clone(this.config),
+        metrics: clone(this.metrics)
+      };
+    }
+  }
+
+  ns.ClassSkillController = ClassSkillController;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+
+(function (root) {
+  'use strict';
+
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns) throw new Error('ALBOT_INTERNALS_MISSING');
+
+  const clone = ns.helpers.clone;
+  const cleanText = ns.helpers.cleanText;
+
+  function finite(value) {
+    if (value == null || value === '') return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function roleForClass(ctype, hasWarrior) {
+    const value = String(ctype || '').toLowerCase();
+    if (value === 'warrior') return 'TANK';
+    if (value === 'priest') return 'HEALER';
+    if (value === 'paladin') return hasWarrior ? 'SUPPORT' : 'TANK';
+    if (['ranger', 'mage', 'rogue'].includes(value)) return 'DPS';
+    if (value === 'merchant') return 'LOGISTICS';
+    return 'UNKNOWN';
+  }
+
+  function errorReason(value, fallback = 'PARTY_ACTION_UNKNOWN') {
+    if (value && typeof value === 'object') {
+      const raw = value.reason || value.code || value.message;
+      if (raw) return cleanText(raw, 240);
+    }
+    const text = cleanText(value, 240);
+    return text || fallback;
+  }
+
+  class PartyCoordinator {
+    constructor(options = {}) {
+      this.root = options.root || root;
+      this.logger = options.logger || null;
+      this.game = options.game;
+      this.actions = options.actions;
+      this.roster = options.roster;
+      this.now = typeof options.now === 'function' ? options.now : () => Date.now();
+      this.config = {
+        tickMs: Math.max(100, Math.min(2000, Number(options.tickMs) || 250)),
+        focusHoldMs: Math.max(250, Math.min(10000, Number(options.focusHoldMs) || 1200)),
+        focusPingPongWindowMs: Math.max(1000, Math.min(30000, Number(options.focusPingPongWindowMs) || 6000)),
+        healHpRatio: Math.max(0.25, Math.min(0.95, Number(options.healHpRatio) || 0.70)),
+        partyHealHpRatio: Math.max(0.25, Math.min(0.95, Number(options.partyHealHpRatio) || 0.68)),
+        partyHealMinMembers: Math.max(2, Math.min(8, Number(options.partyHealMinMembers) || 2)),
+        supportBackoffMs: Math.max(1000, Math.min(30000, Number(options.supportBackoffMs) || 4000))
+      };
+
+      this.active = false;
+      this.scope = null;
+      this.heartbeat = null;
+      this.lastSnapshot = null;
+      this.focusTargetId = null;
+      this.focusSource = null;
+      this.focusSinceMs = 0;
+      this.pendingFocusId = null;
+      this.pendingFocusSinceMs = 0;
+      this.focusHistory = [];
+      this.pendingSupport = null;
+      this.supportGeneration = 0;
+      this.supportSuspended = false;
+      this.supportSuspendedReason = null;
+      this.supportBackoffUntil = 0;
+      this.lastSupport = null;
+      this.lastDecision = null;
+      this.metrics = {
+        ticks: 0,
+        partySnapshots: 0,
+        focusUpdates: 0,
+        focusChanges: 0,
+        focusPingPongs: 0,
+        assistTargetsObserved: 0,
+        healsDispatched: 0,
+        partyHealsDispatched: 0,
+        revivesDispatched: 0,
+        supportConfirmed: 0,
+        supportRejected: 0,
+        supportUnknown: 0,
+        foreignPartyBlocks: 0,
+        noPartyTicks: 0
+      };
+    }
+
+    start(context) {
+      this.active = true;
+      this.focusHistory = [];
+      this.scope = context && context.scope || null;
+      this.heartbeat = context && typeof context.heartbeat === 'function' ? context.heartbeat : null;
+      if (!this.scope) throw new Error('PARTY_SCOPE_REQUIRED');
+      this.scope.interval('party-loop', () => this._tick(), this.config.tickMs, { immediate: true });
+      return this.status();
+    }
+
+    stop(reason = 'PARTY_MODULE_STOP') {
+      this.active = false;
+      this.supportGeneration += 1;
+      this.pendingSupport = null;
+      this.scope = null;
+      this.heartbeat = null;
+      this.lastDecision = {
+        at: new Date().toISOString(),
+        type: 'STOP',
+        reason: cleanText(reason, 200)
+      };
+      return this.status();
+    }
+
+    _ownedNames() {
+      const status = this.roster && this.roster.status ? this.roster.status() : null;
+      const rows = status && Array.isArray(status.characters) ? status.characters : [];
+      return new Set(rows.map(row => String(row && row.name || '')).filter(Boolean));
+    }
+
+    _decorateParty(snapshot) {
+      const owned = this._ownedNames();
+      const members = (snapshot && snapshot.members || []).map(member => ({
+        ...member,
+        owned: owned.has(String(member.name || ''))
+      }));
+      const hasWarrior = members.some(member => member.owned && String(member.ctype || '').toLowerCase() === 'warrior');
+      for (const member of members) member.role = roleForClass(member.ctype, hasWarrior);
+      const foreign = members.filter(member => !member.owned).map(member => member.name);
+      const ownedMembers = members.filter(member => member.owned);
+      const local = members.find(member => member.local) || null;
+      return {
+        ...(snapshot || {}),
+        members,
+        ownedMembers,
+        foreignMemberNames: foreign,
+        ownedMemberNames: ownedMembers.map(member => member.name),
+        coordinationEnabled: ownedMembers.length >= 2 && foreign.length === 0,
+        localRole: local ? local.role : null
+      };
+    }
+
+    snapshot() {
+      const raw = this.game && this.game.partySnapshot ? this.game.partySnapshot() : null;
+      return this._decorateParty(raw || {
+        schemaVersion: 1,
+        available: false,
+        partyId: null,
+        leader: null,
+        memberNames: [],
+        members: [],
+        size: 0
+      });
+    }
+
+    _visibleMonsterIds() {
+      const monsters = this.game && this.game.visibleMonsters ? this.game.visibleMonsters() : [];
+      return new Set(monsters.map(row => String(row.id)));
+    }
+
+    _proposedFocus(snapshot) {
+      if (!snapshot || !snapshot.coordinationEnabled) return null;
+      const visibleMonsters = this._visibleMonsterIds();
+      const alive = snapshot.ownedMembers.filter(member => !member.rip && member.targetId && visibleMonsters.has(String(member.targetId)));
+      if (!alive.length) return null;
+
+      const tank = alive.find(member => member.role === 'TANK');
+      if (tank) return { id: String(tank.targetId), source: 'tank:' + tank.name };
+
+      const leader = alive.find(member => String(member.name) === String(snapshot.leader || ''));
+      if (leader) return { id: String(leader.targetId), source: 'leader:' + leader.name };
+
+      const counts = new Map();
+      for (const member of alive) {
+        const key = String(member.targetId);
+        counts.set(key, (counts.get(key) || 0) + 1);
+      }
+      let best = null;
+      for (const [id, count] of counts.entries()) {
+        if (!best || count > best.count || (count === best.count && id < best.id)) best = { id, count };
+      }
+      return best ? { id: best.id, source: 'majority:' + best.count } : null;
+    }
+
+    _recordFocusTarget(targetId, source, atMs = this.now()) {
+      const id = targetId == null ? null : String(targetId);
+      if (!id) return false;
+      const cutoff = atMs - this.config.focusPingPongWindowMs;
+      this.focusHistory = this.focusHistory.filter(row => row && row.atMs >= cutoff);
+
+      const last = this.focusHistory.length ? this.focusHistory[this.focusHistory.length - 1] : null;
+      if (last && last.targetId === id) return false;
+
+      let pingPong = false;
+      if (last && last.targetId !== id) {
+        for (let i = this.focusHistory.length - 2; i >= 0; i -= 1) {
+          if (this.focusHistory[i].targetId === id) {
+            pingPong = true;
+            break;
+          }
+        }
+      }
+
+      this.focusHistory.push({
+        targetId: id,
+        source: cleanText(source || '', 160) || null,
+        atMs
+      });
+      if (this.focusHistory.length > 24) this.focusHistory.splice(0, this.focusHistory.length - 24);
+
+      if (pingPong) {
+        this.metrics.focusPingPongs += 1;
+        if (this.logger) this.logger.warn('Party Focus Pingpong erkannt', {
+          targetId: id,
+          previousTargetId: last && last.targetId || null,
+          windowMs: this.config.focusPingPongWindowMs
+        });
+      }
+      return pingPong;
+    }
+
+    _updateFocus(snapshot) {
+      const proposed = this._proposedFocus(snapshot);
+      const now = this.now();
+
+      if (!proposed) {
+        this.pendingFocusId = null;
+        this.pendingFocusSinceMs = 0;
+        if (this.focusTargetId && !this._visibleMonsterIds().has(String(this.focusTargetId))) {
+          this.focusTargetId = null;
+          this.focusSource = null;
+          this.focusSinceMs = 0;
+          this.metrics.focusChanges += 1;
+        }
+        return;
+      }
+
+      this.metrics.assistTargetsObserved += 1;
+      if (String(proposed.id) === String(this.focusTargetId || '')) {
+        this.pendingFocusId = null;
+        this.pendingFocusSinceMs = 0;
+        this.focusSource = proposed.source;
+        return;
+      }
+
+      if (String(proposed.id) !== String(this.pendingFocusId || '')) {
+        this.pendingFocusId = proposed.id;
+        this.pendingFocusSinceMs = now;
+        if (!this.focusTargetId) this.pendingFocusSinceMs = now - this.config.focusHoldMs;
+      }
+
+      if (now - this.pendingFocusSinceMs < this.config.focusHoldMs) return;
+      this._recordFocusTarget(proposed.id, proposed.source, now);
+      this.focusTargetId = proposed.id;
+      this.focusSource = proposed.source;
+      this.focusSinceMs = now;
+      this.pendingFocusId = null;
+      this.pendingFocusSinceMs = 0;
+      this.metrics.focusUpdates += 1;
+      this.metrics.focusChanges += 1;
+      if (this.logger) this.logger.info('Party Focus aktualisiert', {
+        targetId: this.focusTargetId,
+        source: this.focusSource
+      });
+    }
+
+    preferredTargetId() {
+      return this.focusTargetId;
+    }
+
+    isOwnedPartyMember(name) {
+      if (name == null) return false;
+      const snapshot = this.lastSnapshot || this.snapshot();
+      return !!(snapshot && Array.isArray(snapshot.ownedMemberNames)
+        && snapshot.ownedMemberNames.includes(String(name)));
+    }
+
+    _supportReadiness(skillId, member, allowDead = false) {
+      if (!this.game || typeof this.game.skillReadiness !== 'function') return null;
+      return this.game.skillReadiness(skillId, member && member.name || null, { allowDeadTarget: allowDead });
+    }
+
+    _chooseSupport(snapshot) {
+      if (!snapshot || !snapshot.coordinationEnabled) return null;
+      const local = snapshot.ownedMembers.find(member => member.local);
+      if (!local || String(local.ctype || '').toLowerCase() !== 'priest') return null;
+      if (this.supportSuspended || this.pendingSupport || this.now() < this.supportBackoffUntil) return null;
+
+      const downed = snapshot.ownedMembers
+        .filter(member => !member.local && member.rip && member.visible)
+        .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+      if (downed.length) {
+        const target = downed[0];
+        const readiness = this._supportReadiness('revive', target, true);
+        if (readiness && readiness.allowed) {
+          return { kind: 'revive', action: 'use_skill', args: ['revive', target.name], target, readiness };
+        }
+      }
+
+      const injured = snapshot.ownedMembers
+        .filter(member => !member.rip && member.visible && member.hpRatio != null && member.hpRatio < 0.999)
+        .sort((a, b) => a.hpRatio - b.hpRatio);
+      const partyHealTargets = injured.filter(member => member.hpRatio <= this.config.partyHealHpRatio);
+      if (partyHealTargets.length >= this.config.partyHealMinMembers) {
+        const readiness = this.game.skillReadiness('partyheal');
+        if (readiness && readiness.allowed) {
+          return { kind: 'partyheal', action: 'use_skill', args: ['partyheal'], target: null, readiness };
+        }
+      }
+
+      const target = injured.find(member => member.hpRatio <= this.config.healHpRatio);
+      if (target) {
+        const readiness = this._supportReadiness('heal', target, false);
+        if (readiness && readiness.allowed && this.actions.available('heal')) {
+          const raw = this.game.playerReference(target.name);
+          if (raw) return { kind: 'heal', action: 'heal', args: [raw], target, readiness };
+        }
+      }
+      return null;
+    }
+
+    _settleSupport(pending, state, response) {
+      if (!pending || !this.pendingSupport || this.pendingSupport.id !== pending.id) return;
+      if (state === 'CONFIRMED') {
+        this.metrics.supportConfirmed += 1;
+        this.lastSupport = {
+          at: new Date().toISOString(),
+          id: pending.id,
+          kind: pending.kind,
+          target: pending.targetName,
+          state,
+          response: response == null ? null : clone(response)
+        };
+      } else if (state === 'REJECTED') {
+        this.metrics.supportRejected += 1;
+        this.supportBackoffUntil = this.now() + this.config.supportBackoffMs;
+        this.lastSupport = {
+          at: new Date().toISOString(),
+          id: pending.id,
+          kind: pending.kind,
+          target: pending.targetName,
+          state,
+          error: errorReason(response, 'PARTY_SUPPORT_REJECTED')
+        };
+      } else {
+        this.metrics.supportUnknown += 1;
+        this.supportSuspended = true;
+        this.supportSuspendedReason = errorReason(response, 'PARTY_SUPPORT_UNKNOWN');
+        this.lastSupport = {
+          at: new Date().toISOString(),
+          id: pending.id,
+          kind: pending.kind,
+          target: pending.targetName,
+          state: 'UNKNOWN',
+          error: this.supportSuspendedReason
+        };
+      }
+      this.pendingSupport = null;
+    }
+
+    _watchSupport(dispatch, pending, generation) {
+      const value = dispatch && dispatch.value;
+      if (!value || typeof value.then !== 'function') {
+        if (value && typeof value === 'object' && value.failed === true) this._settleSupport(pending, 'REJECTED', value);
+        else if (value && typeof value === 'object' && (value.success === true || value.response || value.place || value.heal != null)) this._settleSupport(pending, 'CONFIRMED', value);
+        else this._settleSupport(pending, 'UNKNOWN', value);
+        return;
+      }
+      Promise.resolve(value).then(response => {
+        if (generation !== this.supportGeneration) return;
+        if (!this.pendingSupport || this.pendingSupport.id !== pending.id) return;
+        if (response && typeof response === 'object' && response.failed === true) this._settleSupport(pending, 'REJECTED', response);
+        else this._settleSupport(pending, 'CONFIRMED', response);
+      }, error => {
+        if (generation !== this.supportGeneration) return;
+        if (!this.pendingSupport || this.pendingSupport.id !== pending.id) return;
+        const reason = errorReason(error, 'PARTY_SUPPORT_PROMISE_REJECTED');
+        const known = /cooldown|no_mp|too_far|range|not_found|cant_use|cannot_use|level|disabled/i.test(reason);
+        this._settleSupport(pending, known ? 'REJECTED' : 'UNKNOWN', error);
+      }).catch(() => {});
+    }
+
+    _dispatchSupport(decision) {
+      let dispatch;
+      try {
+        dispatch = this.actions.dispatch(decision.action, decision.args);
+      } catch (error) {
+        this.lastDecision = { at: new Date().toISOString(), type: 'SUPPORT_BLOCKED', error: errorReason(error) };
+        return;
+      }
+      if (!dispatch || dispatch.state !== 'DISPATCHED') {
+        const state = dispatch && dispatch.state || null;
+        if (state === 'UNKNOWN') {
+          if (decision.kind === 'heal') this.metrics.healsDispatched += 1;
+          if (decision.kind === 'partyheal') this.metrics.partyHealsDispatched += 1;
+          if (decision.kind === 'revive') this.metrics.revivesDispatched += 1;
+
+          const pending = {
+            id: dispatch.id,
+            kind: decision.kind,
+            targetName: decision.target && decision.target.name || null,
+            dispatchedAt: dispatch.at || new Date().toISOString()
+          };
+          this.pendingSupport = pending;
+          this.lastDecision = {
+            at: new Date().toISOString(),
+            type: 'SUPPORT_UNKNOWN',
+            kind: pending.kind,
+            target: pending.targetName
+          };
+          this._settleSupport(pending, 'UNKNOWN', dispatch.error || dispatch);
+          return;
+        }
+        this.lastDecision = { at: new Date().toISOString(), type: 'SUPPORT_NOT_DISPATCHED', state };
+        return;
+      }
+
+      if (decision.kind === 'heal') this.metrics.healsDispatched += 1;
+      if (decision.kind === 'partyheal') this.metrics.partyHealsDispatched += 1;
+      if (decision.kind === 'revive') this.metrics.revivesDispatched += 1;
+
+      const pending = {
+        id: dispatch.id,
+        kind: decision.kind,
+        targetName: decision.target && decision.target.name || null,
+        dispatchedAt: new Date().toISOString()
+      };
+      this.pendingSupport = pending;
+      this.lastDecision = {
+        at: new Date().toISOString(),
+        type: 'SUPPORT_DISPATCHED',
+        kind: pending.kind,
+        target: pending.targetName
+      };
+      const generation = this.supportGeneration;
+      this._watchSupport(dispatch, pending, generation);
+    }
+
+    _tick() {
+      if (!this.active) return;
+      this.metrics.ticks += 1;
+      const snapshot = this.snapshot();
+      this.lastSnapshot = snapshot;
+      this.metrics.partySnapshots += 1;
+
+      if (this.heartbeat) {
+        this.heartbeat({
+          phase: snapshot.coordinationEnabled ? 'party-coordination' : 'party-observe',
+          size: snapshot.size,
+          owned: snapshot.ownedMemberNames.length,
+          focusTargetId: this.focusTargetId
+        });
+      }
+
+      if (!snapshot.available || snapshot.size < 2) {
+        this.metrics.noPartyTicks += 1;
+        this.focusTargetId = null;
+        this.focusSource = null;
+        return;
+      }
+      if (snapshot.foreignMemberNames.length) {
+        this.metrics.foreignPartyBlocks += 1;
+        this.focusTargetId = null;
+        this.focusSource = null;
+        this.lastDecision = {
+          at: new Date().toISOString(),
+          type: 'FOREIGN_PARTY_BLOCK',
+          members: snapshot.foreignMemberNames.slice()
+        };
+        return;
+      }
+
+      this._updateFocus(snapshot);
+      const support = this._chooseSupport(snapshot);
+      if (support) this._dispatchSupport(support);
+    }
+
+    status() {
+      const snapshot = this.lastSnapshot || this.snapshot();
+      const localClass = snapshot && snapshot.ownedMembers && snapshot.ownedMembers.find(member => member.local);
+      const partyBuffSkills = [];
+      if (localClass && this.game && typeof this.game.skillDefinition === 'function') {
+        const candidates = ['warcry', 'darkblessing', 'partyheal'];
+        for (const id of candidates) {
+          const definition = this.game.skillDefinition(id);
+          if (definition && definition.classes.includes(String(localClass.ctype || '').toLowerCase()) && (definition.party || definition.multi || id !== 'partyheal')) {
+            partyBuffSkills.push(id);
+          }
+        }
+      }
+      return {
+        schemaVersion: 1,
+        active: this.active,
+        party: clone(snapshot),
+        focus: {
+          targetId: this.focusTargetId,
+          source: this.focusSource,
+          sinceMs: this.focusSinceMs || null,
+          pendingTargetId: this.pendingFocusId,
+          recentHistory: clone(this.focusHistory)
+        },
+        support: {
+          pending: clone(this.pendingSupport),
+          suspended: this.supportSuspended,
+          suspendedReason: this.supportSuspendedReason,
+          last: clone(this.lastSupport),
+          backoffUntilMs: this.supportBackoffUntil || null
+        },
+        partyBuffSkills,
+        lastDecision: clone(this.lastDecision),
+        metrics: clone(this.metrics)
+      };
+    }
+  }
+
+  ns.PartyCoordinator = PartyCoordinator;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
