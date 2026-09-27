@@ -249,7 +249,7 @@ test('H13 NPC buy requires an explicit price cap and respects gold reserve', () 
 test('H13 NPC buy travels once, dispatches buy_with_gold and confirms inventory plus gold delta', async () => {
   const f = fixture({ x: 0 });
   assert.equal(f.controller.queueNpcBuy('hpot0', 1, { maxUnitPrice: 200 }).accepted, true);
-  assert.equal(f.controller.tick().state, 'READY');
+  assert.equal(f.controller.tick().state, 'DISPATCHED');
   assert.deepEqual(f.state.dispatches[0], { name: 'buy_with_gold', args: ['hpot0', 1] });
   await Promise.resolve();
   f.controller.tick();
