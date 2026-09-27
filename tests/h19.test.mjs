@@ -134,6 +134,50 @@ function fixture(options = {}) {
     }
   };
 
+  const runtimePeers = new Map((options.crossWindowPeers || []).map(peer => [
+    String(peer.name),
+    {
+      name: String(peer.name),
+      sessionId: String(peer.sessionId || ('session-' + peer.name)),
+      running: peer.running === true,
+      runEpoch: Number(peer.runEpoch || 1)
+    }
+  ]));
+  state.crossWindowDispatches = state.crossWindowDispatches || [];
+  const crossWindow = options.crossWindowPeers ? {
+    freshPeer(name) {
+      const peer = runtimePeers.get(String(name));
+      return peer ? clone(peer) : null;
+    },
+    freshPeers() {
+      return [...runtimePeers.values()].map(clone);
+    },
+    requestRuntimeState(name, desiredRunning) {
+      const peer = runtimePeers.get(String(name));
+      if (!peer) {
+        return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H19_CROSS_WINDOW_PEER_NOT_FRESH' } };
+      }
+      const desired = desiredRunning === true;
+      state.crossWindowDispatches.push({ name: String(name), desiredRunning: desired, sessionId: peer.sessionId });
+      if (options.crossWindowNoMutation !== true) {
+        peer.running = desired;
+        if (desired) peer.runEpoch += 1;
+      }
+      return {
+        id: 'cm-' + state.crossWindowDispatches.length,
+        state: 'DISPATCHED',
+        dispatched: true,
+        value: Promise.resolve({
+          success: options.crossWindowReject !== true,
+          reason: options.crossWindowReject ? 'CROSS_WINDOW_REJECTED_TEST' : 'CROSS_WINDOW_SETTLED_TEST',
+          target: String(name),
+          targetSessionId: peer.sessionId,
+          state: { running: peer.running, runEpoch: peer.runEpoch }
+        })
+      };
+    }
+  } : null;
+
   const ctx = {
     console, Date, Math, JSON, Map, Set, Promise, Object, Array, String, Number, Boolean, Error,
     __ALBOT_INTERNALS__: {
@@ -154,6 +198,7 @@ function fixture(options = {}) {
     roster,
     party,
     storage,
+    crossWindow,
     canAct: () => options.actionBlocked !== true,
     outcomeTimeoutMs: options.outcomeTimeoutMs == null ? 5000 : options.outcomeTimeoutMs,
     maxActionsPerSession: options.maxActionsPerSession == null ? 4 : options.maxActionsPerSession
@@ -543,6 +588,73 @@ test('H19 fails closed when account or account-wide online truth is unavailable'
   assert.equal(runnerActiveUnavailable.state.dispatches.length, 0);
 });
 
+test('H19 separate-window lifecycle uses fresh CM peer instead of runner-active membership', async () => {
+  const { controller, state } = fixture({
+    onlineNames: ['My_Ranger', 'My_Merchant'],
+    runnerActiveNames: ['My_Ranger'],
+    freezeRunnerActive: true,
+    crossWindowPeers: [
+      { name: 'My_Merchant', sessionId: 'merchant-window-session', running: true, runEpoch: 8 }
+    ]
+  });
+
+  const captured = controller.captureDesiredActive();
+  assert.equal(captured.accepted, true);
+  assert.deepEqual([...captured.desiredRuntimeRunningNames], ['My_Merchant']);
+
+  assert.equal(controller.queueStop('My_Merchant').accepted, true);
+  const stoppedDispatch = controller.tick();
+  assert.equal(stoppedDispatch.state, 'DISPATCHED');
+  assert.equal(state.dispatches.length, 0);
+  assert.equal(state.crossWindowDispatches.length, 1);
+  assert.equal(state.online.has('My_Merchant'), true);
+
+  await flush();
+  const stopped = controller.tick();
+  assert.equal(stopped.state, 'CONFIRMED');
+  assert.equal(stopped.details.evidence, 'CROSS_WINDOW_RUNTIME_SETTLEMENT');
+  assert.equal(stopped.details.running, false);
+  assert.equal(controller.status().metrics.stopsConfirmed, 1);
+  assert.equal(controller.status().metrics.crossWindowConfirms, 1);
+
+  assert.equal(controller.startAutonomy({ maxActions: 1 }).accepted, true);
+  const restartedDispatch = controller.tick();
+  assert.equal(restartedDispatch.state, 'DISPATCHED');
+  assert.equal(state.dispatches.length, 0);
+  assert.equal(state.crossWindowDispatches.length, 2);
+
+  await flush();
+  const restarted = controller.tick();
+  assert.equal(restarted.state, 'CONFIRMED');
+  assert.equal(restarted.details.evidence, 'CROSS_WINDOW_RUNTIME_SETTLEMENT');
+  assert.equal(restarted.details.running, true);
+  assert.equal(state.online.has('My_Merchant'), true);
+  assert.equal(controller.status().metrics.startsConfirmed, 1);
+  assert.equal(controller.status().metrics.crossWindowDispatches, 2);
+});
+
+test('H19 does not fall back to child start when a desired separate-window runtime loses fresh peer authority', () => {
+  const setup = fixture({
+    onlineNames: ['My_Ranger', 'My_Merchant'],
+    runnerActiveNames: ['My_Ranger'],
+    crossWindowPeers: [
+      { name: 'My_Merchant', sessionId: 'merchant-window-session', running: true, runEpoch: 3 }
+    ]
+  });
+  const { controller, state } = setup;
+  assert.equal(controller.captureDesiredActive().accepted, true);
+  assert.deepEqual(controller.status().policy.desiredRuntimeRunningNames, ['My_Merchant']);
+
+  setup.controller.crossWindow.freshPeer = () => null;
+  setup.controller.crossWindow.freshPeers = () => [];
+  assert.equal(controller.startAutonomy({ maxActions: 1 }).accepted, true);
+  const plan = controller.plan();
+  assert.equal(plan.state, 'BLOCKED');
+  assert.equal(plan.reason, 'H19_DESIRED_RUNTIME_PEER_UNAVAILABLE');
+  assert.equal(state.dispatches.length, 0);
+  assert.equal(state.crossWindowDispatches.length, 0);
+});
+
 test('H19 remote stop requires runner controllability while start still uses account-wide online truth', async () => {
   const { controller, state } = fixture({
     onlineNames: ['My_Ranger', 'My_Priest', 'My_Merchant'],
@@ -581,6 +693,8 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   const dist = fs.readFileSync(path.resolve(here, '../dist/al-bot.js'), 'utf8');
   const pkg = JSON.parse(fs.readFileSync(path.resolve(here, '../package.json'), 'utf8'));
 
+  assert.match(runtime, /new ns\.H19CrossWindowLifecycleTransport/);
+  assert.match(runtime, /lifecycleTransport\.install\(\)/);
   assert.match(runtime, /new ns\.CharacterLifecycleController/);
   assert.match(runtime, /id: 'character-lifecycle'/);
   assert.match(runtime, /id: 'h19-character-lifecycle'/);
@@ -591,7 +705,7 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(runtime, /runnerActive\.has\(row\.name\)/);
   assert.match(runtime, /H19_REMOTE_CONTROLLABLE_TARGET_UNAVAILABLE/);
   assert.match(runtime, /safeFirstStartRecovery/);
-  assert.match(runtime, /targetName = null;\s*baseline = null;\s*originalPolicy = null;/);
+  assert.match(runtime, /targetName = null;\s*targetControlMode = null;\s*baseline = null;\s*originalPolicy = null;/);
   assert.match(runtime, /const cleanupSleep = \(runtime, ms\) => new Promise/);
   assert.match(runtime, /const waitForCleanup = async \(runtime, predicate, options = \{\}\)/);
   assert.match(runtime, /cleanup: async \(\{ runtime \}\) =>/);
@@ -622,6 +736,9 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(source, /H19_RESPAWN_COOLDOWN/);
   assert.match(source, /H19_REMOTE_TARGET_NOT_RUNNER_CONTROLLABLE/);
   assert.match(source, /H19_RUNNER_ACTIVE_STATE_UNAVAILABLE/);
+  assert.match(source, /cross-window-runtime/);
+  assert.match(source, /desiredRuntimeRunningNames/);
+  assert.match(source, /H19_DESIRED_RUNTIME_PEER_UNAVAILABLE/);
   assert.match(boundary, /start_character: Object\.freeze/);
   assert.match(boundary, /stop_character: Object\.freeze/);
   assert.match(boundary, /respawn: Object\.freeze/);
@@ -630,9 +747,12 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(core, /onlineCharacterNames/);
   assert.match(core, /runnerActiveCharacterNames/);
   assert.match(core, /activeCharacterNames/);
+  assert.match(build, /src\/cross-window-lifecycle\.js/);
   assert.match(build, /src\/lifecycle-recovery\.js/);
   assert.match(build, /AL Bot 0\.19\.0-h19/);
   assert.match(dist, /AL Bot 0\.19\.0-h19/);
+  assert.match(dist, /class H19CrossWindowLifecycleTransport/);
+  assert.match(dist, /albot-h19-cross-window-v1/);
   assert.match(dist, /class CharacterLifecycleController/);
   assert.match(dist, /H19_REMOTE_TARGET_NOT_RUNNER_CONTROLLABLE/);
   assert.match(dist, /H19_REMOTE_CONTROLLABLE_TARGET_UNAVAILABLE/);
