@@ -327,13 +327,13 @@ test('H16 material acquisition delegates to H13 trade with explicit price ceilin
 });
 
 test('H16 blocks dispatch while combat is active', () => {
-  const { controller, state, arrive } = fixture({ combatActive: true });
+  const { controller, state } = fixture({ combatActive: true });
   assert.equal(controller.queueExchange(0).accepted, true);
   const tick = controller.tick();
   assert.equal(tick.state, 'BLOCKED');
   assert.equal(tick.reason, 'H16_COMBAT_ACTIVE');
   assert.equal(state.dispatches.length, 0);
-  arrive();
+  assert.equal(state.movement.active, false);
 });
 
 test('H16 refuses to dispatch after owned movement is cancelled instead of verified complete', () => {
