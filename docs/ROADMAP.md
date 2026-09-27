@@ -931,3 +931,23 @@ Stand 2026-09-27:
 Ab 2026-09-27 ist ein frischer Codex-Code-Review für PR #20 keine verpflichtende Merge-Voraussetzung mehr. Der zuvor dokumentierte Codex-Quota-Blocker ist damit aufgehoben.
 
 Weiterhin zwingend: aktueller Head, `behind_by=0`, vollständig grüne relevante CI, keine pending/failing Checks, keine offenen Review-Threads, kein `CHANGES_REQUESTED`, `mergeable=true`, Merge ausschließlich per `merge` mit exaktem `expected_head_sha`, danach `main` verifizieren.
+
+### H16 abgeschlossen – echter v6-Live-PASS
+
+Stand 2026-09-27:
+
+- PR #20 ist auf `main` gemergt;
+- echter `h16-exchange-craft`-Live-Test Suite v6: **PASSED / ALL_STEPS_PASSED**;
+- read-only Bank-Discovery erfolgreich;
+- Materialquelle BANK real genutzt: 10× `whiteegg` via H12-Withdraw;
+- Produktionsgraph danach `READY`;
+- echter Craft `cake`: 1 dispatched / 1 confirmed;
+- echter Exchange `anniversarygift`: 1 dispatched / 1 confirmed;
+- Exchange/Craft/Trade UNKNOWN jeweils 0;
+- keine H16/H13-Suspension;
+- Cleanup erfolgreich;
+- keine Safety-Caps angehoben.
+
+**H16 – Exchange & Craft: abgeschlossen.**
+
+Nächster Entwicklungsblock: **H17 – Economy Autonomy**.
