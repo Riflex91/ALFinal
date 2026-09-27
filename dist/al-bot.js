@@ -5691,6 +5691,7 @@
       this.config = {
         tickMs: Math.max(250, Math.min(5000, Number(options.tickMs) || 750)),
         outcomeTimeoutMs: Math.max(3000, Math.min(120000, Number(options.outcomeTimeoutMs) || 15000)),
+        respawnGraceMs: Math.max(12000, Math.min(30000, Number(options.respawnGraceMs) || 13000)),
         maxActionsPerSession: Math.max(1, Math.min(20, Number(options.maxActionsPerSession) || 4)),
         maxQueue: Math.max(1, Math.min(32, Number(options.maxQueue) || 12))
       };
@@ -5708,6 +5709,7 @@
       this.sequence = 0;
       this.settlementGeneration = 0;
       this.restoredPending = false;
+      this.deathObservedAtMs = null;
       this.partySignals = [];
       this.previousPartyInviteHandler = null;
       this.previousPartyRequestHandler = null;
@@ -5732,6 +5734,8 @@
         stopsConfirmed: 0,
         respawnsQueued: 0,
         respawnsConfirmed: 0,
+        respawnCooldownBlocks: 0,
+        respawnCooldownRejects: 0,
         partyInvitesDispatched: 0,
         partyInvitesConfirmed: 0,
         partyRequestsDispatched: 0,
@@ -5760,6 +5764,30 @@
     _localName() {
       const local = this._local();
       return cleanText(local && local.name || '', 120);
+    }
+
+    _respawnReadiness() {
+      const local = this._local();
+      if (!local || !local.name) {
+        return { ready: false, reason: 'H19_LOCAL_CHARACTER_UNAVAILABLE', local: null, readyAtMs: null, waitMs: null };
+      }
+      if (local.rip !== true) {
+        this.deathObservedAtMs = null;
+        return { ready: false, reason: 'H19_LOCAL_CHARACTER_NOT_DEAD', local: clone(local), readyAtMs: null, waitMs: null };
+      }
+
+      const nowMs = Date.now();
+      if (!Number.isFinite(this.deathObservedAtMs)) this.deathObservedAtMs = nowMs;
+      const readyAtMs = this.deathObservedAtMs + this.config.respawnGraceMs;
+      const waitMs = Math.max(0, readyAtMs - nowMs);
+      return {
+        ready: waitMs <= 0,
+        reason: waitMs <= 0 ? 'H19_RESPAWN_READY' : 'H19_RESPAWN_COOLDOWN',
+        local: clone(local),
+        observedAtMs: this.deathObservedAtMs,
+        readyAtMs,
+        waitMs
+      };
     }
 
     _partySnapshot() {
@@ -6401,11 +6429,24 @@
           targetWasActive: check.active
         };
       } else if (request.kind === 'RESPAWN') {
-        const local = this._local();
-        if (!local || local.rip !== true) return { accepted: false, reason: 'H19_LOCAL_CHARACTER_NOT_DEAD' };
+        const readiness = this._respawnReadiness();
+        if (!readiness.ready) {
+          if (readiness.reason === 'H19_RESPAWN_COOLDOWN') this.metrics.respawnCooldownBlocks += 1;
+          return {
+            accepted: false,
+            state: 'WAIT',
+            reason: readiness.reason,
+            readyAtMs: readiness.readyAtMs,
+            waitMs: readiness.waitMs
+          };
+        }
         actionName = 'respawn';
         args = [];
-        before = { targetWasDead: true };
+        before = {
+          targetWasDead: true,
+          deathObservedAtMs: readiness.observedAtMs,
+          respawnReadyAtMs: readiness.readyAtMs
+        };
       } else if (['PARTY_INVITE', 'PARTY_REQUEST', 'PARTY_ACCEPT_INVITE', 'PARTY_ACCEPT_REQUEST'].includes(request.kind)) {
         const roster = this._roster();
         if (!roster || roster.accountStateAvailable !== true || roster.activeStateAvailable !== true) {
@@ -6595,6 +6636,31 @@
       }
 
       if (current.settlement === 'REJECTED') {
+        const error = cleanText(current.error || '', 300);
+        if (current.kind === 'RESPAWN' && error === 'cant_respawn') {
+          this.currentAction = null;
+          this._removeStorage('pending');
+          this.metrics.actionsRejected += 1;
+          this.metrics.respawnCooldownRejects += 1;
+          this.autonomyEnabled = false;
+          this.deathObservedAtMs = Date.now();
+          const readyAtMs = this.deathObservedAtMs + this.config.respawnGraceMs;
+          this.lastAction = {
+            at: nowIso(),
+            type: 'RESPAWN_REJECTED',
+            reason: 'H19_RESPAWN_COOLDOWN',
+            serverReason: error,
+            readyAtMs,
+            autonomyStopped: true
+          };
+          return {
+            state: 'REJECTED',
+            reason: 'H19_RESPAWN_COOLDOWN',
+            serverReason: error,
+            readyAtMs,
+            autonomyStopped: true
+          };
+        }
         return this._suspend('H19_DISPATCH_REJECTED_WITHOUT_LIVE_OUTCOME', { error: current.error || null });
       }
 
@@ -6648,6 +6714,7 @@
         },
         partySignals: clone(this.partySignals),
         config: clone(this.config),
+        respawn: clone(this._respawnReadiness()),
         lastPlan: clone(this.lastPlan),
         lastAction: clone(this.lastAction),
         metrics: clone(this.metrics)
@@ -19718,8 +19785,10 @@
           baseline = {
             actionsDispatched: Number(status.metrics.actionsDispatched || 0),
             actionsConfirmed: Number(status.metrics.actionsConfirmed || 0),
+            actionsRejected: Number(status.metrics.actionsRejected || 0),
             actionsUnknown: Number(status.metrics.actionsUnknown || 0),
-            respawnsConfirmed: Number(status.metrics.respawnsConfirmed || 0)
+            respawnsConfirmed: Number(status.metrics.respawnsConfirmed || 0),
+            respawnCooldownRejects: Number(status.metrics.respawnCooldownRejects || 0)
           };
         },
         cleanup: async ({ runtime }) => {
@@ -19751,20 +19820,24 @@
               note({
                 local: game.character.name,
                 ctype: game.character.ctype,
-                desiredActiveNames: status.policy.desiredActiveNames
+                desiredActiveNames: status.policy.desiredActiveNames,
+                respawnReadyAtMs: status.respawn && status.respawn.readyAtMs,
+                respawnWaitMs: status.respawn && status.respawn.waitMs
               });
               return {
                 local: game.character.name,
                 ctype: game.character.ctype,
                 rip: game.character.rip,
-                activeCharacterNames: roster.activeCharacterNames
+                activeCharacterNames: roster.activeCharacterNames,
+                respawnReadyAtMs: status.respawn && status.respawn.readyAtMs,
+                respawnWaitMs: status.respawn && status.respawn.waitMs
               };
             }
           },
           {
             id: 'death-recovery',
-            title: 'Genau einen echten Respawn bestätigen',
-            timeoutMs: 30000,
+            title: 'Respawn-Cooldown abwarten und genau einen echten Respawn bestätigen',
+            timeoutMs: 40000,
             run: async ({ runtime, assert, waitFor }) => {
               const queued = runtime.lifecycle.queueRespawn();
               assert(queued && queued.accepted === true, queued && queued.reason || 'H19_RESPAWN_QUEUE_FAILED');
@@ -19775,11 +19848,13 @@
                 const status = runtime.lifecycle.status();
                 if (status.suspended) throw new Error(status.suspendedReason || 'H19_SUSPENDED_DURING_RESPAWN');
                 if (Number(status.metrics.actionsUnknown || 0) > baseline.actionsUnknown) throw new Error('H19_ACTION_UNKNOWN');
+                if (Number(status.metrics.respawnCooldownRejects || 0) > baseline.respawnCooldownRejects) throw new Error('H19_RESPAWN_COOLDOWN_REJECTED');
+                if (Number(status.metrics.actionsRejected || 0) > baseline.actionsRejected) throw new Error('H19_RESPAWN_REJECTED');
                 return Number(status.metrics.respawnsConfirmed || 0) > baseline.respawnsConfirmed
                   && status.currentAction == null
                   ? status
                   : null;
-              }, { timeoutMs: 25000, pollMs: 200, label: 'h19-respawn' });
+              }, { timeoutMs: 35000, pollMs: 200, label: 'h19-respawn' });
 
               runtime.lifecycle.stopAutonomy('H19_RESPAWN_COMPLETE');
               const game = runtime.game.snapshot();
