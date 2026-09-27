@@ -581,7 +581,7 @@ H15-Live-Gate ist bestanden. Nach den Evidence-Dokucommits ist nur noch der neue
 
 ## H16 – Exchange & Craft
 
-**🟦 IMPLEMENTIERT · LIVE V1 FAIL-CLOSED · MATERIAL-FALLBACK V2 IMPLEMENTIERT · CI/REVIEW OFFEN**
+**🟦 IMPLEMENTIERT · LIVE V1 FAIL-CLOSED · V2 TECHNISCH GRÜN · REVIEW + FINALER DOKU-CI OFFEN · LIVE V2 OFFEN**
 
 **BAU**
 - eigener `ExchangeCraftController`
@@ -639,6 +639,16 @@ Live-Versuch 1:
 - Runtime/Scheduler sauber restauriert.
 
 v2 behebt genau diese Testlücke durch begrenzte Materialbeschaffung. Fehlt weiterhin ein sicherer Pfad, wird erneut fail-closed ohne weitere Mutation beendet.
+
+v2 technischer Pre-Live-Stand:
+- technischer Head `3e36f6ccaa34d7359e8cf7d26e5d44af942811cc`;
+- CI Run #355: **211/211 PASS, 0 FAIL, 0 SKIP, completed/success**;
+- Bundle exakt source-synchron auf `0.16.0-h16`;
+- Craft→Exchange prüft Output-Risiko bereits im Preflight;
+- H16-UNKNOWN-Suspension wird durch Test-Cleanup nicht automatisch aufgehoben;
+- v2 Material-Fallback ist regressionsseitig abgedeckt;
+- frischer Codex-Review auf v2-Head angefordert;
+- finaler Doku-Exact-Head-CI noch erforderlich.
 
 H16 wird erst nach grünem Exact-Head-CI, sauberem Review-Gate und echtem Adventure-Land-Live-PASS gemergt.
 
