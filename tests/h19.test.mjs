@@ -183,6 +183,20 @@ test('H19 rejected lifecycle Promise suspends without blind retry', async () => 
   assert.equal(state.dispatches.length, 1);
 });
 
+
+test('H19 synchronous UNKNOWN preserves ownership and suspends without retry', () => {
+  const { controller, state } = fixture({ syncUnknown: true, noMutation: true });
+  assert.equal(controller.queueStart('My_Merchant').accepted, true);
+  const result = controller.tick();
+  assert.equal(result.state, 'UNKNOWN');
+  assert.match(result.reason, /H19_DISPATCH_SYNC_UNKNOWN/);
+  assert.equal(controller.status().suspended, true);
+  assert.ok(controller.status().currentAction);
+  assert.equal(state.dispatches.length, 1);
+  controller.tick();
+  assert.equal(state.dispatches.length, 1);
+});
+
 test('H19 preserves pending lifecycle ownership across module reload and reconciles instead of redispatching', () => {
   const first = fixture({ neverSettle: true });
   assert.equal(first.controller.queueStart('My_Merchant').accepted, true);
@@ -226,4 +240,35 @@ test('H19 fails closed when account or active roster truth is unavailable', () =
   const activeUnavailable = fixture({ activeUnavailable: true });
   assert.equal(activeUnavailable.controller.queueStart('My_Merchant').accepted, false);
   assert.equal(activeUnavailable.state.dispatches.length, 0);
+});
+
+test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired', () => {
+  const runtime = fs.readFileSync(path.resolve(here, '../src/runtime.js'), 'utf8');
+  const entry = fs.readFileSync(path.resolve(here, '../src/entry.js'), 'utf8');
+  const ui = fs.readFileSync(path.resolve(here, '../src/ui.js'), 'utf8');
+  const boundary = fs.readFileSync(path.resolve(here, '../src/action-boundary.js'), 'utf8');
+  const core = fs.readFileSync(path.resolve(here, '../src/core.js'), 'utf8');
+  const build = fs.readFileSync(path.resolve(here, '../scripts/build.mjs'), 'utf8');
+  const dist = fs.readFileSync(path.resolve(here, '../dist/al-bot.js'), 'utf8');
+  const pkg = JSON.parse(fs.readFileSync(path.resolve(here, '../package.json'), 'utf8'));
+
+  assert.match(runtime, /new ns\.CharacterLifecycleController/);
+  assert.match(runtime, /id: 'character-lifecycle'/);
+  assert.match(runtime, /id: 'h19-character-lifecycle'/);
+  assert.match(runtime, /options\.version \|\| '0\.19\.0-h19'/);
+  assert.match(entry, /runtime\.lifecycle\.queueStart/);
+  assert.match(entry, /runtime\.lifecycle\.queueStop/);
+  assert.match(entry, /runtime\.lifecycle\.queueRespawn/);
+  assert.match(entry, /Object\.freeze\(api\.lifecycle\)/);
+  assert.match(ui, /H19 Character Lifecycle & Recovery/);
+  assert.match(boundary, /start_character: Object\.freeze/);
+  assert.match(boundary, /stop_character: Object\.freeze/);
+  assert.match(boundary, /respawn: Object\.freeze/);
+  assert.match(core, /accountCharacters/);
+  assert.match(core, /activeCharacterNames/);
+  assert.match(build, /src\/lifecycle-recovery\.js/);
+  assert.match(build, /AL Bot 0\.19\.0-h19/);
+  assert.match(dist, /AL Bot 0\.19\.0-h19/);
+  assert.match(dist, /class CharacterLifecycleController/);
+  assert.equal(pkg.version, '0.19.0');
 });
