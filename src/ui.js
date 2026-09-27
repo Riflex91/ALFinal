@@ -29,6 +29,7 @@
       this.farmIntelligenceResult = null;
       this.inventoryResult = null;
       this.merchantResult = null;
+      this.bankResult = null;
       this.liveTestClipboard = null;
       this._offLog = null;
       this._dragCleanup = null;
@@ -85,7 +86,7 @@
 </style>
 <div class="albot-head" id="albot-drag-handle"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-minimize" class="albot-window-btn" title="Fenster minimieren" aria-label="Fenster minimieren">—</button><button id="albot-emergency" class="albot-stop">STOP</button></div>
 <div class="albot-tabs">
-<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="merchant">Merchant</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
+<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="merchant">Merchant</button><button class="albot-tab" data-tab="bank">Bank</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
 </div>
 <div class="albot-body">
 <section id="albot-panel-overview" class="albot-panel active"></section>
@@ -97,6 +98,7 @@
 <section id="albot-panel-farm-intelligence" class="albot-panel"></section>
 <section id="albot-panel-inventory" class="albot-panel"></section>
 <section id="albot-panel-merchant" class="albot-panel"></section>
+<section id="albot-panel-bank" class="albot-panel"></section>
 <section id="albot-panel-live-test" class="albot-panel"></section>
 <section id="albot-panel-knowledge" class="albot-panel"></section>
 <section id="albot-panel-logs" class="albot-panel"></section>
@@ -237,6 +239,7 @@
       if (this.activeTab === 'party') this.renderParty(status);
       if (this.activeTab === 'inventory') this.renderInventory(status);
       if (this.activeTab === 'merchant') this.renderMerchant(status);
+      if (this.activeTab === 'bank') this.renderBank(status);
       if (this.activeTab === 'live-test') this.renderLiveTest(status);
       if (this.activeTab === 'knowledge') this.renderKnowledge(status);
       if (this.activeTab === 'logs') this.renderLogs();
@@ -257,6 +260,7 @@
       this.renderFarmIntelligence(status);
       this.renderInventory(status);
       this.renderMerchant(status);
+      this.renderBank(status);
       this.renderLiveTest(status);
       this.renderKnowledge(status);
       this.renderLogs();
@@ -761,6 +765,108 @@ ${items.length ? items.slice(0, 24).map(row => '<div class="albot-small">#'+esc(
         const itemName = panel.querySelector('#albot-h11-item').value;
         const quantity = Number(panel.querySelector('#albot-h11-quantity').value) || 1;
         run(() => this.runtime.merchant.queueDelivery(targetName, itemName, quantity));
+      };
+    }
+
+    renderBank(status) {
+      const panel = this.host.querySelector('#albot-panel-bank');
+      if (!panel) return;
+      const bank = status.bank || {};
+      const metrics = bank.metrics || {};
+      const plan = bank.lastPlan || null;
+      const bankInfo = plan && plan.bank || {};
+      const packs = plan && Array.isArray(plan.packs) ? plan.packs : [];
+      const safe = plan && Array.isArray(plan.safeDepositRows) ? plan.safeDepositRows : [];
+      const bankRows = [];
+      for (const pack of packs) {
+        for (const row of pack.items || []) bankRows.push({ ...row, pack: pack.name });
+      }
+      const resultText = this.bankResult ? JSON.stringify(this.bankResult, null, 2) : 'Noch keine manuelle H12-Aktion.';
+      const depositOptions = safe.length
+        ? safe.map(row => '<option value="'+esc(row.slot)+'">'+esc(row.name)+' x'+esc(row.quantity || 1)+' · Slot '+esc(row.slot)+'</option>').join('')
+        : '<option value="">kein sicheres BANK-Item</option>';
+      const withdrawOptions = bankRows.length
+        ? bankRows.map(row => '<option value="'+esc(row.pack)+'|'+esc(row.slot)+'">'+esc(row.name)+' x'+esc(row.quantity || 1)+' · '+esc(row.pack)+'/'+esc(row.slot)+'</option>').join('')
+        : '<option value="">keine sichtbaren Bank-Items</option>';
+      const packOptions = packs.length
+        ? '<option value="">automatisch</option>'+packs.map(row => '<option value="'+esc(row.name)+'">'+esc(row.name)+' · frei '+esc(row.freeSlots)+'</option>').join('')
+        : '<option value="">Bank nicht gemountet</option>';
+
+      panel.innerHTML = `<div class="albot-card"><b>H12 Bank</b>
+<div class="albot-small">Sichere Bankfahrt, Packs, Workspace, Reservierungen und Inventory/Bank-Reconciliation. Bankwrites laufen ausschließlich über die zentrale ActionBoundary und gelten erst nach beobachtetem Zustandsdelta als bestätigt.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${bank.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Plan</span><div class="albot-v">${esc(plan && plan.state || '-')} · ${esc(plan && plan.reason || '-')}</div></div>
+<div><span class="albot-k">Bank</span><div class="albot-v">${bankInfo.available ? 'GEMOUNTET' : 'nicht gemountet'} · ${esc(bankInfo.map || '-')}</div></div>
+<div><span class="albot-k">Slots</span><div class="albot-v">${esc(bankInfo.usedSlots == null ? '-' : bankInfo.usedSlots)} / ${esc(bankInfo.capacity == null ? '-' : bankInfo.capacity)} · frei ${esc(bankInfo.freeSlots == null ? '-' : bankInfo.freeSlots)}</div></div>
+<div><span class="albot-k">Packs</span><div class="albot-v">${esc(packs.length)}</div></div>
+<div><span class="albot-k">Suspendiert</span><div class="albot-v">${bank.suspended ? 'JA · '+esc(bank.suspendedReason || '-') : 'NEIN'}</div></div>
+<div><span class="albot-k">Deposits bestätigt</span><div class="albot-v">${esc(metrics.depositsConfirmed || 0)}</div></div>
+<div><span class="albot-k">Withdraws bestätigt</span><div class="albot-v">${esc(metrics.withdrawalsConfirmed || 0)}</div></div>
+<div><span class="albot-k">Deposit UNKNOWN</span><div class="albot-v">${esc(metrics.depositsUnknown || 0)}</div></div>
+<div><span class="albot-k">Withdraw UNKNOWN</span><div class="albot-v">${esc(metrics.withdrawalsUnknown || 0)}</div></div>
+<div><span class="albot-k">Movement UNKNOWN</span><div class="albot-v">${esc(metrics.movementUnknown || 0)}</div></div>
+<div><span class="albot-k">Reconciliation Fail</span><div class="albot-v">${esc(metrics.reconciliationFailures || 0)}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Workspace & Reservierung</b>
+<div class="albot-row"><select id="albot-h12-workspace">${packOptions}</select><button id="albot-h12-workspace-set" class="albot-btn">Workspace setzen</button></div>
+<div class="albot-row"><input id="albot-h12-reserve-name" placeholder="Item-ID"><input id="albot-h12-reserve-qty" type="number" min="1" step="1" value="1" style="max-width:90px"><button id="albot-h12-reserve-set" class="albot-btn">Reservieren</button></div>
+<div class="albot-small">Withdraw wird fail-closed blockiert, wenn die konfigurierte Mindestreserve in der Bank unterschritten würde.</div>
+</div>
+
+<div class="albot-card"><b>Kontrollierte Bankaktionen</b>
+<div class="albot-row"><select id="albot-h12-deposit">${depositOptions}</select><button id="albot-h12-deposit-btn" class="albot-btn">BANK-Item einlagern</button></div>
+<div class="albot-row"><select id="albot-h12-withdraw">${withdrawOptions}</select><button id="albot-h12-withdraw-btn" class="albot-btn">Bank-Item holen</button></div>
+<div class="albot-small">Einlagern ist nur für H10-Disposition BANK erlaubt. PROTECT/RESERVE/KEEP/EXCHANGE werden nicht automatisch eingelagert.</div>
+</div>
+
+<div class="albot-card"><b>Steuerung</b>
+<div class="albot-row"><button id="albot-h12-plan" class="albot-btn">Plan</button><button id="albot-h12-reconcile" class="albot-btn">Reconcile</button><button id="albot-h12-tick" class="albot-btn">Tick</button><button id="albot-h12-reset" class="albot-btn warn" ${bank.suspended ? '' : 'disabled'}>Safety zurücksetzen</button></div>
+<div class="albot-small">Pending: ${bank.pending ? esc(bank.pending.kind) : 'nein'} · Request: ${bank.request ? esc(bank.request.kind) : 'keiner'} · Workspace: ${esc(bank.workspace && bank.workspace.preferredPack || 'auto')}</div>
+</div>
+
+<div class="albot-card"><b>Letzte Aktion</b><div class="albot-small">${esc(bank.lastAction && bank.lastAction.type || '-')} · ${esc(bank.lastAction && bank.lastAction.reason || '-')}</div></div>
+<div class="albot-card"><b>Letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.bankResult = fn(); }
+        catch (error) { this.bankResult = { ok: false, reason: String(error && error.message || error) }; }
+        this.renderBank(this.runtime.status());
+      };
+      const planButton = panel.querySelector('#albot-h12-plan');
+      if (planButton) planButton.onclick = () => run(() => this.runtime.bank.plan());
+      const reconcileButton = panel.querySelector('#albot-h12-reconcile');
+      if (reconcileButton) reconcileButton.onclick = () => run(() => this.runtime.bank.reconcile());
+      const tickButton = panel.querySelector('#albot-h12-tick');
+      if (tickButton) tickButton.onclick = () => run(() => this.runtime.bank.tick());
+      const resetButton = panel.querySelector('#albot-h12-reset');
+      if (resetButton) resetButton.onclick = () => run(() => this.runtime.bank.resetSafety('GUI_H12_RESET'));
+      const workspaceButton = panel.querySelector('#albot-h12-workspace-set');
+      if (workspaceButton) workspaceButton.onclick = () => run(() => this.runtime.bank.setWorkspace({
+        preferredPack: panel.querySelector('#albot-h12-workspace').value || null
+      }));
+      const reserveButton = panel.querySelector('#albot-h12-reserve-set');
+      if (reserveButton) reserveButton.onclick = () => {
+        const name = panel.querySelector('#albot-h12-reserve-name').value;
+        const quantity = Number(panel.querySelector('#albot-h12-reserve-qty').value) || 1;
+        run(() => this.runtime.bank.setReservations(name ? { [name]: quantity } : {}));
+      };
+      const depositButton = panel.querySelector('#albot-h12-deposit-btn');
+      if (depositButton) depositButton.onclick = () => {
+        const slot = Number(panel.querySelector('#albot-h12-deposit').value);
+        const row = safe.find(item => Number(item.slot) === slot);
+        run(() => row ? this.runtime.bank.queueDeposit(row.name, { inventorySlot: row.slot }) : { accepted: false, reason: 'H12_GUI_NO_DEPOSIT_ITEM' });
+      };
+      const withdrawButton = panel.querySelector('#albot-h12-withdraw-btn');
+      if (withdrawButton) withdrawButton.onclick = () => {
+        const raw = panel.querySelector('#albot-h12-withdraw').value || '';
+        const split = raw.lastIndexOf('|');
+        const pack = split >= 0 ? raw.slice(0, split) : '';
+        const slot = split >= 0 ? Number(raw.slice(split + 1)) : NaN;
+        run(() => pack && Number.isFinite(slot)
+          ? this.runtime.bank.queueWithdraw(pack, slot, {})
+          : { accepted: false, reason: 'H12_GUI_NO_WITHDRAW_ITEM' });
       };
     }
 
