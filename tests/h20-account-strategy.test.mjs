@@ -442,7 +442,7 @@ test('full autonomy arms an already-active lifecycle and blocks if it later stop
 
 test('entry auto-starts runtime and arms FARM full autonomy only on live Adventure Land pages', () => {
   const entry = fs.readFileSync(path.resolve(here, '../src/entry.js'), 'utf8');
-  assert.match(entry, /host => host === 'adventure\\.land'/);
+  assert.ok(entry.includes("host === 'adventure.land'"));
   assert.match(entry, /await runtime\.start\(\)/);
   assert.match(entry, /startAutonomy\(\{ taskType: 'FARM', waitForRoster: true \}\)/);
   assert.match(entry, /__ALBOT_DISABLE_AUTOSTART__/);
