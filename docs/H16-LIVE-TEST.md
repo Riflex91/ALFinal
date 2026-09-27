@@ -281,14 +281,14 @@ Daraufhin wurde Suite-Version 2 implementiert:
 
 ## v2 Pre-Live Technical Evidence
 
-Technischer v2-Head vor den finalen Dokucommits:
+Finaler technischer v2-Head vor den finalen Dokucommits:
 
-`3e36f6ccaa34d7359e8cf7d26e5d44af942811cc`
+`9e007bc6bfdf872ebf91ecd9f8dbf7f7c2140428`
 
 Evidence:
 
-- Exact-Head-CI Run `#355`: **completed / success**
-- `npm test`: **211/211 PASS, 0 FAIL, 0 SKIP**
+- Exact-Head-CI Run `#362`: **completed / success**
+- `npm test`: **213/213 PASS, 0 FAIL, 0 SKIP**
 - Branch bei Prüfung `behind_by=0`
 - PR #17 `mergeable=true`
 - keine offenen Review-Threads
@@ -315,7 +315,14 @@ v2-Hardening gegenüber Live-Versuch 1:
 - Material-, Craft- und Exchange-Wechsel erhalten Anti-Pingpong-Abstand;
 - kompletter v2-Wiring-/Safety-Stand ist regressionsseitig abgedeckt.
 
-Ein frischer Codex-Review wurde auf diesem technischen v2-Stand explizit angefordert. Der zweite echte H16-Live-Test darf erst freigegeben werden, wenn:
-1. der neue Review abgeschlossen bzw. ohne offene Threads ist,
-2. die finalen Dokucommits einen neuen Exact-Head-CI mit `completed/success` haben,
-3. `behind_by=0`, `mergeable=true`, kein `CHANGES_REQUESTED` und keine pending/failing Checks vorliegen.
+Frischer Codex-v2-Review auf Commit `3e36f6ccaa...` meldete zwei zusätzliche Punkte, beide im finalen technischen Head behoben:
+
+1. **P1 Gesamt-Gold vor Materialkauf**  
+   Vor der ersten H13-Materialmutation muss Character-Gold `Materialbeschaffung + Craft-Kosten + 10.000 Goldreserve` vollständig decken. Andernfalls wird der Kandidat bereits im Preflight verworfen.
+
+2. **P2 mehrere Bank-Stacks**  
+   `queueMaterialAcquire` darf bei recoverable H12-Rejects (`WRONG_OR_UNKNOWN_BANK_MAP`, `BANK_RESERVATION_BLOCKED`, `WITHDRAW_ITEM_NOT_FOUND`) nicht beim ersten Stack abbrechen, sondern prüft weitere passende Bank-Stacks. Nicht-recoverable Rejects wie `H12_BUSY` stoppen weiterhin fail-closed ohne parallelen Trade-Fallback.
+
+Beide Review-Threads sind resolved. Regressionen decken recoverable Bank-Fallback, non-recoverable Bank-Stop sowie das vollständige Goldreserve-Gate ab.
+
+Der frische Codex-v2-Review ist ausgewertet und seine beiden neuen Threads sind resolved. Nach diesen finalen Dokucommits ist noch ein neuer Exact-Head-CI erforderlich. Der zweite echte H16-Live-Test darf erst freigegeben werden, wenn dieser Doku-Head `completed/success`, `behind_by=0`, `mergeable=true`, review-clean und ohne pending/failing Checks ist.
