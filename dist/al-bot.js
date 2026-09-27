@@ -19777,6 +19777,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
   Object.freeze(api.gear);
   Object.freeze(api.upgrade);
   Object.freeze(api.exchangeCraft);
+  Object.freeze(api.economy);
   Object.freeze(api.liveTests);
   Object.freeze(api.knowledge);
   Object.freeze(api.roster);
