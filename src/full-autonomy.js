@@ -228,6 +228,14 @@
       const shouldRunLifecycle = coordinator || !localPartyHealthy;
 
       const current = lifecycle.status();
+      if (shouldRunLifecycle && this.started.lifecycle && current.autonomyEnabled !== true) {
+        return {
+          ok: false,
+          reason: 'FULL_AUTONOMY_LIFECYCLE_STOP_REQUIRES_EXPLICIT_RESTART',
+          lifecycleLastAction: clone(current.lastAction),
+          actionsThisSession: Number(current.actionsThisSession || 0)
+        };
+      }
       if (shouldRunLifecycle && current.autonomyEnabled !== true) {
         const started = lifecycle.startAutonomy({ maxActions: this.config.lifecycleMaxActions });
         if (!started || started.accepted !== true) {
