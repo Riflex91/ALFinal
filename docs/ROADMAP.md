@@ -1277,3 +1277,29 @@ Arbeitsbranch/PR:
 - der nächste echte H19-v2-Live-Test benötigt mindestens einen Remote-Character, der vom Test-Runner selbst als Child-Character gestartet wurde.
 
 H19 Remote Start/Stop + Restart-Recovery bleibt bis zu einem vollständigen PASS weiter offen.
+
+
+### H19 v2 – Cross-Window Lifecycle fuer getrennte Browserfenster
+
+Stand 2026-09-27.
+
+Die V3/V4/V5-Auswertung hat die H19-Steuerungsgrenze praezisiert:
+
+- `get_active_characters()` ist fuer direkte Child-/Runner-Steuerung geeignet, nicht fuer separat geoeffnete Browserfenster.
+- V3 nutzte bei nicht runner-beobachteten eigenen Characters einen adressierten `send_cm`-Fallback.
+- V4 etablierte `send_cm`-/`on_cm`-Lebensnachweise mit Vertrauensgrenze.
+- V5 lieferte die Session-/Liveness-/TTL-/ACK-/SETTLEMENT-Semantik fuer fail-closed Recovery.
+
+ALFinal H19 fuehrt deshalb einen nativen Cross-Window-Lifecycle-Kanal ein:
+
+- getrennte ALFinal-Fenster senden bounded Heartbeats mit Character, Session, Server und Runtime-`running`;
+- Remote STOP/START an ein getrenntes Fenster wird als `STOP_RUNTIME`/`START_RUNTIME` per CM an den Zielbot delegiert;
+- der Zielbot fuehrt `runtime.stop()`/`runtime.start()` lokal aus und bestaetigt terminal per SETTLEMENT;
+- der Kommunikationskanal lebt ausserhalb des normalen Runtime-Schedulers weiter, damit eine gestoppte Runtime weiterhin einen START empfangen kann;
+- bei Hot-Reload/Destroy wird der Kanal vollstaendig entfernt;
+- Child-Character behalten den nativen `stop_character`/`start_character`-Pfad und haben bei direkter Runner-Kontrollierbarkeit Vorrang;
+- Sessionwechsel, stale Heartbeats und verlorene Peer-Authority blockieren fail-closed ohne Blind-Retry oder stillen Child-Fallback.
+
+PR #35 (`chatgpt/h19-cross-window-lifecycle`) enthaelt Implementierung, Live-Test v2 und Regressionstests. Nach erfolgreichem Merge muessen alle separat geoeffneten Adventure-Land-Fenster denselben neuen ALFinal-Build laden, bevor der naechste echte `h19-remote-recovery`-Lauf ausgefuehrt wird.
+
+H19 bleibt bis zum vollstaendigen Remote-Recovery-PASS und anschliessendem Party-Recovery-Gate offen.

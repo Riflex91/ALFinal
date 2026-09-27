@@ -170,6 +170,24 @@
         economy: this.economy,
         canAct: action => this.actionAllowed(action)
       });
+      this.lifecycleTransport = new ns.H19CrossWindowLifecycleTransport({
+        root: this.root,
+        logger: this.logger,
+        roster: this.roster,
+        getLocalState: () => {
+          let game = null;
+          try { game = this.game.snapshot(); } catch (_) {}
+          return {
+            localName: game && game.character ? game.character.name : null,
+            running: this.running,
+            runEpoch: this.runEpoch,
+            emergencyStopLatched: this.stopLatch.status().latched,
+            version: this.version
+          };
+        },
+        startRuntime: () => this.start(),
+        stopRuntime: reason => this.stop(reason)
+      });
       this.lifecycle = new ns.CharacterLifecycleController({
         root: this.root,
         logger: this.logger,
@@ -178,6 +196,7 @@
         roster: this.roster,
         party: this.party,
         storage: this.storage,
+        crossWindow: this.lifecycleTransport,
         canAct: action => this.actionAllowed(action)
       });
       this.inventory.partyLogistics = this.partyLogistics;
@@ -204,6 +223,7 @@
       this._registerH19LiveTest();
       this._registerH19RemoteRecoveryLiveTest();
       this._installErrorCapture();
+      this.lifecycleTransport.install();
       this.logger.info('AL Bot Runtime erstellt', {
         version: this.version,
         bootCount: this.bootCount,
@@ -4381,6 +4401,7 @@
     _registerH19RemoteRecoveryLiveTest() {
       let baseline = null;
       let targetName = null;
+      let targetControlMode = null;
       let originalPolicy = null;
 
       const onlineSet = roster => new Set(
@@ -4401,6 +4422,7 @@
         if (!originalPolicy) return null;
         return runtime.lifecycle.setPolicy({
           desiredActiveNames: Array.isArray(originalPolicy.desiredActiveNames) ? originalPolicy.desiredActiveNames : [],
+          desiredRuntimeRunningNames: Array.isArray(originalPolicy.desiredRuntimeRunningNames) ? originalPolicy.desiredRuntimeRunningNames : [],
           desiredPartyMemberNames: Array.isArray(originalPolicy.desiredPartyMemberNames) ? originalPolicy.desiredPartyMemberNames : [],
           desiredPartyLeader: originalPolicy.desiredPartyLeader || null,
           maxActionsPerSession: originalPolicy.maxActionsPerSession
@@ -4431,13 +4453,14 @@
       this.liveTests.register({
         id: 'h19-remote-recovery',
         title: 'H19 – Remote Start/Stop & Restart Recovery',
-        description: 'Bounded Live-Test: einen sicheren eigenen Remote-Character stoppen, Live-Roster-Abwesenheit bestätigen und ihn über Desired Active genau einmal automatisch wieder starten.',
-        version: '1',
+        description: 'Bounded Live-Test: einen sicheren eigenen Remote-Bot stoppen und über denselben bestätigten Lifecycle-Pfad genau einmal via Desired Active wieder starten; getrennte Browserfenster nutzen H19-CM, Child-Runner die native Character-API.',
+        version: '2',
         recommended: true,
         autoStartRuntime: true,
         restoreRuntimeState: true,
         prepare: async ({ runtime }) => {
           targetName = null;
+          targetControlMode = null;
           baseline = null;
           originalPolicy = null;
           try { runtime.lifecycle.stopAutonomy('H19_REMOTE_LIVE_TEST_RESET'); } catch (_) {}
@@ -4449,6 +4472,7 @@
           const clean = runtime.lifecycle.status();
           originalPolicy = {
             desiredActiveNames: Array.isArray(clean.policy.desiredActiveNames) ? clean.policy.desiredActiveNames.slice() : [],
+            desiredRuntimeRunningNames: Array.isArray(clean.policy.desiredRuntimeRunningNames) ? clean.policy.desiredRuntimeRunningNames.slice() : [],
             desiredPartyMemberNames: Array.isArray(clean.policy.desiredPartyMemberNames) ? clean.policy.desiredPartyMemberNames.slice() : [],
             desiredPartyLeader: clean.policy.desiredPartyLeader || null,
             maxActionsPerSession: clean.policy.maxActionsPerSession
@@ -4476,7 +4500,18 @@
                 throw new Error('H19_REMOTE_CLEANUP_ROSTER_UNAVAILABLE');
               }
 
-              let targetActive = onlineSet(roster).has(String(targetName));
+              const targetHealthy = () => {
+                if (targetControlMode === 'cross-window-runtime') {
+                  const peer = runtime.lifecycleTransport.freshPeer(targetName);
+                  return !!peer && peer.running === true;
+                }
+                const liveRoster = runtime.roster.refresh();
+                return !!liveRoster
+                  && liveRoster.onlineStateAvailable === true
+                  && onlineSet(liveRoster).has(String(targetName));
+              };
+
+              let targetActive = targetHealthy();
               if (!targetActive) {
                 const dispatchedDelta = Number(status.metrics.actionsDispatched || 0) - baseline.actionsDispatched;
                 const rejectedDelta = Number(status.metrics.actionsRejected || 0) - baseline.actionsRejected;
@@ -4499,7 +4534,6 @@
 
                 await waitForCleanup(runtime, () => {
                   const current = runtime.lifecycle.status();
-                  const liveRoster = runtime.roster.refresh();
                   const rejectedNow = Number(current.metrics.actionsRejected || 0) - baseline.actionsRejected;
                   const unknownNow = Number(current.metrics.actionsUnknown || 0) - baseline.actionsUnknown;
 
@@ -4512,9 +4546,7 @@
 
                   return Number(current.metrics.startsConfirmed || 0) > baseline.startsConfirmed
                     && current.currentAction == null
-                    && liveRoster
-                    && liveRoster.onlineStateAvailable === true
-                    && onlineSet(liveRoster).has(String(targetName))
+                    && targetHealthy()
                     ? true
                     : false;
                 }, {
@@ -4525,10 +4557,8 @@
 
                 status = runtime.lifecycle.status();
                 roster = runtime.roster.refresh();
-                targetActive = roster
-                  && roster.onlineStateAvailable === true
-                  && onlineSet(roster).has(String(targetName));
-                if (!targetActive) throw new Error('H19_REMOTE_CLEANUP_TARGET_STILL_OFFLINE');
+                targetActive = targetHealthy();
+                if (!targetActive) throw new Error('H19_REMOTE_CLEANUP_TARGET_STILL_INACTIVE');
               }
             }
           } catch (error) {
@@ -4558,9 +4588,9 @@
         steps: [
           {
             id: 'preflight',
-            title: 'Sicheren eigenen aktiven Remote-Character und Lifecycle-APIs prüfen',
-            timeoutMs: 10000,
-            run: async ({ runtime, assert, note }) => {
+            title: 'Sicheren eigenen Remote-Bot und passenden Lifecycle-Transport prüfen',
+            timeoutMs: 12000,
+            run: async ({ runtime, assert, note, waitFor }) => {
               const game = runtime.game.snapshot();
               assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
               assert(game.character.rip !== true, 'H19_REMOTE_LOCAL_CHARACTER_DEAD');
@@ -4571,9 +4601,7 @@
               const roster = runtime.roster.refresh();
               assert(roster && roster.accountStateAvailable === true, 'H19_REMOTE_ACCOUNT_ROSTER_UNAVAILABLE');
               assert(roster.onlineStateAvailable === true, 'H19_REMOTE_ACTIVE_ROSTER_UNAVAILABLE');
-              assert(roster.activeStateAvailable === true, 'H19_REMOTE_RUNNER_ACTIVE_ROSTER_UNAVAILABLE');
-              assert(runtime.actions.available('stop_character'), 'H19_REMOTE_STOP_API_UNAVAILABLE');
-              assert(runtime.actions.available('start_character'), 'H19_REMOTE_START_API_UNAVAILABLE');
+              assert(runtime.lifecycleTransport && runtime.lifecycleTransport.status().installed === true, 'H19_REMOTE_CROSS_WINDOW_TRANSPORT_UNAVAILABLE');
 
               const status = runtime.lifecycle.status();
               assert(status.suspended === false, status.suspendedReason || 'H19_REMOTE_SUSPENDED');
@@ -4581,57 +4609,100 @@
               assert(status.queue.length === 0, 'H19_REMOTE_QUEUE_NOT_EMPTY');
 
               const localName = String(game.character.name || '');
-              const online = onlineSet(roster);
-              const runnerActive = runnerActiveSet(roster);
               const party = runtime.party.snapshot();
               const leader = party && party.leader ? String(party.leader) : null;
               const partyMembers = new Set(party && Array.isArray(party.memberNames) ? party.memberNames.map(String) : []);
 
-              const candidates = (roster.accountCharacters || [])
-                .filter(row => row && row.name)
-                .map(row => ({ name: String(row.name), ctype: row.ctype || null }))
-                .filter(row => row.name !== localName
-                  && row.name !== leader
-                  && online.has(row.name)
-                  && runnerActive.has(row.name))
-                .sort((a, b) => {
-                  const aParty = partyMembers.has(a.name) ? 1 : 0;
-                  const bParty = partyMembers.has(b.name) ? 1 : 0;
-                  if (aParty !== bParty) return aParty - bParty;
-                  return a.name.localeCompare(b.name);
-                });
+              const selectCandidates = () => {
+                const liveRoster = runtime.roster.refresh();
+                if (!liveRoster || liveRoster.onlineStateAvailable !== true) return [];
+                const online = onlineSet(liveRoster);
+                const runnerActive = runnerActiveSet(liveRoster);
+                const peers = new Map(runtime.lifecycleTransport.freshPeers().map(peer => [String(peer.name), peer]));
+                return (liveRoster.accountCharacters || [])
+                  .filter(row => row && row.name)
+                  .map(row => {
+                    const name = String(row.name);
+                    const peer = peers.get(name) || null;
+                    return {
+                      name,
+                      ctype: row.ctype || null,
+                      peer,
+                      controlMode: runnerActive.has(name)
+                        ? 'child-character'
+                        : peer && peer.running === true
+                          ? 'cross-window-runtime'
+                          : null
+                    };
+                  })
+                  .filter(row => row.name !== localName
+                    && row.name !== leader
+                    && online.has(row.name)
+                    && row.controlMode)
+                  .sort((a, b) => {
+                    const aMode = a.controlMode === 'cross-window-runtime' ? 0 : 1;
+                    const bMode = b.controlMode === 'cross-window-runtime' ? 0 : 1;
+                    if (aMode !== bMode) return aMode - bMode;
+                    const aParty = partyMembers.has(a.name) ? 1 : 0;
+                    const bParty = partyMembers.has(b.name) ? 1 : 0;
+                    if (aParty !== bParty) return aParty - bParty;
+                    return a.name.localeCompare(b.name);
+                  });
+              };
 
-              assert(candidates.length > 0, 'H19_REMOTE_CONTROLLABLE_TARGET_UNAVAILABLE');
-              targetName = candidates[0].name;
+              const candidate = await waitFor(() => selectCandidates()[0] || null, {
+                timeoutMs: 8000,
+                pollMs: 250,
+                label: 'h19-remote-controllable-target'
+              });
+              assert(candidate, 'H19_REMOTE_CONTROLLABLE_TARGET_UNAVAILABLE');
+              targetName = candidate.name;
+              targetControlMode = candidate.controlMode;
+
+              if (targetControlMode === 'child-character') {
+                assert(runtime.actions.available('stop_character'), 'H19_REMOTE_STOP_API_UNAVAILABLE');
+                assert(runtime.actions.available('start_character'), 'H19_REMOTE_START_API_UNAVAILABLE');
+              }
 
               const captured = runtime.lifecycle.captureDesiredActive();
               assert(captured && captured.accepted === true, captured && captured.reason || 'H19_REMOTE_CAPTURE_ACTIVE_FAILED');
               assert(Array.isArray(captured.desiredActiveNames) && captured.desiredActiveNames.includes(targetName), 'H19_REMOTE_TARGET_NOT_CAPTURED_AS_DESIRED');
+              if (targetControlMode === 'cross-window-runtime') {
+                assert(Array.isArray(captured.desiredRuntimeRunningNames)
+                  && captured.desiredRuntimeRunningNames.includes(targetName), 'H19_REMOTE_TARGET_NOT_CAPTURED_AS_DESIRED_RUNTIME');
+              }
 
               note({
                 local: localName,
                 target: targetName,
-                targetCtype: candidates[0].ctype,
+                targetCtype: candidate.ctype,
+                controlMode: targetControlMode,
+                targetSessionId: candidate.peer && candidate.peer.sessionId || null,
                 targetWasPartyMember: partyMembers.has(targetName),
                 partyLeader: leader,
                 desiredActiveNames: captured.desiredActiveNames,
+                desiredRuntimeRunningNames: captured.desiredRuntimeRunningNames,
                 desiredPartyMemberNames: captured.desiredPartyMemberNames
               });
 
+              const finalRoster = runtime.roster.refresh();
               return {
                 local: localName,
                 target: targetName,
-                targetCtype: candidates[0].ctype,
+                targetCtype: candidate.ctype,
+                controlMode: targetControlMode,
+                targetSessionId: candidate.peer && candidate.peer.sessionId || null,
                 targetWasPartyMember: partyMembers.has(targetName),
                 partyLeader: leader,
-                onlineCharacterNames: roster.onlineCharacterNames,
-                runnerActiveCharacterNames: roster.runnerActiveCharacterNames || roster.activeCharacterNames
+                onlineCharacterNames: finalRoster.onlineCharacterNames,
+                runnerActiveCharacterNames: finalRoster.runnerActiveCharacterNames || finalRoster.activeCharacterNames,
+                crossWindowPeers: runtime.lifecycleTransport.freshPeers()
               };
             }
           },
           {
             id: 'remote-stop',
-            title: 'Remote-Character genau einmal stoppen und Live-Abwesenheit bestätigen',
+            title: 'Remote-Bot genau einmal stoppen und passenden Live-Zustand bestätigen',
             timeoutMs: 30000,
             run: async ({ runtime, assert, waitFor }) => {
               assert(targetName, 'H19_REMOTE_TARGET_MISSING');
@@ -4644,11 +4715,15 @@
                 if (Number(status.metrics.actionsUnknown || 0) > baseline.actionsUnknown) throw new Error('H19_REMOTE_STOP_UNKNOWN');
                 if (Number(status.metrics.actionsRejected || 0) > baseline.actionsRejected) throw new Error('H19_REMOTE_STOP_REJECTED');
                 const roster = runtime.roster.refresh();
+                const targetStopped = targetControlMode === 'cross-window-runtime'
+                  ? (() => {
+                      const peer = runtime.lifecycleTransport.freshPeer(targetName);
+                      return !!peer && peer.running === false;
+                    })()
+                  : !!roster && roster.onlineStateAvailable === true && !onlineSet(roster).has(String(targetName));
                 return Number(status.metrics.stopsConfirmed || 0) > baseline.stopsConfirmed
                   && status.currentAction == null
-                  && roster
-                  && roster.onlineStateAvailable === true
-                  && !onlineSet(roster).has(String(targetName))
+                  && targetStopped
                   ? { status, roster }
                   : null;
               }, { timeoutMs: 25000, pollMs: 250, label: 'h19-remote-stop' });
@@ -4661,8 +4736,14 @@
               assert(dispatched === 1, 'H19_REMOTE_STOP_DISPATCH_COUNT_INVALID');
               assert(confirmed === 1, 'H19_REMOTE_STOP_CONFIRM_COUNT_INVALID');
               assert(stopped === 1, 'H19_REMOTE_STOP_CONFIRMATION_MISSING');
-              assert(!onlineSet(roster).has(String(targetName)), 'H19_REMOTE_TARGET_STILL_ACTIVE');
-              return { target: targetName, dispatched, confirmed, stopsConfirmed: stopped };
+              if (targetControlMode === 'cross-window-runtime') {
+                const peer = runtime.lifecycleTransport.freshPeer(targetName);
+                assert(peer && peer.running === false, 'H19_REMOTE_TARGET_RUNTIME_STILL_RUNNING');
+                assert(onlineSet(roster).has(String(targetName)), 'H19_REMOTE_WINDOW_CHARACTER_WENT_OFFLINE');
+              } else {
+                assert(!onlineSet(roster).has(String(targetName)), 'H19_REMOTE_TARGET_STILL_ACTIVE');
+              }
+              return { target: targetName, controlMode: targetControlMode, dispatched, confirmed, stopsConfirmed: stopped };
             }
           },
           {
@@ -4680,11 +4761,15 @@
                 if (Number(status.metrics.actionsUnknown || 0) > baseline.actionsUnknown) throw new Error('H19_REMOTE_RESTART_UNKNOWN');
                 if (Number(status.metrics.actionsRejected || 0) > baseline.actionsRejected) throw new Error('H19_REMOTE_RESTART_REJECTED');
                 const roster = runtime.roster.refresh();
+                const targetStarted = targetControlMode === 'cross-window-runtime'
+                  ? (() => {
+                      const peer = runtime.lifecycleTransport.freshPeer(targetName);
+                      return !!peer && peer.running === true;
+                    })()
+                  : !!roster && roster.onlineStateAvailable === true && onlineSet(roster).has(String(targetName));
                 return Number(status.metrics.startsConfirmed || 0) > baseline.startsConfirmed
                   && status.currentAction == null
-                  && roster
-                  && roster.onlineStateAvailable === true
-                  && onlineSet(roster).has(String(targetName))
+                  && targetStarted
                   ? { status, roster }
                   : null;
               }, { timeoutMs: 35000, pollMs: 250, label: 'h19-remote-restart' });
@@ -4706,9 +4791,14 @@
               assert(rejected === 0, 'H19_REMOTE_REJECTED');
               assert(unknown === 0, 'H19_REMOTE_UNKNOWN');
               assert(onlineSet(roster).has(String(targetName)), 'H19_REMOTE_TARGET_NOT_ACTIVE_AFTER_RECOVERY');
+              if (targetControlMode === 'cross-window-runtime') {
+                const peer = runtime.lifecycleTransport.freshPeer(targetName);
+                assert(peer && peer.running === true, 'H19_REMOTE_TARGET_RUNTIME_NOT_RUNNING_AFTER_RECOVERY');
+              }
 
               return {
                 target: targetName,
+                controlMode: targetControlMode,
                 dispatched,
                 confirmed,
                 stopsConfirmed: stoppedCount,
@@ -4735,8 +4825,13 @@
               assert(Number(after.metrics.actionsUnknown || 0) === baseline.actionsUnknown, 'H19_REMOTE_UNKNOWN_DURING_STABILITY');
               assert(Number(after.metrics.actionsRejected || 0) === baseline.actionsRejected, 'H19_REMOTE_REJECT_DURING_STABILITY');
               assert(roster && roster.onlineStateAvailable === true && onlineSet(roster).has(String(targetName)), 'H19_REMOTE_TARGET_LOST_DURING_STABILITY');
+              if (targetControlMode === 'cross-window-runtime') {
+                const peer = runtime.lifecycleTransport.freshPeer(targetName);
+                assert(peer && peer.running === true, 'H19_REMOTE_TARGET_RUNTIME_LOST_DURING_STABILITY');
+              }
               return {
                 target: targetName,
+                controlMode: targetControlMode,
                 actionsDispatched: Number(after.metrics.actionsDispatched || 0) - baseline.actionsDispatched,
                 actionsConfirmed: Number(after.metrics.actionsConfirmed || 0) - baseline.actionsConfirmed,
                 actionsRejected: Number(after.metrics.actionsRejected || 0) - baseline.actionsRejected,
@@ -4759,8 +4854,13 @@
               assert(status.queue.length === 0, 'H19_REMOTE_QUEUE_REMAINS');
               assert(status.suspended === false, status.suspendedReason || 'H19_REMOTE_SUSPENDED_AT_CLEANUP');
               assert(roster && roster.onlineStateAvailable === true && onlineSet(roster).has(String(targetName)), 'H19_REMOTE_TARGET_NOT_RESTORED');
+              if (targetControlMode === 'cross-window-runtime') {
+                const peer = runtime.lifecycleTransport.freshPeer(targetName);
+                assert(peer && peer.running === true, 'H19_REMOTE_TARGET_RUNTIME_NOT_RESTORED');
+              }
               return {
                 target: targetName,
+                controlMode: targetControlMode,
                 autonomyEnabled: status.autonomyEnabled,
                 currentAction: status.currentAction,
                 queueLength: status.queue.length,
@@ -4929,6 +5029,7 @@
         exchangeCraft: this.exchangeCraft.status(),
         economy: this.economy.status(),
         partyLogistics: this.partyLogistics.status(),
+        lifecycleTransport: this.lifecycleTransport.status(),
         lifecycle: this.lifecycle.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
@@ -4963,6 +5064,7 @@
         exchangeCraft: this.exchangeCraft.status(),
         economy: this.economy.status(),
         partyLogistics: this.partyLogistics.status(),
+        lifecycleTransport: this.lifecycleTransport.status(),
         lifecycle: this.lifecycle.status(),
         liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
@@ -4996,6 +5098,10 @@
       push('exchange-craft-controller', !!this.exchangeCraft.status() && typeof this.exchangeCraft.plan === 'function' && typeof this.exchangeCraft.productionPlan === 'function', this.exchangeCraft.status());
       push('economy-controller', !!this.economy.status() && typeof this.economy.plan === 'function' && typeof this.economy.startAutonomy === 'function', this.economy.status());
       push('party-logistics-controller', !!this.partyLogistics.status() && typeof this.partyLogistics.plan === 'function' && typeof this.partyLogistics.queueSupply === 'function', this.partyLogistics.status());
+      push('h19-cross-window-lifecycle-transport', !!this.lifecycleTransport.status()
+        && this.lifecycleTransport.status().protocol === 'albot-h19-cross-window-v1'
+        && typeof this.lifecycleTransport.freshPeer === 'function'
+        && typeof this.lifecycleTransport.requestRuntimeState === 'function', this.lifecycleTransport.status());
       push('character-lifecycle-controller', !!this.lifecycle.status() && typeof this.lifecycle.plan === 'function' && typeof this.lifecycle.queueStart === 'function' && typeof this.lifecycle.queueRespawn === 'function', this.lifecycle.status());
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
@@ -5072,6 +5178,7 @@
       if (this._destroyed) return;
       this.running = false;
       try { this.liveTests.cancel(reason); } catch (_) {}
+      try { if (this.lifecycleTransport) this.lifecycleTransport.destroy(reason); } catch (_) {}
 
       // Zuerst alle zentral verwalteten Ressourcen synchron stoppen. Dadurch kann
       // ein neu geladenes Bundle niemals alte Timer/Listener weiterlaufen lassen.

@@ -1581,3 +1581,47 @@ Nächster Live-Test nach finalem Merge:
 Mindestens ein nichtlokaler eigener Character muss vom Test-Runner selbst über Adventure Lands `start_character(...)` als Child-Character gestartet worden sein. Separat geöffnete Browserfenster reichen für Remote STOP nicht aus.
 
 H19 ist weiterhin nicht abgeschlossen. Nach einem vollständigen Remote-Recovery-PASS bleibt Party Recovery als letzter gezielter H19-Live-Gate.
+
+
+## H19 v2 – Cross-Window Lifecycle fuer getrennte Adventure-Land-Fenster
+
+Stand: 2026-09-27
+
+Aus V3/V4/V5 wurde die bewaehrte Trennung fuer getrennte Browserfenster uebernommen:
+
+- Child-/Runner-Character: direkte native Character-Steuerung.
+- Separates Browserfenster: adressierte Character-to-Character-Kommunikation ueber `send_cm`/`on_cm`.
+- Fachliche Bestaetigung erfolgt nicht allein aus Transporterfolg, sondern ueber Heartbeat/Liveness plus terminales Settlement.
+- Commands sind an eigene Character, Server, TTL und die beobachtete Ziel-Session gebunden.
+- Sessionwechsel oder stale Liveness invalidieren alte Authority fail-closed.
+
+Aktueller Arbeitsstand:
+
+- Branch: `chatgpt/h19-cross-window-lifecycle`
+- PR: #35 – `H19: Add cross-window lifecycle recovery`
+- neuer Transport: `src/cross-window-lifecycle.js`
+- Protokoll: `albot-h19-cross-window-v1`
+- Heartbeat bleibt beim normalen `runtime.stop()` aktiv, damit der gestoppte Zielbot einen `START_RUNTIME` empfangen kann.
+- Hot-Reload/Destroy entfernt den CM-Handler und Heartbeat-Timer.
+- Node-faehige Heartbeat-Timer werden `unref()`t, damit Tests/Hosts nicht kuenstlich am Leben bleiben.
+- Remote STOP/START fuer separate Fenster wird lokal auf dem Zielbot ausgefuehrt und mit ACK/SETTLEMENT korreliert.
+- Stale Target-Session erzeugt ein terminal negatives Settlement; keine Timeout-/Blind-Retry-Schleife.
+- `desiredRuntimeRunningNames` wird separat persistiert/restauriert und faellt bei verlorener Peer-Authority nicht still auf Child-`start_character` zurueck.
+- Wenn ein Character im selben Runner direkt steuerbar ist, hat der native Child-Pfad Vorrang.
+- `h19-remote-recovery` v2 kann beide Modi testen und bevorzugt bei der Zielauswahl einen geeigneten Cross-Window-Kandidaten.
+
+Vor dem naechsten Live-Lauf:
+
+1. PR #35 muss vollstaendig gruen, review-clean und gemergt sein.
+2. Alle separat geoeffneten Adventure-Land-Fenster muessen exakt denselben neuen `dist/al-bot.js` von `main` laden.
+3. Einige Sekunden fuer gegenseitige H19-Heartbeats laufen lassen.
+4. `h19-remote-recovery` exakt einmal starten.
+5. Bei Fehler kein Blind-Rerun, sondern Diagnoseexport auswerten.
+
+Erwartung fuer den Cross-Window-Live-PASS:
+
+- Ziel bleibt als Adventure-Land-Character accountweit online;
+- Zielruntime geht bestaetigt `running=false`;
+- Desired Active startet dieselbe Ziel-Session wieder auf `running=true`;
+- insgesamt 2 Dispatch / 2 Confirm / 1 STOP / 1 START / 0 Reject / 0 UNKNOWN;
+- danach 5 Sekunden stabil ohne Retry.

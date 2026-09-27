@@ -27,6 +27,7 @@
       this.roster = options.roster;
       this.party = options.party || null;
       this.storage = options.storage || null;
+      this.crossWindow = options.crossWindow || null;
       this.canAct = typeof options.canAct === 'function' ? options.canAct : () => true;
 
       this.config = {
@@ -58,6 +59,7 @@
       this.partyRequestHandler = null;
       this.policyState = {
         desiredActiveNames: [],
+        desiredRuntimeRunningNames: [],
         desiredPartyMemberNames: [],
         desiredPartyLeader: null
       };
@@ -89,7 +91,9 @@
         reconciliations: 0,
         sessionBudgetBlocks: 0,
         ownershipBlocks: 0,
-        safetyBlocks: 0
+        safetyBlocks: 0,
+        crossWindowDispatches: 0,
+        crossWindowConfirms: 0
       };
     }
 
@@ -277,6 +281,7 @@
     _persistPolicy() {
       this._writeStorage('policy', {
         desiredActiveNames: clone(this.policyState.desiredActiveNames),
+        desiredRuntimeRunningNames: clone(this.policyState.desiredRuntimeRunningNames),
         desiredPartyMemberNames: clone(this.policyState.desiredPartyMemberNames),
         desiredPartyLeader: this.policyState.desiredPartyLeader || null
       });
@@ -291,6 +296,9 @@
         this.policyState.desiredActiveNames = policy.desiredActiveNames
           .map(name => cleanText(name, 120))
           .filter(Boolean);
+        this.policyState.desiredRuntimeRunningNames = Array.isArray(policy.desiredRuntimeRunningNames)
+          ? policy.desiredRuntimeRunningNames.map(name => cleanText(name, 120)).filter(Boolean)
+          : [];
         this.policyState.desiredPartyMemberNames = Array.isArray(policy.desiredPartyMemberNames)
           ? policy.desiredPartyMemberNames.map(name => cleanText(name, 120)).filter(Boolean)
           : [];
@@ -395,18 +403,39 @@
       if (String(owned.name) === String(localName)) {
         return { ok: false, reason: 'H19_REMOTE_TARGET_IS_LOCAL' };
       }
+
       const targetName = String(owned.name);
       const active = this._onlineSet(roster).has(targetName);
       const runnerActive = this._runnerActiveSet(roster).has(targetName);
-      if (mode === 'START' && active) return { ok: false, reason: 'H19_TARGET_ALREADY_ACTIVE' };
-      if (mode === 'STOP' && !active) return { ok: false, reason: 'H19_TARGET_ALREADY_STOPPED' };
-      if (mode === 'STOP' && roster.activeStateAvailable !== true) {
-        return { ok: false, reason: 'H19_RUNNER_ACTIVE_STATE_UNAVAILABLE' };
-      }
-      if (mode === 'STOP' && !runnerActive) {
+      const peer = this.crossWindow && typeof this.crossWindow.freshPeer === 'function'
+        ? this.crossWindow.freshPeer(targetName)
+        : null;
+
+      if (mode === 'STOP') {
+        if (!active) return { ok: false, reason: 'H19_TARGET_ALREADY_STOPPED' };
+        if (roster.activeStateAvailable === true && runnerActive) {
+          return { ok: true, roster, owned, active, runnerActive, peer, transport: 'child-character' };
+        }
+        if (peer) {
+          if (peer.running !== true) return { ok: false, reason: 'H19_TARGET_RUNTIME_ALREADY_STOPPED' };
+          return { ok: true, roster, owned, active, runnerActive, peer, transport: 'cross-window-runtime' };
+        }
+        if (roster.activeStateAvailable !== true) {
+          return { ok: false, reason: 'H19_RUNNER_ACTIVE_STATE_UNAVAILABLE' };
+        }
         return { ok: false, reason: 'H19_REMOTE_TARGET_NOT_RUNNER_CONTROLLABLE' };
       }
-      return { ok: true, roster, owned, active, runnerActive };
+
+      if (mode === 'START') {
+        if (peer) {
+          if (peer.running === true) return { ok: false, reason: 'H19_TARGET_ALREADY_ACTIVE' };
+          return { ok: true, roster, owned, active, runnerActive, peer, transport: 'cross-window-runtime' };
+        }
+        if (active) return { ok: false, reason: 'H19_REMOTE_RUNTIME_PEER_UNAVAILABLE' };
+        return { ok: true, roster, owned, active, runnerActive, peer: null, transport: 'child-character' };
+      }
+
+      return { ok: false, reason: 'H19_REMOTE_MODE_UNSUPPORTED' };
     }
 
     _enqueue(kind, targetName, details = {}) {
@@ -469,6 +498,13 @@
         .map(String)
         .filter(name => owned.has(name))
         .sort((a, b) => a.localeCompare(b));
+      const freshPeers = this.crossWindow && typeof this.crossWindow.freshPeers === 'function'
+        ? this.crossWindow.freshPeers()
+        : [];
+      this.policyState.desiredRuntimeRunningNames = freshPeers
+        .filter(peer => peer && peer.running === true && owned.has(String(peer.name || '')))
+        .map(peer => String(peer.name))
+        .sort((a, b) => a.localeCompare(b));
       const party = this._partySnapshot();
       const partyMembers = this._partyMemberSet(party);
       this.policyState.desiredPartyMemberNames = [...partyMembers]
@@ -484,6 +520,7 @@
       return {
         accepted: true,
         desiredActiveNames: clone(this.policyState.desiredActiveNames),
+        desiredRuntimeRunningNames: clone(this.policyState.desiredRuntimeRunningNames),
         desiredPartyMemberNames: clone(this.policyState.desiredPartyMemberNames),
         desiredPartyLeader: this.policyState.desiredPartyLeader
       };
@@ -497,6 +534,18 @@
         const normalized = [...new Set(next.desiredActiveNames.map(name => cleanText(name, 120)).filter(Boolean))];
         if (normalized.some(name => !owned.has(name))) return { accepted: false, reason: 'H19_POLICY_CONTAINS_NON_OWNED_CHARACTER' };
         this.policyState.desiredActiveNames = normalized.sort((a,b) => a.localeCompare(b));
+        const activeDesired = new Set(this.policyState.desiredActiveNames.map(String));
+        this.policyState.desiredRuntimeRunningNames = this.policyState.desiredRuntimeRunningNames
+          .filter(name => activeDesired.has(String(name)));
+      }
+      if (Array.isArray(next.desiredRuntimeRunningNames)) {
+        if (!roster || roster.accountStateAvailable !== true) return { accepted: false, reason: 'H19_ACCOUNT_ROSTER_UNAVAILABLE' };
+        const owned = new Set((roster.accountCharacters || []).map(row => String(row.name || '')));
+        const activeDesired = new Set(this.policyState.desiredActiveNames.map(String));
+        const normalizedRuntime = [...new Set(next.desiredRuntimeRunningNames.map(name => cleanText(name, 120)).filter(Boolean))];
+        if (normalizedRuntime.some(name => !owned.has(name))) return { accepted: false, reason: 'H19_RUNTIME_POLICY_CONTAINS_NON_OWNED_CHARACTER' };
+        if (normalizedRuntime.some(name => !activeDesired.has(name))) return { accepted: false, reason: 'H19_RUNTIME_TARGET_NOT_DESIRED_ACTIVE' };
+        this.policyState.desiredRuntimeRunningNames = normalizedRuntime.sort((a,b) => a.localeCompare(b));
       }
       if (Array.isArray(next.desiredPartyMemberNames)) {
         if (!roster || roster.accountStateAvailable !== true) return { accepted: false, reason: 'H19_ACCOUNT_ROSTER_UNAVAILABLE' };
@@ -657,9 +706,41 @@
 
       const active = this._onlineSet(roster);
       const localName = this._localName();
+
+      for (const name of this.policyState.desiredRuntimeRunningNames) {
+        if (name === localName) continue;
+        if (!this._ownedRow(name, roster)) continue;
+        const peer = this.crossWindow && typeof this.crossWindow.freshPeer === 'function'
+          ? this.crossWindow.freshPeer(name)
+          : null;
+        if (!peer) {
+          return {
+            state: 'BLOCKED',
+            reason: 'H19_DESIRED_RUNTIME_PEER_UNAVAILABLE',
+            targetName: name
+          };
+        }
+        if (peer.running !== true) {
+          return {
+            state: 'READY',
+            reason: 'H19_DESIRED_REMOTE_RUNTIME_STOPPED',
+            request: {
+              id: 'h19-auto-runtime-start-' + name,
+              kind: 'START',
+              targetName: name,
+              queuedAt: nowIso(),
+              automatic: true,
+              transportHint: 'cross-window-runtime'
+            }
+          };
+        }
+      }
+
+      const crossWindowManaged = new Set(this.policyState.desiredRuntimeRunningNames.map(String));
       for (const name of this.policyState.desiredActiveNames) {
         if (name === localName) continue;
         if (!this._ownedRow(name, roster)) continue;
+        if (crossWindowManaged.has(name)) continue;
         if (!active.has(name)) {
           return {
             state: 'READY',
@@ -784,7 +865,10 @@
         args = [request.targetName];
         before = {
           onlineStateAvailable: true,
-          targetWasActive: check.active
+          targetWasActive: check.active,
+          transport: check.transport || 'child-character',
+          targetSessionId: check.peer && check.peer.sessionId || null,
+          targetRuntimeWasRunning: check.peer ? check.peer.running === true : null
         };
       } else if (request.kind === 'RESPAWN') {
         const readiness = this._respawnReadiness();
@@ -854,14 +938,24 @@
         restored: false,
         response: null,
         error: null,
-        before
+        before,
+        transport: before.transport || 'game-action'
       };
       this.currentAction = action;
       this._persistCurrent();
 
       let dispatched;
       try {
-        dispatched = this.actions.dispatch(actionName, args);
+        if ((request.kind === 'START' || request.kind === 'STOP')
+            && action.transport === 'cross-window-runtime') {
+          if (!this.crossWindow || typeof this.crossWindow.requestRuntimeState !== 'function') {
+            throw new Error('H19_CROSS_WINDOW_TRANSPORT_UNAVAILABLE');
+          }
+          dispatched = this.crossWindow.requestRuntimeState(request.targetName, request.kind === 'START');
+          this.metrics.crossWindowDispatches += 1;
+        } else {
+          dispatched = this.actions.dispatch(actionName, args);
+        }
       } catch (error) {
         this.currentAction = null;
         this._removeStorage('pending');
@@ -950,14 +1044,38 @@
 
       const settlementFinished = current.settlement !== 'PENDING' && current.settlement !== 'PREPARED';
       if (current.kind === 'START' || current.kind === 'STOP') {
-        const roster = this._roster();
-        if (roster && roster.onlineStateAvailable === true) {
-          const active = this._onlineSet(roster).has(String(current.targetName || ''));
-          if (settlementFinished && current.kind === 'START' && active) {
-            return this._confirmCurrent({ evidence: 'ACTIVE_ROSTER_PRESENT' });
+        if (current.transport === 'cross-window-runtime') {
+          const desiredRunning = current.kind === 'START';
+          const peer = this.crossWindow && typeof this.crossWindow.freshPeer === 'function'
+            ? this.crossWindow.freshPeer(current.targetName)
+            : null;
+          const sameSession = !!peer
+            && !!current.before
+            && !!current.before.targetSessionId
+            && String(peer.sessionId || '') === String(current.before.targetSessionId);
+          const responseSuccess = current.response && current.response.success === true;
+          const restoredReconciled = current.restored === true && settlementFinished && sameSession;
+          if (settlementFinished
+              && sameSession
+              && peer.running === desiredRunning
+              && (responseSuccess || restoredReconciled)) {
+            this.metrics.crossWindowConfirms += 1;
+            return this._confirmCurrent({
+              evidence: restoredReconciled ? 'CROSS_WINDOW_RUNTIME_RECONCILED' : 'CROSS_WINDOW_RUNTIME_SETTLEMENT',
+              targetSessionId: peer.sessionId,
+              running: peer.running
+            });
           }
-          if (settlementFinished && current.kind === 'STOP' && !active && current.before && current.before.targetWasActive === true) {
-            return this._confirmCurrent({ evidence: 'ACTIVE_ROSTER_ABSENT' });
+        } else {
+          const roster = this._roster();
+          if (roster && roster.onlineStateAvailable === true) {
+            const active = this._onlineSet(roster).has(String(current.targetName || ''));
+            if (settlementFinished && current.kind === 'START' && active) {
+              return this._confirmCurrent({ evidence: 'ACTIVE_ROSTER_PRESENT' });
+            }
+            if (settlementFinished && current.kind === 'STOP' && !active && current.before && current.before.targetWasActive === true) {
+              return this._confirmCurrent({ evidence: 'ACTIVE_ROSTER_ABSENT' });
+            }
           }
         }
       } else if (current.kind === 'RESPAWN') {
@@ -1066,6 +1184,7 @@
         actionsThisSession: this.actionsThisSession,
         policy: {
           desiredActiveNames: clone(this.policyState.desiredActiveNames),
+          desiredRuntimeRunningNames: clone(this.policyState.desiredRuntimeRunningNames),
           desiredPartyMemberNames: clone(this.policyState.desiredPartyMemberNames),
           desiredPartyLeader: this.policyState.desiredPartyLeader,
           maxActionsPerSession: this.config.maxActionsPerSession

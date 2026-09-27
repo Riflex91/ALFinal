@@ -520,3 +520,30 @@ Korrektur:
 - Der `h19-remote-recovery`-Preflight wählt nur Ziele aus der Schnittmenge account-online ∩ runner-active und meldet andernfalls `H19_REMOTE_CONTROLLABLE_TARGET_UNAVAILABLE`.
 
 Dieser Lauf ist weiterhin **keine H19-PASS-Evidence**. Für den nächsten echten Remote-Recovery-Live-Test muss mindestens ein Remote-Character vom Test-Runner selbst per `start_character(...)` als Child-Character gestartet worden sein.
+
+
+## Cross-Window-Korrektur – getrennte Browserfenster nach V3/V4/V5
+
+Stand: 2026-09-27
+
+Die Auswertung der frueheren Bot-Generationen zeigt, dass `get_active_characters()` nur fuer denselben Runner-/Child-Kontext als direkte Steuerungsgrenze verwendet werden darf. Fuer separat geoeffnete Adventure-Land-Fenster nutzten die bewaehrten Generationen einen Character-to-Character-Kanal:
+
+- V3: `command_character` nur fuer im selben Runner beobachtete Character; andernfalls adressierter `send_cm`-Fallback mit gemeinsamem `on_cm`-Router.
+- V4: expliziter `send_cm`-/`on_cm`-Lebensnachweis mit Vertrauensliste; Transport-Evidence ist nicht gleich fachliches Settlement.
+- V5: Heartbeat/Liveness, Session-Bindung, TTL, Dedupe sowie ACK/SETTLEMENT und fail-closed Restart-Semantik.
+
+H19 uebernimmt diese Semantik nativ fuer ALFinal:
+
+- `src/cross-window-lifecycle.js` installiert einen schmalen H19-CM-Kanal ausserhalb des normalen Runtime-Schedulers.
+- Der Kanal bleibt auch dann aktiv, wenn die lokale ALFinal-Runtime durch einen bestaetigten Remote-STOP gestoppt wurde.
+- Heartbeats tragen Character, H19-Session, Serverbindung, Runtime-`running`, `runEpoch` und Emergency-Stop-Zustand.
+- Ein Remote-Ziel in einem getrennten Fenster wird nur bei frischem, account-eigenem Heartbeat als `cross-window-runtime` steuerbar betrachtet.
+- `STOP_RUNTIME` und `START_RUNTIME` werden auf dem Ziel selbst ausgefuehrt; der Zielbot antwortet mit ACK und terminalem SETTLEMENT.
+- Die Command-Bindung enthaelt die beobachtete Ziel-Session. Ein Reload/Sessionwechsel fenced alte Commands.
+- Separat geoeffnete Character bleiben waehrend eines Runtime-STOP accountweit online; die H19-Bestaetigung prueft deshalb das CM-Settlement plus den frischen Runtime-Heartbeat statt Online-Abwesenheit.
+- Child-Character verwenden weiterhin den nativen `start_character`-/`stop_character`-Pfad.
+- Ein zuvor als getrennte Runtime erfasstes Desired-Active-Ziel faellt bei verlorenem Heartbeat nicht blind auf Child-`start_character` zurueck.
+
+Der Live-Test `h19-remote-recovery` Version 2 bevorzugt nun ein frisches getrenntes Fenster als Testziel und verwendet nur dann den Child-Pfad, wenn kein geeigneter Cross-Window-Peer vorhanden ist.
+
+Vor dem naechsten echten Live-Test muessen alle beteiligten getrennten Adventure-Land-Fenster denselben neuen ALFinal-Build geladen haben und einige Sekunden fuer gegenseitige Heartbeats laufen.
