@@ -17138,3 +17138,8208 @@
 
   ns.EconomyController = EconomyController;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
+
+
+(function (root) {
+  'use strict';
+
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns) throw new Error('ALBOT_INTERNALS_MISSING');
+
+  const clone = ns.helpers.clone;
+  const cleanText = ns.helpers.cleanText;
+
+  function errorDetails(error) {
+    return {
+      name: cleanText(error && error.name || 'Error', 80),
+      message: cleanText(error && error.message || error || 'Unknown error', 600),
+      stack: error && error.stack ? String(error.stack).slice(0, 4000) : null
+    };
+  }
+
+  class LiveTestRunner {
+    constructor(options = {}) {
+      this.runtime = options.runtime || null;
+      this.logger = options.logger || null;
+      this.bus = options.bus || null;
+      this.suites = new Map();
+      this.recommendedId = null;
+      this.sequence = 0;
+      this.current = null;
+      this.lastRun = null;
+      this.cancelRequested = false;
+    }
+
+    register(definition) {
+      if (!definition || typeof definition !== 'object') throw new Error('LIVE_TEST_DEFINITION_REQUIRED');
+      const id = cleanText(definition.id, 100);
+      if (!id) throw new Error('LIVE_TEST_ID_REQUIRED');
+      if (this.suites.has(id)) throw new Error('LIVE_TEST_DUPLICATE:' + id);
+      const steps = Array.isArray(definition.steps) ? definition.steps : [];
+      if (!steps.length) throw new Error('LIVE_TEST_STEPS_REQUIRED:' + id);
+      for (const step of steps) {
+        if (!step || typeof step.run !== 'function') throw new Error('LIVE_TEST_STEP_RUN_REQUIRED:' + id);
+      }
+      const suite = {
+        id,
+        title: cleanText(definition.title || id, 160),
+        description: cleanText(definition.description || '', 500),
+        version: cleanText(definition.version || '1', 40),
+        autoStartRuntime: definition.autoStartRuntime !== false,
+        restoreRuntimeState: definition.restoreRuntimeState !== false,
+        prepare: typeof definition.prepare === 'function' ? definition.prepare : null,
+        cleanup: typeof definition.cleanup === 'function' ? definition.cleanup : null,
+        steps: steps.map((step, index) => ({
+          id: cleanText(step.id || ('step-' + (index + 1)), 100),
+          title: cleanText(step.title || step.id || ('Schritt ' + (index + 1)), 180),
+          timeoutMs: Math.max(250, Math.min(10 * 60 * 1000, Number(step.timeoutMs) || 30000)),
+          run: step.run
+        }))
+      };
+      this.suites.set(id, suite);
+      if (definition.recommended === true || !this.recommendedId) this.recommendedId = id;
+      return this.describe(id);
+    }
+
+    setRecommended(id) {
+      if (!this.suites.has(id)) throw new Error('LIVE_TEST_UNKNOWN:' + id);
+      this.recommendedId = id;
+      return this.describe(id);
+    }
+
+    list() {
+      return Array.from(this.suites.values()).map(suite => ({
+        id: suite.id,
+        title: suite.title,
+        description: suite.description,
+        version: suite.version,
+        recommended: suite.id === this.recommendedId,
+        steps: suite.steps.map(step => ({ id: step.id, title: step.title, timeoutMs: step.timeoutMs }))
+      }));
+    }
+
+    describe(id) {
+      const suite = this.suites.get(id);
+      if (!suite) return null;
+      return this.list().find(row => row.id === id) || null;
+    }
+
+    _emit() {
+      if (this.bus) {
+        try { this.bus.emit('live-test', this.status()); } catch (_) {}
+      }
+    }
+
+    _publicRun(run) {
+      if (!run) return null;
+      return clone({
+        id: run.id,
+        suiteId: run.suiteId,
+        title: run.title,
+        state: run.state,
+        reason: run.reason,
+        startedAt: run.startedAt,
+        finishedAt: run.finishedAt,
+        runtimeWasRunning: run.runtimeWasRunning,
+        runtimeAutoStarted: run.runtimeAutoStarted,
+        currentStepId: run.currentStepId,
+        steps: run.steps,
+        cleanup: run.cleanup
+      });
+    }
+
+    _assertNotCancelled() {
+      if (this.cancelRequested) throw new Error('LIVE_TEST_CANCELLED');
+      if (this.runtime && this.runtime.stopLatch && this.runtime.stopLatch.status().latched) {
+        throw new Error('LIVE_TEST_EMERGENCY_STOP_LATCHED');
+      }
+    }
+
+    _context(run, suite) {
+      const sleep = ms => new Promise((resolve, reject) => {
+        const delay = Math.max(0, Number(ms) || 0);
+        const timerRoot = this.runtime && this.runtime.root || root;
+        const set = timerRoot && typeof timerRoot.setTimeout === 'function' ? timerRoot.setTimeout.bind(timerRoot) : setTimeout;
+        set(() => {
+          try {
+            this._assertNotCancelled();
+            resolve();
+          } catch (error) {
+            reject(error);
+          }
+        }, delay);
+      });
+
+      const waitFor = async (predicate, options = {}) => {
+        const timeoutMs = Math.max(100, Math.min(10 * 60 * 1000, Number(options.timeoutMs) || 10000));
+        const pollMs = Math.max(25, Math.min(2000, Number(options.pollMs) || 100));
+        const started = Date.now();
+        let lastValue = null;
+        while (Date.now() - started <= timeoutMs) {
+          this._assertNotCancelled();
+          lastValue = await predicate();
+          if (lastValue) return lastValue;
+          await sleep(pollMs);
+        }
+        const label = cleanText(options.label || 'condition', 120);
+        throw new Error('LIVE_TEST_WAIT_TIMEOUT:' + label);
+      };
+
+      return {
+        runtime: this.runtime,
+        suite: this.describe(suite.id),
+        run: () => this._publicRun(run),
+        assert: (condition, message = 'LIVE_TEST_ASSERTION_FAILED') => {
+          if (!condition) throw new Error(cleanText(message, 300) || 'LIVE_TEST_ASSERTION_FAILED');
+          return true;
+        },
+        assertNotCancelled: () => this._assertNotCancelled(),
+        sleep,
+        waitFor,
+        game: () => this.runtime && this.runtime.game ? this.runtime.game.snapshot() : null,
+        status: () => this.runtime ? this.runtime.status() : null,
+        note: details => {
+          const step = run.steps.find(row => row.id === run.currentStepId);
+          if (step) step.details = clone(details);
+          this._emit();
+        }
+      };
+    }
+
+    async _runStep(run, suite, step, context) {
+      const row = run.steps.find(candidate => candidate.id === step.id);
+      row.state = 'RUNNING';
+      row.startedAt = new Date().toISOString();
+      run.currentStepId = step.id;
+      this._emit();
+
+      let timer = null;
+      const timeoutPromise = new Promise((_, reject) => {
+        const timerRoot = this.runtime && this.runtime.root || root;
+        const set = timerRoot && typeof timerRoot.setTimeout === 'function' ? timerRoot.setTimeout.bind(timerRoot) : setTimeout;
+        timer = set(() => reject(new Error('LIVE_TEST_STEP_TIMEOUT:' + step.id)), step.timeoutMs);
+      });
+
+      try {
+        this._assertNotCancelled();
+        const result = await Promise.race([
+          Promise.resolve().then(() => step.run(context)),
+          timeoutPromise
+        ]);
+        this._assertNotCancelled();
+        row.state = 'PASSED';
+        row.finishedAt = new Date().toISOString();
+        row.result = result == null ? null : clone(result);
+        row.error = null;
+      } catch (error) {
+        row.state = this.cancelRequested ? 'CANCELLED' : 'FAILED';
+        row.finishedAt = new Date().toISOString();
+        row.error = errorDetails(error);
+        throw error;
+      } finally {
+        if (timer != null) {
+          const timerRoot = this.runtime && this.runtime.root || root;
+          const clear = timerRoot && typeof timerRoot.clearTimeout === 'function' ? timerRoot.clearTimeout.bind(timerRoot) : clearTimeout;
+          try { clear(timer); } catch (_) {}
+        }
+        this._emit();
+      }
+    }
+
+    async start(id) {
+      if (this.current && this.current.state === 'RUNNING') throw new Error('LIVE_TEST_ALREADY_RUNNING');
+      const suiteId = id || this.recommendedId;
+      const suite = this.suites.get(suiteId);
+      if (!suite) throw new Error('LIVE_TEST_UNKNOWN:' + cleanText(suiteId, 100));
+      if (!this.runtime) throw new Error('LIVE_TEST_RUNTIME_MISSING');
+      if (this.runtime.stopLatch.status().latched) throw new Error('LIVE_TEST_EMERGENCY_STOP_LATCHED');
+
+      this.cancelRequested = false;
+      const runtimeWasRunning = this.runtime.running === true;
+      const run = {
+        id: 'live-test-' + (++this.sequence),
+        suiteId: suite.id,
+        title: suite.title,
+        state: 'RUNNING',
+        reason: null,
+        startedAt: new Date().toISOString(),
+        finishedAt: null,
+        runtimeWasRunning,
+        runtimeAutoStarted: false,
+        currentStepId: null,
+        cleanup: { attempted: false, ok: null, error: null },
+        steps: suite.steps.map(step => ({
+          id: step.id,
+          title: step.title,
+          state: 'PENDING',
+          startedAt: null,
+          finishedAt: null,
+          details: null,
+          result: null,
+          error: null
+        }))
+      };
+      this.current = run;
+      this._emit();
+      if (this.logger) this.logger.warn('Live-Test gestartet', { id: run.id, suite: suite.id, title: suite.title });
+
+      const context = this._context(run, suite);
+      try {
+        if (!runtimeWasRunning && suite.autoStartRuntime) {
+          await this.runtime.start();
+          run.runtimeAutoStarted = true;
+          this._emit();
+        }
+        this._assertNotCancelled();
+        if (suite.prepare) await suite.prepare(context);
+
+        for (const step of suite.steps) {
+          await this._runStep(run, suite, step, context);
+        }
+
+        run.state = 'PASSED';
+        run.reason = 'ALL_STEPS_PASSED';
+      } catch (error) {
+        run.state = this.cancelRequested ? 'CANCELLED' : 'FAILED';
+        run.reason = cleanText(error && error.message || error || 'LIVE_TEST_FAILED', 300);
+        for (const row of run.steps) {
+          if (row.state === 'PENDING') row.state = 'SKIPPED';
+        }
+      } finally {
+        run.cleanup.attempted = true;
+        try {
+          if (suite.cleanup) await suite.cleanup(context, run.state);
+          if (run.runtimeAutoStarted && suite.restoreRuntimeState && this.runtime.running) {
+            await this.runtime.stop('LIVE_TEST_AUTO_RESTORE');
+          }
+          run.cleanup.ok = true;
+        } catch (cleanupError) {
+          run.cleanup.ok = false;
+          run.cleanup.error = errorDetails(cleanupError);
+          if (run.state === 'PASSED') {
+            run.state = 'FAILED';
+            run.reason = 'LIVE_TEST_CLEANUP_FAILED:' + run.cleanup.error.message;
+          }
+        }
+
+        run.finishedAt = new Date().toISOString();
+        run.currentStepId = null;
+        this.lastRun = this._publicRun(run);
+        this.current = null;
+        this._emit();
+        if (this.logger) {
+          const data = { id: run.id, suite: suite.id, state: run.state, reason: run.reason };
+          if (run.state === 'PASSED') this.logger.info('Live-Test beendet: BESTANDEN', data);
+          else this.logger.error('Live-Test beendet: ' + run.state, data);
+        }
+      }
+
+      return clone(this.lastRun);
+    }
+
+    startRecommended() {
+      return this.start(this.recommendedId);
+    }
+
+    cancel(reason = 'MANUAL_TEST_CANCEL') {
+      if (!this.current || this.current.state !== 'RUNNING') {
+        return { cancelled: false, reason: 'NO_RUNNING_LIVE_TEST' };
+      }
+      this.cancelRequested = true;
+      this.current.reason = cleanText(reason, 200);
+      this._emit();
+      if (this.logger) this.logger.warn('Live-Test Abbruch angefordert', {
+        id: this.current.id,
+        suite: this.current.suiteId,
+        reason: this.current.reason
+      });
+      return { cancelled: true, id: this.current.id, suiteId: this.current.suiteId };
+    }
+
+    status() {
+      return {
+        schemaVersion: 1,
+        recommendedId: this.recommendedId,
+        recommended: this.describe(this.recommendedId),
+        running: !!(this.current && this.current.state === 'RUNNING'),
+        current: this._publicRun(this.current),
+        lastRun: clone(this.lastRun),
+        suites: this.list()
+      };
+    }
+  }
+
+  ns.LiveTestRunner = LiveTestRunner;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+
+(function (root) {
+  'use strict';
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns || !ns.Scheduler) throw new Error('ALBOT_SCHEDULER_MISSING');
+
+  class ALBotRuntime {
+    constructor(options = {}) {
+      this.version = options.version || '0.20.0-h20';
+      this.root = options.root || root;
+      this.bootCount = Math.max(1, Number(options.bootCount) || 1);
+      this.replacedPrevious = options.replacedPrevious === true;
+      this.loadedAt = new Date().toISOString();
+      this.startedAt = null;
+      this.running = false;
+      this.runEpoch = 0;
+      this.bus = new ns.EventBus();
+      this.storage = new ns.StorageAdapter(this.root);
+      this.logger = new ns.Logger({ bus: this.bus, limit: 400 });
+      this.stopLatch = new ns.EmergencyStop({ storage: this.storage, logger: this.logger, bus: this.bus });
+      this.scheduler = new ns.Scheduler({ root: this.root, logger: this.logger, bus: this.bus });
+      this.modules = new ns.ModuleRegistry({ logger: this.logger, scheduler: this.scheduler });
+      this.scheduler.setErrorHandler(details => this.modules.handleResourceError(details));
+      this.goals = new ns.GoalService({ storage: this.storage, logger: this.logger });
+      this.game = new ns.AdventureLandGameAdapter({ root: this.root, logger: this.logger });
+      this.actions = new ns.GameActionBoundary({
+        root: this.root,
+        logger: this.logger,
+        assertAllowed: action => this.assertActionAllowed(action)
+      });
+      this.movement = new ns.MovementController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions
+      });
+      this.classSkills = new ns.ClassSkillController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions
+      });
+      this.combat = new ns.CombatController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        movement: this.movement,
+        classSkills: this.classSkills
+      });
+      this.knowledge = new ns.KnowledgeService({ logger: this.logger, storage: this.storage });
+      this.knowledgeProvider = new ns.WindowsBridgeKnowledgeProvider({ root: this.root, logger: this.logger });
+      this.knowledge.setProvider(this.knowledgeProvider);
+      this.roster = new ns.CharacterRosterService({ root: this.root, logger: this.logger });
+      this.party = new ns.PartyCoordinator({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        roster: this.roster
+      });
+      this.farming = new ns.AdaptiveFarmingController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        combat: this.combat,
+        party: this.party,
+        classSkills: this.classSkills
+      });
+      this.combat.party = this.party;
+      this.combat.farming = this.farming;
+      this.farmIntelligence = new ns.FarmIntelligenceController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        combat: this.combat,
+        farming: this.farming,
+        movement: this.movement,
+        party: this.party
+      });
+      this.inventory = new ns.LootInventoryController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        goals: this.goals
+      });
+      this.merchant = new ns.MerchantController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        roster: this.roster,
+        movement: this.movement,
+        inventory: this.inventory
+      });
+      this.bank = new ns.BankController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        movement: this.movement,
+        inventory: this.inventory
+      });
+      this.trade = new ns.TradeController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        movement: this.movement,
+        inventory: this.inventory
+      });
+      this.gear = new ns.GearController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        inventory: this.inventory,
+        roster: this.roster,
+        combat: this.combat
+      });
+      this.upgrade = new ns.UpgradeCompoundController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        combat: this.combat
+      });
+      this.exchangeCraft = new ns.ExchangeCraftController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        movement: this.movement,
+        inventory: this.inventory,
+        bank: this.bank,
+        trade: this.trade,
+        combat: this.combat
+      });
+      this.economy = new ns.EconomyController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        movement: this.movement,
+        combat: this.combat,
+        inventory: this.inventory,
+        merchant: this.merchant,
+        bank: this.bank,
+        trade: this.trade,
+        gear: this.gear,
+        upgrade: this.upgrade,
+        exchangeCraft: this.exchangeCraft,
+        canAct: action => this.actionAllowed(action)
+      });
+      this.partyLogistics = new ns.PartyLogisticsController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        party: this.party,
+        movement: this.movement,
+        combat: this.combat,
+        inventory: this.inventory,
+        merchant: this.merchant,
+        bank: this.bank,
+        trade: this.trade,
+        gear: this.gear,
+        upgrade: this.upgrade,
+        exchangeCraft: this.exchangeCraft,
+        economy: this.economy,
+        canAct: action => this.actionAllowed(action)
+      });
+      const dispatchH19CrossWindowPartyAction = (actionName, args = []) => {
+        let dispatched;
+        try { dispatched = this.actions.dispatch(actionName, args); }
+        catch (error) { throw new Error('H19_CROSS_WINDOW_PARTY_ACTION_THROW:' + String(error && error.message || error || actionName)); }
+        if (dispatched && dispatched.state === 'UNKNOWN' && dispatched.dispatched === true) {
+          throw new Error('H19_CROSS_WINDOW_PARTY_ACTION_UNKNOWN:' + actionName);
+        }
+        if (!dispatched || dispatched.state !== 'DISPATCHED') {
+          const reason = dispatched && dispatched.error && dispatched.error.message || 'H19_CROSS_WINDOW_PARTY_ACTION_NOT_DISPATCHED';
+          throw new Error(String(reason));
+        }
+        // The Adventure Land promise is transport/server feedback, not terminal
+        // party evidence. Cross-window settlement is confirmed from party snapshots.
+        return { actionBoundaryId: dispatched.id || null, settlement: dispatched.value || null };
+      };
+
+      this.lifecycleTransport = new ns.H19CrossWindowLifecycleTransport({
+        root: this.root,
+        logger: this.logger,
+        roster: this.roster,
+        getLocalState: () => {
+          let game = null;
+          try { game = this.game.snapshot(); } catch (_) {}
+          return {
+            localName: game && game.character ? game.character.name : null,
+            running: this.running,
+            runEpoch: this.runEpoch,
+            emergencyStopLatched: this.stopLatch.status().latched,
+            lifecycleAutonomyEnabled: this.lifecycle ? this.lifecycle.status().autonomyEnabled === true : null,
+            version: this.version,
+            profile: this.accountStrategy ? this.accountStrategy.localProfile() : null
+          };
+        },
+        getPartyState: () => this.party.snapshot(),
+        leavePartyLocal: () => dispatchH19CrossWindowPartyAction('leave_party', []),
+        requestPartyJoinLocal: leaderName => dispatchH19CrossWindowPartyAction('send_party_request', [leaderName]),
+        startRuntime: () => this.start(),
+        stopRuntime: reason => this.stop(reason)
+      });
+      this.lifecycle = new ns.CharacterLifecycleController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        roster: this.roster,
+        party: this.party,
+        storage: this.storage,
+        crossWindow: this.lifecycleTransport,
+        canAct: action => this.actionAllowed(action)
+      });
+      this.accountStrategy = new ns.AccountStrategyController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        roster: this.roster,
+        party: this.party,
+        crossWindow: this.lifecycleTransport,
+        gear: this.gear
+      });
+      this.fullAutonomy = new ns.FullAutonomyController({
+        root: this.root,
+        logger: this.logger,
+        runtime: this,
+        strategy: this.accountStrategy
+      });
+      this.inventory.partyLogistics = this.partyLogistics;
+      this.merchant.partyLogistics = this.partyLogistics;
+      this.economy.partyLogistics = this.partyLogistics;
+      this.liveTests = new ns.LiveTestRunner({
+        runtime: this,
+        logger: this.logger,
+        bus: this.bus
+      });
+      this.ui = null;
+      this.lastError = null;
+      this._destroyed = false;
+      this._registerCoreModules();
+      this._registerLiveTests();
+      this._registerH11LiveTest();
+      this._registerH12LiveTest();
+      this._registerH13LiveTest();
+      this._registerH14LiveTest();
+      this._registerH15LiveTest();
+      this._registerH16LiveTest();
+      this._registerH17LiveTest();
+      this._registerH18LiveTest();
+      this._registerH19LiveTest();
+      this._registerH19RemoteRecoveryLiveTest();
+      this._registerH19PartyRecoveryLiveTest();
+      this._installErrorCapture();
+      this.lifecycleTransport.install();
+      this.logger.info('AL Bot Runtime erstellt', {
+        version: this.version,
+        bootCount: this.bootCount,
+        replacedPrevious: this.replacedPrevious,
+        stopLatched: this.stopLatch.status().latched
+      });
+    }
+
+    _registerCoreModules() {
+      this.modules.register({
+        id: 'runtime-health',
+        title: 'Runtime Health',
+        version: '0.7.0',
+        watchdogMs: 4000,
+        start: context => {
+          context.scope.interval('heartbeat', () => {
+            context.heartbeat({
+              at: new Date().toISOString(),
+              running: this.running,
+              runEpoch: this.runEpoch
+            });
+            try { this.roster.refresh(); } catch (_) {}
+          }, 1000, { immediate: true });
+        },
+        stop: () => {},
+        status: () => ({
+          purpose: 'runtime-heartbeat',
+          runEpoch: this.runEpoch
+        })
+      });
+
+      this.modules.register({
+        id: 'movement',
+        title: 'Movement',
+        version: '0.7.0',
+        start: context => this.movement.start(context),
+        stop: reason => this.movement.stop(reason),
+        status: () => this.movement.status()
+      });
+
+      this.modules.register({
+        id: 'class-skills',
+        title: 'Class Skills',
+        version: '0.7.0',
+        start: () => this.classSkills.start(),
+        stop: reason => this.classSkills.stop(reason),
+        status: () => this.classSkills.status()
+      });
+
+      this.modules.register({
+        id: 'party',
+        title: 'Party',
+        version: '0.7.0',
+        start: context => this.party.start(context),
+        stop: reason => this.party.stop(reason),
+        status: () => this.party.status()
+      });
+
+      this.modules.register({
+        id: 'combat',
+        title: 'Combat',
+        version: '0.7.0',
+        start: context => this.combat.start(context),
+        stop: reason => this.combat.stop(reason),
+        status: () => this.combat.status()
+      });
+
+      this.modules.register({
+        id: 'adaptive-farming',
+        title: 'Adaptive Farming',
+        version: '0.8.0',
+        start: context => this.farming.start(context),
+        stop: reason => this.farming.stop(reason),
+        status: () => this.farming.status()
+      });
+
+      this.modules.register({
+        id: 'farm-intelligence',
+        title: 'Farm Intelligence',
+        version: '0.9.0',
+        start: context => this.farmIntelligence.start(context),
+        stop: reason => this.farmIntelligence.stop(reason),
+        status: () => this.farmIntelligence.status()
+      });
+
+      this.modules.register({
+        id: 'loot-inventory',
+        title: 'Loot & Inventory',
+        version: '0.10.0',
+        start: context => this.inventory.start(context),
+        stop: reason => this.inventory.stop(reason),
+        status: () => this.inventory.status()
+      });
+
+      this.modules.register({
+        id: 'merchant',
+        title: 'Merchant',
+        version: '0.11.0',
+        start: context => this.merchant.start(context),
+        stop: reason => this.merchant.stop(reason),
+        status: () => this.merchant.status()
+      });
+
+      this.modules.register({
+        id: 'bank',
+        title: 'Bank',
+        version: '0.12.0',
+        start: context => this.bank.start(context),
+        stop: reason => this.bank.stop(reason),
+        status: () => this.bank.status()
+      });
+
+      this.modules.register({
+        id: 'trade',
+        title: 'Handel',
+        version: '0.13.0',
+        start: context => this.trade.start(context),
+        stop: reason => this.trade.stop(reason),
+        status: () => this.trade.status()
+      });
+
+      this.modules.register({
+        id: 'gear',
+        title: 'Gear',
+        version: '0.14.0',
+        start: context => this.gear.start(context),
+        stop: reason => this.gear.stop(reason),
+        status: () => this.gear.status()
+      });
+
+      this.modules.register({
+        id: 'upgrade-compound',
+        title: 'Upgrade & Compound',
+        version: '0.15.0',
+        start: context => this.upgrade.start(context),
+        stop: reason => this.upgrade.stop(reason),
+        status: () => this.upgrade.status()
+      });
+
+      this.modules.register({
+        id: 'exchange-craft',
+        title: 'Exchange & Craft',
+        version: '0.16.0',
+        start: context => this.exchangeCraft.start(context),
+        stop: reason => this.exchangeCraft.stop(reason),
+        status: () => this.exchangeCraft.status()
+      });
+
+      this.modules.register({
+        id: 'economy',
+        title: 'Economy Autonomy',
+        version: '0.17.0',
+        start: context => this.economy.start(context),
+        stop: reason => this.economy.stop(reason),
+        status: () => this.economy.status()
+      });
+
+      this.modules.register({
+        id: 'party-logistics',
+        title: 'Party Logistics',
+        version: '0.18.0',
+        start: context => this.partyLogistics.start(context),
+        stop: reason => this.partyLogistics.stop(reason),
+        status: () => this.partyLogistics.status()
+      });
+
+      this.modules.register({
+        id: 'character-lifecycle',
+        title: 'Character Lifecycle & Recovery',
+        version: '0.19.0',
+        start: context => this.lifecycle.start(context),
+        stop: reason => this.lifecycle.stop(reason),
+        status: () => this.lifecycle.status()
+      });
+
+      this.modules.register({
+        id: 'account-strategy',
+        title: 'Account Progression & Party Optimizer',
+        version: '0.20.0',
+        start: context => this.accountStrategy.start(context),
+        stop: reason => this.accountStrategy.stop(reason),
+        status: () => this.accountStrategy.status()
+      });
+
+      this.modules.register({
+        id: 'full-autonomy',
+        title: 'Full Live Autonomy',
+        version: '0.20.0',
+        start: context => this.fullAutonomy.start(context),
+        stop: reason => this.fullAutonomy.stop(reason),
+        status: () => this.fullAutonomy.status()
+      });
+    }
+
+    _registerLiveTests() {
+      let baseline = null;
+      let livePlan = null;
+      let h6Baseline = null;
+      let h6Plan = null;
+      let h7Baseline = null;
+      let h7Plan = null;
+      let h8Baseline = null;
+      let h8Plan = null;
+      let h9Baseline = null;
+      let h9Plan = null;
+      let h10Baseline = null;
+      let h10Before = null;
+      let h10StartedH9 = false;
+      this.liveTests.register({
+        id: 'h5-combat',
+        title: 'H5 – Einfacher Kampf',
+        description: 'Ein-Klick-Live-Test für Targeting, Range, Cooldown, bestätigte Angriffe, Cleanup und Fail-Safe.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.combat.stopSession('H5_LIVE_TEST_RESET'); } catch (_) {}
+          livePlan = null;
+          const metrics = runtime.combat.status().metrics;
+          baseline = {
+            targetsAcquired: metrics.targetsAcquired,
+            attacksDispatched: metrics.attacksDispatched,
+            attacksConfirmed: metrics.attacksConfirmed,
+            attackUnknown: metrics.attackUnknown,
+            killsObserved: metrics.killsObserved
+          };
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.combat.stopSession('H5_LIVE_TEST_CLEANUP'); } catch (_) {}
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Combat-Sicherheit und sichtbares Ziel prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(game.character.rip !== true, 'CHARACTER_DEAD');
+              assert(runtime.actions.available('attack'), 'ATTACK_API_UNAVAILABLE');
+              assert(runtime.actions.available('change_target'), 'CHANGE_TARGET_API_UNAVAILABLE');
+              const combatModule = runtime.modules.describe('combat');
+              assert(combatModule && combatModule.state === 'ACTIVE', 'COMBAT_MODULE_NOT_ACTIVE');
+              const currentHp = Number(game.character.hp);
+              const maxHp = Number(game.character.maxHp);
+              assert(Number.isFinite(currentHp) && currentHp > 0, 'CHARACTER_HP_UNAVAILABLE');
+              assert(Number.isFinite(maxHp) && maxHp > 0, 'CHARACTER_MAX_HP_UNAVAILABLE');
+
+              const attackBudget = Math.max(5, Math.min(maxHp * 0.08, currentHp * 0.08));
+              const candidates = runtime.combat.safeCandidates({
+                maxAcquireDistance: 450,
+                maxAttack: attackBudget
+              });
+              assert(candidates.length > 0, 'NO_SAFE_VISIBLE_MONSTER_FOR_CURRENT_HP');
+              const target = candidates[0];
+              const targetAttack = Number(target.attack);
+              assert(Number.isFinite(targetAttack) && targetAttack >= 0, 'TARGET_ATTACK_UNAVAILABLE');
+
+              const absoluteRetreatHp = Math.max(100, targetAttack * 20);
+              const minimumStartHp = Math.max(150, targetAttack * 25);
+              assert(currentHp >= minimumStartHp,
+                'HP_TOO_LOW_FOR_SAFE_H5_TEST:' + Math.round(currentHp) + '<' + Math.round(minimumStartHp));
+
+              const retreatHpRatio = Math.max(0.05, Math.min(0.35, absoluteRetreatHp / maxHp));
+              const resumeHpRatio = Math.max(
+                retreatHpRatio + 0.05,
+                Math.min(0.65, retreatHpRatio * 1.75)
+              );
+
+              livePlan = {
+                monsterType: target.mtype || null,
+                maxAttack: attackBudget,
+                retreatHpRatio,
+                resumeHpRatio,
+                targetId: target.id,
+                targetAttack,
+                startingHp: currentHp,
+                maxHp
+              };
+
+              return {
+                character: game.character.name,
+                hp: currentHp,
+                maxHp,
+                target: target.name || target.mtype || target.id,
+                mtype: target.mtype,
+                distance: target.distance,
+                attack: target.attack,
+                attackBudget,
+                retreatHp: Math.round(maxHp * retreatHpRatio),
+                retreatHpRatio
+              };
+            }
+          },
+          {
+            id: 'start-combat',
+            title: 'Autonome Combat-Session starten und Target bestätigen',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(livePlan, 'H5_LIVE_TEST_PLAN_MISSING');
+              const result = runtime.combat.startSession({
+                owner: 'live-test-h5',
+                monsterType: livePlan.monsterType || undefined,
+                maxAcquireDistance: 450,
+                maxAttack: livePlan.maxAttack,
+                retreatHpRatio: livePlan.retreatHpRatio,
+                resumeHpRatio: livePlan.resumeHpRatio,
+                minMpRatio: 0,
+                kiting: false
+              });
+              assert(result && result.accepted === true, result && result.reason || 'COMBAT_SESSION_START_FAILED');
+              const status = await waitFor(() => {
+                const current = runtime.combat.status();
+                if (current.lastSession && ['FAILED_SAFE', 'UNKNOWN'].includes(current.lastSession.state)) {
+                  throw new Error(current.lastSession.reason || current.lastSession.state);
+                }
+                return current.session && current.session.targetId ? current : null;
+              }, { timeoutMs: 8000, pollMs: 100, label: 'target-acquisition' });
+              return {
+                sessionId: status.session.id,
+                targetId: status.session.targetId,
+                targetType: status.session.targetType
+              };
+            }
+          },
+          {
+            id: 'confirmed-attack',
+            title: 'Mindestens einen Angriff durch Live-Evidence bestätigen',
+            timeoutMs: 35000,
+            run: async ({ runtime, assert, waitFor }) => {
+              const result = await waitFor(() => {
+                const current = runtime.combat.status();
+                if (current.lastSession && ['FAILED_SAFE', 'UNKNOWN'].includes(current.lastSession.state)) {
+                  throw new Error(current.lastSession.reason || current.lastSession.state);
+                }
+                const confirmed = current.metrics.attacksConfirmed - baseline.attacksConfirmed;
+                const killed = current.metrics.killsObserved - baseline.killsObserved;
+                return confirmed > 0 || killed > 0 ? current : null;
+              }, { timeoutMs: 30000, pollMs: 125, label: 'confirmed-attack' });
+              assert(result.metrics.attackUnknown === baseline.attackUnknown, 'ATTACK_UNKNOWN_DURING_TEST');
+              return {
+                targetsAcquired: result.metrics.targetsAcquired - baseline.targetsAcquired,
+                attacksDispatched: result.metrics.attacksDispatched - baseline.attacksDispatched,
+                attacksConfirmed: result.metrics.attacksConfirmed - baseline.attacksConfirmed,
+                killsObserved: result.metrics.killsObserved - baseline.killsObserved
+              };
+            }
+          },
+          {
+            id: 'stability-window',
+            title: 'Combat fünf Sekunden ohne UNKNOWN/Fail-Safe beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              await sleep(5000);
+              const current = runtime.combat.status();
+              assert(current.metrics.attackUnknown === baseline.attackUnknown, 'ATTACK_UNKNOWN_DURING_STABILITY_WINDOW');
+              assert(!(current.lastSession && ['FAILED_SAFE', 'UNKNOWN'].includes(current.lastSession.state)), current.lastSession && current.lastSession.reason || 'COMBAT_FAILED');
+              return {
+                active: current.active,
+                state: current.state,
+                attacksConfirmed: current.metrics.attacksConfirmed - baseline.attacksConfirmed,
+                killsObserved: current.metrics.killsObserved - baseline.killsObserved,
+                approaches: current.metrics.approaches
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'Combat sauber stoppen und Ownership freigeben',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.combat.stopSession('H5_LIVE_TEST_COMPLETE');
+              const combat = runtime.combat.status();
+              const movement = runtime.movement.status();
+              assert(combat.active === false, 'COMBAT_STILL_ACTIVE_AFTER_STOP');
+              assert(!(movement.activeOrder && String(movement.activeOrder.owner || '').startsWith('combat-h5')), 'COMBAT_MOVEMENT_STILL_ACTIVE');
+              return {
+                combatActive: combat.active,
+                movementActive: movement.active,
+                lastSession: combat.lastSession && {
+                  state: combat.lastSession.state,
+                  reason: combat.lastSession.reason,
+                  counters: combat.lastSession.counters
+                }
+              };
+            }
+          }
+        ]
+      });
+
+      this.liveTests.register({
+        id: 'h6-class-logic',
+        title: 'H6 – Klassenlogik',
+        description: 'Ein-Klick-Live-Test für klassenspezifische Skills, Cooldown-/MP-Planung, Defensive/Support und Anti-Spam.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.combat.stopSession('H6_LIVE_TEST_RESET'); } catch (_) {}
+          h6Plan = null;
+          const skillMetrics = runtime.classSkills.status().metrics;
+          const combatMetrics = runtime.combat.status().metrics;
+          h6Baseline = {
+            dispatched: skillMetrics.dispatched,
+            confirmed: skillMetrics.confirmed,
+            rejected: skillMetrics.rejected,
+            unknown: skillMetrics.unknown,
+            spamSkips: skillMetrics.spamSkips,
+            cooldownSkips: skillMetrics.cooldownSkips,
+            attackUnknown: combatMetrics.attackUnknown
+          };
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.combat.stopSession('H6_LIVE_TEST_CLEANUP'); } catch (_) {}
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Klasse, Live-Skills und sicheren Gegner prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(game.character.rip !== true, 'CHARACTER_DEAD');
+              assert(runtime.actions.available('use_skill'), 'USE_SKILL_API_UNAVAILABLE');
+
+              const classModule = runtime.modules.describe('class-skills');
+              assert(classModule && classModule.state === 'ACTIVE', 'CLASS_SKILL_MODULE_NOT_ACTIVE');
+
+              const ctype = String(game.character.ctype || '').toLowerCase();
+              const supported = runtime.classSkills.supportedSkills(ctype);
+              assert(supported.length > 0, 'CLASS_NOT_SUPPORTED_BY_H6:' + ctype);
+              const liveSkills = runtime.classSkills.liveSkillSummary(ctype).filter(row => row.available);
+              assert(liveSkills.length > 0, 'NO_SUPPORTED_LIVE_SKILL_FOR_CLASS:' + ctype);
+
+              const currentHp = Number(game.character.hp);
+              const maxHp = Number(game.character.maxHp);
+              assert(Number.isFinite(currentHp) && currentHp > 0, 'CHARACTER_HP_UNAVAILABLE');
+              assert(Number.isFinite(maxHp) && maxHp > 0, 'CHARACTER_MAX_HP_UNAVAILABLE');
+
+              const attackBudget = Math.max(5, Math.min(maxHp * 0.08, currentHp * 0.08));
+              const candidates = runtime.combat.safeCandidates({
+                maxAcquireDistance: 450,
+                maxAttack: attackBudget
+              });
+              assert(candidates.length > 0, 'NO_SAFE_VISIBLE_MONSTER_FOR_H6');
+
+              let chosen = null;
+              let preview = null;
+              for (const candidate of candidates) {
+                const decision = runtime.classSkills.preview(candidate.id);
+                if (decision) {
+                  chosen = candidate;
+                  preview = decision;
+                  break;
+                }
+              }
+              assert(chosen && preview, 'NO_SAFE_CLASS_SKILL_OPPORTUNITY:' + ctype);
+
+              const targetAttack = Number(chosen.attack);
+              assert(Number.isFinite(targetAttack) && targetAttack >= 0, 'TARGET_ATTACK_UNAVAILABLE');
+              const absoluteRetreatHp = Math.max(100, targetAttack * 20);
+              const minimumStartHp = Math.max(150, targetAttack * 25);
+              assert(currentHp >= minimumStartHp,
+                'HP_TOO_LOW_FOR_SAFE_H6_TEST:' + Math.round(currentHp) + '<' + Math.round(minimumStartHp));
+
+              const retreatHpRatio = Math.max(0.05, Math.min(0.35, absoluteRetreatHp / maxHp));
+              const resumeHpRatio = Math.max(
+                retreatHpRatio + 0.05,
+                Math.min(0.65, retreatHpRatio * 1.75)
+              );
+
+              h6Plan = {
+                characterClass: ctype,
+                monsterType: chosen.mtype || null,
+                maxAttack: attackBudget,
+                retreatHpRatio,
+                resumeHpRatio,
+                previewSkillId: preview.skillId,
+                previewReason: preview.reason
+              };
+
+              return {
+                character: game.character.name,
+                characterClass: ctype,
+                supportedSkills: supported,
+                liveSkills: liveSkills.map(row => row.id),
+                previewSkillId: preview.skillId,
+                previewReason: preview.reason,
+                target: chosen.name || chosen.mtype || chosen.id,
+                distance: chosen.distance,
+                attack: chosen.attack,
+                retreatHp: Math.round(maxHp * retreatHpRatio)
+              };
+            }
+          },
+          {
+            id: 'start-combat',
+            title: 'Combat mit H6-Klassenlogik starten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(h6Plan, 'H6_LIVE_TEST_PLAN_MISSING');
+              const result = runtime.combat.startSession({
+                owner: 'live-test-h6',
+                monsterType: h6Plan.monsterType || undefined,
+                maxAcquireDistance: 450,
+                maxAttack: h6Plan.maxAttack,
+                retreatHpRatio: h6Plan.retreatHpRatio,
+                resumeHpRatio: h6Plan.resumeHpRatio,
+                minMpRatio: 0,
+                kiting: false
+              });
+              assert(result && result.accepted === true, result && result.reason || 'H6_COMBAT_SESSION_START_FAILED');
+              const status = await waitFor(() => {
+                const combat = runtime.combat.status();
+                if (combat.lastSession && ['FAILED_SAFE', 'UNKNOWN'].includes(combat.lastSession.state)) {
+                  throw new Error(combat.lastSession.reason || combat.lastSession.state);
+                }
+                return combat.session && combat.session.targetId ? combat : null;
+              }, { timeoutMs: 8000, pollMs: 100, label: 'h6-target-acquisition' });
+              return {
+                sessionId: status.session.id,
+                targetId: status.session.targetId,
+                targetType: status.session.targetType
+              };
+            }
+          },
+          {
+            id: 'class-skill',
+            title: 'Mindestens einen klassenspezifischen Skill serverbestätigt einsetzen',
+            timeoutMs: 20000,
+            run: async ({ runtime, assert, waitFor }) => {
+              const status = await waitFor(() => {
+                const skills = runtime.classSkills.status();
+                if (skills.metrics.unknown > h6Baseline.unknown) {
+                  throw new Error(skills.suspendedReason || 'CLASS_SKILL_UNKNOWN');
+                }
+                return skills.metrics.confirmed > h6Baseline.confirmed ? skills : null;
+              }, { timeoutMs: 15000, pollMs: 100, label: 'confirmed-class-skill' });
+
+              assert(status.lastUse && status.lastUse.state === 'CONFIRMED', 'CLASS_SKILL_NOT_CONFIRMED');
+              return {
+                skillId: status.lastUse.skillId,
+                kind: status.lastUse.kind,
+                reason: status.lastUse.reason,
+                damage: status.lastUse.damage,
+                lethal: status.lastUse.lethal,
+                dispatched: status.metrics.dispatched - h6Baseline.dispatched,
+                confirmed: status.metrics.confirmed - h6Baseline.confirmed
+              };
+            }
+          },
+          {
+            id: 'anti-spam-window',
+            title: 'Klassenlogik fünf Sekunden ohne Skill-Spam/UNKNOWN beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              await sleep(5000);
+              const skills = runtime.classSkills.status();
+              const combat = runtime.combat.status();
+
+              assert(skills.metrics.unknown === h6Baseline.unknown, 'CLASS_SKILL_UNKNOWN_DURING_STABILITY_WINDOW');
+              assert(combat.metrics.attackUnknown === h6Baseline.attackUnknown, 'ATTACK_UNKNOWN_DURING_H6_STABILITY_WINDOW');
+              assert(!(combat.lastSession && ['FAILED_SAFE', 'UNKNOWN'].includes(combat.lastSession.state)),
+                combat.lastSession && combat.lastSession.reason || 'COMBAT_FAILED_DURING_H6');
+
+              const dispatched = skills.metrics.dispatched - h6Baseline.dispatched;
+              const confirmed = skills.metrics.confirmed - h6Baseline.confirmed;
+              const rejected = skills.metrics.rejected - h6Baseline.rejected;
+              const pending = skills.pending ? 1 : 0;
+              assert(dispatched <= confirmed + rejected + pending, 'CLASS_SKILL_DISPATCH_ACCOUNTING_INVALID');
+              assert(dispatched <= 12, 'CLASS_SKILL_SPAM_GUARD_EXCEEDED:' + dispatched);
+
+              return {
+                class: skills.currentClass,
+                dispatched,
+                confirmed,
+                rejected,
+                pending,
+                spamSkips: skills.metrics.spamSkips - h6Baseline.spamSkips,
+                cooldownSkips: skills.metrics.cooldownSkips - h6Baseline.cooldownSkips,
+                suspended: skills.suspended
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'Klassenlogik und Combat sauber freigeben',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.combat.stopSession('H6_LIVE_TEST_COMPLETE');
+              const combat = runtime.combat.status();
+              const skills = runtime.classSkills.status();
+              const movement = runtime.movement.status();
+
+              assert(combat.active === false, 'H6_COMBAT_STILL_ACTIVE_AFTER_STOP');
+              assert(skills.pending == null, 'H6_CLASS_SKILL_STILL_PENDING_AFTER_STOP');
+              assert(skills.sessionId == null, 'H6_CLASS_SKILL_SESSION_STILL_OWNED');
+              assert(!(movement.activeOrder && String(movement.activeOrder.owner || '').startsWith('combat-h5')),
+                'H6_COMBAT_MOVEMENT_STILL_ACTIVE');
+
+              return {
+                combatActive: combat.active,
+                classSkillPending: !!skills.pending,
+                classSkillSessionId: skills.sessionId,
+                movementActive: movement.active,
+                skillMetrics: {
+                  dispatched: skills.metrics.dispatched - h6Baseline.dispatched,
+                  confirmed: skills.metrics.confirmed - h6Baseline.confirmed,
+                  rejected: skills.metrics.rejected - h6Baseline.rejected,
+                  unknown: skills.metrics.unknown - h6Baseline.unknown
+                }
+              };
+            }
+          }
+        ]
+      });
+
+      this.liveTests.register({
+        id: 'h7-party',
+        title: 'H7 – Party',
+        description: 'Ein-Klick-Live-Test für dynamische Party-Erkennung, Rollen, Focus Fire, Assist, Support-Sicht und Cleanup.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.combat.stopSession('H7_LIVE_TEST_RESET'); } catch (_) {}
+          h7Plan = null;
+          const party = runtime.party.status();
+          const combat = runtime.combat.status();
+          h7Baseline = {
+            focusChanges: party.metrics.focusChanges,
+            focusPingPongs: party.metrics.focusPingPongs,
+            supportUnknown: party.metrics.supportUnknown,
+            supportConfirmed: party.metrics.supportConfirmed,
+            attackUnknown: combat.metrics.attackUnknown,
+            attacksConfirmed: combat.metrics.attacksConfirmed
+          };
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.combat.stopSession('H7_LIVE_TEST_CLEANUP'); } catch (_) {}
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Eigene aktive Party, Rollen und sicheren Gegner prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const partyModule = runtime.modules.describe('party');
+              assert(partyModule && partyModule.state === 'ACTIVE', 'PARTY_MODULE_NOT_ACTIVE');
+              const party = runtime.party.snapshot();
+              assert(party.available && party.size >= 2, 'H7_NEEDS_ACTIVE_PARTY_OF_AT_LEAST_2');
+              assert(party.foreignMemberNames.length === 0,
+                'H7_FOREIGN_PARTY_MEMBER_BLOCK:' + party.foreignMemberNames.join(','));
+              assert(party.coordinationEnabled === true, 'H7_PARTY_COORDINATION_NOT_READY');
+              assert(party.ownedMembers.filter(member => !member.rip).length >= 2, 'H7_NEEDS_2_LIVING_OWNED_PARTY_MEMBERS');
+
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character && !game.character.rip, 'CHARACTER_UNAVAILABLE');
+              const currentHp = Number(game.character.hp);
+              const maxHp = Number(game.character.maxHp);
+              assert(Number.isFinite(currentHp) && currentHp > 0, 'CHARACTER_HP_UNAVAILABLE');
+              assert(Number.isFinite(maxHp) && maxHp > 0, 'CHARACTER_MAX_HP_UNAVAILABLE');
+
+              const observerOnly = party.localRole === 'LOGISTICS'
+                || String(game.character.ctype || '').toLowerCase() === 'merchant';
+
+              if (observerOnly) {
+                h7Plan = { observerOnly: true };
+                return {
+                  local: game.character.name,
+                  localRole: party.localRole,
+                  leader: party.leader,
+                  partySize: party.size,
+                  observerOnly: true,
+                  ownedMembers: party.ownedMembers.map(member => ({
+                    name: member.name,
+                    ctype: member.ctype,
+                    role: member.role,
+                    visible: member.visible,
+                    rip: member.rip
+                  })),
+                  target: null,
+                  targetId: null
+                };
+              }
+
+              const attackBudget = Math.max(5, Math.min(maxHp * 0.08, currentHp * 0.08));
+              const candidates = runtime.combat.safeCandidates({ maxAcquireDistance: 450, maxAttack: attackBudget });
+              assert(candidates.length > 0, 'NO_SAFE_VISIBLE_MONSTER_FOR_H7');
+              const chosen = candidates[0];
+              const targetAttack = Number(chosen.attack);
+              assert(Number.isFinite(targetAttack) && targetAttack >= 0, 'TARGET_ATTACK_UNAVAILABLE');
+              const absoluteRetreatHp = Math.max(100, targetAttack * 20);
+              const minimumStartHp = Math.max(150, targetAttack * 25);
+              assert(currentHp >= minimumStartHp,
+                'HP_TOO_LOW_FOR_SAFE_H7_TEST:' + Math.round(currentHp) + '<' + Math.round(minimumStartHp));
+
+              const retreatHpRatio = Math.max(0.05, Math.min(0.35, absoluteRetreatHp / maxHp));
+              const resumeHpRatio = Math.max(retreatHpRatio + 0.05, Math.min(0.65, retreatHpRatio * 1.75));
+              h7Plan = {
+                observerOnly: false,
+                monsterType: chosen.mtype || null,
+                maxAttack: attackBudget,
+                retreatHpRatio,
+                resumeHpRatio
+              };
+
+              return {
+                local: game.character.name,
+                localRole: party.localRole,
+                leader: party.leader,
+                partySize: party.size,
+                observerOnly: false,
+                ownedMembers: party.ownedMembers.map(member => ({
+                  name: member.name,
+                  ctype: member.ctype,
+                  role: member.role,
+                  visible: member.visible,
+                  rip: member.rip
+                })),
+                target: chosen.name || chosen.mtype || chosen.id,
+                targetId: chosen.id
+              };
+            }
+          },
+          {
+            id: 'focus-fire',
+            title: 'Party-Focus/Assist prüfen und bei Combat-Rollen konvergieren lassen',
+            timeoutMs: 15000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(h7Plan, 'H7_LIVE_TEST_PLAN_MISSING');
+              if (h7Plan.observerOnly) {
+                const party = runtime.party.status();
+                assert(party.party.coordinationEnabled === true, 'H7_COORDINATION_LOST');
+                return {
+                  observerOnly: true,
+                  reason: 'LOGISTICS_ROLE_NO_COMBAT',
+                  focusTargetId: party.focus.targetId || null,
+                  focusSource: party.focus.source || null,
+                  combatTargetId: null,
+                  combatState: 'NOT_STARTED'
+                };
+              }
+              const result = runtime.combat.startSession({
+                owner: 'live-test-h7',
+                monsterType: h7Plan.monsterType || undefined,
+                maxAcquireDistance: 450,
+                maxAttack: h7Plan.maxAttack,
+                retreatHpRatio: h7Plan.retreatHpRatio,
+                resumeHpRatio: h7Plan.resumeHpRatio,
+                minMpRatio: 0,
+                kiting: false,
+                partyAssist: true
+              });
+              assert(result && result.accepted === true, result && result.reason || 'H7_COMBAT_SESSION_START_FAILED');
+
+              const converged = await waitFor(() => {
+                const party = runtime.party.status();
+                const combat = runtime.combat.status();
+                if (party.support.suspended) throw new Error(party.support.suspendedReason || 'PARTY_SUPPORT_UNKNOWN');
+                if (combat.lastSession && ['FAILED_SAFE', 'UNKNOWN'].includes(combat.lastSession.state)) {
+                  throw new Error(combat.lastSession.reason || combat.lastSession.state);
+                }
+                if (!party.focus.targetId || !combat.session || !combat.session.targetId) return null;
+                return String(party.focus.targetId) === String(combat.session.targetId)
+                  ? { party, combat }
+                  : null;
+              }, { timeoutMs: 12000, pollMs: 125, label: 'party-focus-convergence' });
+
+              return {
+                focusTargetId: converged.party.focus.targetId,
+                focusSource: converged.party.focus.source,
+                combatTargetId: converged.combat.session.targetId,
+                combatState: converged.combat.state
+              };
+            }
+          },
+          {
+            id: 'party-health',
+            title: 'Party-Health, Healing- und Recovery-Basis prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const party = runtime.party.status();
+              assert(party.party.coordinationEnabled === true, 'H7_COORDINATION_LOST');
+              assert(party.metrics.supportUnknown === h7Baseline.supportUnknown, 'PARTY_SUPPORT_UNKNOWN_DURING_TEST');
+              const downed = party.party.ownedMembers.filter(member => member.rip).map(member => member.name);
+              const injured = party.party.ownedMembers
+                .filter(member => !member.rip && member.hpRatio != null && member.hpRatio < 0.999)
+                .map(member => ({ name: member.name, hpRatio: member.hpRatio }));
+              return {
+                localRole: party.party.localRole,
+                injured,
+                downed,
+                partyBuffSkills: party.partyBuffSkills,
+                supportConfirmed: party.metrics.supportConfirmed - h7Baseline.supportConfirmed,
+                supportPending: !!party.support.pending
+              };
+            }
+          },
+          {
+            id: 'stability-window',
+            title: 'Fünf Sekunden Focus-Fire ohne UNKNOWN/Pingpong beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              await sleep(5000);
+              const party = runtime.party.status();
+              const combat = runtime.combat.status();
+              assert(party.metrics.supportUnknown === h7Baseline.supportUnknown, 'PARTY_SUPPORT_UNKNOWN_DURING_STABILITY_WINDOW');
+              if (!(h7Plan && h7Plan.observerOnly)) {
+                assert(combat.metrics.attackUnknown === h7Baseline.attackUnknown, 'ATTACK_UNKNOWN_DURING_H7_STABILITY_WINDOW');
+              }
+              assert(party.party.coordinationEnabled === true, 'H7_COORDINATION_LOST_DURING_STABILITY_WINDOW');
+              const focusChanges = party.metrics.focusChanges - h7Baseline.focusChanges;
+              const focusPingPongs = party.metrics.focusPingPongs - h7Baseline.focusPingPongs;
+              assert(focusPingPongs === 0, 'PARTY_FOCUS_PINGPONG_DETECTED:' + focusPingPongs);
+              return {
+                observerOnly: !!(h7Plan && h7Plan.observerOnly),
+                focusTargetId: party.focus.targetId,
+                focusSource: party.focus.source,
+                focusChanges,
+                focusPingPongs,
+                attacksConfirmed: combat.metrics.attacksConfirmed - h7Baseline.attacksConfirmed,
+                supportConfirmed: party.metrics.supportConfirmed - h7Baseline.supportConfirmed,
+                supportUnknown: party.metrics.supportUnknown - h7Baseline.supportUnknown
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'Party-Combat sauber stoppen und Ownership freigeben',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.combat.stopSession('H7_LIVE_TEST_COMPLETE');
+              const combat = runtime.combat.status();
+              const movement = runtime.movement.status();
+              const party = runtime.party.status();
+              assert(combat.active === false, 'H7_COMBAT_STILL_ACTIVE_AFTER_STOP');
+              assert(!(movement.activeOrder && String(movement.activeOrder.owner || '').startsWith('combat-h5')),
+                'H7_COMBAT_MOVEMENT_STILL_ACTIVE');
+              assert(party.support.pending == null, 'H7_PARTY_SUPPORT_STILL_PENDING');
+              return {
+                combatActive: combat.active,
+                movementActive: movement.active,
+                supportPending: !!party.support.pending,
+                focusTargetId: party.focus.targetId,
+                partySize: party.party.size
+              };
+            }
+          }
+        ]
+      });
+
+      this.liveTests.register({
+        id: 'h8-adaptive-farming',
+        title: 'H8 – AoE & adaptives Farming',
+        description: 'Ein-Klick-Live-Test für sichere Pack-Planung, live-bereite Klassen-AoE, adaptives Risiko, UNKNOWN-Safety und Cleanup.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.farming.stopSession('H8_LIVE_TEST_RESET'); } catch (_) {}
+          try { runtime.combat.stopSession('H8_LIVE_TEST_RESET'); } catch (_) {}
+          h8Plan = null;
+          const farming = runtime.farming.status();
+          const combat = runtime.combat.status();
+          const party = runtime.party.status();
+          h8Baseline = {
+            aoeConfirmed: farming.metrics.aoeConfirmed,
+            aoeUnknown: farming.metrics.aoeUnknown,
+            attackUnknown: combat.metrics.attackUnknown,
+            focusPingPongs: party.metrics.focusPingPongs
+          };
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.farming.stopSession('H8_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try { runtime.combat.stopSession('H8_LIVE_TEST_CLEANUP'); } catch (_) {}
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Klasse, Live-AoE und mindestens ein sicheres Pack prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const module = runtime.modules.describe('adaptive-farming');
+              assert(module && module.state === 'ACTIVE', 'H8_MODULE_NOT_ACTIVE');
+
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character && !game.character.rip, 'CHARACTER_UNAVAILABLE');
+              const ctype = String(game.character.ctype || '').toLowerCase();
+              assert(ctype !== 'merchant', 'H8_NEEDS_COMBAT_CLASS_NOT_MERCHANT');
+
+              const party = runtime.party.status();
+              const foreign = party.party && party.party.foreignMemberNames || [];
+              assert(foreign.length === 0, 'H8_FOREIGN_PARTY_MEMBER_BLOCK:' + foreign.join(','));
+
+              const supported = runtime.farming.supportedAoeSkills(ctype);
+              assert(supported.length > 0, 'H8_CLASS_HAS_NO_AOE_POLICY:' + ctype);
+
+              const ready = supported.map(id => ({
+                id,
+                definition: runtime.game.skillDefinition(id),
+                readiness: runtime.game.skillReadiness(id, null)
+              })).filter(row => row.definition && row.readiness && row.readiness.allowed === true);
+              assert(ready.length > 0,
+                'H8_NEEDS_LIVE_READY_AOE_SKILL:' + ctype + ':' + supported.join(','));
+
+              const currentHp = Number(game.character.hp);
+              const maxHp = Number(game.character.maxHp);
+              assert(Number.isFinite(currentHp) && currentHp > 0, 'CHARACTER_HP_UNAVAILABLE');
+              assert(Number.isFinite(maxHp) && maxHp > 0, 'CHARACTER_MAX_HP_UNAVAILABLE');
+              assert(currentHp / maxHp >= runtime.farming.config.aoeHpRatio,
+                'H8_HP_BELOW_AOE_THRESHOLD');
+
+              const candidates = runtime.combat.safeCandidates({
+                maxAcquireDistance: runtime.farming.config.maxAcquireDistance,
+                maxAttackToHpRatio: 0.08,
+                allowContested: false,
+                allowUnknownAttack: false,
+                partyAssist: true
+              });
+              assert(candidates.length >= 2, 'H8_NEEDS_AT_LEAST_2_SAFE_VISIBLE_MONSTERS');
+
+              const groups = new Map();
+              for (const monster of candidates) {
+                const key = String(monster.mtype || '');
+                if (!groups.has(key)) groups.set(key, []);
+                groups.get(key).push(monster);
+              }
+              const thresholds = { '3shot': 2, '5shot': 4, cleave: 3, stomp: 3, cburst: 2, fanofknives: 3 };
+              let selected = null;
+              for (const row of ready) {
+                const minimum = thresholds[row.id] || 2;
+                for (const [monsterType, rows] of groups.entries()) {
+                  if (rows.length >= minimum) {
+                    selected = { skillId: row.id, minimum, monsterType: monsterType || null, candidates: rows };
+                    break;
+                  }
+                }
+                if (selected) break;
+              }
+              assert(selected, 'H8_NO_SAFE_SAME_TYPE_PACK_FOR_READY_AOE');
+
+              h8Plan = {
+                ctype,
+                skillId: selected.skillId,
+                minimumTargets: selected.minimum,
+                monsterType: selected.monsterType,
+                safeVisible: selected.candidates.length
+              };
+              return {
+                character: game.character.name,
+                ctype,
+                skillId: selected.skillId,
+                minimumTargets: selected.minimum,
+                monsterType: selected.monsterType,
+                safeVisible: selected.candidates.length
+              };
+            }
+          },
+          {
+            id: 'adaptive-pack',
+            title: 'H8-Session starten und sicheren AoE-Packplan erreichen',
+            timeoutMs: 15000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(h8Plan, 'H8_LIVE_TEST_PLAN_MISSING');
+              const started = runtime.farming.startSession({
+                owner: 'live-test-h8',
+                monsterType: h8Plan.monsterType || undefined,
+                partyAssist: true,
+                maxAcquireDistance: runtime.farming.config.maxAcquireDistance,
+                maxAttackToHpRatio: 0.08,
+                retreatHpRatio: runtime.farming.config.retreatHpRatio,
+                minMpRatio: 0.08
+              });
+              assert(started && started.accepted === true, started && started.reason || 'H8_SESSION_START_FAILED');
+
+              const planned = await waitFor(() => {
+                const combat = runtime.combat.status();
+                if (combat.lastSession && ['FAILED_SAFE', 'UNKNOWN'].includes(combat.lastSession.state)) {
+                  throw new Error(combat.lastSession.reason || combat.lastSession.state);
+                }
+                const farming = runtime.farming.status();
+                if (farming.suspended) throw new Error(farming.suspendedReason || 'H8_AOE_SUSPENDED');
+                const plan = runtime.farming.plan();
+                return plan && plan.state === 'AOE_READY' ? plan : null;
+              }, { timeoutMs: 12000, pollMs: 150, label: 'h8-aoe-pack-plan' });
+
+              assert(planned.aoe && planned.aoe.packSize >= h8Plan.minimumTargets,
+                'H8_PACK_BELOW_SKILL_THRESHOLD');
+              return {
+                state: planned.state,
+                skillId: planned.aoe.skillId,
+                packSize: planned.aoe.packSize,
+                capacity: planned.capacity,
+                aggregateAttack: planned.aggregateAttack
+              };
+            }
+          },
+          {
+            id: 'confirmed-aoe',
+            title: 'Mindestens einen AoE-Skill serverbestätigt ausführen',
+            timeoutMs: 25000,
+            run: async ({ runtime, waitFor }) => {
+              const confirmed = await waitFor(() => {
+                const farming = runtime.farming.status();
+                if (farming.suspended) throw new Error(farming.suspendedReason || 'H8_AOE_SUSPENDED');
+                if (farming.metrics.aoeUnknown > h8Baseline.aoeUnknown) throw new Error('H8_AOE_UNKNOWN');
+                if (farming.metrics.aoeConfirmed <= h8Baseline.aoeConfirmed) return null;
+                return farming;
+              }, { timeoutMs: 22000, pollMs: 150, label: 'h8-confirmed-aoe' });
+
+              return {
+                aoeConfirmed: confirmed.metrics.aoeConfirmed - h8Baseline.aoeConfirmed,
+                lastUse: confirmed.lastUse
+              };
+            }
+          },
+          {
+            id: 'stability-window',
+            title: 'Fünf Sekunden ohne UNKNOWN, Overpull oder Focus-Pingpong beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              await sleep(5000);
+              const farming = runtime.farming.status();
+              const combat = runtime.combat.status();
+              const party = runtime.party.status();
+              assert(farming.suspended === false, 'H8_AOE_SUSPENDED_DURING_STABILITY');
+              assert(farming.metrics.aoeUnknown === h8Baseline.aoeUnknown, 'H8_AOE_UNKNOWN_DURING_STABILITY');
+              assert(combat.metrics.attackUnknown === h8Baseline.attackUnknown, 'ATTACK_UNKNOWN_DURING_H8_STABILITY');
+              assert(party.metrics.focusPingPongs === h8Baseline.focusPingPongs, 'PARTY_FOCUS_PINGPONG_DURING_H8');
+              const lastPlan = farming.lastPlan;
+              if (lastPlan && Array.isArray(lastPlan.pack)) {
+                assert(lastPlan.pack.length <= Number(lastPlan.capacity || 1), 'H8_PACK_EXCEEDS_CAPACITY');
+                assert(Number(lastPlan.aggregateAttack || 0)
+                  <= Number(runtime.game.snapshot().character.maxHp || 0) * farming.config.maxAggregateAttackToHpRatio + 0.001,
+                  'H8_AGGREGATE_ATTACK_BUDGET_EXCEEDED');
+              }
+              return {
+                aoeConfirmed: farming.metrics.aoeConfirmed - h8Baseline.aoeConfirmed,
+                aoeUnknown: farming.metrics.aoeUnknown - h8Baseline.aoeUnknown,
+                attackUnknown: combat.metrics.attackUnknown - h8Baseline.attackUnknown,
+                focusPingPongs: party.metrics.focusPingPongs - h8Baseline.focusPingPongs,
+                maxPackObserved: farming.metrics.maxPackObserved,
+                lastPlan
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'Adaptive Farming, Combat und Movement sauber freigeben',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.farming.stopSession('H8_LIVE_TEST_COMPLETE');
+              const farming = runtime.farming.status();
+              const combat = runtime.combat.status();
+              const movement = runtime.movement.status();
+              assert(farming.active === false, 'H8_SESSION_STILL_ACTIVE');
+              assert(farming.pending == null, 'H8_AOE_STILL_PENDING');
+              assert(combat.active === false, 'H8_COMBAT_STILL_ACTIVE');
+              assert(!(movement.activeOrder && String(movement.activeOrder.owner || '').startsWith('combat-h5')),
+                'H8_COMBAT_MOVEMENT_STILL_ACTIVE');
+              return {
+                farmingActive: farming.active,
+                pending: !!farming.pending,
+                combatActive: combat.active,
+                movementActive: movement.active
+              };
+            }
+          }
+        ]
+      });
+
+      this.liveTests.register({
+        id: 'h9-farm-intelligence',
+        title: 'H9 – Farm Intelligence',
+        description: 'Ein-Klick-Live-Test für autonome Farmzielwahl, Effizienz-Scoring, stabilen Hold, natürlichen Spotwechsel und Anti-Pingpong.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.farmIntelligence.stopAutonomy('H9_LIVE_TEST_RESET'); } catch (_) {}
+          try { runtime.farming.stopSession('H9_LIVE_TEST_RESET'); } catch (_) {}
+          try {
+            const movement = runtime.movement.status();
+            if (movement.activeOrder && String(movement.activeOrder.owner || '') === 'farm-intelligence-h9') {
+              runtime.movement.cancel('H9_LIVE_TEST_RESET');
+            }
+          } catch (_) {}
+          h9Plan = null;
+          const intelligence = runtime.farmIntelligence.status();
+          const farming = runtime.farming.status();
+          const combat = runtime.combat.status();
+          const party = runtime.party.status();
+          h9Baseline = {
+            decisions: intelligence.metrics.decisions,
+            holds: intelligence.metrics.holds,
+            switches: intelligence.metrics.switches,
+            farmingStarts: intelligence.metrics.farmingStarts,
+            travelOrders: intelligence.metrics.travelOrders,
+            pingPongBlocks: intelligence.metrics.pingPongBlocks,
+            ownershipBlocks: intelligence.metrics.ownershipBlocks,
+            aoeConfirmed: farming.metrics.aoeConfirmed,
+            aoeUnknown: farming.metrics.aoeUnknown,
+            attacksConfirmed: combat.metrics.attacksConfirmed,
+            attackUnknown: combat.metrics.attackUnknown,
+            focusPingPongs: party.metrics.focusPingPongs
+          };
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.farmIntelligence.stopAutonomy('H9_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try { runtime.farming.stopSession('H9_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try {
+            const movement = runtime.movement.status();
+            if (movement.activeOrder && String(movement.activeOrder.owner || '') === 'farm-intelligence-h9') {
+              runtime.movement.cancel('H9_LIVE_TEST_CLEANUP');
+            }
+          } catch (_) {}
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Live-Farmkandidaten und erklärbares Scoring prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const module = runtime.modules.describe('farm-intelligence');
+              assert(module && module.state === 'ACTIVE', 'H9_MODULE_NOT_ACTIVE');
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character && !game.character.rip, 'CHARACTER_UNAVAILABLE');
+              const ctype = String(game.character.ctype || '').toLowerCase();
+              assert(ctype !== 'merchant', 'H9_NEEDS_COMBAT_CLASS_NOT_MERCHANT');
+
+              const party = runtime.party.status();
+              const foreign = party.party && party.party.foreignMemberNames || [];
+              assert(foreign.length === 0, 'H9_FOREIGN_PARTY_MEMBER_BLOCK:' + foreign.join(','));
+
+              const plan = runtime.farmIntelligence.plan();
+              assert(plan && plan.selected, plan && plan.reason || 'H9_NO_FARM_CANDIDATE');
+              const candidates = Array.isArray(plan.candidates) ? plan.candidates : [];
+              const visibleSafe = candidates.filter(row => row && row.source === 'LIVE_SAFE_CLUSTER' && Number(row.visibleSafeCount) > 0);
+              assert(visibleSafe.length > 0, 'H9_LIVE_TEST_NEEDS_VISIBLE_SAFE_CLUSTER');
+              assert(candidates.length >= 2, 'H9_LIVE_TEST_NEEDS_AT_LEAST_2_FARM_CANDIDATES');
+              assert(Number.isFinite(Number(plan.selected.score)), 'H9_SCORE_UNAVAILABLE');
+              assert(plan.selected.components && Number.isFinite(Number(plan.selected.components.safety)),
+                'H9_SCORE_COMPONENTS_UNAVAILABLE');
+
+              h9Plan = {
+                initialKey: plan.selected.key,
+                monsterType: plan.selected.mtype,
+                source: plan.selected.source,
+                score: plan.selected.score,
+                travelSeconds: plan.selected.raw && Number(plan.selected.raw.travelSeconds),
+                candidateCount: candidates.length,
+                visibleSafeCount: visibleSafe.reduce((sum, row) => sum + Number(row.visibleSafeCount || 0), 0)
+              };
+              return {
+                character: game.character.name,
+                ctype,
+                initialKey: h9Plan.initialKey,
+                monsterType: h9Plan.monsterType,
+                source: h9Plan.source,
+                score: h9Plan.score,
+                travelSeconds: h9Plan.travelSeconds,
+                candidateCount: h9Plan.candidateCount,
+                visibleSafeCount: h9Plan.visibleSafeCount,
+                components: plan.selected.components
+              };
+            }
+          },
+          {
+            id: 'autonomous-start',
+            title: 'H9-Autonomie starten und gewähltes Farmziel an H8 übergeben',
+            timeoutMs: 90000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(h9Plan, 'H9_LIVE_TEST_PLAN_MISSING');
+              const started = runtime.farmIntelligence.startAutonomy({
+                owner: 'live-test-h9',
+                allowTravel: true
+              });
+              assert(started && started.accepted === true, started && started.reason || 'H9_SESSION_START_FAILED');
+
+              const state = await waitFor(() => {
+                const intelligence = runtime.farmIntelligence.status();
+                if (intelligence.suspended) throw new Error(intelligence.suspendedReason || 'H9_SUSPENDED');
+                if (!intelligence.currentSelection) return null;
+                const farming = runtime.farming.status();
+                return farming.active ? { intelligence, farming } : null;
+              }, { timeoutMs: 85000, pollMs: 200, label: 'h9-farming-start' });
+
+              assert(state.farming.session && String(state.farming.session.owner || '') === 'farm-intelligence-h9',
+                'H9_DID_NOT_OWN_H8_SESSION');
+              return {
+                selectedKey: state.intelligence.currentSelection.key,
+                monsterType: state.intelligence.currentSelection.mtype,
+                score: state.intelligence.currentSelection.score,
+                farmingStarts: state.intelligence.metrics.farmingStarts - h9Baseline.farmingStarts
+              };
+            }
+          },
+          {
+            id: 'confirmed-farming',
+            title: 'Mindestens eine H8-AoE- oder H5-Basisaktion live bestätigen',
+            timeoutMs: 35000,
+            run: async ({ runtime, waitFor }) => {
+              const observed = await waitFor(() => {
+                const intelligence = runtime.farmIntelligence.status();
+                if (intelligence.suspended) throw new Error(intelligence.suspendedReason || 'H9_SUSPENDED');
+                const farming = runtime.farming.status();
+                const combat = runtime.combat.status();
+                if (farming.metrics.aoeUnknown > h9Baseline.aoeUnknown) throw new Error('H9_H8_AOE_UNKNOWN');
+                if (combat.metrics.attackUnknown > h9Baseline.attackUnknown) throw new Error('H9_H5_ATTACK_UNKNOWN');
+                const aoe = farming.metrics.aoeConfirmed - h9Baseline.aoeConfirmed;
+                const attacks = combat.metrics.attacksConfirmed - h9Baseline.attacksConfirmed;
+                return aoe > 0 || attacks > 0 ? { intelligence, farming, combat, aoe, attacks } : null;
+              }, { timeoutMs: 32000, pollMs: 200, label: 'h9-confirmed-farming' });
+
+              return {
+                aoeConfirmed: observed.aoe,
+                attacksConfirmed: observed.attacks,
+                selection: observed.intelligence.currentSelection
+              };
+            }
+          },
+          {
+            id: 'adaptive-switch',
+            title: 'Adaptive Farmentscheidung und Anti-Pingpong unter Live-Bedingungen prüfen',
+            timeoutMs: 18000,
+            run: async ({ runtime, assert, waitFor }) => {
+              const observed = await waitFor(() => {
+                const intelligence = runtime.farmIntelligence.status();
+                if (intelligence.suspended) throw new Error(intelligence.suspendedReason || 'H9_SUSPENDED');
+                const decisionDelta = intelligence.metrics.decisions - h9Baseline.decisions;
+                return decisionDelta >= 5 && intelligence.currentSelection ? intelligence : null;
+              }, { timeoutMs: 15000, pollMs: 500, label: 'h9-adaptive-decisions' });
+
+              const history = Array.isArray(observed.history) ? observed.history : [];
+              for (let index = 2; index < history.length; index += 1) {
+                const a = history[index - 2];
+                const b = history[index - 1];
+                const c = history[index];
+                const within = Number(c.atMs || 0) - Number(a.atMs || 0) <= observed.config.pingPongWindowMs;
+                assert(!(within && a.key === c.key && a.key !== b.key), 'H9_FARM_TARGET_PINGPONG');
+              }
+
+              const candidates = observed.lastPlan && Array.isArray(observed.lastPlan.candidates)
+                ? observed.lastPlan.candidates
+                : [];
+              assert(candidates.length >= 2, 'H9_ADAPTIVE_CANDIDATES_LOST');
+              return {
+                decisions: observed.metrics.decisions - h9Baseline.decisions,
+                holds: observed.metrics.holds - h9Baseline.holds,
+                switches: observed.metrics.switches - h9Baseline.switches,
+                switchObserved: observed.metrics.switches > h9Baseline.switches,
+                travelOrders: observed.metrics.travelOrders - h9Baseline.travelOrders,
+                currentSelection: observed.currentSelection,
+                lastPlanReason: observed.lastPlan && observed.lastPlan.reason || null,
+                candidateCount: candidates.length,
+                history
+              };
+            }
+          },
+          {
+            id: 'stability-window',
+            title: 'Fünf Sekunden ohne UNKNOWN, Ownership-Verlust oder Focus-Pingpong beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              await sleep(5000);
+              const intelligence = runtime.farmIntelligence.status();
+              const farming = runtime.farming.status();
+              const combat = runtime.combat.status();
+              const party = runtime.party.status();
+              assert(intelligence.suspended === false, intelligence.suspendedReason || 'H9_SUSPENDED_DURING_STABILITY');
+              assert(farming.metrics.aoeUnknown === h9Baseline.aoeUnknown, 'H9_AOE_UNKNOWN_DURING_STABILITY');
+              assert(combat.metrics.attackUnknown === h9Baseline.attackUnknown, 'H9_ATTACK_UNKNOWN_DURING_STABILITY');
+              assert(party.metrics.focusPingPongs === h9Baseline.focusPingPongs, 'H9_PARTY_FOCUS_PINGPONG');
+              assert(intelligence.metrics.ownershipBlocks === h9Baseline.ownershipBlocks,
+                'H9_OWNERSHIP_BLOCK_DURING_TEST');
+              return {
+                selection: intelligence.currentSelection,
+                switches: intelligence.metrics.switches - h9Baseline.switches,
+                pingPongBlocks: intelligence.metrics.pingPongBlocks - h9Baseline.pingPongBlocks,
+                aoeUnknown: farming.metrics.aoeUnknown - h9Baseline.aoeUnknown,
+                attackUnknown: combat.metrics.attackUnknown - h9Baseline.attackUnknown,
+                focusPingPongs: party.metrics.focusPingPongs - h9Baseline.focusPingPongs
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'Farm Intelligence und alle eigene H8/H4-Ownership sauber freigeben',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.farmIntelligence.stopAutonomy('H9_LIVE_TEST_COMPLETE');
+              const intelligence = runtime.farmIntelligence.status();
+              const farming = runtime.farming.status();
+              const combat = runtime.combat.status();
+              const movement = runtime.movement.status();
+              assert(intelligence.active === false, 'H9_SESSION_STILL_ACTIVE');
+              assert(!(farming.active && farming.session && String(farming.session.owner || '') === 'farm-intelligence-h9'),
+                'H9_OWNED_FARMING_STILL_ACTIVE');
+              assert(!(movement.activeOrder && String(movement.activeOrder.owner || '') === 'farm-intelligence-h9'),
+                'H9_OWNED_MOVEMENT_STILL_ACTIVE');
+              assert(combat.active === false, 'H9_COMBAT_STILL_ACTIVE');
+              return {
+                intelligenceActive: intelligence.active,
+                farmingActive: farming.active,
+                combatActive: combat.active,
+                movementActive: movement.active
+              };
+            }
+          }
+        ]
+      });
+
+      this.liveTests.register({
+        id: 'h10-loot-inventory',
+        title: 'H10 – Loot & Inventar',
+        description: 'Ein-Klick-Live-Test für sicheren Loot, Inventarschutz, Slot-Reserve und erklärbare Item-Dispositionen.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.farmIntelligence.stopAutonomy('H10_LIVE_TEST_RESET'); } catch (_) {}
+          try { runtime.farming.stopSession('H10_LIVE_TEST_RESET'); } catch (_) {}
+          try {
+            const movement = runtime.movement.status();
+            if (movement.activeOrder && String(movement.activeOrder.owner || '') === 'farm-intelligence-h9') {
+              runtime.movement.cancel('H10_LIVE_TEST_RESET');
+            }
+          } catch (_) {}
+          try { runtime.inventory.resetSafety('H10_LIVE_TEST_RESET'); } catch (_) {}
+          h10StartedH9 = false;
+          const inventory = runtime.inventory.status();
+          const combat = runtime.combat.status();
+          const intelligence = runtime.farmIntelligence.status();
+          h10Baseline = {
+            lootDispatched: inventory.metrics.lootDispatched,
+            lootConfirmed: inventory.metrics.lootConfirmed,
+            lootKnownRejected: inventory.metrics.lootKnownRejected,
+            lootUnknown: inventory.metrics.lootUnknown,
+            attacksConfirmed: combat.metrics.attacksConfirmed,
+            attackUnknown: combat.metrics.attackUnknown,
+            h9Decisions: intelligence.metrics.decisions
+          };
+          h10Before = null;
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.farmIntelligence.stopAutonomy('H10_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try { runtime.farming.stopSession('H10_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try {
+            const movement = runtime.movement.status();
+            if (movement.activeOrder && String(movement.activeOrder.owner || '') === 'farm-intelligence-h9') {
+              runtime.movement.cancel('H10_LIVE_TEST_CLEANUP');
+            }
+          } catch (_) {}
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Live-Inventar, Schutzregeln und Loot-API prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const module = runtime.modules.describe('loot-inventory');
+              assert(module && module.state === 'ACTIVE', 'H10_MODULE_NOT_ACTIVE');
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character && !game.character.rip, 'CHARACTER_UNAVAILABLE');
+              assert(String(game.character.ctype || '').toLowerCase() !== 'merchant', 'H10_LIVE_TEST_NEEDS_FARMER');
+              assert(runtime.actions.available('loot'), 'H10_LOOT_API_UNAVAILABLE');
+
+              const plan = runtime.inventory.plan();
+              assert(plan && plan.state === 'READY', plan && plan.reason || 'H10_INVENTORY_PLAN_UNAVAILABLE');
+              assert(Number.isFinite(Number(plan.inventory.capacity)) && Number(plan.inventory.capacity) > 0,
+                'H10_INVENTORY_CAPACITY_UNAVAILABLE');
+              assert(Array.isArray(plan.items), 'H10_ITEMS_UNAVAILABLE');
+              assert(plan.items.every(row => row && row.disposition && typeof row.protected === 'boolean'),
+                'H10_ITEM_CLASSIFICATION_INCOMPLETE');
+
+              const protectedItems = plan.items
+                .filter(row => row && row.protected === true)
+                .map(row => ({
+                  name: row.name,
+                  level: Number(row.level || 0),
+                  statType: row.statType || null,
+                  quantity: Number(row.quantity || 1),
+                  disposition: row.disposition,
+                  reason: row.reason
+                }));
+              h10Before = {
+                capacity: Number(plan.inventory.capacity),
+                usedSlots: Number(plan.inventory.usedSlots),
+                freeSlots: Number(plan.inventory.freeSlots),
+                protectedItems
+              };
+              return {
+                character: game.character.name,
+                ctype: game.character.ctype,
+                capacity: h10Before.capacity,
+                usedSlots: h10Before.usedSlots,
+                freeSlots: h10Before.freeSlots,
+                protectedCount: protectedItems.length,
+                dispositionCounts: plan.counts,
+                visibleChests: plan.chests.length,
+                reserveFreeSlots: plan.reserveFreeSlots
+              };
+            }
+          },
+          {
+            id: 'autonomous-farming',
+            title: 'H9-Farming starten, damit echter Loot entstehen kann',
+            timeoutMs: 90000,
+            run: async ({ runtime, assert, waitFor }) => {
+              const h9Plan = runtime.farmIntelligence.plan();
+              assert(h9Plan && h9Plan.selected, h9Plan && h9Plan.reason || 'H10_NO_H9_FARM_CANDIDATE');
+
+              const candidates = Array.isArray(h9Plan.candidates)
+                ? h9Plan.candidates.filter(row => row && row.mtype)
+                : [];
+              const visible = candidates.filter(row => Number(row.visibleSafeCount || 0) > 0);
+              const pool = visible.length ? visible : candidates;
+              const probe = pool.slice().sort((a, b) => {
+                const ahp = Number(a.definition && a.definition.hp);
+                const bhp = Number(b.definition && b.definition.hp);
+                const safeAhp = Number.isFinite(ahp) && ahp > 0 ? ahp : Number.POSITIVE_INFINITY;
+                const safeBhp = Number.isFinite(bhp) && bhp > 0 ? bhp : Number.POSITIVE_INFINITY;
+                if (safeAhp !== safeBhp) return safeAhp - safeBhp;
+                const ad = Number(a.averageDistance);
+                const bd = Number(b.averageDistance);
+                const safeAd = Number.isFinite(ad) ? ad : Number.POSITIVE_INFINITY;
+                const safeBd = Number.isFinite(bd) ? bd : Number.POSITIVE_INFINITY;
+                return safeAd - safeBd;
+              })[0] || h9Plan.selected;
+
+              assert(probe && probe.mtype, 'H10_NO_LOOT_PROBE_CANDIDATE');
+              const started = runtime.farmIntelligence.startAutonomy({
+                owner: 'live-test-h10',
+                preferredTypes: [probe.mtype],
+                allowTravel: true
+              });
+              assert(started && started.accepted === true, started && started.reason || 'H10_H9_START_FAILED');
+              h10StartedH9 = true;
+
+              const active = await waitFor(() => {
+                const intelligence = runtime.farmIntelligence.status();
+                if (intelligence.suspended) throw new Error(intelligence.suspendedReason || 'H10_H9_SUSPENDED');
+                const farming = runtime.farming.status();
+                return farming.active && intelligence.currentSelection ? { intelligence, farming } : null;
+              }, { timeoutMs: 85000, pollMs: 200, label: 'h10-farming-start' });
+
+              return {
+                probe: {
+                  mtype: probe.mtype,
+                  hp: probe.definition && probe.definition.hp,
+                  visibleSafeCount: probe.visibleSafeCount,
+                  averageDistance: probe.averageDistance,
+                  source: probe.source
+                },
+                selection: active.intelligence.currentSelection,
+                farmingOwner: active.farming.session && active.farming.session.owner || null
+              };
+            }
+          },
+          {
+            id: 'confirmed-loot',
+            title: 'Echten Farming-Loot bestätigen und Inventardelta erfassen',
+            timeoutMs: 120000,
+            run: async ({ runtime, assert, waitFor }) => {
+              const observed = await waitFor(() => {
+                const inventory = runtime.inventory.status();
+                const intelligence = runtime.farmIntelligence.status();
+                const combat = runtime.combat.status();
+                if (inventory.suspended) throw new Error(inventory.suspendedReason || 'H10_INVENTORY_SUSPENDED');
+                if (inventory.metrics.lootUnknown > h10Baseline.lootUnknown) throw new Error('H10_LOOT_UNKNOWN');
+                if (combat.metrics.attackUnknown > h10Baseline.attackUnknown) throw new Error('H10_ATTACK_UNKNOWN');
+                if (intelligence.suspended) throw new Error(intelligence.suspendedReason || 'H10_H9_SUSPENDED');
+                const confirmed = inventory.metrics.lootConfirmed - h10Baseline.lootConfirmed;
+                return confirmed > 0 ? { inventory, intelligence, combat } : null;
+              }, { timeoutMs: 115000, pollMs: 250, label: 'h10-confirmed-loot' });
+
+              const afterPlan = runtime.inventory.plan();
+              assert(afterPlan && afterPlan.state === 'READY', 'H10_POST_LOOT_INVENTORY_UNAVAILABLE');
+              return {
+                lootDispatched: observed.inventory.metrics.lootDispatched - h10Baseline.lootDispatched,
+                lootConfirmed: observed.inventory.metrics.lootConfirmed - h10Baseline.lootConfirmed,
+                knownSkips: observed.inventory.metrics.lootKnownRejected - h10Baseline.lootKnownRejected,
+                attacksConfirmed: observed.combat.metrics.attacksConfirmed - h10Baseline.attacksConfirmed,
+                decisions: observed.intelligence.metrics.decisions - h10Baseline.h9Decisions,
+                beforeUsedSlots: h10Before && h10Before.usedSlots,
+                afterUsedSlots: afterPlan.inventory.usedSlots,
+                afterFreeSlots: afterPlan.inventory.freeSlots,
+                dispositionCounts: afterPlan.counts
+              };
+            }
+          },
+          {
+            id: 'protection-delta',
+            title: 'Geschützte und reservierte Items gegen Inventarverlust prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              assert(h10Before, 'H10_BEFORE_SNAPSHOT_MISSING');
+              const plan = runtime.inventory.plan();
+              const aggregate = new Map();
+              for (const row of plan.items || []) {
+                const key = String(row.name) + '|' + Number(row.level || 0) + '|' + String(row.statType || '');
+                aggregate.set(key, (aggregate.get(key) || 0) + Number(row.quantity || 1));
+              }
+              for (const row of h10Before.protectedItems) {
+                const key = String(row.name) + '|' + Number(row.level || 0) + '|' + String(row.statType || '');
+                assert((aggregate.get(key) || 0) >= Number(row.quantity || 1),
+                  'H10_PROTECTED_ITEM_LOST:' + row.name + ':' + row.level);
+              }
+              return {
+                checkedProtectedItems: h10Before.protectedItems.length,
+                currentUsedSlots: plan.inventory.usedSlots,
+                currentFreeSlots: plan.inventory.freeSlots,
+                reserveFreeSlots: plan.reserveFreeSlots
+              };
+            }
+          },
+          {
+            id: 'stability-window',
+            title: 'Fünf Sekunden ohne Loot-UNKNOWN oder Inventar-Safety-Verlust beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              await sleep(5000);
+              const inventory = runtime.inventory.status();
+              const plan = runtime.inventory.plan();
+              const combat = runtime.combat.status();
+              assert(inventory.suspended === false, inventory.suspendedReason || 'H10_SUSPENDED_DURING_STABILITY');
+              assert(inventory.metrics.lootUnknown === h10Baseline.lootUnknown, 'H10_LOOT_UNKNOWN_DURING_STABILITY');
+              assert(combat.metrics.attackUnknown === h10Baseline.attackUnknown, 'H10_ATTACK_UNKNOWN_DURING_STABILITY');
+              assert(Number(plan.inventory.freeSlots) >= 0, 'H10_NEGATIVE_FREE_SLOTS');
+              return {
+                lootConfirmed: inventory.metrics.lootConfirmed - h10Baseline.lootConfirmed,
+                knownSkips: inventory.metrics.lootKnownRejected - h10Baseline.lootKnownRejected,
+                lootUnknown: inventory.metrics.lootUnknown - h10Baseline.lootUnknown,
+                freeSlots: plan.inventory.freeSlots,
+                reserveFreeSlots: plan.reserveFreeSlots,
+                dispositionCounts: plan.counts
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'H9-Farming freigeben und H10 ohne Pending Loot hinterlassen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert, waitFor }) => {
+              if (h10StartedH9) runtime.farmIntelligence.stopAutonomy('H10_LIVE_TEST_COMPLETE');
+              try { runtime.farming.stopSession('H10_LIVE_TEST_COMPLETE'); } catch (_) {}
+              const inventory = await waitFor(() => {
+                const current = runtime.inventory.status();
+                return current.pendingLoot == null ? current : null;
+              }, { timeoutMs: 3000, pollMs: 100, label: 'h10-loot-settle' });
+              const intelligence = runtime.farmIntelligence.status();
+              const farming = runtime.farming.status();
+              const combat = runtime.combat.status();
+              const movement = runtime.movement.status();
+              assert(intelligence.active === false, 'H10_H9_SESSION_STILL_ACTIVE');
+              assert(farming.active === false, 'H10_H8_SESSION_STILL_ACTIVE');
+              assert(combat.active === false, 'H10_COMBAT_STILL_ACTIVE');
+              assert(!(movement.activeOrder && String(movement.activeOrder.owner || '') === 'farm-intelligence-h9'),
+                'H10_H9_MOVEMENT_STILL_ACTIVE');
+              assert(inventory.pendingLoot == null, 'H10_LOOT_STILL_PENDING');
+              return {
+                inventoryActive: inventory.moduleActive,
+                inventorySuspended: inventory.suspended,
+                pendingLoot: !!inventory.pendingLoot,
+                h9Active: intelligence.active,
+                farmingActive: farming.active,
+                combatActive: combat.active,
+                movementActive: movement.active
+              };
+            }
+          }
+        ]
+      });
+    }
+
+    _registerH11LiveTest() {
+      let baseline = null;
+      let testPlan = null;
+      this.liveTests.register({
+        id: 'h11-merchant',
+        title: 'H11 – Merchant-Grundbetrieb',
+        description: 'Ein-Klick-Live-Test für eigene Farmer, sichere Item-Delivery, MLuck-Service, Inventory Pressure und Anti-Pingpong.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.merchant.resetSafety('H11_LIVE_TEST_RESET'); } catch (_) {}
+          try { runtime.merchant.cancelDelivery('H11_LIVE_TEST_RESET'); } catch (_) {}
+          try {
+            const movement = runtime.movement.status();
+            if (movement.activeOrder && String(movement.activeOrder.owner || '') === 'merchant-h11') {
+              runtime.movement.cancel('H11_LIVE_TEST_RESET');
+            }
+          } catch (_) {}
+          const metrics = runtime.merchant.status().metrics;
+          baseline = {
+            transfersDispatched: metrics.transfersDispatched,
+            transfersConfirmed: metrics.transfersConfirmed,
+            transfersUnknown: metrics.transfersUnknown,
+            mluckDispatched: metrics.mluckDispatched,
+            mluckConfirmed: metrics.mluckConfirmed,
+            mluckUnknown: metrics.mluckUnknown,
+            pingPongBlocks: metrics.pingPongBlocks
+          };
+          testPlan = null;
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.merchant.cancelDelivery('H11_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try {
+            const movement = runtime.movement.status();
+            if (movement.activeOrder && String(movement.activeOrder.owner || '') === 'merchant-h11') {
+              runtime.movement.cancel('H11_LIVE_TEST_CLEANUP');
+            }
+          } catch (_) {}
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Merchant, eigener sichtbarer Farmer, MLuck und sichere Delivery prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(String(game.character.ctype || '').toLowerCase() === 'merchant', 'H11_LIVE_TEST_REQUIRES_MERCHANT');
+              assert(game.character.rip !== true, 'CHARACTER_DEAD');
+              const roster = runtime.roster.status();
+              assert(roster && roster.merchant && String(roster.merchant.name) === String(game.character.name),
+                'H11_LOCAL_MERCHANT_NOT_OWNED_ROSTER_MERCHANT');
+              assert(runtime.actions.available('send_item'), 'SEND_ITEM_API_UNAVAILABLE');
+              assert(runtime.actions.available('use_skill'), 'USE_SKILL_API_UNAVAILABLE');
+              const merchantModule = runtime.modules.describe('merchant');
+              assert(merchantModule && merchantModule.state === 'ACTIVE', 'H11_MODULE_NOT_ACTIVE');
+
+              const plan = runtime.merchant.plan();
+              assert(plan && plan.role === 'MERCHANT', 'H11_ROLE_NOT_MERCHANT');
+              assert(Array.isArray(plan.visibleOwnedFarmers) && plan.visibleOwnedFarmers.length > 0,
+                'H11_NEEDS_VISIBLE_OWN_FARMER');
+
+              const inventory = runtime.inventory.plan();
+              const safeRows = (inventory.items || []).filter(row => runtime.merchant._transferSafe(row, { allowUtility: true }));
+              assert(safeRows.length > 0, 'H11_NEEDS_SAFE_TRANSFER_ITEM');
+              const utility = safeRows.find(row => {
+                const type = String(row && row.definition && row.definition.type || '').toLowerCase();
+                return row.disposition === 'KEEP' && ['pot', 'elixir', 'food', 'scroll', 'booster'].includes(type);
+              });
+              const row = utility || safeRows[0];
+              const target = plan.visibleOwnedFarmers.slice().sort((a, b) =>
+                Number(a.distance == null ? Infinity : a.distance) - Number(b.distance == null ? Infinity : b.distance))[0];
+
+              const readiness = runtime.game.skillReadiness('mluck', target.name);
+              assert(readiness && readiness.available === true, 'H11_MLUCK_SKILL_UNAVAILABLE');
+
+              testPlan = {
+                targetName: target.name,
+                itemName: row.name,
+                slot: row.slot,
+                beforeQuantity: Number(row.quantity) || 1,
+                quantity: 1
+              };
+              return {
+                merchant: game.character.name,
+                target: target.name,
+                distance: target.distance,
+                itemName: row.name,
+                itemDisposition: row.disposition,
+                itemQuantity: row.quantity,
+                pressure: plan.pressure,
+                mluckReady: readiness.allowed,
+                mluckReasons: readiness.reasons || []
+              };
+            }
+          },
+          {
+            id: 'delivery',
+            title: 'Genau ein sicheres Item an eigenen Farmer liefern und Delta bestätigen',
+            timeoutMs: 45000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(testPlan, 'H11_LIVE_TEST_PLAN_MISSING');
+              const queued = runtime.merchant.queueDelivery(testPlan.targetName, testPlan.itemName, testPlan.quantity);
+              assert(queued && queued.accepted === true, queued && queued.reason || 'H11_DELIVERY_QUEUE_FAILED');
+              const confirmed = await waitFor(() => {
+                const status = runtime.merchant.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H11_SUSPENDED');
+                if (status.metrics.transfersUnknown > baseline.transfersUnknown) throw new Error('H11_TRANSFER_UNKNOWN');
+                return status.metrics.transfersConfirmed > baseline.transfersConfirmed ? status : null;
+              }, { timeoutMs: 40000, pollMs: 150, label: 'h11-delivery-confirmed' });
+
+              const after = runtime.game.inventorySnapshot();
+              const sameSlot = (after.items || []).find(row =>
+                Number(row.slot) === Number(testPlan.slot) && String(row.name || '') === String(testPlan.itemName));
+              const afterQuantity = sameSlot ? Number(sameSlot.quantity) || 0 : 0;
+              assert(testPlan.beforeQuantity - afterQuantity >= testPlan.quantity,
+                'H11_DELIVERY_LOCAL_DELTA_NOT_CONFIRMED');
+              return {
+                target: testPlan.targetName,
+                itemName: testPlan.itemName,
+                quantity: testPlan.quantity,
+                transfersDispatched: confirmed.metrics.transfersDispatched - baseline.transfersDispatched,
+                transfersConfirmed: confirmed.metrics.transfersConfirmed - baseline.transfersConfirmed,
+                beforeQuantity: testPlan.beforeQuantity,
+                afterQuantity
+              };
+            }
+          },
+          {
+            id: 'mluck',
+            title: 'MLuck für eigenen Farmer sicherstellen ohne Spam',
+            timeoutMs: 45000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(testPlan, 'H11_LIVE_TEST_PLAN_MISSING');
+              const before = runtime.game.playerCondition(testPlan.targetName, 'mluck');
+              if (before && before.active
+                && (before.remainingMs == null || before.remainingMs > runtime.merchant.config.mluckRefreshMs)) {
+                return {
+                  target: testPlan.targetName,
+                  alreadyHealthy: true,
+                  source: before.source,
+                  remainingMs: before.remainingMs,
+                  mluckDispatched: runtime.merchant.status().metrics.mluckDispatched - baseline.mluckDispatched
+                };
+              }
+              const confirmed = await waitFor(() => {
+                const status = runtime.merchant.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H11_SUSPENDED');
+                if (status.metrics.mluckUnknown > baseline.mluckUnknown) throw new Error('H11_MLUCK_UNKNOWN');
+                if (status.metrics.mluckConfirmed <= baseline.mluckConfirmed) return null;
+                const condition = runtime.game.playerCondition(testPlan.targetName, 'mluck');
+                return condition && condition.active ? { status, condition } : null;
+              }, { timeoutMs: 40000, pollMs: 150, label: 'h11-mluck-confirmed' });
+              return {
+                target: testPlan.targetName,
+                alreadyHealthy: false,
+                source: confirmed.condition.source,
+                remainingMs: confirmed.condition.remainingMs,
+                mluckDispatched: confirmed.status.metrics.mluckDispatched - baseline.mluckDispatched,
+                mluckConfirmed: confirmed.status.metrics.mluckConfirmed - baseline.mluckConfirmed
+              };
+            }
+          },
+          {
+            id: 'stability',
+            title: 'Fünf Sekunden ohne UNKNOWN oder Service-Pingpong beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              await sleep(5000);
+              const status = runtime.merchant.status();
+              assert(status.suspended === false, status.suspendedReason || 'H11_SUSPENDED');
+              assert(status.metrics.transfersUnknown === baseline.transfersUnknown, 'H11_TRANSFER_UNKNOWN_DURING_STABILITY');
+              assert(status.metrics.mluckUnknown === baseline.mluckUnknown, 'H11_MLUCK_UNKNOWN_DURING_STABILITY');
+              assert(status.metrics.pingPongBlocks === baseline.pingPongBlocks, 'H11_SERVICE_PINGPONG');
+              return {
+                transfersConfirmed: status.metrics.transfersConfirmed - baseline.transfersConfirmed,
+                mluckConfirmed: status.metrics.mluckConfirmed - baseline.mluckConfirmed,
+                transferUnknown: status.metrics.transfersUnknown - baseline.transfersUnknown,
+                mluckUnknown: status.metrics.mluckUnknown - baseline.mluckUnknown,
+                pingPongBlocks: status.metrics.pingPongBlocks - baseline.pingPongBlocks
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'H11 Delivery und H11-eigene Bewegung vollständig freigeben',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.merchant.cancelDelivery('H11_LIVE_TEST_COMPLETE');
+              const merchant = runtime.merchant.status();
+              const movement = runtime.movement.status();
+              assert(merchant.pending == null, 'H11_PENDING_ACTION_REMAINS');
+              assert(merchant.delivery == null, 'H11_DELIVERY_REMAINS');
+              assert(!(movement.activeOrder && String(movement.activeOrder.owner || '') === 'merchant-h11'),
+                'H11_MOVEMENT_REMAINS');
+              return {
+                pending: !!merchant.pending,
+                delivery: !!merchant.delivery,
+                movementActive: !!movement.activeOrder
+              };
+            }
+          }
+        ]
+      });
+    }
+
+    _registerH12LiveTest() {
+      let baseline = null;
+      let testPlan = null;
+      this.liveTests.register({
+        id: 'h12-bank',
+        title: 'H12 – Bank',
+        description: 'Ein-Klick-Live-Test für sichere Bankfahrt, Deposit/Withdraw, Workspace und Inventory/Bank-Reconciliation.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.bank.resetSafety('H12_LIVE_TEST_RESET'); } catch (_) {}
+          try { runtime.bank.cancelRequest('H12_LIVE_TEST_RESET'); } catch (_) {}
+          try {
+            const movement = runtime.movement.status();
+            if (movement.activeOrder && String(movement.activeOrder.owner || '') === 'bank-h12') {
+              runtime.movement.cancel('H12_LIVE_TEST_RESET');
+            }
+          } catch (_) {}
+          const metrics = runtime.bank.status().metrics;
+          baseline = {
+            depositsConfirmed: metrics.depositsConfirmed,
+            depositsUnknown: metrics.depositsUnknown,
+            withdrawalsConfirmed: metrics.withdrawalsConfirmed,
+            withdrawalsUnknown: metrics.withdrawalsUnknown,
+            movementUnknown: metrics.movementUnknown,
+            reconciliationFailures: metrics.reconciliationFailures
+          };
+          testPlan = null;
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.bank.cancelRequest('H12_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try {
+            const movement = runtime.movement.status();
+            if (movement.activeOrder && String(movement.activeOrder.owner || '') === 'bank-h12') {
+              runtime.movement.cancel('H12_LIVE_TEST_CLEANUP');
+            }
+          } catch (_) {}
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Merchant, Bank-APIs und sicheres BANK-Item prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(String(game.character.ctype || '').toLowerCase() === 'merchant', 'H12_LIVE_TEST_REQUIRES_MERCHANT');
+              assert(game.character.rip !== true, 'CHARACTER_DEAD');
+              const bankModule = runtime.modules.describe('bank');
+              assert(bankModule && bankModule.state === 'ACTIVE', 'H12_MODULE_NOT_ACTIVE');
+              assert(runtime.actions.available('bank_store'), 'BANK_STORE_API_UNAVAILABLE');
+              assert(runtime.actions.available('bank_retrieve'), 'BANK_RETRIEVE_API_UNAVAILABLE');
+              assert(runtime.actions.available('smart_move'), 'SMART_MOVE_API_UNAVAILABLE');
+
+              const bankPlan = runtime.bank.plan();
+              const candidates = bankPlan && Array.isArray(bankPlan.safeDepositRows)
+                ? bankPlan.safeDepositRows
+                : [];
+              assert(candidates.length > 0, 'H12_NEEDS_SAFE_BANK_ITEM');
+              const row = candidates.slice().sort((a, b) => Number(a.slot) - Number(b.slot))[0];
+              testPlan = {
+                itemName: row.name,
+                originalSlot: Number(row.slot),
+                quantity: Math.max(1, Math.floor(Number(row.quantity) || 1))
+              };
+              const bank = runtime.game.bankSnapshot();
+              return {
+                merchant: game.character.name,
+                map: game.character.map,
+                itemName: row.name,
+                itemDisposition: row.disposition,
+                quantity: testPlan.quantity,
+                originalSlot: testPlan.originalSlot,
+                bankMounted: !!(bank && bank.available),
+                bankMap: bank && bank.map || null
+              };
+            }
+          },
+          {
+            id: 'deposit',
+            title: 'Sicheres Item automatisch zur Bank bringen und eindeutig einlagern',
+            timeoutMs: 90000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(testPlan, 'H12_LIVE_TEST_PLAN_MISSING');
+              const queued = runtime.bank.queueDeposit(testPlan.itemName, { inventorySlot: testPlan.originalSlot });
+              assert(queued && queued.accepted === true, queued && queued.reason || 'H12_DEPOSIT_QUEUE_FAILED');
+              const confirmed = await waitFor(() => {
+                const status = runtime.bank.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H12_SUSPENDED');
+                if (status.metrics.depositsUnknown > baseline.depositsUnknown) throw new Error('H12_DEPOSIT_UNKNOWN');
+                if (status.metrics.movementUnknown > baseline.movementUnknown) throw new Error('H12_MOVEMENT_UNKNOWN');
+                if (status.metrics.depositsConfirmed <= baseline.depositsConfirmed) return null;
+                return status;
+              }, { timeoutMs: 85000, pollMs: 150, label: 'h12-deposit-confirmed' });
+
+              const action = confirmed.lastAction || {};
+              assert(action.pack, 'H12_DEPOSIT_PACK_EVIDENCE_MISSING');
+              assert(action.bankSlot != null, 'H12_DEPOSIT_SLOT_EVIDENCE_MISSING');
+              const bank = runtime.game.bankSnapshot();
+              const pack = (bank.packs || []).find(row => String(row.name) === String(action.pack));
+              const stored = pack && (pack.items || []).find(row => Number(row.slot) === Number(action.bankSlot));
+              assert(stored && String(stored.name) === String(testPlan.itemName), 'H12_DEPOSIT_BANK_ITEM_NOT_FOUND');
+              const inventory = runtime.game.inventorySnapshot();
+              const original = (inventory.items || []).find(row => Number(row.slot) === testPlan.originalSlot);
+              assert(!original || String(original.name) !== String(testPlan.itemName), 'H12_DEPOSIT_INVENTORY_DELTA_NOT_CONFIRMED');
+
+              testPlan.pack = String(action.pack);
+              testPlan.bankSlot = Number(action.bankSlot);
+              return {
+                itemName: testPlan.itemName,
+                quantity: testPlan.quantity,
+                originalSlot: testPlan.originalSlot,
+                pack: testPlan.pack,
+                bankSlot: testPlan.bankSlot,
+                depositsConfirmed: confirmed.metrics.depositsConfirmed - baseline.depositsConfirmed,
+                movementRequests: confirmed.metrics.movementRequests
+              };
+            }
+          },
+          {
+            id: 'withdraw',
+            title: 'Dasselbe Bank-Item exakt in den ursprünglichen Inventarslot zurückholen',
+            timeoutMs: 45000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(testPlan && testPlan.pack && testPlan.bankSlot != null, 'H12_DEPOSIT_EVIDENCE_MISSING');
+              const queued = runtime.bank.queueWithdraw(testPlan.pack, testPlan.bankSlot, {
+                inventorySlot: testPlan.originalSlot
+              });
+              assert(queued && queued.accepted === true, queued && queued.reason || 'H12_WITHDRAW_QUEUE_FAILED');
+              const confirmed = await waitFor(() => {
+                const status = runtime.bank.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H12_SUSPENDED');
+                if (status.metrics.withdrawalsUnknown > baseline.withdrawalsUnknown) throw new Error('H12_WITHDRAW_UNKNOWN');
+                if (status.metrics.withdrawalsConfirmed <= baseline.withdrawalsConfirmed) return null;
+                return status;
+              }, { timeoutMs: 40000, pollMs: 150, label: 'h12-withdraw-confirmed' });
+
+              const inventory = runtime.game.inventorySnapshot();
+              const restored = (inventory.items || []).find(row => Number(row.slot) === testPlan.originalSlot);
+              assert(restored && String(restored.name) === String(testPlan.itemName),
+                'H12_WITHDRAW_ORIGINAL_SLOT_NOT_RESTORED');
+              assert(Math.max(1, Math.floor(Number(restored.quantity) || 1)) === testPlan.quantity,
+                'H12_WITHDRAW_QUANTITY_NOT_RESTORED');
+              const bank = runtime.game.bankSnapshot();
+              const pack = (bank.packs || []).find(row => String(row.name) === String(testPlan.pack));
+              const bankRow = pack && (pack.items || []).find(row => Number(row.slot) === testPlan.bankSlot);
+              assert(!bankRow || String(bankRow.name) !== String(testPlan.itemName),
+                'H12_WITHDRAW_BANK_DELTA_NOT_CONFIRMED');
+              return {
+                itemName: testPlan.itemName,
+                quantity: testPlan.quantity,
+                originalSlot: testPlan.originalSlot,
+                pack: testPlan.pack,
+                bankSlot: testPlan.bankSlot,
+                withdrawalsConfirmed: confirmed.metrics.withdrawalsConfirmed - baseline.withdrawalsConfirmed
+              };
+            }
+          },
+          {
+            id: 'reconciliation',
+            title: 'Fünf Sekunden Reconciliation ohne UNKNOWN oder verlorene Item-Position prüfen',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              await sleep(5000);
+              const status = runtime.bank.status();
+              assert(status.suspended === false, status.suspendedReason || 'H12_SUSPENDED');
+              assert(status.metrics.depositsUnknown === baseline.depositsUnknown, 'H12_DEPOSIT_UNKNOWN_DURING_STABILITY');
+              assert(status.metrics.withdrawalsUnknown === baseline.withdrawalsUnknown, 'H12_WITHDRAW_UNKNOWN_DURING_STABILITY');
+              assert(status.metrics.movementUnknown === baseline.movementUnknown, 'H12_MOVEMENT_UNKNOWN_DURING_STABILITY');
+              const reconciliation = runtime.bank.reconcile();
+              assert(reconciliation.available === true, reconciliation.reason || 'H12_RECONCILIATION_UNAVAILABLE');
+              const inventory = runtime.game.inventorySnapshot();
+              const restored = (inventory.items || []).find(row => Number(row.slot) === testPlan.originalSlot);
+              assert(restored && String(restored.name) === String(testPlan.itemName), 'H12_ITEM_LOCATION_LOST');
+              return {
+                depositsUnknown: status.metrics.depositsUnknown - baseline.depositsUnknown,
+                withdrawalsUnknown: status.metrics.withdrawalsUnknown - baseline.withdrawalsUnknown,
+                movementUnknown: status.metrics.movementUnknown - baseline.movementUnknown,
+                reconciliationEntries: reconciliation.ledger.length,
+                itemRestored: true
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'H12 Pending/Request und H12-eigene Bewegung vollständig freigeben',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.bank.cancelRequest('H12_LIVE_TEST_COMPLETE');
+              const bank = runtime.bank.status();
+              const movement = runtime.movement.status();
+              assert(bank.pending == null, 'H12_PENDING_ACTION_REMAINS');
+              assert(bank.request == null, 'H12_REQUEST_REMAINS');
+              assert(!(movement.activeOrder && String(movement.activeOrder.owner || '') === 'bank-h12'),
+                'H12_MOVEMENT_REMAINS');
+              return {
+                pending: !!bank.pending,
+                request: !!bank.request,
+                movementActive: !!(movement.activeOrder && String(movement.activeOrder.owner || '') === 'bank-h12')
+              };
+            }
+          }
+        ]
+      });
+    }
+
+    _registerH13LiveTest() {
+      let baseline = null;
+      let testPlan = null;
+      this.liveTests.register({
+        id: 'h13-trade',
+        title: 'H13 – Handel',
+        description: 'Ein-Klick-Live-Test für preisgedeckelten NPC-Kauf, Live-Deltas und read-only Player-Market-Analyse.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.trade.resetSafety('H13_LIVE_TEST_RESET'); } catch (_) {}
+          try { runtime.trade.cancelRequest('H13_LIVE_TEST_RESET'); } catch (_) {}
+          try {
+            const movement = runtime.movement.status();
+            if (movement.activeOrder && String(movement.activeOrder.owner || '') === 'trade-h13') {
+              runtime.movement.cancel('H13_LIVE_TEST_RESET');
+            }
+          } catch (_) {}
+          const metrics = runtime.trade.status().metrics;
+          baseline = {
+            npcBuysConfirmed: metrics.npcBuysConfirmed,
+            npcBuysUnknown: metrics.npcBuysUnknown,
+            npcSellsUnknown: metrics.npcSellsUnknown,
+            marketBuysUnknown: metrics.marketBuysUnknown,
+            marketSellsUnknown: metrics.marketSellsUnknown,
+            movementUnknown: metrics.movementUnknown
+          };
+          testPlan = null;
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.trade.cancelRequest('H13_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try {
+            const movement = runtime.movement.status();
+            if (movement.activeOrder && String(movement.activeOrder.owner || '') === 'trade-h13') {
+              runtime.movement.cancel('H13_LIVE_TEST_CLEANUP');
+            }
+          } catch (_) {}
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Merchant, Handels-APIs, hpot0-Festpreis und NPC-Quelle prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(String(game.character.ctype || '').toLowerCase() === 'merchant', 'H13_LIVE_TEST_REQUIRES_MERCHANT');
+              assert(game.character.rip !== true, 'CHARACTER_DEAD');
+              const module = runtime.modules.describe('trade');
+              assert(module && module.state === 'ACTIVE', 'H13_MODULE_NOT_ACTIVE');
+              assert(runtime.actions.available('buy_with_gold'), 'BUY_WITH_GOLD_API_UNAVAILABLE');
+              assert(runtime.actions.available('sell'), 'SELL_API_UNAVAILABLE');
+              assert(runtime.actions.available('trade_buy'), 'TRADE_BUY_API_UNAVAILABLE');
+              assert(runtime.actions.available('trade_sell'), 'TRADE_SELL_API_UNAVAILABLE');
+              assert(runtime.actions.available('smart_move'), 'SMART_MOVE_API_UNAVAILABLE');
+
+              const definition = runtime.game.itemDefinition('hpot0');
+              assert(definition && Number.isFinite(Number(definition.g)) && Number(definition.g) > 0,
+                'H13_HPOT0_PRICE_UNAVAILABLE');
+              const sources = runtime.game.npcShopSources('hpot0');
+              const source = (sources || []).find(row => row && row.location);
+              assert(source, 'H13_HPOT0_NPC_SOURCE_UNAVAILABLE');
+
+              const inventory = runtime.game.inventorySnapshot();
+              assert(inventory && inventory.available !== false && Number(inventory.freeSlots) > 0,
+                'H13_INVENTORY_FULL_OR_UNAVAILABLE');
+              const beforeQuantity = (inventory.items || []).reduce((sum, row) =>
+                sum + (String(row.name) === 'hpot0' && Number(row.level || 0) === 0 ? Number(row.quantity || 1) : 0), 0);
+              const beforeGold = Number(game.character.gold);
+              const unitPrice = Number(definition.g);
+              assert(Number.isFinite(beforeGold) && beforeGold - unitPrice >= runtime.trade.config.goldReserve,
+                'H13_LIVE_TEST_GOLD_RESERVE_BLOCKED');
+
+              testPlan = {
+                itemName: 'hpot0',
+                quantity: 1,
+                unitPrice,
+                beforeQuantity,
+                beforeGold,
+                npcId: source.npcId,
+                location: source.location
+              };
+              return {
+                merchant: game.character.name,
+                map: game.character.map,
+                itemName: testPlan.itemName,
+                quantity: 1,
+                unitPrice,
+                beforeQuantity,
+                beforeGold,
+                goldReserve: runtime.trade.config.goldReserve,
+                npcId: source.npcId,
+                npcLocation: source.location
+              };
+            }
+          },
+          {
+            id: 'npc-buy',
+            title: 'Genau ein hpot0 zum live bekannten NPC-Festpreis kaufen und Delta bestätigen',
+            timeoutMs: 90000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(testPlan, 'H13_LIVE_TEST_PLAN_MISSING');
+              const queued = runtime.trade.queueNpcBuy(testPlan.itemName, 1, {
+                maxUnitPrice: testPlan.unitPrice
+              });
+              assert(queued && queued.accepted === true, queued && queued.reason || 'H13_NPC_BUY_QUEUE_FAILED');
+              const confirmed = await waitFor(() => {
+                const status = runtime.trade.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H13_SUSPENDED');
+                if (status.metrics.npcBuysUnknown > baseline.npcBuysUnknown) throw new Error('H13_NPC_BUY_UNKNOWN');
+                if (status.metrics.movementUnknown > baseline.movementUnknown) throw new Error('H13_MOVEMENT_UNKNOWN');
+                return status.metrics.npcBuysConfirmed > baseline.npcBuysConfirmed ? status : null;
+              }, { timeoutMs: 85000, pollMs: 150, label: 'h13-npc-buy-confirmed' });
+
+              const inventory = runtime.game.inventorySnapshot();
+              const afterQuantity = (inventory.items || []).reduce((sum, row) =>
+                sum + (String(row.name) === testPlan.itemName && Number(row.level || 0) === 0 ? Number(row.quantity || 1) : 0), 0);
+              const afterGame = runtime.game.snapshot();
+              const afterGold = Number(afterGame && afterGame.character && afterGame.character.gold);
+              assert(afterQuantity >= testPlan.beforeQuantity + 1, 'H13_NPC_BUY_INVENTORY_DELTA_NOT_CONFIRMED');
+              assert(Number.isFinite(afterGold) && afterGold <= testPlan.beforeGold - testPlan.unitPrice,
+                'H13_NPC_BUY_GOLD_DELTA_NOT_CONFIRMED');
+              return {
+                itemName: testPlan.itemName,
+                quantity: 1,
+                unitPrice: testPlan.unitPrice,
+                beforeQuantity: testPlan.beforeQuantity,
+                afterQuantity,
+                beforeGold: testPlan.beforeGold,
+                afterGold,
+                npcBuysConfirmed: confirmed.metrics.npcBuysConfirmed - baseline.npcBuysConfirmed,
+                movementRequests: confirmed.metrics.movementRequests
+              };
+            }
+          },
+          {
+            id: 'market-analysis',
+            title: 'Sichtbare Player-Listings read-only analysieren ohne Kauf oder Verkauf',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const before = runtime.trade.status().metrics;
+              const analysis = runtime.trade.marketAnalysis(null);
+              assert(analysis && analysis.available === true, analysis && analysis.reason || 'H13_MARKET_ANALYSIS_UNAVAILABLE');
+              const after = runtime.trade.status().metrics;
+              assert(after.marketBuysDispatched === before.marketBuysDispatched, 'H13_MARKET_ANALYSIS_DISPATCHED_BUY');
+              assert(after.marketSellsDispatched === before.marketSellsDispatched, 'H13_MARKET_ANALYSIS_DISPATCHED_SELL');
+              return {
+                asks: analysis.asks.length,
+                bids: analysis.bids.length,
+                bestAsk: analysis.bestAsk,
+                bestBid: analysis.bestBid,
+                spread: analysis.spread
+              };
+            }
+          },
+          {
+            id: 'stability',
+            title: 'Fünf Sekunden ohne Trade-UNKNOWN beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              await sleep(5000);
+              const status = runtime.trade.status();
+              assert(status.suspended === false, status.suspendedReason || 'H13_SUSPENDED');
+              assert(status.metrics.npcBuysUnknown === baseline.npcBuysUnknown, 'H13_NPC_BUY_UNKNOWN_DURING_STABILITY');
+              assert(status.metrics.npcSellsUnknown === baseline.npcSellsUnknown, 'H13_NPC_SELL_UNKNOWN_DURING_STABILITY');
+              assert(status.metrics.marketBuysUnknown === baseline.marketBuysUnknown, 'H13_MARKET_BUY_UNKNOWN_DURING_STABILITY');
+              assert(status.metrics.marketSellsUnknown === baseline.marketSellsUnknown, 'H13_MARKET_SELL_UNKNOWN_DURING_STABILITY');
+              assert(status.metrics.movementUnknown === baseline.movementUnknown, 'H13_MOVEMENT_UNKNOWN_DURING_STABILITY');
+              return {
+                npcBuyUnknown: status.metrics.npcBuysUnknown - baseline.npcBuysUnknown,
+                npcSellUnknown: status.metrics.npcSellsUnknown - baseline.npcSellsUnknown,
+                marketBuyUnknown: status.metrics.marketBuysUnknown - baseline.marketBuysUnknown,
+                marketSellUnknown: status.metrics.marketSellsUnknown - baseline.marketSellsUnknown,
+                movementUnknown: status.metrics.movementUnknown - baseline.movementUnknown
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'H13 Pending/Request und H13-eigene Bewegung vollständig freigeben',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.trade.cancelRequest('H13_LIVE_TEST_COMPLETE');
+              const trade = runtime.trade.status();
+              const movement = runtime.movement.status();
+              assert(trade.pending == null, 'H13_PENDING_ACTION_REMAINS');
+              assert(trade.request == null, 'H13_REQUEST_REMAINS');
+              assert(!(movement.activeOrder && String(movement.activeOrder.owner || '') === 'trade-h13'),
+                'H13_MOVEMENT_REMAINS');
+              return {
+                pending: !!trade.pending,
+                request: !!trade.request,
+                movementActive: !!(movement.activeOrder && String(movement.activeOrder.owner || '') === 'trade-h13')
+              };
+            }
+          }
+        ]
+      });
+    }
+
+    _registerH14LiveTest() {
+      let baseline = null;
+      let testPlan = null;
+      let previousGoals = [];
+
+      const fingerprint = (runtime, row) => runtime.gear._fingerprint(row);
+
+      const tryRestore = async runtime => {
+        if (!testPlan || !testPlan.originalFingerprint || !testPlan.targetSlot) return;
+        const status = runtime.gear.status();
+        if (status.pending || status.suspended) return;
+        const equipment = runtime.game.equipmentSnapshot();
+        const current = equipment && equipment.slots && equipment.slots[testPlan.targetSlot] || null;
+        if (fingerprint(runtime, current) === testPlan.originalFingerprint) return;
+        const inventory = runtime.game.inventorySnapshot();
+        const original = inventory && (inventory.items || []).find(row =>
+          fingerprint(runtime, row) === testPlan.originalFingerprint);
+        if (!original) return;
+        const queued = runtime.gear.queueEquip(original.slot, testPlan.targetSlot);
+        if (!queued || queued.accepted !== true) return;
+        for (let i = 0; i < 40; i += 1) {
+          runtime.gear.tick();
+          const now = runtime.game.equipmentSnapshot();
+          const equipped = now && now.slots && now.slots[testPlan.targetSlot] || null;
+          if (fingerprint(runtime, equipped) === testPlan.originalFingerprint) return;
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+      };
+
+      this.liveTests.register({
+        id: 'h14-gear',
+        title: 'H14 – Gear',
+        description: 'Ein-Klick-Live-Test für Gear-Ranking, Gear Goals, Farmer-Priorität und einen reversiblen echten Equipment-Swap.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.gear.resetSafety('H14_LIVE_TEST_RESET'); } catch (_) {}
+          try { runtime.gear.cancelRequest('H14_LIVE_TEST_RESET'); } catch (_) {}
+          previousGoals = runtime.gear.goalSnapshot();
+          runtime.gear.setGoals([]);
+          const metrics = runtime.gear.status().metrics;
+          baseline = {
+            equipsConfirmed: metrics.equipsConfirmed,
+            equipsUnknown: metrics.equipsUnknown,
+            unequipsUnknown: metrics.unequipsUnknown,
+            deliveriesUnknown: metrics.deliveriesUnknown
+          };
+          testPlan = null;
+        },
+        cleanup: async ({ runtime }) => {
+          try { await tryRestore(runtime); } catch (_) {}
+          try { runtime.gear.cancelRequest('H14_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try { runtime.gear.setGoals(previousGoals); } catch (_) {}
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Live-Equipment, Gear-Ranking und reversiblen Swap-Kandidaten prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(game.character.rip !== true, 'CHARACTER_DEAD');
+              const module = runtime.modules.describe('gear');
+              assert(module && module.state === 'ACTIVE', 'H14_MODULE_NOT_ACTIVE');
+              assert(runtime.actions.available('equip'), 'EQUIP_API_UNAVAILABLE');
+              assert(runtime.actions.available('unequip'), 'UNEQUIP_API_UNAVAILABLE');
+
+              const equipment = runtime.game.equipmentSnapshot(game.character.name);
+              assert(equipment && equipment.available !== false, 'H14_EQUIPMENT_SNAPSHOT_UNAVAILABLE');
+              const plan = runtime.gear.plan();
+              assert(plan && plan.state === 'READY', plan && plan.reason || 'H14_PLAN_UNAVAILABLE');
+              assert(plan.farmerPriority > plan.merchantPriority, 'H14_FARMER_PRIORITY_NOT_ABOVE_MERCHANT');
+
+              const occupiedSafeImprovement = (plan.local.improvements || []).find(row =>
+                row.current && row.bestInventory && row.safeSwitch);
+              const fallback = (plan.local.slots || []).find(row =>
+                row.current && row.bestInventory && row.safeSwitch
+                && fingerprint(runtime, row.current) !== row.bestInventory.fingerprint);
+              const selected = occupiedSafeImprovement || fallback;
+              assert(selected && selected.current && selected.bestInventory,
+                'H14_NEEDS_REVERSIBLE_COMPATIBLE_INVENTORY_GEAR');
+
+              const originalFingerprint = fingerprint(runtime, selected.current);
+              const candidateFingerprint = selected.bestInventory.fingerprint;
+              assert(originalFingerprint && candidateFingerprint && originalFingerprint !== candidateFingerprint,
+                'H14_SWAP_FINGERPRINT_INVALID');
+
+              testPlan = {
+                targetSlot: selected.slot,
+                candidateInventorySlot: selected.bestInventory.inventorySlot,
+                candidateFingerprint,
+                candidateName: selected.bestInventory.item.name,
+                candidateLevel: Number(selected.bestInventory.item.level) || 0,
+                candidateScore: selected.bestInventory.score,
+                originalFingerprint,
+                originalName: selected.current.name,
+                originalLevel: Number(selected.current.level) || 0,
+                originalScore: selected.currentScore,
+                delta: selected.delta,
+                mode: occupiedSafeImprovement ? 'IMPROVEMENT' : 'REVERSIBLE_COMPARISON'
+              };
+
+              runtime.gear.setGoals([{
+                id: 'h14-live-goal',
+                targetName: game.character.name,
+                slot: testPlan.targetSlot,
+                itemName: testPlan.candidateName,
+                minLevel: testPlan.candidateLevel,
+                priority: 1000
+              }]);
+
+              return {
+                character: game.character.name,
+                ctype: game.character.ctype,
+                slot: testPlan.targetSlot,
+                mode: testPlan.mode,
+                original: {
+                  name: testPlan.originalName,
+                  level: testPlan.originalLevel,
+                  score: testPlan.originalScore
+                },
+                candidate: {
+                  inventorySlot: testPlan.candidateInventorySlot,
+                  name: testPlan.candidateName,
+                  level: testPlan.candidateLevel,
+                  score: testPlan.candidateScore
+                },
+                delta: testPlan.delta,
+                farmerPriority: plan.farmerPriority,
+                merchantPriority: plan.merchantPriority,
+                groupTargets: (plan.group && plan.group.targets || []).map(row => ({
+                  name: row.name,
+                  ctype: row.ctype,
+                  role: row.role,
+                  priority: row.priority,
+                  visible: row.visible
+                }))
+              };
+            }
+          },
+          {
+            id: 'planning',
+            title: 'Gear Goal, Klassenkompatibilität und Farmer-vor-Merchant-Planung prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              assert(testPlan, 'H14_LIVE_TEST_PLAN_MISSING');
+              const plan = runtime.gear.plan();
+              assert(plan && plan.state === 'READY', plan && plan.reason || 'H14_PLAN_UNAVAILABLE');
+              const goal = (plan.goals || []).find(row => row.id === 'h14-live-goal');
+              assert(goal, 'H14_LIVE_GOAL_MISSING');
+              assert(['READY_TO_EQUIP', 'ACHIEVED'].includes(goal.state), 'H14_LIVE_GOAL_NOT_ACTIONABLE');
+              const slot = (plan.local.slots || []).find(row => row.slot === testPlan.targetSlot);
+              assert(slot && slot.bestInventory, 'H14_TARGET_SLOT_PLAN_MISSING');
+              if (testPlan.mode === 'IMPROVEMENT') {
+                assert(slot.improvement === true && Number(slot.delta) > 0, 'H14_BETTER_GEAR_NOT_DETECTED');
+              }
+              const targetOrder = (plan.group && plan.group.targets || []).map(row => row.role);
+              const firstMerchant = targetOrder.indexOf('MERCHANT');
+              const lastFarmer = targetOrder.lastIndexOf('FARMER');
+              if (firstMerchant >= 0 && lastFarmer >= 0) {
+                assert(lastFarmer < firstMerchant, 'H14_GROUP_PRIORITY_ORDER_INVALID');
+              }
+              return {
+                goalState: goal.state,
+                slot: testPlan.targetSlot,
+                improvement: slot.improvement,
+                delta: slot.delta,
+                groupTargetOrder: targetOrder,
+                groupProposals: plan.group && plan.group.proposals ? plan.group.proposals.length : 0,
+                upgradeCandidates: plan.local.upgradeCandidates.length
+              };
+            }
+          },
+          {
+            id: 'equip-swap',
+            title: 'Gear-Kandidaten echt ausrüsten und Live-Deltas bestätigen',
+            timeoutMs: 12000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(testPlan, 'H14_LIVE_TEST_PLAN_MISSING');
+              const queued = runtime.gear.queueEquip(testPlan.candidateInventorySlot, testPlan.targetSlot);
+              assert(queued && queued.accepted === true, queued && queued.reason || 'H14_EQUIP_QUEUE_FAILED');
+              const confirmed = await waitFor(() => {
+                const status = runtime.gear.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H14_SUSPENDED');
+                if (status.metrics.equipsUnknown > baseline.equipsUnknown) throw new Error('H14_EQUIP_UNKNOWN');
+                return status.metrics.equipsConfirmed > baseline.equipsConfirmed ? status : null;
+              }, { timeoutMs: 10000, pollMs: 100, label: 'h14-equip-confirmed' });
+
+              const equipment = runtime.game.equipmentSnapshot();
+              const current = equipment && equipment.slots && equipment.slots[testPlan.targetSlot] || null;
+              assert(fingerprint(runtime, current) === testPlan.candidateFingerprint,
+                'H14_EQUIP_TARGET_NOT_OBSERVED');
+
+              const inventory = runtime.game.inventorySnapshot();
+              const original = inventory && (inventory.items || []).find(row =>
+                fingerprint(runtime, row) === testPlan.originalFingerprint);
+              assert(original, 'H14_ORIGINAL_GEAR_NOT_RETURNED_TO_INVENTORY');
+              testPlan.restoreInventorySlot = Number(original.slot);
+
+              return {
+                slot: testPlan.targetSlot,
+                equipped: { name: current.name, level: current.level },
+                originalInventorySlot: testPlan.restoreInventorySlot,
+                equipsConfirmed: confirmed.metrics.equipsConfirmed - baseline.equipsConfirmed
+              };
+            }
+          },
+          {
+            id: 'restore',
+            title: 'Ursprüngliches Gear exakt zurückrüsten und Zustand wiederherstellen',
+            timeoutMs: 12000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(testPlan && Number.isInteger(testPlan.restoreInventorySlot), 'H14_RESTORE_SLOT_MISSING');
+              const queued = runtime.gear.queueEquip(testPlan.restoreInventorySlot, testPlan.targetSlot);
+              assert(queued && queued.accepted === true, queued && queued.reason || 'H14_RESTORE_QUEUE_FAILED');
+              const restored = await waitFor(() => {
+                const status = runtime.gear.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H14_SUSPENDED');
+                if (status.metrics.equipsUnknown > baseline.equipsUnknown) throw new Error('H14_EQUIP_UNKNOWN');
+                return status.metrics.equipsConfirmed >= baseline.equipsConfirmed + 2 ? status : null;
+              }, { timeoutMs: 10000, pollMs: 100, label: 'h14-restore-confirmed' });
+
+              const equipment = runtime.game.equipmentSnapshot();
+              const current = equipment && equipment.slots && equipment.slots[testPlan.targetSlot] || null;
+              assert(fingerprint(runtime, current) === testPlan.originalFingerprint,
+                'H14_ORIGINAL_GEAR_NOT_RESTORED');
+
+              const inventory = runtime.game.inventorySnapshot();
+              const candidate = inventory && (inventory.items || []).find(row =>
+                fingerprint(runtime, row) === testPlan.candidateFingerprint);
+              assert(candidate, 'H14_CANDIDATE_NOT_RETURNED_TO_INVENTORY');
+
+              return {
+                slot: testPlan.targetSlot,
+                restored: { name: current.name, level: current.level },
+                candidateInventorySlot: candidate.slot,
+                equipsConfirmed: restored.metrics.equipsConfirmed - baseline.equipsConfirmed
+              };
+            }
+          },
+          {
+            id: 'stability',
+            title: 'Fünf Sekunden ohne Gear-UNKNOWN oder unerwarteten Zustand beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              await sleep(5000);
+              const status = runtime.gear.status();
+              assert(status.suspended === false, status.suspendedReason || 'H14_SUSPENDED');
+              assert(status.metrics.equipsUnknown === baseline.equipsUnknown, 'H14_EQUIP_UNKNOWN_DURING_STABILITY');
+              assert(status.metrics.unequipsUnknown === baseline.unequipsUnknown, 'H14_UNEQUIP_UNKNOWN_DURING_STABILITY');
+              assert(status.metrics.deliveriesUnknown === baseline.deliveriesUnknown, 'H14_DELIVERY_UNKNOWN_DURING_STABILITY');
+              const equipment = runtime.game.equipmentSnapshot();
+              const current = equipment && equipment.slots && equipment.slots[testPlan.targetSlot] || null;
+              assert(fingerprint(runtime, current) === testPlan.originalFingerprint,
+                'H14_RESTORED_GEAR_DRIFTED');
+              return {
+                equipUnknown: status.metrics.equipsUnknown - baseline.equipsUnknown,
+                unequipUnknown: status.metrics.unequipsUnknown - baseline.unequipsUnknown,
+                deliveryUnknown: status.metrics.deliveriesUnknown - baseline.deliveriesUnknown,
+                originalRestored: true
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'H14 Pending/Request/Goal vollständig freigeben',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.gear.cancelRequest('H14_LIVE_TEST_COMPLETE');
+              runtime.gear.setGoals(previousGoals);
+              const gear = runtime.gear.status();
+              assert(gear.pending == null, 'H14_PENDING_REMAINS');
+              assert(gear.request == null, 'H14_REQUEST_REMAINS');
+              const equipment = runtime.game.equipmentSnapshot();
+              const current = equipment && equipment.slots && equipment.slots[testPlan.targetSlot] || null;
+              assert(fingerprint(runtime, current) === testPlan.originalFingerprint,
+                'H14_CLEANUP_ORIGINAL_GEAR_NOT_RESTORED');
+              return {
+                pending: !!gear.pending,
+                request: !!gear.request,
+                originalRestored: true,
+                goalsRestored: gear.goals.length === previousGoals.length
+              };
+            }
+          }
+        ]
+      });
+    }
+
+    _registerH15LiveTest() {
+      let baseline = null;
+      let testPlan = null;
+      let previousPolicy = null;
+
+      this.liveTests.register({
+        id: 'h15-upgrade-compound',
+        title: 'H15 – Upgrade & Compound',
+        description: 'Ein-Klick-Live-Test für Scrollwahl, Risiko-/Kostenbudget und genau eine niedrig riskante echte Upgrade- oder Compound-Aktion mit Live-Outcome-Evidence.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.upgrade.resetSafety('H15_LIVE_TEST_RESET'); } catch (_) {}
+          try { runtime.upgrade.cancelRequest('H15_LIVE_TEST_RESET'); } catch (_) {}
+          previousPolicy = runtime.upgrade.policy();
+          runtime.upgrade.policy({
+            maxAttemptsPerSession: 1,
+            maxUpgradeLevel: 3,
+            maxCompoundLevel: 1,
+            maxItemValueAtRisk: 25000,
+            maxConsumableCost: 10000,
+            offeringMode: 'DISABLED',
+            offeringFromLevel: 99
+          });
+          const metrics = runtime.upgrade.status().metrics;
+          baseline = {
+            upgradesDispatched: metrics.upgradesDispatched,
+            upgradesSucceeded: metrics.upgradesSucceeded,
+            upgradesFailed: metrics.upgradesFailed,
+            upgradesUnknown: metrics.upgradesUnknown,
+            compoundsDispatched: metrics.compoundsDispatched,
+            compoundsSucceeded: metrics.compoundsSucceeded,
+            compoundsFailed: metrics.compoundsFailed,
+            compoundsUnknown: metrics.compoundsUnknown
+          };
+          testPlan = null;
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.upgrade.cancelRequest('H15_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try { runtime.upgrade.resetSafety('H15_LIVE_TEST_CLEANUP'); } catch (_) {}
+          if (previousPolicy) {
+            try { runtime.upgrade.policy(previousPolicy); } catch (_) {}
+          }
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Niedrig riskanten Upgrade-/Compound-Kandidaten und Live-APIs prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(game.character.rip !== true, 'CHARACTER_DEAD');
+              const module = runtime.modules.describe('upgrade-compound');
+              assert(module && module.state === 'ACTIVE', 'H15_MODULE_NOT_ACTIVE');
+
+              const plan = runtime.upgrade.plan();
+              assert(plan && plan.state === 'READY', plan && plan.reason || 'H15_PLAN_UNAVAILABLE');
+              const choices = [];
+              for (const row of plan.upgradeCandidates || []) {
+                if (Number(row.fromLevel) <= 2 && Number(row.budget && row.budget.itemValueAtRisk) <= 25000
+                    && Number(row.budget && row.budget.consumableCost) <= 10000) choices.push(row);
+              }
+              for (const row of plan.compoundCandidates || []) {
+                if (Number(row.fromLevel) <= 0 && Number(row.budget && row.budget.itemValueAtRisk) <= 25000
+                    && Number(row.budget && row.budget.consumableCost) <= 10000) choices.push(row);
+              }
+              choices.sort((a, b) => Number(a.budget.itemValueAtRisk) - Number(b.budget.itemValueAtRisk)
+                || Number(a.budget.consumableCost) - Number(b.budget.consumableCost)
+                || (a.kind === 'UPGRADE' ? -1 : 1));
+              const selected = choices[0];
+              assert(selected, 'H15_NEEDS_LOW_RISK_UPGRADE_OR_COMPOUND_CANDIDATE');
+              assert(runtime.actions.available(selected.kind === 'COMPOUND' ? 'compound' : 'upgrade'),
+                selected.kind === 'COMPOUND' ? 'COMPOUND_API_UNAVAILABLE' : 'UPGRADE_API_UNAVAILABLE');
+
+              testPlan = {
+                kind: selected.kind,
+                itemName: selected.kind === 'COMPOUND' ? selected.items[0].name : selected.item.name,
+                itemSlot: selected.itemSlot == null ? null : Number(selected.itemSlot),
+                itemSlots: selected.itemSlots ? selected.itemSlots.map(Number) : null,
+                fromLevel: Number(selected.fromLevel) || 0,
+                targetLevel: Number(selected.targetLevel) || 0,
+                scrollName: selected.scrollName,
+                scrollSlot: Number(selected.scroll.slot),
+                offeringName: selected.offering ? selected.offering.name : null,
+                offeringSlot: selected.offering ? Number(selected.offering.slot) : null,
+                itemValueAtRisk: Number(selected.budget.itemValueAtRisk) || 0,
+                consumableCost: Number(selected.budget.consumableCost) || 0
+              };
+
+              return {
+                character: game.character.name,
+                ctype: game.character.ctype,
+                kind: testPlan.kind,
+                item: testPlan.itemName,
+                fromLevel: testPlan.fromLevel,
+                targetLevel: testPlan.targetLevel,
+                itemSlot: testPlan.itemSlot,
+                itemSlots: testPlan.itemSlots,
+                scroll: testPlan.scrollName,
+                scrollSlot: testPlan.scrollSlot,
+                offering: testPlan.offeringName,
+                itemValueAtRisk: testPlan.itemValueAtRisk,
+                consumableCost: testPlan.consumableCost,
+                availableUpgradeCandidates: (plan.upgradeCandidates || []).length,
+                availableCompoundCandidates: (plan.compoundCandidates || []).length
+              };
+            }
+          },
+          {
+            id: 'planning',
+            title: 'Scroll-Grade, Workspace und H15-Budgets vor Mutation bestätigen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              assert(testPlan, 'H15_LIVE_TEST_PLAN_MISSING');
+              const plan = runtime.upgrade.plan();
+              assert(plan && plan.state === 'READY', plan && plan.reason || 'H15_PLAN_UNAVAILABLE');
+              assert(testPlan.itemValueAtRisk <= 25000, 'H15_LIVE_ITEM_RISK_TOO_HIGH');
+              assert(testPlan.consumableCost <= 10000, 'H15_LIVE_CONSUMABLE_COST_TOO_HIGH');
+              const policy = runtime.upgrade.policy();
+              assert(policy.maxAttemptsPerSession === 1, 'H15_LIVE_ATTEMPT_BUDGET_NOT_ONE');
+              assert(policy.offeringMode === 'DISABLED', 'H15_LIVE_OFFERING_MUST_BE_DISABLED');
+              return {
+                kind: testPlan.kind,
+                policy,
+                workspace: plan.workspace,
+                itemValueAtRisk: testPlan.itemValueAtRisk,
+                consumableCost: testPlan.consumableCost
+              };
+            }
+          },
+          {
+            id: 'real-action',
+            title: 'Genau eine echte niedrig riskante H15-Aktion ausführen und Outcome beobachten',
+            timeoutMs: 15000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(testPlan, 'H15_LIVE_TEST_PLAN_MISSING');
+              const queued = testPlan.kind === 'COMPOUND'
+                ? runtime.upgrade.queueCompound(testPlan.itemSlots)
+                : runtime.upgrade.queueUpgrade(testPlan.itemSlot);
+              assert(queued && queued.accepted === true, queued && queued.reason || 'H15_QUEUE_FAILED');
+              const dispatched = runtime.upgrade.tick();
+              assert(dispatched && dispatched.accepted === true, dispatched && dispatched.reason || 'H15_DISPATCH_FAILED');
+
+              const outcome = await waitFor(() => {
+                const status = runtime.upgrade.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H15_SUSPENDED');
+                if (status.metrics.upgradesUnknown > baseline.upgradesUnknown) throw new Error('H15_UPGRADE_UNKNOWN');
+                if (status.metrics.compoundsUnknown > baseline.compoundsUnknown) throw new Error('H15_COMPOUND_UNKNOWN');
+                const succeeded = testPlan.kind === 'COMPOUND'
+                  ? status.metrics.compoundsSucceeded > baseline.compoundsSucceeded
+                  : status.metrics.upgradesSucceeded > baseline.upgradesSucceeded;
+                const failed = testPlan.kind === 'COMPOUND'
+                  ? status.metrics.compoundsFailed > baseline.compoundsFailed
+                  : status.metrics.upgradesFailed > baseline.upgradesFailed;
+                return succeeded || failed ? status : null;
+              }, { timeoutMs: 12000, pollMs: 100, label: 'h15-live-outcome' });
+
+              const lastAction = outcome.lastAction || {};
+              assert([testPlan.kind + '_SUCCEEDED', testPlan.kind + '_FAILED'].includes(lastAction.type),
+                'H15_OUTCOME_NOT_CLASSIFIED');
+              return {
+                kind: testPlan.kind,
+                outcome: lastAction.type,
+                evidence: lastAction.evidence || null,
+                fromLevel: testPlan.fromLevel,
+                targetLevel: testPlan.targetLevel,
+                upgradesDispatched: outcome.metrics.upgradesDispatched - baseline.upgradesDispatched,
+                upgradesSucceeded: outcome.metrics.upgradesSucceeded - baseline.upgradesSucceeded,
+                upgradesFailed: outcome.metrics.upgradesFailed - baseline.upgradesFailed,
+                compoundsDispatched: outcome.metrics.compoundsDispatched - baseline.compoundsDispatched,
+                compoundsSucceeded: outcome.metrics.compoundsSucceeded - baseline.compoundsSucceeded,
+                compoundsFailed: outcome.metrics.compoundsFailed - baseline.compoundsFailed
+              };
+            }
+          },
+          {
+            id: 'stability',
+            title: 'Fünf Sekunden ohne H15 UNKNOWN, Retry oder Suspension beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              await sleep(5000);
+              const status = runtime.upgrade.status();
+              assert(status.suspended === false, status.suspendedReason || 'H15_SUSPENDED');
+              assert(status.metrics.upgradesUnknown === baseline.upgradesUnknown, 'H15_UPGRADE_UNKNOWN_DURING_STABILITY');
+              assert(status.metrics.compoundsUnknown === baseline.compoundsUnknown, 'H15_COMPOUND_UNKNOWN_DURING_STABILITY');
+              assert(status.attemptsThisSession === 1, 'H15_LIVE_ATTEMPT_COUNT_NOT_ONE');
+              assert(status.pending == null, 'H15_PENDING_REMAINS_DURING_STABILITY');
+              assert(status.request == null, 'H15_REQUEST_REMAINS_DURING_STABILITY');
+              return {
+                attempts: status.attemptsThisSession,
+                upgradeUnknown: status.metrics.upgradesUnknown - baseline.upgradesUnknown,
+                compoundUnknown: status.metrics.compoundsUnknown - baseline.compoundsUnknown,
+                suspended: status.suspended
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'H15 Request/Pending freigeben und Test-Policy zurücksetzen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.upgrade.cancelRequest('H15_LIVE_TEST_COMPLETE');
+              const status = runtime.upgrade.status();
+              assert(status.pending == null, 'H15_PENDING_REMAINS');
+              assert(status.request == null, 'H15_REQUEST_REMAINS');
+              return {
+                pending: !!status.pending,
+                request: !!status.request,
+                outcome: status.lastAction && status.lastAction.type || null
+              };
+            }
+          }
+        ]
+      });
+    }
+
+    _registerH16LiveTest() {
+      let baseline = null;
+      let testPlan = null;
+      let previousPolicy = null;
+
+      const inventoryQuantity = (runtime, name, level = 0) => {
+        const inventory = runtime.game.inventorySnapshot();
+        if (!inventory || inventory.available === false) return 0;
+        return (inventory.items || []).reduce((sum, row) =>
+          String(row.name) === String(name) && Math.max(0, Number(row.level) || 0) === Math.max(0, Number(level) || 0)
+            ? sum + Math.max(1, Number(row.quantity) || 1)
+            : sum, 0);
+      };
+
+      const tradeUnknownTotal = status => {
+        const metrics = status && status.metrics || {};
+        return Number(metrics.npcBuysUnknown || 0) + Number(metrics.marketBuysUnknown || 0);
+      };
+
+      const bankUnknownTotal = status => {
+        const metrics = status && status.metrics || {};
+        return Number(metrics.withdrawalsUnknown || 0)
+          + Number(metrics.depositsUnknown || 0)
+          + Number(metrics.goldWithdrawalsUnknown || 0)
+          + Number(metrics.goldDepositsUnknown || 0)
+          + Number(metrics.movementUnknown || 0);
+      };
+
+      const bankWriteTotal = status => {
+        const metrics = status && status.metrics || {};
+        return Number(metrics.withdrawalsDispatched || 0)
+          + Number(metrics.depositsDispatched || 0)
+          + Number(metrics.goldWithdrawalsDispatched || 0)
+          + Number(metrics.goldDepositsDispatched || 0);
+      };
+
+      const recipeInputRisk = (runtime, recipe) => {
+        let total = 0;
+        for (const ingredient of recipe && recipe.items || []) {
+          const definition = runtime.game.itemDefinition(ingredient.name);
+          const base = definition && Number(definition.g);
+          if (!Number.isFinite(base) || base < 0) return null;
+          const level = Math.max(0, Number(ingredient.level) || 0);
+          const quantity = Math.max(1, Math.floor(Number(ingredient.quantity) || 1));
+          total += Math.round(base * Math.pow(1.75, level)) * quantity;
+        }
+        return total;
+      };
+
+      this.liveTests.register({
+        id: 'h16-exchange-craft',
+        title: 'H16 – Exchange & Craft',
+        description: 'Ein-Klick-Live-Test für Materialbeschaffung, eine kleine niedrig riskante Craft- und Exchange-Sequenz, Live-Outcome-Evidence und Produktionsgraph.',
+        version: '6',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.exchangeCraft.resetSafety('H16_LIVE_TEST_RESET'); } catch (_) {}
+          try { runtime.exchangeCraft.cancelRequest('H16_LIVE_TEST_RESET'); } catch (_) {}
+          try { runtime.trade.cancelRequest('H16_LIVE_TEST_RESET'); } catch (_) {}
+          try { runtime.bank.cancelRequest('H16_LIVE_TEST_RESET'); } catch (_) {}
+          previousPolicy = runtime.exchangeCraft.policy();
+          runtime.exchangeCraft.policy({
+            maxAttemptsPerSession: 2,
+            maxExchangeValueAtRisk: 2000000,
+            maxCraftGoldCost: 1000000,
+            maxCraftInputValueAtRisk: 2000000,
+            goldReserve: 10000,
+            maxProductionDepth: 6,
+            allowQuestEvent: false
+          });
+          const metrics = runtime.exchangeCraft.status().metrics;
+          const tradeStatus = runtime.trade.status();
+          const bankStatus = runtime.bank.status();
+          baseline = {
+            exchangesDispatched: metrics.exchangesDispatched,
+            exchangesConfirmed: metrics.exchangesConfirmed,
+            exchangesRejected: metrics.exchangesRejected,
+            exchangesUnknown: metrics.exchangesUnknown,
+            craftsDispatched: metrics.craftsDispatched,
+            craftsConfirmed: metrics.craftsConfirmed,
+            craftsRejected: metrics.craftsRejected,
+            craftsUnknown: metrics.craftsUnknown,
+            tradeUnknown: tradeUnknownTotal(tradeStatus),
+            bankUnknown: bankUnknownTotal(bankStatus),
+            bankWrites: bankWriteTotal(bankStatus),
+            materialDelegations: metrics.materialDelegations
+          };
+          testPlan = null;
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.exchangeCraft.cancelRequest('H16_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try { runtime.trade.cancelRequest('H16_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try { runtime.bank.cancelRequest('H16_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try {
+            const current = runtime.exchangeCraft.status();
+            if (!current.suspended) runtime.exchangeCraft.resetSafety('H16_LIVE_TEST_CLEANUP');
+          } catch (_) {}
+          if (previousPolicy) {
+            try { runtime.exchangeCraft.policy(previousPolicy); } catch (_) {}
+          }
+        },
+        steps: [
+          {
+            id: 'bank-discovery',
+            title: 'Bankbestand read-only sichtbar machen',
+            timeoutMs: 120000,
+            run: async ({ runtime, assert, waitFor }) => {
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(game.character.rip !== true, 'CHARACTER_DEAD');
+              if (String(game.character.ctype || '').toLowerCase() !== 'merchant') {
+                return {
+                  skipped: true,
+                  reason: 'H16_BANK_DISCOVERY_NOT_REQUIRED_FOR_NON_MERCHANT',
+                  ctype: game.character.ctype || null,
+                  movementRequests: 0
+                };
+              }
+
+              const beforeStatus = runtime.bank.status();
+              assert(beforeStatus && beforeStatus.suspended !== true,
+                beforeStatus && beforeStatus.suspendedReason || 'H12_SUSPENDED_BEFORE_H16_BANK_DISCOVERY');
+              const beforeWrites = bankWriteTotal(beforeStatus);
+              const beforeUnknown = bankUnknownTotal(beforeStatus);
+              const existing = runtime.game.bankSnapshot();
+              if (existing && existing.available !== false) {
+                assert(bankWriteTotal(runtime.bank.status()) === beforeWrites, 'H16_BANK_DISCOVERY_WRITE_DETECTED');
+                return {
+                  alreadyMounted: true,
+                  map: existing.map || null,
+                  packCount: (existing.packs || []).length,
+                  usedSlots: Number(existing.usedSlots || 0),
+                  movementRequests: 0
+                };
+              }
+
+              const movementBefore = Number(beforeStatus.metrics && beforeStatus.metrics.movementRequests || 0);
+              const queued = runtime.bank.queueMount();
+              assert(queued && queued.accepted === true,
+                queued && queued.reason || 'H16_BANK_DISCOVERY_QUEUE_FAILED');
+
+              const bank = await waitFor(() => {
+                const tick = runtime.bank.tick();
+                const current = runtime.bank.status();
+                if (current.suspended) throw new Error(current.suspendedReason || 'H12_SUSPENDED_DURING_H16_BANK_DISCOVERY');
+                if (bankUnknownTotal(current) > beforeUnknown) throw new Error('H16_BANK_DISCOVERY_UNKNOWN');
+                if (bankWriteTotal(current) !== beforeWrites) throw new Error('H16_BANK_DISCOVERY_WRITE_DETECTED');
+                const snapshot = runtime.game.bankSnapshot();
+                return snapshot && snapshot.available !== false && !current.pending && !current.request
+                  ? snapshot
+                  : null;
+              }, { timeoutMs: 110000, pollMs: 150, label: 'h16-bank-discovery' });
+
+              const afterStatus = runtime.bank.status();
+              assert(bankWriteTotal(afterStatus) === beforeWrites, 'H16_BANK_DISCOVERY_WRITE_DETECTED');
+              return {
+                alreadyMounted: false,
+                map: bank.map || null,
+                packCount: (bank.packs || []).length,
+                usedSlots: Number(bank.usedSlots || 0),
+                movementRequests: Number(afterStatus.metrics && afterStatus.metrics.movementRequests || 0) - movementBefore
+              };
+            }
+          },
+          {
+            id: 'preflight',
+            title: 'Sicheren Craft-/Exchange-Pfad inklusive beschaffbarer Materialien prüfen',
+            timeoutMs: 12000,
+            run: async ({ runtime, assert, note }) => {
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(game.character.rip !== true, 'CHARACTER_DEAD');
+              const module = runtime.modules.describe('exchange-craft');
+              assert(module && module.state === 'ACTIVE', 'H16_MODULE_NOT_ACTIVE');
+              assert(runtime.actions.available('auto_craft'), 'AUTO_CRAFT_API_UNAVAILABLE');
+              assert(runtime.actions.available('exchange'), 'EXCHANGE_API_UNAVAILABLE');
+
+              const plan = runtime.exchangeCraft.plan();
+              assert(plan && plan.state === 'READY', plan && plan.reason || 'H16_PLAN_UNAVAILABLE');
+              const crafts = (plan.craftCandidates || []).filter(row =>
+                row.safe === true
+                && row.questEvent !== true
+                && Number(row.cost || 0) <= 1000000
+                && Number(row.inputValueAtRisk || 0) <= 2000000);
+              const exchanges = (plan.exchangeCandidates || []).filter(row =>
+                row.safe === true
+                && row.questEvent !== true
+                && Number(row.valueAtRisk || 0) <= 2000000);
+
+              let selectedCraft = null;
+              let selectedExchange = null;
+              let materials = [];
+              let production = null;
+              let materialAcquisitionGold = 0;
+              let mode = null;
+              const localCraftRejects = {};
+              const fallbackRejects = {};
+              const nearMatches = [];
+              const bump = (bucket, reason) => {
+                const key = String(reason || 'UNKNOWN');
+                bucket[key] = (bucket[key] || 0) + 1;
+              };
+              const recordFallbackReject = (recipe, reason, details = {}, distance = 9) => {
+                bump(fallbackRejects, reason);
+                nearMatches.push({
+                  ...details,
+                  itemName: recipe && recipe.name || null,
+                  reason,
+                  distance,
+                  craftCost: recipe ? Number(recipe.cost || 0) : null
+                });
+              };
+              const recordLocalCraftReject = (craft, reason, details = {}, distance = 3) => {
+                bump(localCraftRejects, reason);
+                nearMatches.push({
+                  ...details,
+                  itemName: craft && craft.itemName || null,
+                  reason,
+                  distance,
+                  craftCost: craft ? Number(craft.cost || 0) : null
+                });
+              };
+              const buildPreflightDiagnostics = () => {
+                nearMatches.sort((a, b) =>
+                  Number(a.distance) - Number(b.distance)
+                  || Number(a.craftCost == null ? Number.MAX_SAFE_INTEGER : a.craftCost)
+                    - Number(b.craftCost == null ? Number.MAX_SAFE_INTEGER : b.craftCost)
+                  || String(a.itemName || '').localeCompare(String(b.itemName || '')));
+                return {
+                  suiteVersion: 6,
+                  selectedMode: mode,
+                  totalCraftCandidates: (plan.craftCandidates || []).length,
+                  safeCraftCandidates: crafts.length,
+                  safeExchangeCandidates: exchanges.length,
+                  localCraftRejects,
+                  fallbackRejects,
+                  topNearMatches: nearMatches.slice(0, 5),
+                  caps: {
+                    exchangeValueAtRisk: 2000000,
+                    craftInputValueAtRisk: 2000000,
+                    craftCost: 1000000,
+                    materialAcquisition: 1000000,
+                    goldReserve: 10000,
+                    maxMissingLeaves: 2,
+                    missingLeafLevel: 0
+                  }
+                };
+              };
+
+              for (const row of plan.craftCandidates || []) {
+                if (row && row.safe !== true) bump(localCraftRejects, row.reason || 'H16_CRAFT_UNSAFE');
+              }
+
+              note(buildPreflightDiagnostics());
+              assert(exchanges.length > 0, 'H16_NEEDS_LOW_RISK_EXCHANGE_CANDIDATE');
+
+              for (const craft of crafts) {
+                const outputDef = craft.definition || runtime.game.itemDefinition(craft.itemName);
+                const required = outputDef && Number(outputDef.e);
+                const outputUnitValue = outputDef && Number(outputDef.g);
+                const outputRisk = Number.isFinite(outputUnitValue) && Number.isFinite(required)
+                  ? outputUnitValue * required
+                  : null;
+                if (!Number.isFinite(required) || required <= 0 || outputDef.quest === true || outputDef.cash === true) continue;
+                if (outputRisk == null || outputRisk > 2000000) continue;
+                const existing = inventoryQuantity(runtime, craft.itemName, 0);
+                if (existing + 1 < required) continue;
+                selectedCraft = craft;
+                selectedExchange = {
+                  itemName: craft.itemName,
+                  level: 0,
+                  requiredQuantity: required,
+                  valueAtRisk: outputRisk,
+                  afterCraft: true
+                };
+                production = runtime.exchangeCraft.productionPlan(craft.itemName, 1, { includeBank: false });
+                mode = 'CRAFT_TO_EXCHANGE_CHAIN';
+                break;
+              }
+
+              if (!selectedCraft) {
+                for (const craft of crafts) {
+                  const sourceNames = new Set((craft.recipe && craft.recipe.items || []).map(row => String(row.name)));
+                  const exchange = exchanges.find(row => !sourceNames.has(String(row.itemName)));
+                  if (!exchange) {
+                    recordLocalCraftReject(craft, 'NO_DISJOINT_EXCHANGE_CANDIDATE', {
+                      inputRisk: Number(craft.inputValueAtRisk || 0),
+                      sourceItems: Array.from(sourceNames).slice(0, 5),
+                      availableExchangeCandidates: exchanges.length
+                    }, 3);
+                    continue;
+                  }
+                  selectedCraft = craft;
+                  selectedExchange = {
+                    itemName: exchange.itemName,
+                    level: exchange.level,
+                    requiredQuantity: exchange.requiredQuantity,
+                    inventorySlot: exchange.inventorySlot,
+                    fingerprint: exchange.fingerprint,
+                    valueAtRisk: exchange.valueAtRisk,
+                    afterCraft: false
+                  };
+                  production = runtime.exchangeCraft.productionPlan(craft.itemName, 1, { includeBank: false });
+                  mode = 'CRAFT_AND_EXCHANGE_COVERAGE';
+                  break;
+                }
+              }
+
+              const tradeStatus = runtime.trade.status();
+              const isMerchant = String(game.character.ctype || '').toLowerCase() === 'merchant';
+              if (!selectedCraft && !isMerchant) {
+                recordFallbackReject(null, 'MATERIAL_ACQUISITION_REQUIRES_MERCHANT', {
+                  characterType: game.character.ctype || null
+                }, 0);
+              } else if (!selectedCraft && tradeStatus && tradeStatus.suspended) {
+                recordFallbackReject(null, 'MATERIAL_ACQUISITION_TRADE_SUSPENDED', {
+                  tradeReason: tradeStatus.reason || null
+                }, 0);
+              } else if (!selectedCraft) {
+                const acquisitionCandidates = [];
+                const catalog = runtime.game.craftCatalog();
+                for (const recipe of catalog || []) {
+                  if (!recipe) {
+                    recordFallbackReject(null, 'RECIPE_UNAVAILABLE', {}, 12);
+                    continue;
+                  }
+                  if (recipe.quest) {
+                    recordFallbackReject(recipe, 'QUEST_EVENT_RECIPE', { quest: recipe.quest }, 12);
+                    continue;
+                  }
+                  if (Number(recipe.cost || 0) > 1000000) {
+                    recordFallbackReject(recipe, 'CRAFT_COST_OVER_CAP', { craftCost: Number(recipe.cost || 0), cap: 1000000 }, 8);
+                    continue;
+                  }
+                  const outputDef = runtime.game.itemDefinition(recipe.name);
+                  if (!outputDef) {
+                    recordFallbackReject(recipe, 'OUTPUT_DEFINITION_UNAVAILABLE', {}, 11);
+                    continue;
+                  }
+                  if (outputDef.quest === true || outputDef.cash === true) {
+                    recordFallbackReject(recipe, 'OUTPUT_QUEST_OR_CASH_BLOCKED', { quest: outputDef.quest === true, cash: outputDef.cash === true }, 11);
+                    continue;
+                  }
+                  const inputRisk = recipeInputRisk(runtime, recipe);
+                  if (inputRisk == null) {
+                    recordFallbackReject(recipe, 'INPUT_RISK_UNAVAILABLE', {}, 9);
+                    continue;
+                  }
+                  if (inputRisk > 2000000) {
+                    recordFallbackReject(recipe, 'INPUT_RISK_OVER_CAP', { inputRisk, cap: 2000000 }, 8);
+                    continue;
+                  }
+
+                  const candidateProduction = runtime.exchangeCraft.productionPlan(recipe.name, 1, { includeBank: false });
+                  if (candidateProduction && (candidateProduction.protectedRecipes || []).length) {
+                    recordFallbackReject(recipe, 'PROTECTED_RECIPE_IN_PRODUCTION', {
+                      productionState: candidateProduction.state || null,
+                      productionReason: candidateProduction.reason || null,
+                      protectedRecipes: (candidateProduction.protectedRecipes || []).slice(0, 3),
+                      inputRisk
+                    }, 7);
+                    continue;
+                  }
+                  if (!candidateProduction || candidateProduction.state !== 'NEEDS_MATERIALS') {
+                    recordFallbackReject(recipe, 'PRODUCTION_NOT_NEEDS_MATERIALS', {
+                      productionState: candidateProduction && candidateProduction.state || null,
+                      productionReason: candidateProduction && candidateProduction.reason || null,
+                      inputRisk
+                    }, 7);
+                    continue;
+                  }
+                  if ((candidateProduction.stages || []).length !== 1) {
+                    recordFallbackReject(recipe, 'NESTED_OR_MULTI_STAGE_RECIPE', {
+                      stageCount: (candidateProduction.stages || []).length,
+                      stages: (candidateProduction.stages || []).slice(0, 4).map(row => row.itemName),
+                      inputRisk
+                    }, 5);
+                    continue;
+                  }
+                  const stage = candidateProduction.stages[0];
+                  if (!stage || String(stage.itemName) !== String(recipe.name) || Number(stage.runs) !== 1) {
+                    recordFallbackReject(recipe, 'DIRECT_STAGE_MISMATCH', {
+                      stage: stage ? { itemName: stage.itemName, runs: stage.runs } : null,
+                      inputRisk
+                    }, 5);
+                    continue;
+                  }
+                  const missing = candidateProduction.missing || [];
+                  if (!missing.length) {
+                    recordFallbackReject(recipe, 'NO_MISSING_LEAVES_AFTER_NEEDS_MATERIALS', { inputRisk }, 6);
+                    continue;
+                  }
+                  if (missing.length > 2) {
+                    recordFallbackReject(recipe, 'TOO_MANY_MISSING_LEAVES', {
+                      missingCount: missing.length,
+                      missing: missing.slice(0, 5).map(row => ({ itemName: row.itemName, level: row.level, quantity: row.quantity })),
+                      inputRisk
+                    }, 4);
+                    continue;
+                  }
+
+                  const sourceNames = new Set((recipe.items || []).map(row => String(row.name)));
+                  const exchange = exchanges.find(row => !sourceNames.has(String(row.itemName)));
+                  if (!exchange) {
+                    recordFallbackReject(recipe, 'NO_DISJOINT_EXCHANGE_CANDIDATE', {
+                      missingCount: missing.length,
+                      missing: missing.map(row => ({ itemName: row.itemName, level: row.level, quantity: row.quantity })),
+                      inputRisk
+                    }, 4);
+                    continue;
+                  }
+
+                  let viable = true;
+                  let viabilityReason = null;
+                  let viabilityDetails = null;
+                  let acquisitionGold = 0;
+                  const inventoryForAcquisition = runtime.game.inventorySnapshot();
+                  const availableInventorySlots = inventoryForAcquisition && inventoryForAcquisition.available !== false
+                    ? Math.max(0, Math.floor(Number(inventoryForAcquisition.freeSlots) || 0))
+                    : 0;
+                  let plannedBankWithdrawals = 0;
+                  const plannedMaterials = [];
+                  for (const row of missing) {
+                    const quantity = Math.max(1, Math.floor(Number(row.quantity) || 1));
+                    const level = Math.max(0, Number(row.level) || 0);
+                    if (level !== 0) {
+                      viable = false;
+                      viabilityReason = 'MISSING_LEAF_LEVEL_NONZERO';
+                      viabilityDetails = { missingItemName: row.itemName, level, quantity };
+                      break;
+                    }
+
+                    const offers = [];
+                    const recipeIngredientQuantity = (recipe.items || [])
+                      .filter(ingredient =>
+                        String(ingredient.name) === String(row.itemName)
+                        && Math.max(0, Number(ingredient.level) || 0) === level)
+                      .reduce((max, ingredient) =>
+                        Math.max(max, Math.max(1, Math.floor(Number(ingredient.quantity) || 1))), quantity);
+                    const minBankStackQuantity = Math.max(quantity, recipeIngredientQuantity);
+                    const bankSlotAvailable = plannedBankWithdrawals < availableInventorySlots;
+                    const bankRow = bankSlotAvailable
+                      ? (row.bankRows || []).find(source =>
+                        source
+                        && source.withdrawable === true
+                        && Math.max(1, Math.floor(Number(source.quantity) || 1)) >= minBankStackQuantity)
+                      : null;
+                    if (bankRow) {
+                      offers.push({
+                        source: 'BANK',
+                        unitPrice: 0,
+                        bankRow: {
+                          pack: bankRow.pack,
+                          map: bankRow.map,
+                          slot: bankRow.slot,
+                          quantity: bankRow.quantity
+                        }
+                      });
+                    }
+
+                    const npcPrice = Number(row.npcPrice);
+                    const npcAvailable = Number.isFinite(npcPrice) && npcPrice > 0
+                      && (row.npcSources || []).some(source => source && source.location);
+                    if (npcAvailable) offers.push({ source: 'NPC', unitPrice: npcPrice });
+
+                    const ask = row.bestMarketAsk || null;
+                    const askPrice = ask && Number(ask.price);
+                    const askQuantity = ask && Math.max(1, Math.floor(Number(ask.quantity) || 1));
+                    if (ask && Number.isFinite(askPrice) && askPrice > 0 && askQuantity >= quantity) {
+                      offers.push({ source: 'MARKET', unitPrice: askPrice });
+                    }
+
+                    offers.sort((a, b) => a.unitPrice - b.unitPrice);
+                    const chosen = offers[0];
+                    if (!chosen) {
+                      viable = false;
+                      viabilityReason = 'MISSING_LEAF_NO_BANK_NPC_OR_MARKET_SOURCE';
+                      viabilityDetails = {
+                        missingItemName: row.itemName,
+                        level,
+                        quantity,
+                        bankRows: (row.bankRows || []).slice(0, 4).map(source => ({
+                          pack: source.pack,
+                          map: source.map || null,
+                          slot: source.slot,
+                          quantity: source.quantity,
+                          safe: source.safe === true,
+                          mountedMapMatch: source.mountedMapMatch === true,
+                          reservedQuantity: Number(source.reservedQuantity || 0),
+                          remainingAfterWholeStack: Number(source.remainingAfterWholeStack || 0),
+                          withdrawable: source.withdrawable === true,
+                          minBankStackQuantity,
+                          availableInventorySlots,
+                          plannedBankWithdrawals,
+                          bankSlotAvailable
+                        })),
+                        npcPrice: Number.isFinite(npcPrice) ? npcPrice : null,
+                        npcSources: (row.npcSources || []).slice(0, 4).map(source => ({
+                          npcId: source.npcId,
+                          hasLocation: !!(source && source.location)
+                        })),
+                        bestMarketAsk: ask ? { price: ask.price, quantity: ask.quantity, playerName: ask.playerName || null } : null
+                      };
+                      break;
+                    }
+
+                    const estimatedCost = chosen.unitPrice * quantity;
+                    acquisitionGold += estimatedCost;
+                    if (chosen.source === 'BANK') plannedBankWithdrawals += 1;
+                    plannedMaterials.push({
+                      itemName: row.itemName,
+                      level,
+                      quantity,
+                      maxUnitPrice: chosen.source === 'BANK' ? null : chosen.unitPrice,
+                      expectedSource: chosen.source,
+                      bankSource: chosen.bankRow || null,
+                      minBankStackQuantity: chosen.source === 'BANK' ? minBankStackQuantity : null,
+                      inventorySlotReservation: chosen.source === 'BANK' ? plannedBankWithdrawals : null,
+                      estimatedCost
+                    });
+                  }
+                  if (!viable) {
+                    recordFallbackReject(recipe, viabilityReason || 'MATERIAL_PATH_NOT_VIABLE', {
+                      ...(viabilityDetails || {}),
+                      missingCount: missing.length,
+                      missing: missing.map(row => ({ itemName: row.itemName, level: row.level, quantity: row.quantity })),
+                      inputRisk,
+                      acquisitionGold
+                    }, 2);
+                    continue;
+                  }
+                  if (acquisitionGold > 1000000) {
+                    recordFallbackReject(recipe, 'MATERIAL_ACQUISITION_OVER_CAP', {
+                      acquisitionGold,
+                      cap: 1000000,
+                      materials: plannedMaterials,
+                      inputRisk
+                    }, 1);
+                    continue;
+                  }
+                  const recipeCost = Number(recipe.cost || 0);
+                  const currentGold = Number(game.character.gold);
+                  const totalEstimatedGold = acquisitionGold + recipeCost;
+                  if (!Number.isFinite(currentGold)
+                      || currentGold - totalEstimatedGold < 10000) {
+                    recordFallbackReject(recipe, 'GOLD_RESERVE_AFTER_ACQUISITION_AND_CRAFT', {
+                      currentGold: Number.isFinite(currentGold) ? currentGold : null,
+                      acquisitionGold,
+                      recipeCost,
+                      totalEstimatedGold,
+                      requiredGoldWithReserve: totalEstimatedGold + 10000,
+                      reserve: 10000,
+                      materials: plannedMaterials,
+                      inputRisk
+                    }, 1);
+                    continue;
+                  }
+
+                  acquisitionCandidates.push({
+                    recipe,
+                    production: candidateProduction,
+                    inputRisk,
+                    acquisitionGold,
+                    materials: plannedMaterials,
+                    exchange,
+                    currentGold,
+                    requiredGoldWithReserve: totalEstimatedGold + 10000,
+                    totalEstimatedGold
+                  });
+                }
+
+                acquisitionCandidates.sort((a, b) =>
+                  Number(a.totalEstimatedGold) - Number(b.totalEstimatedGold)
+                  || a.materials.length - b.materials.length
+                  || String(a.recipe.name).localeCompare(String(b.recipe.name)));
+
+                const chosen = acquisitionCandidates[0] || null;
+                if (chosen) {
+                  selectedCraft = {
+                    itemName: chosen.recipe.name,
+                    cost: Number(chosen.recipe.cost || 0),
+                    inputValueAtRisk: chosen.inputRisk,
+                    sources: [],
+                    recipe: chosen.recipe
+                  };
+                  selectedExchange = {
+                    itemName: chosen.exchange.itemName,
+                    level: chosen.exchange.level,
+                    requiredQuantity: chosen.exchange.requiredQuantity,
+                    inventorySlot: chosen.exchange.inventorySlot,
+                    fingerprint: chosen.exchange.fingerprint,
+                    valueAtRisk: chosen.exchange.valueAtRisk,
+                    afterCraft: false
+                  };
+                  production = chosen.production;
+                  materials = chosen.materials;
+                  materialAcquisitionGold = chosen.acquisitionGold;
+                  mode = 'ACQUIRE_CRAFT_AND_EXCHANGE_COVERAGE';
+                  selectedCraft.currentGold = chosen.currentGold;
+                  selectedCraft.requiredGoldWithReserve = chosen.requiredGoldWithReserve;
+                }
+              }
+
+              note(buildPreflightDiagnostics());
+
+              assert(selectedCraft && selectedExchange,
+                'H16_NEEDS_LOW_RISK_CRAFT_OR_ACQUIRABLE_MATERIALS');
+
+              testPlan = {
+                mode,
+                craft: {
+                  itemName: selectedCraft.itemName,
+                  cost: selectedCraft.cost,
+                  inputValueAtRisk: selectedCraft.inputValueAtRisk,
+                  sources: selectedCraft.sources || [],
+                  currentGold: selectedCraft.currentGold == null ? null : selectedCraft.currentGold,
+                  requiredGoldWithReserve: selectedCraft.requiredGoldWithReserve == null ? null : selectedCraft.requiredGoldWithReserve
+                },
+                exchange: selectedExchange,
+                production,
+                materials,
+                materialAcquisitionGold
+              };
+
+              return {
+                character: game.character.name,
+                ctype: game.character.ctype,
+                mode,
+                craft: testPlan.craft,
+                exchange: testPlan.exchange,
+                materials,
+                materialAcquisitionGold,
+                safeCraftCandidates: crafts.length,
+                safeExchangeCandidates: exchanges.length
+              };
+            }
+          },
+          {
+            id: 'planning',
+            title: 'Produktionsgraph, Budgets und Materialbeschaffung prüfen',
+            timeoutMs: 6000,
+            run: async ({ runtime, assert }) => {
+              assert(testPlan, 'H16_LIVE_TEST_PLAN_MISSING');
+              const production = runtime.exchangeCraft.productionPlan(testPlan.craft.itemName, 1, { includeBank: false });
+              if (testPlan.materials.length) {
+                assert(production && production.state === 'NEEDS_MATERIALS',
+                  production && production.reason || 'H16_LIVE_PRODUCTION_MATERIAL_STATE_CHANGED');
+                assert((production.missing || []).length > 0, 'H16_LIVE_EXPECTED_MATERIALS_MISSING');
+                assert(testPlan.materialAcquisitionGold <= 1000000, 'H16_LIVE_MATERIAL_BUDGET_EXCEEDED');
+              } else {
+                assert(production && production.state === 'READY',
+                  production && production.reason || 'H16_LIVE_PRODUCTION_NOT_READY');
+                assert((production.missing || []).length === 0, 'H16_LIVE_PRODUCTION_HAS_MISSING_MATERIALS');
+              }
+              assert((production.protectedRecipes || []).length === 0, 'H16_LIVE_PRODUCTION_HAS_PROTECTED_RECIPE');
+              const policy = runtime.exchangeCraft.policy();
+              assert(policy.maxAttemptsPerSession === 2, 'H16_LIVE_ATTEMPT_BUDGET_NOT_TWO');
+              assert(policy.allowQuestEvent === false, 'H16_LIVE_QUEST_EVENT_MUST_BE_DISABLED');
+              return {
+                mode: testPlan.mode,
+                production,
+                materials: testPlan.materials,
+                materialAcquisitionGold: testPlan.materialAcquisitionGold,
+                policy
+              };
+            }
+          },
+          {
+            id: 'materials',
+            title: 'Fehlende Craft-Materialien innerhalb des Goldbudgets beschaffen',
+            timeoutMs: 180000,
+            run: async ({ runtime, assert, waitFor, sleep }) => {
+              assert(testPlan, 'H16_LIVE_TEST_PLAN_MISSING');
+              const acquired = [];
+              for (const material of testPlan.materials) {
+                const before = inventoryQuantity(runtime, material.itemName, material.level);
+                const bankExpected = material.expectedSource === 'BANK';
+                const queued = runtime.exchangeCraft.queueMaterialAcquire(material.itemName, material.quantity, {
+                  level: material.level,
+                  maxUnitPrice: material.maxUnitPrice,
+                  allowBank: bankExpected,
+                  minBankStackQuantity: material.minBankStackQuantity
+                });
+                assert(queued && queued.accepted === true,
+                  queued && queued.reason || 'H16_MATERIAL_ACQUIRE_QUEUE_FAILED');
+                assert(queued.delegatedTo === (bankExpected ? 'bank' : 'trade'),
+                  bankExpected ? 'H16_MATERIAL_ACQUIRE_NOT_DELEGATED_TO_BANK' : 'H16_MATERIAL_ACQUIRE_NOT_DELEGATED_TO_TRADE');
+
+                let delegationStatus = null;
+                if (bankExpected) {
+                  const bankUnknownBefore = bankUnknownTotal(runtime.bank.status());
+                  delegationStatus = await waitFor(() => {
+                    try { runtime.bank.tick(); } catch (_) {}
+                    const current = runtime.bank.status();
+                    if (current.suspended) throw new Error(current.suspendedReason || 'H12_SUSPENDED_DURING_H16_MATERIALS');
+                    if (bankUnknownTotal(current) > bankUnknownBefore) throw new Error('H16_BANK_MATERIAL_ACQUIRE_UNKNOWN');
+                    const after = inventoryQuantity(runtime, material.itemName, material.level);
+                    return after >= before + material.quantity && !current.pending && !current.request
+                      ? current
+                      : null;
+                  }, { timeoutMs: 80000, pollMs: 150, label: 'h16-bank-material-' + material.itemName });
+                } else {
+                  delegationStatus = await waitFor(() => {
+                    try { runtime.trade.tick(); } catch (_) {}
+                    const current = runtime.trade.status();
+                    if (current.suspended) throw new Error(current.suspendedReason || 'H13_SUSPENDED_DURING_H16_MATERIALS');
+                    if (tradeUnknownTotal(current) > baseline.tradeUnknown) throw new Error('H16_MATERIAL_ACQUIRE_UNKNOWN');
+                    const after = inventoryQuantity(runtime, material.itemName, material.level);
+                    return after >= before + material.quantity && !current.pending && !current.request
+                      ? current
+                      : null;
+                  }, { timeoutMs: 80000, pollMs: 150, label: 'h16-material-' + material.itemName });
+                }
+
+                acquired.push({
+                  itemName: material.itemName,
+                  quantity: material.quantity,
+                  expectedSource: material.expectedSource,
+                  maxUnitPrice: material.maxUnitPrice,
+                  bankSource: material.bankSource || null,
+                  minBankStackQuantity: material.minBankStackQuantity == null ? null : material.minBankStackQuantity,
+                  estimatedCost: material.estimatedCost,
+                  delegatedTo: queued.delegatedTo,
+                  delegationLastAction: delegationStatus.lastAction || null
+                });
+                await sleep(1800);
+              }
+
+              const production = runtime.exchangeCraft.productionPlan(testPlan.craft.itemName, 1, { includeBank: false });
+              assert(production && production.state === 'READY',
+                production && production.reason || 'H16_MATERIALS_DID_NOT_COMPLETE_PRODUCTION_INPUTS');
+              assert((production.missing || []).length === 0, 'H16_MATERIALS_STILL_MISSING');
+              return {
+                acquired,
+                materialDelegations: runtime.exchangeCraft.status().metrics.materialDelegations - baseline.materialDelegations,
+                production
+              };
+            }
+          },
+          {
+            id: 'craft',
+            title: 'Eine echte niedrig riskante Craft-Aktion ausführen und bestätigen',
+            timeoutMs: 90000,
+            run: async ({ runtime, assert, waitFor, sleep }) => {
+              assert(testPlan, 'H16_LIVE_TEST_PLAN_MISSING');
+              if (!testPlan.materials.length) await sleep(1800);
+              const queued = runtime.exchangeCraft.queueCraft(testPlan.craft.itemName);
+              assert(queued && queued.accepted === true, queued && queued.reason || 'H16_CRAFT_QUEUE_FAILED');
+
+              const status = await waitFor(() => {
+                runtime.exchangeCraft.tick();
+                const current = runtime.exchangeCraft.status();
+                if (current.suspended) throw new Error(current.suspendedReason || 'H16_SUSPENDED');
+                if (current.metrics.craftsUnknown > baseline.craftsUnknown) throw new Error('H16_CRAFT_UNKNOWN');
+                return current.metrics.craftsConfirmed > baseline.craftsConfirmed ? current : null;
+              }, { timeoutMs: 85000, pollMs: 150, label: 'h16-craft-confirmed' });
+
+              return {
+                itemName: testPlan.craft.itemName,
+                craftsDispatched: status.metrics.craftsDispatched - baseline.craftsDispatched,
+                craftsConfirmed: status.metrics.craftsConfirmed - baseline.craftsConfirmed,
+                evidence: status.lastAction && status.lastAction.evidence || null
+              };
+            }
+          },
+          {
+            id: 'exchange',
+            title: 'Eine echte niedrig riskante Exchange-Aktion ausführen und bestätigen',
+            timeoutMs: 90000,
+            run: async ({ runtime, assert, waitFor, sleep }) => {
+              assert(testPlan, 'H16_LIVE_TEST_PLAN_MISSING');
+              await sleep(1800);
+              const candidates = runtime.exchangeCraft.exchangeCandidates();
+              const selected = candidates.find(row =>
+                row.safe === true
+                && row.questEvent !== true
+                && String(row.itemName) === String(testPlan.exchange.itemName)
+                && Math.max(0, Number(row.level) || 0) === Math.max(0, Number(testPlan.exchange.level) || 0));
+              assert(selected, testPlan.mode === 'CRAFT_TO_EXCHANGE_CHAIN'
+                ? 'H16_CRAFT_OUTPUT_NOT_EXCHANGE_READY'
+                : 'H16_EXCHANGE_CANDIDATE_CHANGED');
+
+              const queued = runtime.exchangeCraft.queueExchange(selected.inventorySlot);
+              assert(queued && queued.accepted === true, queued && queued.reason || 'H16_EXCHANGE_QUEUE_FAILED');
+
+              const status = await waitFor(() => {
+                runtime.exchangeCraft.tick();
+                const current = runtime.exchangeCraft.status();
+                if (current.suspended) throw new Error(current.suspendedReason || 'H16_SUSPENDED');
+                if (current.metrics.exchangesUnknown > baseline.exchangesUnknown) throw new Error('H16_EXCHANGE_UNKNOWN');
+                return current.metrics.exchangesConfirmed > baseline.exchangesConfirmed ? current : null;
+              }, { timeoutMs: 85000, pollMs: 150, label: 'h16-exchange-confirmed' });
+
+              return {
+                itemName: selected.itemName,
+                requiredQuantity: selected.requiredQuantity,
+                valueAtRisk: selected.valueAtRisk,
+                exchangesDispatched: status.metrics.exchangesDispatched - baseline.exchangesDispatched,
+                exchangesConfirmed: status.metrics.exchangesConfirmed - baseline.exchangesConfirmed,
+                evidence: status.lastAction && status.lastAction.evidence || null
+              };
+            }
+          },
+          {
+            id: 'stability',
+            title: 'Fünf Sekunden ohne UNKNOWN, Retry oder Suspension beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              await sleep(5000);
+              const status = runtime.exchangeCraft.status();
+              const tradeStatus = runtime.trade.status();
+              assert(status.suspended === false, status.suspendedReason || 'H16_SUSPENDED');
+              assert(tradeStatus.suspended === false, tradeStatus.suspendedReason || 'H13_SUSPENDED_DURING_H16');
+              assert(status.metrics.exchangesUnknown === baseline.exchangesUnknown, 'H16_EXCHANGE_UNKNOWN_DURING_STABILITY');
+              assert(status.metrics.craftsUnknown === baseline.craftsUnknown, 'H16_CRAFT_UNKNOWN_DURING_STABILITY');
+              assert(tradeUnknownTotal(tradeStatus) === baseline.tradeUnknown, 'H16_MATERIAL_TRADE_UNKNOWN_DURING_STABILITY');
+              assert(status.attemptsThisSession === 2, 'H16_LIVE_ATTEMPT_COUNT_NOT_TWO');
+              assert(status.pending == null, 'H16_PENDING_REMAINS_DURING_STABILITY');
+              assert(status.request == null, 'H16_REQUEST_REMAINS_DURING_STABILITY');
+              assert(tradeStatus.pending == null, 'H16_MATERIAL_TRADE_PENDING_REMAINS');
+              assert(tradeStatus.request == null, 'H16_MATERIAL_TRADE_REQUEST_REMAINS');
+              return {
+                attempts: status.attemptsThisSession,
+                exchangeUnknown: status.metrics.exchangesUnknown - baseline.exchangesUnknown,
+                craftUnknown: status.metrics.craftsUnknown - baseline.craftsUnknown,
+                tradeUnknown: tradeUnknownTotal(tradeStatus) - baseline.tradeUnknown,
+                suspended: status.suspended,
+                tradeSuspended: tradeStatus.suspended
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'H16/H13 Request und Pending freigeben und Test-Policy zurücksetzen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.exchangeCraft.cancelRequest('H16_LIVE_TEST_COMPLETE');
+              runtime.trade.cancelRequest('H16_LIVE_TEST_COMPLETE');
+              const status = runtime.exchangeCraft.status();
+              const tradeStatus = runtime.trade.status();
+              assert(status.pending == null, 'H16_PENDING_REMAINS');
+              assert(status.request == null, 'H16_REQUEST_REMAINS');
+              assert(tradeStatus.pending == null, 'H16_MATERIAL_TRADE_PENDING_REMAINS');
+              assert(tradeStatus.request == null, 'H16_MATERIAL_TRADE_REQUEST_REMAINS');
+              return {
+                pending: !!status.pending,
+                request: !!status.request,
+                tradePending: !!tradeStatus.pending,
+                tradeRequest: !!tradeStatus.request,
+                mode: testPlan && testPlan.mode || null
+              };
+            }
+          }
+        ]
+      });
+    }
+
+    _registerH17LiveTest() {
+      let baseline = null;
+      let previousPolicy = null;
+
+      const childUnknownTotal = runtime => {
+        const inventory = runtime.inventory.status().metrics || {};
+        const bank = runtime.bank.status().metrics || {};
+        const trade = runtime.trade.status().metrics || {};
+        const gear = runtime.gear.status().metrics || {};
+        const upgrade = runtime.upgrade.status().metrics || {};
+        const exchange = runtime.exchangeCraft.status().metrics || {};
+        return Number(inventory.lootUnknown || 0)
+          + Number(bank.withdrawalsUnknown || 0)
+          + Number(bank.depositsUnknown || 0)
+          + Number(bank.goldWithdrawalsUnknown || 0)
+          + Number(bank.goldDepositsUnknown || 0)
+          + Number(bank.movementUnknown || 0)
+          + Number(trade.npcBuysUnknown || 0)
+          + Number(trade.npcSellsUnknown || 0)
+          + Number(trade.marketBuysUnknown || 0)
+          + Number(trade.marketSellsUnknown || 0)
+          + Number(trade.movementUnknown || 0)
+          + Number(gear.equipsUnknown || 0)
+          + Number(gear.unequipsUnknown || 0)
+          + Number(gear.deliveriesUnknown || 0)
+          + Number(upgrade.upgradesUnknown || 0)
+          + Number(upgrade.compoundsUnknown || 0)
+          + Number(exchange.exchangesUnknown || 0)
+          + Number(exchange.craftsUnknown || 0);
+      };
+
+      const childBusy = runtime => {
+        const statuses = [
+          runtime.inventory.status(),
+          runtime.bank.status(),
+          runtime.trade.status(),
+          runtime.gear.status(),
+          runtime.upgrade.status(),
+          runtime.exchangeCraft.status()
+        ];
+        return statuses.some(status => status && (status.pending || status.request || status.pendingLoot));
+      };
+
+      this.liveTests.register({
+        id: 'h17-economy-autonomy',
+        title: 'H17 – Economy Autonomy',
+        description: 'Begrenzter Live-Test des gemeinsamen Economy-Planners mit Konfliktauflösung, maximal drei bestätigten Aktionen und ohne Gear-/Upgrade-/Compound-Mutation.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.economy.stopAutonomy('H17_LIVE_TEST_RESET'); } catch (_) {}
+          const current = runtime.economy.status();
+          if (current.currentAction) throw new Error('H17_ACTIVE_ACTION_BEFORE_LIVE_TEST');
+          try {
+            if (!current.suspended) runtime.economy.resetSafety('H17_LIVE_TEST_RESET');
+          } catch (_) {}
+          previousPolicy = runtime.economy.policy();
+          runtime.economy.policy({
+            maxActionsPerSession: 3,
+            actionCooldownMs: 1500,
+            actionTimeoutMs: 120000,
+            minMarketPremiumRatio: 1,
+            allowKinds: {
+              BANK_MOUNT: true,
+              BANK_DEPOSIT: true,
+              GEAR_EQUIP: false,
+              MARKET_SELL: true,
+              EXCHANGE: true,
+              CRAFT: true,
+              UPGRADE: false,
+              COMPOUND: false,
+              NPC_SELL: true
+            }
+          });
+          const status = runtime.economy.status();
+          baseline = {
+            actionsQueued: Number(status.metrics.actionsQueued || 0),
+            actionsConfirmed: Number(status.metrics.actionsConfirmed || 0),
+            actionsRejected: Number(status.metrics.actionsRejected || 0),
+            actionsUnknown: Number(status.metrics.actionsUnknown || 0),
+            childUnknown: childUnknownTotal(runtime)
+          };
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.economy.stopAutonomy('H17_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try {
+            const current = runtime.economy.status();
+            if (!current.suspended && !current.currentAction) runtime.economy.resetSafety('H17_LIVE_TEST_CLEANUP');
+          } catch (_) {}
+          if (previousPolicy) {
+            try { runtime.economy.policy(previousPolicy); } catch (_) {}
+          }
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Economy-Planner und konfliktfreien Merchant-Pfad prüfen',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, note }) => {
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(game.character.rip !== true, 'CHARACTER_DEAD');
+              assert(String(game.character.ctype || '').toLowerCase() === 'merchant', 'H17_REQUIRES_MERCHANT');
+              const module = runtime.modules.describe('economy');
+              assert(module && module.state === 'ACTIVE', 'H17_MODULE_NOT_ACTIVE');
+
+              const status = runtime.economy.status();
+              assert(status.suspended === false, status.suspendedReason || 'H17_SUSPENDED');
+              assert(status.currentAction == null, 'H17_ACTION_ACTIVE_BEFORE_PREFLIGHT');
+              assert(childUnknownTotal(runtime) === baseline.childUnknown, 'H17_CHILD_UNKNOWN_BEFORE_PREFLIGHT');
+
+              const plan = runtime.economy.plan();
+              note({
+                selected: plan.selected || null,
+                proposals: (plan.proposals || []).slice(0, 8),
+                blockers: plan.blockers || [],
+                pressure: plan.pressure || null
+              });
+              assert(plan.state === 'READY' && plan.selected, plan.reason || 'H17_NEEDS_SAFE_ECONOMY_ACTION');
+              assert(['BANK_MOUNT','BANK_DEPOSIT','MARKET_SELL','EXCHANGE','CRAFT','NPC_SELL'].includes(plan.selected.kind),
+                'H17_LIVE_SELECTED_KIND_NOT_ALLOWED');
+              return {
+                state: plan.state,
+                reason: plan.reason,
+                selected: plan.selected,
+                proposalCount: (plan.proposals || []).length,
+                pressure: plan.pressure || null
+              };
+            }
+          },
+          {
+            id: 'bounded-autonomy',
+            title: 'Economy-Autonomie begrenzt arbeiten lassen',
+            timeoutMs: 70000,
+            run: async ({ runtime, assert, sleep, waitFor }) => {
+              const started = runtime.economy.startAutonomy({ maxActions: 3 });
+              assert(started && started.accepted === true, started && started.reason || 'H17_AUTONOMY_START_FAILED');
+
+              await sleep(30000);
+              runtime.economy.stopAutonomy('H17_LIVE_TEST_WINDOW_COMPLETE');
+
+              await waitFor(() => {
+                const status = runtime.economy.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H17_SUSPENDED_DURING_AUTONOMY');
+                if (Number(status.metrics.actionsUnknown || 0) > baseline.actionsUnknown) throw new Error('H17_ACTION_UNKNOWN');
+                if (childUnknownTotal(runtime) > baseline.childUnknown) throw new Error('H17_CHILD_UNKNOWN');
+                return status.currentAction == null && !childBusy(runtime) ? status : null;
+              }, { timeoutMs: 30000, pollMs: 200, label: 'h17-autonomy-settle' });
+
+              const status = runtime.economy.status();
+              const confirmed = Number(status.metrics.actionsConfirmed || 0) - baseline.actionsConfirmed;
+              const queued = Number(status.metrics.actionsQueued || 0) - baseline.actionsQueued;
+              const rejected = Number(status.metrics.actionsRejected || 0) - baseline.actionsRejected;
+              assert(confirmed >= 1, 'H17_NO_CONFIRMED_ECONOMY_ACTION');
+              assert(confirmed <= 3, 'H17_CONFIRMED_ACTION_BUDGET_EXCEEDED');
+              assert(queued <= 3, 'H17_QUEUED_ACTION_BUDGET_EXCEEDED');
+              assert(Number(status.metrics.actionsUnknown || 0) === baseline.actionsUnknown, 'H17_ACTION_UNKNOWN');
+              assert(childUnknownTotal(runtime) === baseline.childUnknown, 'H17_CHILD_UNKNOWN');
+              return {
+                actionsQueued: queued,
+                actionsConfirmed: confirmed,
+                actionsRejected: rejected,
+                actionsUnknown: Number(status.metrics.actionsUnknown || 0) - baseline.actionsUnknown,
+                actionsThisSession: status.actionsThisSession,
+                lastAction: status.lastAction || null
+              };
+            }
+          },
+          {
+            id: 'stability',
+            title: 'Zehn Sekunden ohne UNKNOWN oder neue Economy-Mutation beobachten',
+            timeoutMs: 15000,
+            run: async ({ runtime, assert, sleep }) => {
+              const before = runtime.economy.status();
+              const beforeQueued = Number(before.metrics.actionsQueued || 0);
+              await sleep(10000);
+              const after = runtime.economy.status();
+              assert(after.autonomyEnabled === false, 'H17_AUTONOMY_RESTARTED');
+              assert(after.currentAction == null, 'H17_ACTION_REMAINS_DURING_STABILITY');
+              assert(after.suspended === false, after.suspendedReason || 'H17_SUSPENDED_DURING_STABILITY');
+              assert(Number(after.metrics.actionsQueued || 0) === beforeQueued, 'H17_NEW_ACTION_AFTER_AUTONOMY_STOP');
+              assert(Number(after.metrics.actionsUnknown || 0) === baseline.actionsUnknown, 'H17_ACTION_UNKNOWN_DURING_STABILITY');
+              assert(childUnknownTotal(runtime) === baseline.childUnknown, 'H17_CHILD_UNKNOWN_DURING_STABILITY');
+              assert(!childBusy(runtime), 'H17_CHILD_BUSY_DURING_STABILITY');
+              return {
+                actionsQueued: Number(after.metrics.actionsQueued || 0) - baseline.actionsQueued,
+                actionsConfirmed: Number(after.metrics.actionsConfirmed || 0) - baseline.actionsConfirmed,
+                actionsRejected: Number(after.metrics.actionsRejected || 0) - baseline.actionsRejected,
+                actionsUnknown: Number(after.metrics.actionsUnknown || 0) - baseline.actionsUnknown,
+                childUnknown: childUnknownTotal(runtime) - baseline.childUnknown
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'Economy-Autonomie stoppen und Ownership freigeben',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.economy.stopAutonomy('H17_LIVE_TEST_COMPLETE');
+              const status = runtime.economy.status();
+              assert(status.autonomyEnabled === false, 'H17_AUTONOMY_STILL_ENABLED');
+              assert(status.currentAction == null, 'H17_CURRENT_ACTION_REMAINS');
+              assert(!childBusy(runtime), 'H17_CHILD_BUSY_AFTER_TEST');
+              return {
+                autonomyEnabled: status.autonomyEnabled,
+                currentAction: status.currentAction,
+                actionsThisSession: status.actionsThisSession,
+                suspended: status.suspended
+              };
+            }
+          }
+        ]
+      });
+    }
+
+
+    _registerH18LiveTest() {
+      let baseline = null;
+      let previousPolicy = null;
+      let liveTarget = null;
+      let liveSupply = null;
+
+      const distance = (a, b) => {
+        if (!a || !b || !a.map || !b.map || String(a.map) !== String(b.map)) return null;
+        const ax = Number(a.x), ay = Number(a.y), bx = Number(b.x), by = Number(b.y);
+        if (![ax, ay, bx, by].every(Number.isFinite)) return null;
+        return Math.hypot(ax - bx, ay - by);
+      };
+
+      this.liveTests.register({
+        id: 'h18-party-logistics',
+        title: 'H18 – Party Logistics',
+        description: 'Begrenzter Live-Test für eigene Party, optionales Regrouping und einen bestätigten sicheren Supply-Transfer ohne UNKNOWN.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.partyLogistics.stopAutonomy('H18_LIVE_TEST_RESET'); } catch (_) {}
+          const current = runtime.partyLogistics.status();
+          if (current.currentAction) throw new Error('H18_ACTIVE_ACTION_BEFORE_LIVE_TEST');
+          try { runtime.partyLogistics.cancelQueue('H18_LIVE_TEST_RESET'); } catch (_) {}
+          try {
+            if (!current.suspended) runtime.partyLogistics.resetSafety('H18_LIVE_TEST_RESET');
+          } catch (_) {}
+          previousPolicy = runtime.partyLogistics.policy();
+          runtime.partyLogistics.policy({
+            maxActionsPerSession: 2,
+            transferRange: 320,
+            regroupDistance: 100,
+            regroupArrivalRadius: 80,
+            outcomeTimeoutMs: 10000,
+            movementTimeoutMs: 60000,
+            allowRegroup: true
+          });
+          const status = runtime.partyLogistics.status();
+          baseline = {
+            suppliesDispatched: Number(status.metrics.suppliesDispatched || 0),
+            suppliesConfirmed: Number(status.metrics.suppliesConfirmed || 0),
+            suppliesRejected: Number(status.metrics.suppliesRejected || 0),
+            suppliesUnknown: Number(status.metrics.suppliesUnknown || 0),
+            regroupsConfirmed: Number(status.metrics.regroupsConfirmed || 0),
+            regroupsUnknown: Number(status.metrics.regroupsUnknown || 0)
+          };
+          liveTarget = null;
+          liveSupply = null;
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.partyLogistics.stopAutonomy('H18_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try {
+            const current = runtime.partyLogistics.status();
+            if (!current.currentAction) runtime.partyLogistics.cancelQueue('H18_LIVE_TEST_CLEANUP');
+            if (!current.suspended && !current.currentAction) runtime.partyLogistics.resetSafety('H18_LIVE_TEST_CLEANUP');
+          } catch (_) {}
+          if (previousPolicy) {
+            try { runtime.partyLogistics.policy(previousPolicy); } catch (_) {}
+          }
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Eigene Party und sicheren Supply-Pfad prüfen',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, note }) => {
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(game.character.rip !== true, 'CHARACTER_DEAD');
+              const module = runtime.modules.describe('party-logistics');
+              assert(module && module.state === 'ACTIVE', 'H18_MODULE_NOT_ACTIVE');
+
+              const party = runtime.party.snapshot();
+              assert(party && party.coordinationEnabled === true, 'H18_NEEDS_OWNED_PARTY_WITHOUT_FOREIGN_MEMBERS');
+              const candidates = (party.ownedMembers || [])
+                .filter(member => !member.local && !member.rip && member.visible)
+                .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+              assert(candidates.length > 0, 'H18_NEEDS_VISIBLE_OWNED_PARTY_MEMBER');
+              liveTarget = candidates[0];
+
+              const catalog = runtime.partyLogistics.supplyCatalog();
+              liveSupply = catalog.find(row => row.utility === true && Number(row.quantity || 0) >= 1)
+                || catalog.find(row => Number(row.quantity || 0) >= 1)
+                || null;
+              assert(liveSupply, 'H18_NEEDS_SAFE_SUPPLY_ITEM');
+              assert(runtime.actions.available('send_item'), 'H18_SEND_ITEM_UNAVAILABLE');
+
+              const status = runtime.partyLogistics.status();
+              assert(status.suspended === false, status.suspendedReason || 'H18_SUSPENDED');
+              assert(status.currentAction == null, 'H18_ACTION_ACTIVE_BEFORE_PREFLIGHT');
+              note({
+                target: liveTarget,
+                supply: liveSupply,
+                partySize: party.size,
+                local: game.character.name
+              });
+              return {
+                target: liveTarget.name,
+                supply: liveSupply,
+                partySize: party.size,
+                distance: distance(game.character, liveTarget)
+              };
+            }
+          },
+          {
+            id: 'regroup',
+            title: 'Party bei Bedarf kontrolliert regroupen',
+            timeoutMs: 65000,
+            run: async ({ runtime, assert, waitFor }) => {
+              const game = runtime.game.snapshot();
+              const party = runtime.party.snapshot();
+              const target = (party.ownedMembers || []).find(member => liveTarget && member.name === liveTarget.name) || liveTarget;
+              const beforeDistance = distance(game.character, target);
+              if (beforeDistance != null && beforeDistance <= 100) {
+                return { alreadyGrouped: true, beforeDistance, regroupsConfirmed: 0 };
+              }
+
+              const started = runtime.partyLogistics.startAutonomy({ maxActions: 1 });
+              assert(started && started.accepted === true, started && started.reason || 'H18_REGROUP_START_FAILED');
+              await waitFor(() => {
+                const status = runtime.partyLogistics.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H18_SUSPENDED_DURING_REGROUP');
+                if (Number(status.metrics.regroupsUnknown || 0) > baseline.regroupsUnknown) throw new Error('H18_REGROUP_UNKNOWN');
+                return Number(status.metrics.regroupsConfirmed || 0) > baseline.regroupsConfirmed && status.currentAction == null
+                  ? status
+                  : null;
+              }, { timeoutMs: 60000, pollMs: 200, label: 'h18-regroup' });
+              runtime.partyLogistics.stopAutonomy('H18_REGROUP_COMPLETE');
+              const after = runtime.partyLogistics.status();
+              return {
+                alreadyGrouped: false,
+                beforeDistance,
+                regroupsConfirmed: Number(after.metrics.regroupsConfirmed || 0) - baseline.regroupsConfirmed,
+                regroupsUnknown: Number(after.metrics.regroupsUnknown || 0) - baseline.regroupsUnknown
+              };
+            }
+          },
+          {
+            id: 'supply',
+            title: 'Einen sicheren Supply-Transfer bestätigen',
+            timeoutMs: 75000,
+            run: async ({ runtime, assert, waitFor }) => {
+              const queued = runtime.partyLogistics.queueSupply(liveTarget.name, liveSupply.name, 1);
+              assert(queued && queued.accepted === true, queued && queued.reason || 'H18_SUPPLY_QUEUE_FAILED');
+              const started = runtime.partyLogistics.startAutonomy({ maxActions: 1 });
+              assert(started && started.accepted === true, started && started.reason || 'H18_SUPPLY_START_FAILED');
+
+              await waitFor(() => {
+                const status = runtime.partyLogistics.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H18_SUSPENDED_DURING_SUPPLY');
+                if (Number(status.metrics.suppliesUnknown || 0) > baseline.suppliesUnknown) throw new Error('H18_SUPPLY_UNKNOWN');
+                return Number(status.metrics.suppliesConfirmed || 0) > baseline.suppliesConfirmed
+                  && status.currentAction == null
+                  && status.queue.length === 0
+                  ? status
+                  : null;
+              }, { timeoutMs: 70000, pollMs: 200, label: 'h18-supply' });
+
+              runtime.partyLogistics.stopAutonomy('H18_SUPPLY_COMPLETE');
+              const status = runtime.partyLogistics.status();
+              const dispatched = Number(status.metrics.suppliesDispatched || 0) - baseline.suppliesDispatched;
+              const confirmed = Number(status.metrics.suppliesConfirmed || 0) - baseline.suppliesConfirmed;
+              const rejected = Number(status.metrics.suppliesRejected || 0) - baseline.suppliesRejected;
+              const unknown = Number(status.metrics.suppliesUnknown || 0) - baseline.suppliesUnknown;
+              assert(dispatched === 1, 'H18_SUPPLY_DISPATCH_COUNT_INVALID');
+              assert(confirmed === 1, 'H18_SUPPLY_CONFIRM_COUNT_INVALID');
+              assert(rejected === 0, 'H18_SUPPLY_REJECTED');
+              assert(unknown === 0, 'H18_SUPPLY_UNKNOWN');
+              return {
+                target: liveTarget.name,
+                itemName: liveSupply.name,
+                dispatched,
+                confirmed,
+                rejected,
+                unknown
+              };
+            }
+          },
+          {
+            id: 'stability',
+            title: 'Fünf Sekunden ohne Retry oder UNKNOWN beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              const before = runtime.partyLogistics.status();
+              const beforeDispatch = Number(before.metrics.suppliesDispatched || 0);
+              await sleep(5000);
+              const after = runtime.partyLogistics.status();
+              assert(after.autonomyEnabled === false, 'H18_AUTONOMY_RESTARTED');
+              assert(after.currentAction == null, 'H18_ACTION_REMAINS');
+              assert(after.suspended === false, after.suspendedReason || 'H18_SUSPENDED_DURING_STABILITY');
+              assert(Number(after.metrics.suppliesDispatched || 0) === beforeDispatch, 'H18_SUPPLY_RETRY_AFTER_STOP');
+              assert(Number(after.metrics.suppliesUnknown || 0) === baseline.suppliesUnknown, 'H18_SUPPLY_UNKNOWN_DURING_STABILITY');
+              assert(Number(after.metrics.regroupsUnknown || 0) === baseline.regroupsUnknown, 'H18_REGROUP_UNKNOWN_DURING_STABILITY');
+              return {
+                suppliesConfirmed: Number(after.metrics.suppliesConfirmed || 0) - baseline.suppliesConfirmed,
+                suppliesUnknown: Number(after.metrics.suppliesUnknown || 0) - baseline.suppliesUnknown,
+                regroupsConfirmed: Number(after.metrics.regroupsConfirmed || 0) - baseline.regroupsConfirmed,
+                regroupsUnknown: Number(after.metrics.regroupsUnknown || 0) - baseline.regroupsUnknown
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'Party-Logistik stoppen und Ownership freigeben',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.partyLogistics.stopAutonomy('H18_LIVE_TEST_COMPLETE');
+              const status = runtime.partyLogistics.status();
+              assert(status.autonomyEnabled === false, 'H18_AUTONOMY_STILL_ENABLED');
+              assert(status.currentAction == null, 'H18_CURRENT_ACTION_REMAINS');
+              assert(status.queue.length === 0, 'H18_QUEUE_REMAINS');
+              assert(status.suspended === false, status.suspendedReason || 'H18_SUSPENDED_AT_CLEANUP');
+              return {
+                autonomyEnabled: status.autonomyEnabled,
+                currentAction: status.currentAction,
+                queueLength: status.queue.length,
+                suspended: status.suspended
+              };
+            }
+          }
+        ]
+      });
+    }
+
+    _registerH19LiveTest() {
+      let baseline = null;
+
+      this.liveTests.register({
+        id: 'h19-character-lifecycle',
+        title: 'H19 – Character Lifecycle & Recovery',
+        description: 'Begrenzter erster H19-Live-Test für einen echten lokalen Death→Respawn-Recovery-Pfad mit bestätigter Live-Evidence und ohne Blind-Retry.',
+        version: '1',
+        recommended: false,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.lifecycle.stopAutonomy('H19_LIVE_TEST_RESET'); } catch (_) {}
+          let current = runtime.lifecycle.status();
+          if (current.currentAction) {
+            const action = current.currentAction;
+            const game = runtime.game.snapshot();
+            const local = game && game.character || null;
+            const explicitRetryAckAllowed = current.suspended === true
+              && action.restored === true
+              && action.unknownRecorded === true
+              && action.kind === 'RESPAWN'
+              && local
+              && local.rip === true
+              && String(action.targetName || '') === String(local.name || '');
+            if (!explicitRetryAckAllowed) throw new Error('H19_ACTIVE_ACTION_BEFORE_LIVE_TEST');
+            const acknowledged = runtime.lifecycle.acknowledgeUnknown('H19_LIVE_TEST_EXPLICIT_RETRY_ACK');
+            if (!acknowledged || acknowledged.accepted !== true) {
+              throw new Error(acknowledged && acknowledged.reason || 'H19_LIVE_TEST_UNKNOWN_ACK_FAILED');
+            }
+            current = runtime.lifecycle.status();
+          }
+          try { runtime.lifecycle.cancelQueued(); } catch (_) {}
+          try {
+            if (!current.currentAction) runtime.lifecycle.resetSafety('H19_LIVE_TEST_RESET');
+          } catch (_) {}
+          const status = runtime.lifecycle.status();
+          baseline = {
+            actionsDispatched: Number(status.metrics.actionsDispatched || 0),
+            actionsConfirmed: Number(status.metrics.actionsConfirmed || 0),
+            actionsRejected: Number(status.metrics.actionsRejected || 0),
+            actionsUnknown: Number(status.metrics.actionsUnknown || 0),
+            respawnsConfirmed: Number(status.metrics.respawnsConfirmed || 0),
+            respawnCooldownRejects: Number(status.metrics.respawnCooldownRejects || 0)
+          };
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.lifecycle.stopAutonomy('H19_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try {
+            const current = runtime.lifecycle.status();
+            if (!current.currentAction) runtime.lifecycle.cancelQueued();
+            if (!current.suspended && !current.currentAction) runtime.lifecycle.resetSafety('H19_LIVE_TEST_CLEANUP');
+          } catch (_) {}
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Toten lokalen Character und sicheren Respawn-Pfad prüfen',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, note }) => {
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(game.character.rip === true, 'H19_NEEDS_DEAD_LOCAL_CHARACTER');
+              const module = runtime.modules.describe('character-lifecycle');
+              assert(module && module.state === 'ACTIVE', 'H19_MODULE_NOT_ACTIVE');
+              const roster = runtime.roster.refresh();
+              assert(roster && roster.accountStateAvailable === true, 'H19_ACCOUNT_ROSTER_UNAVAILABLE');
+              assert(roster.activeStateAvailable === true, 'H19_ACTIVE_ROSTER_UNAVAILABLE');
+              assert(runtime.actions.available('respawn'), 'H19_RESPAWN_API_UNAVAILABLE');
+              const status = runtime.lifecycle.status();
+              assert(status.suspended === false, status.suspendedReason || 'H19_SUSPENDED');
+              assert(status.currentAction == null, 'H19_ACTION_ACTIVE_BEFORE_PREFLIGHT');
+              note({
+                local: game.character.name,
+                ctype: game.character.ctype,
+                desiredActiveNames: status.policy.desiredActiveNames,
+                respawnReadyAtMs: status.respawn && status.respawn.readyAtMs,
+                respawnWaitMs: status.respawn && status.respawn.waitMs
+              });
+              return {
+                local: game.character.name,
+                ctype: game.character.ctype,
+                rip: game.character.rip,
+                activeCharacterNames: roster.activeCharacterNames,
+                respawnReadyAtMs: status.respawn && status.respawn.readyAtMs,
+                respawnWaitMs: status.respawn && status.respawn.waitMs
+              };
+            }
+          },
+          {
+            id: 'death-recovery',
+            title: 'Respawn-Cooldown abwarten und genau einen echten Respawn bestätigen',
+            timeoutMs: 40000,
+            run: async ({ runtime, assert, waitFor }) => {
+              const queued = runtime.lifecycle.queueRespawn();
+              assert(queued && queued.accepted === true, queued && queued.reason || 'H19_RESPAWN_QUEUE_FAILED');
+              const started = runtime.lifecycle.startAutonomy({ maxActions: 1 });
+              assert(started && started.accepted === true, started && started.reason || 'H19_RESPAWN_AUTONOMY_START_FAILED');
+
+              await waitFor(() => {
+                const status = runtime.lifecycle.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H19_SUSPENDED_DURING_RESPAWN');
+                if (Number(status.metrics.actionsUnknown || 0) > baseline.actionsUnknown) throw new Error('H19_ACTION_UNKNOWN');
+                if (Number(status.metrics.respawnCooldownRejects || 0) > baseline.respawnCooldownRejects) throw new Error('H19_RESPAWN_COOLDOWN_REJECTED');
+                if (Number(status.metrics.actionsRejected || 0) > baseline.actionsRejected) throw new Error('H19_RESPAWN_REJECTED');
+                return Number(status.metrics.respawnsConfirmed || 0) > baseline.respawnsConfirmed
+                  && status.currentAction == null
+                  ? status
+                  : null;
+              }, { timeoutMs: 35000, pollMs: 200, label: 'h19-respawn' });
+
+              runtime.lifecycle.stopAutonomy('H19_RESPAWN_COMPLETE');
+              const game = runtime.game.snapshot();
+              const status = runtime.lifecycle.status();
+              const dispatched = Number(status.metrics.actionsDispatched || 0) - baseline.actionsDispatched;
+              const confirmed = Number(status.metrics.actionsConfirmed || 0) - baseline.actionsConfirmed;
+              const unknown = Number(status.metrics.actionsUnknown || 0) - baseline.actionsUnknown;
+              const respawns = Number(status.metrics.respawnsConfirmed || 0) - baseline.respawnsConfirmed;
+              assert(game && game.character && game.character.rip !== true, 'H19_CHARACTER_STILL_DEAD');
+              assert(dispatched === 1, 'H19_RESPAWN_DISPATCH_COUNT_INVALID');
+              assert(confirmed === 1, 'H19_RESPAWN_CONFIRM_COUNT_INVALID');
+              assert(respawns === 1, 'H19_RESPAWN_CONFIRMATION_MISSING');
+              assert(unknown === 0, 'H19_RESPAWN_UNKNOWN');
+              return {
+                local: game.character.name,
+                dispatched,
+                confirmed,
+                respawnsConfirmed: respawns,
+                unknown
+              };
+            }
+          },
+          {
+            id: 'stability',
+            title: 'Fünf Sekunden ohne Respawn-Retry oder UNKNOWN beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              const before = runtime.lifecycle.status();
+              const beforeDispatch = Number(before.metrics.actionsDispatched || 0);
+              await sleep(5000);
+              const after = runtime.lifecycle.status();
+              assert(after.autonomyEnabled === false, 'H19_AUTONOMY_RESTARTED');
+              assert(after.currentAction == null, 'H19_ACTION_REMAINS');
+              assert(after.suspended === false, after.suspendedReason || 'H19_SUSPENDED_DURING_STABILITY');
+              assert(Number(after.metrics.actionsDispatched || 0) === beforeDispatch, 'H19_RESPAWN_RETRY_AFTER_STOP');
+              assert(Number(after.metrics.actionsUnknown || 0) === baseline.actionsUnknown, 'H19_UNKNOWN_DURING_STABILITY');
+              return {
+                actionsDispatched: Number(after.metrics.actionsDispatched || 0) - baseline.actionsDispatched,
+                actionsConfirmed: Number(after.metrics.actionsConfirmed || 0) - baseline.actionsConfirmed,
+                actionsUnknown: Number(after.metrics.actionsUnknown || 0) - baseline.actionsUnknown
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'Lifecycle-Autonomie stoppen und Ownership freigeben',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.lifecycle.stopAutonomy('H19_LIVE_TEST_COMPLETE');
+              const status = runtime.lifecycle.status();
+              assert(status.autonomyEnabled === false, 'H19_AUTONOMY_STILL_ENABLED');
+              assert(status.currentAction == null, 'H19_CURRENT_ACTION_REMAINS');
+              assert(status.queue.length === 0, 'H19_QUEUE_REMAINS');
+              assert(status.suspended === false, status.suspendedReason || 'H19_SUSPENDED_AT_CLEANUP');
+              return {
+                autonomyEnabled: status.autonomyEnabled,
+                currentAction: status.currentAction,
+                queueLength: status.queue.length,
+                suspended: status.suspended
+              };
+            }
+          }
+        ]
+      });
+    }
+
+
+    _registerH19RemoteRecoveryLiveTest() {
+      let baseline = null;
+      let targetName = null;
+      let targetControlMode = null;
+      let originalPolicy = null;
+
+      const onlineSet = roster => new Set(
+        roster && Array.isArray(roster.onlineCharacterNames)
+          ? roster.onlineCharacterNames.map(String)
+          : []
+      );
+
+      const runnerActiveSet = roster => new Set(
+        roster && Array.isArray(roster.runnerActiveCharacterNames)
+          ? roster.runnerActiveCharacterNames.map(String)
+          : roster && Array.isArray(roster.activeCharacterNames)
+            ? roster.activeCharacterNames.map(String)
+            : []
+      );
+
+      const restorePolicy = runtime => {
+        if (!originalPolicy) return null;
+        return runtime.lifecycle.setPolicy({
+          desiredActiveNames: Array.isArray(originalPolicy.desiredActiveNames) ? originalPolicy.desiredActiveNames : [],
+          desiredRuntimeRunningNames: Array.isArray(originalPolicy.desiredRuntimeRunningNames) ? originalPolicy.desiredRuntimeRunningNames : [],
+          desiredPartyMemberNames: Array.isArray(originalPolicy.desiredPartyMemberNames) ? originalPolicy.desiredPartyMemberNames : [],
+          desiredPartyLeader: originalPolicy.desiredPartyLeader || null,
+          maxActionsPerSession: originalPolicy.maxActionsPerSession
+        });
+      };
+
+      const cleanupSleep = (runtime, ms) => new Promise(resolve => {
+        const delay = Math.max(0, Number(ms) || 0);
+        const timerRoot = runtime && runtime.root || this.root || root;
+        const set = timerRoot && typeof timerRoot.setTimeout === 'function'
+          ? timerRoot.setTimeout.bind(timerRoot)
+          : setTimeout;
+        set(resolve, delay);
+      });
+
+      const waitForCleanup = async (runtime, predicate, options = {}) => {
+        const timeoutMs = Math.max(100, Math.min(60000, Number(options.timeoutMs) || 25000));
+        const pollMs = Math.max(50, Math.min(2000, Number(options.pollMs) || 250));
+        const startedAt = Date.now();
+        while (Date.now() - startedAt <= timeoutMs) {
+          const value = await predicate();
+          if (value) return value;
+          await cleanupSleep(runtime, pollMs);
+        }
+        throw new Error(options.timeoutReason || 'H19_REMOTE_CLEANUP_RESTORE_TIMEOUT');
+      };
+
+      this.liveTests.register({
+        id: 'h19-cross-window-readiness',
+        title: 'H19 – Cross-Window Readiness',
+        description: 'Nicht mutierender Vorabtest fuer getrennte Browserfenster: Runtime, CM-Transport, Build-Version, Heartbeats und mindestens ein sicheres Cross-Window-Ziel pruefen.',
+        version: '1',
+        recommended: false,
+        autoStartRuntime: false,
+        restoreRuntimeState: false,
+        steps: [
+          {
+            id: 'readiness',
+            title: 'Cross-Window-Heartbeats und sicheren Remote-Peer pruefen',
+            timeoutMs: 12000,
+            run: async ({ runtime, assert, waitFor, note }) => {
+              assert(runtime.running === true, 'H19_READINESS_RUNTIME_NOT_RUNNING');
+
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(game.character.rip !== true, 'H19_READINESS_LOCAL_CHARACTER_DEAD');
+
+              const module = runtime.modules.describe('character-lifecycle');
+              assert(module && module.state === 'ACTIVE', 'H19_READINESS_LIFECYCLE_MODULE_NOT_ACTIVE');
+
+              const transport = runtime.lifecycleTransport;
+              assert(transport && transport.status().installed === true, 'H19_READINESS_CROSS_WINDOW_TRANSPORT_UNAVAILABLE');
+
+              const localName = String(game.character.name || '');
+              const party = runtime.party.snapshot();
+              const leader = party && party.leader ? String(party.leader) : null;
+
+              const snapshot = await waitFor(() => {
+                const roster = runtime.roster.refresh();
+                if (!roster || roster.accountStateAvailable !== true || roster.onlineStateAvailable !== true) return null;
+
+                const online = onlineSet(roster);
+                const runnerActive = runnerActiveSet(roster);
+                const peers = transport.freshPeers();
+                const peerMap = new Map(peers.map(peer => [String(peer.name), peer]));
+                const remoteOnlineNames = (roster.accountCharacters || [])
+                  .filter(row => row && row.name)
+                  .map(row => String(row.name))
+                  .filter(name => name !== localName && online.has(name))
+                  .sort((a, b) => a.localeCompare(b));
+
+                const separateWindowNames = remoteOnlineNames.filter(name => !runnerActive.has(name));
+                const missingHeartbeats = separateWindowNames.filter(name => !peerMap.has(name));
+                const versionMismatches = peers
+                  .filter(peer => !peer || !peer.version || String(peer.version) !== String(runtime.version))
+                  .map(peer => ({
+                    name: peer && peer.name ? String(peer.name) : null,
+                    version: peer && peer.version ? String(peer.version) : null,
+                    expectedVersion: String(runtime.version)
+                  }));
+                const emergencyPeers = peers
+                  .filter(peer => peer && peer.emergencyStopLatched === true)
+                  .map(peer => String(peer.name));
+
+                const candidates = separateWindowNames
+                  .map(name => {
+                    const peer = peerMap.get(name) || null;
+                    return peer ? { name, peer } : null;
+                  })
+                  .filter(Boolean)
+                  .filter(row => row.name !== leader)
+                  .filter(row => row.peer.running === true)
+                  .filter(row => row.peer.emergencyStopLatched !== true)
+                  .filter(row => !row.peer.version || String(row.peer.version) === String(runtime.version))
+                  .sort((a, b) => a.name.localeCompare(b.name));
+
+                return {
+                  roster,
+                  peers,
+                  remoteOnlineNames,
+                  separateWindowNames,
+                  missingHeartbeats,
+                  versionMismatches,
+                  emergencyPeers,
+                  candidates
+                };
+              }, {
+                timeoutMs: 8000,
+                pollMs: 250,
+                label: 'h19-cross-window-readiness'
+              });
+
+              assert(snapshot, 'H19_READINESS_ROSTER_UNAVAILABLE');
+              assert(snapshot.missingHeartbeats.length === 0, 'H19_READINESS_MISSING_REMOTE_HEARTBEAT');
+              assert(snapshot.versionMismatches.length === 0, 'H19_READINESS_VERSION_MISMATCH');
+              assert(snapshot.emergencyPeers.length === 0, 'H19_READINESS_REMOTE_EMERGENCY_STOP_LATCHED');
+              assert(snapshot.candidates.length > 0, 'H19_READINESS_CROSS_WINDOW_TARGET_UNAVAILABLE');
+
+              const candidate = snapshot.candidates[0];
+              note({
+                local: localName,
+                version: runtime.version,
+                partyLeader: leader,
+                remoteOnlineNames: snapshot.remoteOnlineNames,
+                separateWindowNames: snapshot.separateWindowNames,
+                missingHeartbeats: snapshot.missingHeartbeats,
+                freshPeers: snapshot.peers,
+                selectedTarget: candidate.name,
+                selectedSessionId: candidate.peer.sessionId
+              });
+
+              return {
+                local: localName,
+                version: runtime.version,
+                selectedTarget: candidate.name,
+                selectedSessionId: candidate.peer.sessionId,
+                selectedRunEpoch: candidate.peer.runEpoch,
+                selectedRunning: candidate.peer.running,
+                remoteOnlineNames: snapshot.remoteOnlineNames,
+                separateWindowNames: snapshot.separateWindowNames,
+                missingHeartbeats: snapshot.missingHeartbeats,
+                freshPeerNames: snapshot.peers.map(peer => String(peer.name)).sort((a, b) => a.localeCompare(b))
+              };
+            }
+          }
+        ]
+      });
+
+      this.liveTests.register({
+        id: 'h19-remote-recovery',
+        title: 'H19 – Remote Start/Stop & Restart Recovery',
+        description: 'Bounded Live-Test: einen sicheren eigenen Remote-Bot stoppen und über denselben bestätigten Lifecycle-Pfad genau einmal via Desired Active wieder starten; getrennte Browserfenster nutzen H19-CM, Child-Runner die native Character-API.',
+        version: '2',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          targetName = null;
+          targetControlMode = null;
+          baseline = null;
+          originalPolicy = null;
+          try { runtime.lifecycle.stopAutonomy('H19_REMOTE_LIVE_TEST_RESET'); } catch (_) {}
+          const status = runtime.lifecycle.status();
+          if (status.currentAction) throw new Error('H19_REMOTE_ACTIVE_ACTION_BEFORE_LIVE_TEST');
+          if (status.suspended) throw new Error(status.suspendedReason || 'H19_REMOTE_SUSPENDED_BEFORE_LIVE_TEST');
+          try { runtime.lifecycle.cancelQueued(); } catch (_) {}
+          try { runtime.lifecycle.resetSafety('H19_REMOTE_LIVE_TEST_RESET'); } catch (_) {}
+          const clean = runtime.lifecycle.status();
+          originalPolicy = {
+            desiredActiveNames: Array.isArray(clean.policy.desiredActiveNames) ? clean.policy.desiredActiveNames.slice() : [],
+            desiredRuntimeRunningNames: Array.isArray(clean.policy.desiredRuntimeRunningNames) ? clean.policy.desiredRuntimeRunningNames.slice() : [],
+            desiredPartyMemberNames: Array.isArray(clean.policy.desiredPartyMemberNames) ? clean.policy.desiredPartyMemberNames.slice() : [],
+            desiredPartyLeader: clean.policy.desiredPartyLeader || null,
+            maxActionsPerSession: clean.policy.maxActionsPerSession
+          };
+          baseline = {
+            actionsDispatched: Number(clean.metrics.actionsDispatched || 0),
+            actionsConfirmed: Number(clean.metrics.actionsConfirmed || 0),
+            actionsRejected: Number(clean.metrics.actionsRejected || 0),
+            actionsUnknown: Number(clean.metrics.actionsUnknown || 0),
+            startsConfirmed: Number(clean.metrics.startsConfirmed || 0),
+            stopsConfirmed: Number(clean.metrics.stopsConfirmed || 0)
+          };
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.lifecycle.stopAutonomy('H19_REMOTE_LIVE_TEST_CLEANUP'); } catch (_) {}
+
+          let cleanupFailure = null;
+          try {
+            let status = runtime.lifecycle.status();
+            if (!status.currentAction) runtime.lifecycle.cancelQueued();
+
+            if (targetName && baseline) {
+              let roster = runtime.roster.refresh();
+              if (!roster || roster.onlineStateAvailable !== true) {
+                throw new Error('H19_REMOTE_CLEANUP_ROSTER_UNAVAILABLE');
+              }
+
+              const targetHealthy = () => {
+                if (targetControlMode === 'cross-window-runtime') {
+                  const peer = runtime.lifecycleTransport.freshPeer(targetName);
+                  return !!peer && peer.running === true;
+                }
+                const liveRoster = runtime.roster.refresh();
+                return !!liveRoster
+                  && liveRoster.onlineStateAvailable === true
+                  && onlineSet(liveRoster).has(String(targetName));
+              };
+
+              let targetActive = targetHealthy();
+              if (!targetActive) {
+                const dispatchedDelta = Number(status.metrics.actionsDispatched || 0) - baseline.actionsDispatched;
+                const rejectedDelta = Number(status.metrics.actionsRejected || 0) - baseline.actionsRejected;
+                const unknownDelta = Number(status.metrics.actionsUnknown || 0) - baseline.actionsUnknown;
+
+                const safeFirstStartRecovery = !status.currentAction
+                  && status.suspended === false
+                  && dispatchedDelta === 1
+                  && rejectedDelta === 0
+                  && unknownDelta === 0;
+
+                if (!safeFirstStartRecovery) {
+                  throw new Error('H19_REMOTE_CLEANUP_RESTORE_UNSAFE_RETRY_BLOCKED');
+                }
+
+                const queued = runtime.lifecycle.queueStart(targetName);
+                if (!queued || queued.accepted !== true) {
+                  throw new Error(queued && queued.reason || 'H19_REMOTE_CLEANUP_START_QUEUE_FAILED');
+                }
+
+                await waitForCleanup(runtime, () => {
+                  const current = runtime.lifecycle.status();
+                  const rejectedNow = Number(current.metrics.actionsRejected || 0) - baseline.actionsRejected;
+                  const unknownNow = Number(current.metrics.actionsUnknown || 0) - baseline.actionsUnknown;
+
+                  if (current.suspended || unknownNow > 0) {
+                    throw new Error(current.suspendedReason || 'H19_REMOTE_CLEANUP_START_UNKNOWN');
+                  }
+                  if (rejectedNow > 0) {
+                    throw new Error('H19_REMOTE_CLEANUP_START_REJECTED');
+                  }
+
+                  return Number(current.metrics.startsConfirmed || 0) > baseline.startsConfirmed
+                    && current.currentAction == null
+                    && targetHealthy()
+                    ? true
+                    : false;
+                }, {
+                  timeoutMs: 25000,
+                  pollMs: 250,
+                  timeoutReason: 'H19_REMOTE_CLEANUP_RESTORE_TIMEOUT'
+                });
+
+                status = runtime.lifecycle.status();
+                roster = runtime.roster.refresh();
+                targetActive = targetHealthy();
+                if (!targetActive) throw new Error('H19_REMOTE_CLEANUP_TARGET_STILL_INACTIVE');
+              }
+            }
+          } catch (error) {
+            cleanupFailure = error;
+          }
+
+          try {
+            const restored = restorePolicy(runtime);
+            if (restored && restored.accepted !== true && !cleanupFailure) {
+              cleanupFailure = new Error(restored.reason || 'H19_REMOTE_CLEANUP_POLICY_RESTORE_FAILED');
+            }
+          } catch (error) {
+            if (!cleanupFailure) cleanupFailure = error;
+          }
+
+          try {
+            const status = runtime.lifecycle.status();
+            if (!status.suspended && !status.currentAction) {
+              runtime.lifecycle.resetSafety('H19_REMOTE_LIVE_TEST_CLEANUP');
+            }
+          } catch (error) {
+            if (!cleanupFailure) cleanupFailure = error;
+          }
+
+          if (cleanupFailure) throw cleanupFailure;
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Sicheren eigenen Remote-Bot und passenden Lifecycle-Transport prüfen',
+            timeoutMs: 12000,
+            run: async ({ runtime, assert, note, waitFor }) => {
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(game.character.rip !== true, 'H19_REMOTE_LOCAL_CHARACTER_DEAD');
+
+              const module = runtime.modules.describe('character-lifecycle');
+              assert(module && module.state === 'ACTIVE', 'H19_REMOTE_MODULE_NOT_ACTIVE');
+
+              const roster = runtime.roster.refresh();
+              assert(roster && roster.accountStateAvailable === true, 'H19_REMOTE_ACCOUNT_ROSTER_UNAVAILABLE');
+              assert(roster.onlineStateAvailable === true, 'H19_REMOTE_ACTIVE_ROSTER_UNAVAILABLE');
+              assert(runtime.lifecycleTransport && runtime.lifecycleTransport.status().installed === true, 'H19_REMOTE_CROSS_WINDOW_TRANSPORT_UNAVAILABLE');
+
+              const status = runtime.lifecycle.status();
+              assert(status.suspended === false, status.suspendedReason || 'H19_REMOTE_SUSPENDED');
+              assert(status.currentAction == null, 'H19_REMOTE_ACTION_ACTIVE_BEFORE_PREFLIGHT');
+              assert(status.queue.length === 0, 'H19_REMOTE_QUEUE_NOT_EMPTY');
+
+              const localName = String(game.character.name || '');
+              const party = runtime.party.snapshot();
+              const leader = party && party.leader ? String(party.leader) : null;
+              const partyMembers = new Set(party && Array.isArray(party.memberNames) ? party.memberNames.map(String) : []);
+
+              const selectCandidates = () => {
+                const liveRoster = runtime.roster.refresh();
+                if (!liveRoster || liveRoster.onlineStateAvailable !== true) return [];
+                const online = onlineSet(liveRoster);
+                const runnerActive = runnerActiveSet(liveRoster);
+                const peers = new Map(runtime.lifecycleTransport.freshPeers().map(peer => [String(peer.name), peer]));
+                return (liveRoster.accountCharacters || [])
+                  .filter(row => row && row.name)
+                  .map(row => {
+                    const name = String(row.name);
+                    const peer = peers.get(name) || null;
+                    return {
+                      name,
+                      ctype: row.ctype || null,
+                      peer,
+                      controlMode: runnerActive.has(name)
+                        ? 'child-character'
+                        : peer && peer.running === true
+                          ? 'cross-window-runtime'
+                          : null
+                    };
+                  })
+                  .filter(row => row.name !== localName
+                    && row.name !== leader
+                    && online.has(row.name)
+                    && row.controlMode)
+                  .sort((a, b) => {
+                    const aMode = a.controlMode === 'cross-window-runtime' ? 0 : 1;
+                    const bMode = b.controlMode === 'cross-window-runtime' ? 0 : 1;
+                    if (aMode !== bMode) return aMode - bMode;
+                    const aParty = partyMembers.has(a.name) ? 1 : 0;
+                    const bParty = partyMembers.has(b.name) ? 1 : 0;
+                    if (aParty !== bParty) return aParty - bParty;
+                    return a.name.localeCompare(b.name);
+                  });
+              };
+
+              const candidate = await waitFor(() => selectCandidates()[0] || null, {
+                timeoutMs: 8000,
+                pollMs: 250,
+                label: 'h19-remote-controllable-target'
+              });
+              assert(candidate, 'H19_REMOTE_CONTROLLABLE_TARGET_UNAVAILABLE');
+              targetName = candidate.name;
+              targetControlMode = candidate.controlMode;
+
+              if (targetControlMode === 'child-character') {
+                assert(runtime.actions.available('stop_character'), 'H19_REMOTE_STOP_API_UNAVAILABLE');
+                assert(runtime.actions.available('start_character'), 'H19_REMOTE_START_API_UNAVAILABLE');
+              }
+
+              const captured = runtime.lifecycle.captureDesiredActive();
+              assert(captured && captured.accepted === true, captured && captured.reason || 'H19_REMOTE_CAPTURE_ACTIVE_FAILED');
+              assert(Array.isArray(captured.desiredActiveNames) && captured.desiredActiveNames.includes(targetName), 'H19_REMOTE_TARGET_NOT_CAPTURED_AS_DESIRED');
+              if (targetControlMode === 'cross-window-runtime') {
+                assert(Array.isArray(captured.desiredRuntimeRunningNames)
+                  && captured.desiredRuntimeRunningNames.includes(targetName), 'H19_REMOTE_TARGET_NOT_CAPTURED_AS_DESIRED_RUNTIME');
+              }
+
+              note({
+                local: localName,
+                target: targetName,
+                targetCtype: candidate.ctype,
+                controlMode: targetControlMode,
+                targetSessionId: candidate.peer && candidate.peer.sessionId || null,
+                targetWasPartyMember: partyMembers.has(targetName),
+                partyLeader: leader,
+                desiredActiveNames: captured.desiredActiveNames,
+                desiredRuntimeRunningNames: captured.desiredRuntimeRunningNames,
+                desiredPartyMemberNames: captured.desiredPartyMemberNames
+              });
+
+              const finalRoster = runtime.roster.refresh();
+              return {
+                local: localName,
+                target: targetName,
+                targetCtype: candidate.ctype,
+                controlMode: targetControlMode,
+                targetSessionId: candidate.peer && candidate.peer.sessionId || null,
+                targetWasPartyMember: partyMembers.has(targetName),
+                partyLeader: leader,
+                onlineCharacterNames: finalRoster.onlineCharacterNames,
+                runnerActiveCharacterNames: finalRoster.runnerActiveCharacterNames || finalRoster.activeCharacterNames,
+                crossWindowPeers: runtime.lifecycleTransport.freshPeers()
+              };
+            }
+          },
+          {
+            id: 'remote-stop',
+            title: 'Remote-Bot genau einmal stoppen und passenden Live-Zustand bestätigen',
+            timeoutMs: 30000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(targetName, 'H19_REMOTE_TARGET_MISSING');
+              const queued = runtime.lifecycle.queueStop(targetName);
+              assert(queued && queued.accepted === true, queued && queued.reason || 'H19_REMOTE_STOP_QUEUE_FAILED');
+
+              await waitFor(() => {
+                const status = runtime.lifecycle.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H19_REMOTE_SUSPENDED_DURING_STOP');
+                if (Number(status.metrics.actionsUnknown || 0) > baseline.actionsUnknown) throw new Error('H19_REMOTE_STOP_UNKNOWN');
+                if (Number(status.metrics.actionsRejected || 0) > baseline.actionsRejected) throw new Error('H19_REMOTE_STOP_REJECTED');
+                const roster = runtime.roster.refresh();
+                const targetStopped = targetControlMode === 'cross-window-runtime'
+                  ? (() => {
+                      const peer = runtime.lifecycleTransport.freshPeer(targetName);
+                      return !!peer && peer.running === false;
+                    })()
+                  : !!roster && roster.onlineStateAvailable === true && !onlineSet(roster).has(String(targetName));
+                return Number(status.metrics.stopsConfirmed || 0) > baseline.stopsConfirmed
+                  && status.currentAction == null
+                  && targetStopped
+                  ? { status, roster }
+                  : null;
+              }, { timeoutMs: 25000, pollMs: 250, label: 'h19-remote-stop' });
+
+              const status = runtime.lifecycle.status();
+              const roster = runtime.roster.refresh();
+              const dispatched = Number(status.metrics.actionsDispatched || 0) - baseline.actionsDispatched;
+              const confirmed = Number(status.metrics.actionsConfirmed || 0) - baseline.actionsConfirmed;
+              const stopped = Number(status.metrics.stopsConfirmed || 0) - baseline.stopsConfirmed;
+              assert(dispatched === 1, 'H19_REMOTE_STOP_DISPATCH_COUNT_INVALID');
+              assert(confirmed === 1, 'H19_REMOTE_STOP_CONFIRM_COUNT_INVALID');
+              assert(stopped === 1, 'H19_REMOTE_STOP_CONFIRMATION_MISSING');
+              if (targetControlMode === 'cross-window-runtime') {
+                const peer = runtime.lifecycleTransport.freshPeer(targetName);
+                assert(peer && peer.running === false, 'H19_REMOTE_TARGET_RUNTIME_STILL_RUNNING');
+                assert(onlineSet(roster).has(String(targetName)), 'H19_REMOTE_WINDOW_CHARACTER_WENT_OFFLINE');
+              } else {
+                assert(!onlineSet(roster).has(String(targetName)), 'H19_REMOTE_TARGET_STILL_ACTIVE');
+              }
+              return { target: targetName, controlMode: targetControlMode, dispatched, confirmed, stopsConfirmed: stopped };
+            }
+          },
+          {
+            id: 'restart-recovery',
+            title: 'Desired-Active-Recovery starten und Remote-Character genau einmal zurückholen',
+            timeoutMs: 40000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(targetName, 'H19_REMOTE_TARGET_MISSING');
+              const started = runtime.lifecycle.startAutonomy({ maxActions: 1 });
+              assert(started && started.accepted === true, started && started.reason || 'H19_REMOTE_AUTONOMY_START_FAILED');
+
+              await waitFor(() => {
+                const status = runtime.lifecycle.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H19_REMOTE_SUSPENDED_DURING_RESTART');
+                if (Number(status.metrics.actionsUnknown || 0) > baseline.actionsUnknown) throw new Error('H19_REMOTE_RESTART_UNKNOWN');
+                if (Number(status.metrics.actionsRejected || 0) > baseline.actionsRejected) throw new Error('H19_REMOTE_RESTART_REJECTED');
+                const roster = runtime.roster.refresh();
+                const targetStarted = targetControlMode === 'cross-window-runtime'
+                  ? (() => {
+                      const peer = runtime.lifecycleTransport.freshPeer(targetName);
+                      return !!peer && peer.running === true;
+                    })()
+                  : !!roster && roster.onlineStateAvailable === true && onlineSet(roster).has(String(targetName));
+                return Number(status.metrics.startsConfirmed || 0) > baseline.startsConfirmed
+                  && status.currentAction == null
+                  && targetStarted
+                  ? { status, roster }
+                  : null;
+              }, { timeoutMs: 35000, pollMs: 250, label: 'h19-remote-restart' });
+
+              runtime.lifecycle.stopAutonomy('H19_REMOTE_RECOVERY_COMPLETE');
+              const status = runtime.lifecycle.status();
+              const roster = runtime.roster.refresh();
+              const dispatched = Number(status.metrics.actionsDispatched || 0) - baseline.actionsDispatched;
+              const confirmed = Number(status.metrics.actionsConfirmed || 0) - baseline.actionsConfirmed;
+              const startedCount = Number(status.metrics.startsConfirmed || 0) - baseline.startsConfirmed;
+              const stoppedCount = Number(status.metrics.stopsConfirmed || 0) - baseline.stopsConfirmed;
+              const rejected = Number(status.metrics.actionsRejected || 0) - baseline.actionsRejected;
+              const unknown = Number(status.metrics.actionsUnknown || 0) - baseline.actionsUnknown;
+
+              assert(dispatched === 2, 'H19_REMOTE_TOTAL_DISPATCH_COUNT_INVALID');
+              assert(confirmed === 2, 'H19_REMOTE_TOTAL_CONFIRM_COUNT_INVALID');
+              assert(stoppedCount === 1, 'H19_REMOTE_STOP_CONFIRM_COUNT_INVALID');
+              assert(startedCount === 1, 'H19_REMOTE_START_CONFIRM_COUNT_INVALID');
+              assert(rejected === 0, 'H19_REMOTE_REJECTED');
+              assert(unknown === 0, 'H19_REMOTE_UNKNOWN');
+              assert(onlineSet(roster).has(String(targetName)), 'H19_REMOTE_TARGET_NOT_ACTIVE_AFTER_RECOVERY');
+              if (targetControlMode === 'cross-window-runtime') {
+                const peer = runtime.lifecycleTransport.freshPeer(targetName);
+                assert(peer && peer.running === true, 'H19_REMOTE_TARGET_RUNTIME_NOT_RUNNING_AFTER_RECOVERY');
+              }
+
+              return {
+                target: targetName,
+                controlMode: targetControlMode,
+                dispatched,
+                confirmed,
+                stopsConfirmed: stoppedCount,
+                startsConfirmed: startedCount,
+                rejected,
+                unknown
+              };
+            }
+          },
+          {
+            id: 'stability',
+            title: 'Fünf Sekunden ohne Start/Stop-Retry oder UNKNOWN beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              const before = runtime.lifecycle.status();
+              const beforeDispatch = Number(before.metrics.actionsDispatched || 0);
+              await sleep(5000);
+              const after = runtime.lifecycle.status();
+              const roster = runtime.roster.refresh();
+              assert(after.autonomyEnabled === false, 'H19_REMOTE_AUTONOMY_RESTARTED');
+              assert(after.currentAction == null, 'H19_REMOTE_ACTION_REMAINS');
+              assert(after.suspended === false, after.suspendedReason || 'H19_REMOTE_SUSPENDED_DURING_STABILITY');
+              assert(Number(after.metrics.actionsDispatched || 0) === beforeDispatch, 'H19_REMOTE_RETRY_AFTER_RECOVERY');
+              assert(Number(after.metrics.actionsUnknown || 0) === baseline.actionsUnknown, 'H19_REMOTE_UNKNOWN_DURING_STABILITY');
+              assert(Number(after.metrics.actionsRejected || 0) === baseline.actionsRejected, 'H19_REMOTE_REJECT_DURING_STABILITY');
+              assert(roster && roster.onlineStateAvailable === true && onlineSet(roster).has(String(targetName)), 'H19_REMOTE_TARGET_LOST_DURING_STABILITY');
+              if (targetControlMode === 'cross-window-runtime') {
+                const peer = runtime.lifecycleTransport.freshPeer(targetName);
+                assert(peer && peer.running === true, 'H19_REMOTE_TARGET_RUNTIME_LOST_DURING_STABILITY');
+              }
+              return {
+                target: targetName,
+                controlMode: targetControlMode,
+                actionsDispatched: Number(after.metrics.actionsDispatched || 0) - baseline.actionsDispatched,
+                actionsConfirmed: Number(after.metrics.actionsConfirmed || 0) - baseline.actionsConfirmed,
+                actionsRejected: Number(after.metrics.actionsRejected || 0) - baseline.actionsRejected,
+                actionsUnknown: Number(after.metrics.actionsUnknown || 0) - baseline.actionsUnknown
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'Policy wiederherstellen und Remote-Character aktiv hinterlassen',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert }) => {
+              runtime.lifecycle.stopAutonomy('H19_REMOTE_LIVE_TEST_COMPLETE');
+              const restored = restorePolicy(runtime);
+              assert(!restored || restored.accepted === true, restored && restored.reason || 'H19_REMOTE_POLICY_RESTORE_FAILED');
+              const status = runtime.lifecycle.status();
+              const roster = runtime.roster.refresh();
+              assert(status.autonomyEnabled === false, 'H19_REMOTE_AUTONOMY_STILL_ENABLED');
+              assert(status.currentAction == null, 'H19_REMOTE_CURRENT_ACTION_REMAINS');
+              assert(status.queue.length === 0, 'H19_REMOTE_QUEUE_REMAINS');
+              assert(status.suspended === false, status.suspendedReason || 'H19_REMOTE_SUSPENDED_AT_CLEANUP');
+              assert(roster && roster.onlineStateAvailable === true && onlineSet(roster).has(String(targetName)), 'H19_REMOTE_TARGET_NOT_RESTORED');
+              if (targetControlMode === 'cross-window-runtime') {
+                const peer = runtime.lifecycleTransport.freshPeer(targetName);
+                assert(peer && peer.running === true, 'H19_REMOTE_TARGET_RUNTIME_NOT_RESTORED');
+              }
+              return {
+                target: targetName,
+                controlMode: targetControlMode,
+                autonomyEnabled: status.autonomyEnabled,
+                currentAction: status.currentAction,
+                queueLength: status.queue.length,
+                suspended: status.suspended,
+                targetActive: true
+              };
+            }
+          }
+        ]
+      });
+    }
+
+
+    _registerH19PartyRecoveryLiveTest() {
+      let baseline = null;
+      let targetName = null;
+      let originalPolicy = null;
+      let originalParty = null;
+      let joinSettlementPromise = null;
+      const sortedNames = snapshot => (snapshot && Array.isArray(snapshot.memberNames) ? snapshot.memberNames.map(String).sort((a, b) => a.localeCompare(b)) : []);
+      const topologyMatches = snapshot => {
+        if (!originalParty) return true;
+        const currentNames = sortedNames(snapshot);
+        if (String(snapshot && snapshot.leader || '') !== String(originalParty.leader || '')) return false;
+        if (currentNames.length !== originalParty.memberNames.length) return false;
+        return currentNames.every((name, index) => name === originalParty.memberNames[index])
+          && !(snapshot && Array.isArray(snapshot.foreignMemberNames) && snapshot.foreignMemberNames.length);
+      };
+      const restorePolicy = runtime => {
+        if (!originalPolicy) return null;
+        return runtime.lifecycle.setPolicy({
+          desiredActiveNames: Array.isArray(originalPolicy.desiredActiveNames) ? originalPolicy.desiredActiveNames : [],
+          desiredRuntimeRunningNames: Array.isArray(originalPolicy.desiredRuntimeRunningNames) ? originalPolicy.desiredRuntimeRunningNames : [],
+          desiredPartyMemberNames: Array.isArray(originalPolicy.desiredPartyMemberNames) ? originalPolicy.desiredPartyMemberNames : [],
+          desiredPartyLeader: originalPolicy.desiredPartyLeader || null,
+          maxActionsPerSession: originalPolicy.maxActionsPerSession
+        });
+      };
+      this.liveTests.register({
+        id: 'h19-party-recovery',
+        title: 'H19 – Party Recovery',
+        description: 'Bounded Cross-Window-Live-Test: ein eigener Nicht-Leader verlaesst kontrolliert die Party, fordert ueber denselben sessiongebundenen H19-CM-Kanal genau einmal den Wiedereintritt an und der geschuetzte Leader stellt die zuvor erfasste Party-Struktur mit terminaler Live-Evidence wieder her.',
+        version: '1',
+        recommended: false,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          targetName = null; baseline = null; originalPolicy = null; originalParty = null; joinSettlementPromise = null;
+          try { runtime.lifecycle.stopAutonomy('H19_PARTY_LIVE_TEST_RESET'); } catch (_) {}
+          const status = runtime.lifecycle.status();
+          if (status.currentAction) throw new Error('H19_PARTY_ACTIVE_ACTION_BEFORE_LIVE_TEST');
+          if (status.suspended) throw new Error(status.suspendedReason || 'H19_PARTY_SUSPENDED_BEFORE_LIVE_TEST');
+          try { runtime.lifecycle.cancelQueued(); } catch (_) {}
+          try { runtime.lifecycle.resetSafety('H19_PARTY_LIVE_TEST_RESET'); } catch (_) {}
+          const clean = runtime.lifecycle.status();
+          originalPolicy = {
+            desiredActiveNames: Array.isArray(clean.policy.desiredActiveNames) ? clean.policy.desiredActiveNames.slice() : [],
+            desiredRuntimeRunningNames: Array.isArray(clean.policy.desiredRuntimeRunningNames) ? clean.policy.desiredRuntimeRunningNames.slice() : [],
+            desiredPartyMemberNames: Array.isArray(clean.policy.desiredPartyMemberNames) ? clean.policy.desiredPartyMemberNames.slice() : [],
+            desiredPartyLeader: clean.policy.desiredPartyLeader || null,
+            maxActionsPerSession: clean.policy.maxActionsPerSession
+          };
+          const party = runtime.party.snapshot();
+          originalParty = { leader: party && party.leader || null, memberNames: sortedNames(party) };
+          const transport = runtime.lifecycleTransport.status();
+          baseline = {
+            actionsDispatched: Number(clean.metrics.actionsDispatched || 0),
+            actionsConfirmed: Number(clean.metrics.actionsConfirmed || 0),
+            actionsRejected: Number(clean.metrics.actionsRejected || 0),
+            actionsUnknown: Number(clean.metrics.actionsUnknown || 0),
+            partyInvitesDispatched: Number(clean.metrics.partyInvitesDispatched || 0),
+            partyRequestsDispatched: Number(clean.metrics.partyRequestsDispatched || 0),
+            partyAcceptsConfirmed: Number(clean.metrics.partyAcceptsConfirmed || 0),
+            commandsSent: Number(transport.metrics.commandsSent || 0),
+            acksReceived: Number(transport.metrics.acksReceived || 0),
+            settlementsReceived: Number(transport.metrics.settlementsReceived || 0),
+            settlementsSucceeded: Number(transport.metrics.settlementsSucceeded || 0),
+            settlementsFailed: Number(transport.metrics.settlementsFailed || 0),
+            transportFailures: Number(transport.metrics.transportFailures || 0)
+          };
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.lifecycle.stopAutonomy('H19_PARTY_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try { const status = runtime.lifecycle.status(); if (!status.currentAction) runtime.lifecycle.cancelQueued(); } catch (_) {}
+          const restored = restorePolicy(runtime);
+          if (restored && restored.accepted !== true) throw new Error(restored.reason || 'H19_PARTY_CLEANUP_POLICY_RESTORE_FAILED');
+          if (!topologyMatches(runtime.party.snapshot())) throw new Error('H19_PARTY_CLEANUP_MANUAL_RESTORE_REQUIRED');
+          const status = runtime.lifecycle.status();
+          if (!status.suspended && !status.currentAction) runtime.lifecycle.resetSafety('H19_PARTY_LIVE_TEST_CLEANUP');
+        },
+        steps: [
+          {
+            id: 'preflight', title: 'Eigenen Party-Leader, Nicht-Leader-Ziel und frische Cross-Window-Authority pruefen', timeoutMs: 12000,
+            run: async ({ runtime, assert, note, waitFor }) => {
+              assert(runtime.running === true, 'H19_PARTY_RUNTIME_NOT_RUNNING');
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(game.character.rip !== true, 'H19_PARTY_LOCAL_CHARACTER_DEAD');
+              const module = runtime.modules.describe('character-lifecycle');
+              assert(module && module.state === 'ACTIVE', 'H19_PARTY_MODULE_NOT_ACTIVE');
+              assert(runtime.lifecycleTransport && runtime.lifecycleTransport.status().installed === true, 'H19_PARTY_CROSS_WINDOW_TRANSPORT_UNAVAILABLE');
+              assert(typeof runtime.lifecycleTransport.requestPartyLeave === 'function', 'H19_PARTY_LEAVE_COMMAND_UNAVAILABLE');
+              assert(typeof runtime.lifecycleTransport.requestPartyJoin === 'function', 'H19_PARTY_JOIN_COMMAND_UNAVAILABLE');
+              assert(runtime.actions.available('accept_party_request'), 'H19_PARTY_ACCEPT_REQUEST_API_UNAVAILABLE');
+              const localName = String(game.character.name || '');
+              const party = runtime.party.snapshot();
+              assert(party && party.partyId && party.size >= 2, 'H19_PARTY_REQUIRES_ACTIVE_PARTY');
+              assert(String(party.leader || '') === localName, 'H19_PARTY_TEST_REQUIRES_LOCAL_LEADER');
+              assert(!(party.foreignMemberNames && party.foreignMemberNames.length), 'H19_PARTY_FOREIGN_MEMBER_PRESENT');
+              const status = runtime.lifecycle.status();
+              assert(status.suspended === false, status.suspendedReason || 'H19_PARTY_SUSPENDED');
+              assert(status.currentAction == null, 'H19_PARTY_ACTION_ACTIVE_BEFORE_PREFLIGHT');
+              assert(status.queue.length === 0, 'H19_PARTY_QUEUE_NOT_EMPTY');
+              const candidate = await waitFor(() => {
+                const roster = runtime.roster.refresh();
+                if (!roster || roster.accountStateAvailable !== true || roster.onlineStateAvailable !== true) return null;
+                const owned = new Set((roster.accountCharacters || []).map(row => String(row && row.name || '')).filter(Boolean));
+                const online = new Set((roster.onlineCharacterNames || []).map(String));
+                const members = sortedNames(runtime.party.snapshot());
+                const peers = new Map(runtime.lifecycleTransport.freshPeers().map(peer => [String(peer.name), peer]));
+                return members.filter(name => name !== localName && owned.has(name) && online.has(name))
+                  .map(name => ({ name, peer: peers.get(name) || null }))
+                  .filter(row => row.peer
+                    && row.peer.running === true
+                    && row.peer.emergencyStopLatched !== true
+                    && row.peer.lifecycleAutonomyEnabled === false
+                    && String(row.peer.version || '') === String(runtime.version))
+                  .sort((a, b) => a.name.localeCompare(b.name))[0] || null;
+              }, { timeoutMs: 8000, pollMs: 250, label: 'h19-party-recovery-target' });
+              assert(candidate, 'H19_PARTY_SAFE_CROSS_WINDOW_TARGET_UNAVAILABLE');
+              targetName = candidate.name;
+              const captured = runtime.lifecycle.captureDesiredActive();
+              assert(captured && captured.accepted === true, captured && captured.reason || 'H19_PARTY_CAPTURE_POLICY_FAILED');
+              assert(captured.desiredPartyLeader === localName, 'H19_PARTY_CAPTURED_LEADER_MISMATCH');
+              assert(Array.isArray(captured.desiredPartyMemberNames) && captured.desiredPartyMemberNames.includes(targetName), 'H19_PARTY_TARGET_NOT_CAPTURED');
+              assert(Array.isArray(captured.desiredActiveNames) && captured.desiredActiveNames.includes(targetName), 'H19_PARTY_TARGET_NOT_DESIRED_ACTIVE');
+              note({ localLeader: localName, target: targetName, targetSessionId: candidate.peer.sessionId, partyMembers: sortedNames(party), desiredPartyMemberNames: captured.desiredPartyMemberNames, desiredPartyLeader: captured.desiredPartyLeader });
+              return { localLeader: localName, target: targetName, targetSessionId: candidate.peer.sessionId, targetRunning: candidate.peer.running, partyMembers: sortedNames(party), partyLeader: party.leader };
+            }
+          },
+          {
+            id: 'controlled-party-loss', title: 'Nicht-Leader genau einmal sessiongebunden aus der Party loesen und terminal bestaetigen', timeoutMs: 20000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(targetName, 'H19_PARTY_TARGET_MISSING');
+              const command = runtime.lifecycleTransport.requestPartyLeave(targetName);
+              assert(command && command.state === 'DISPATCHED', command && command.error && command.error.message || 'H19_PARTY_LEAVE_NOT_DISPATCHED');
+              const settled = await Promise.resolve(command.value).then(value => ({ ok: true, value }), error => ({ ok: false, error }));
+              assert(settled.ok === true, settled.error && settled.error.message || 'H19_PARTY_LEAVE_TRANSPORT_UNKNOWN');
+              assert(settled.value && settled.value.success === true, settled.value && settled.value.reason || 'H19_PARTY_LEAVE_FAILED');
+              assert(settled.value.reason === 'H19_CROSS_WINDOW_PARTY_LEFT', 'H19_PARTY_LEAVE_SETTLEMENT_INVALID');
+              const recovered = await waitFor(() => {
+                const party = runtime.party.snapshot();
+                const names = new Set(sortedNames(party));
+                if (!party || String(party.leader || '') !== String(originalParty.leader || '')) return null;
+                if (names.has(String(targetName))) return null;
+                if (party.foreignMemberNames && party.foreignMemberNames.length) return null;
+                const peer = runtime.lifecycleTransport.freshPeer(targetName);
+                return peer && peer.running === true ? { party, peer } : null;
+              }, { timeoutMs: 8000, pollMs: 200, label: 'h19-party-loss-confirmed' });
+              const transport = runtime.lifecycleTransport.status();
+              assert(Number(transport.metrics.commandsSent || 0) - baseline.commandsSent === 1, 'H19_PARTY_LEAVE_COMMAND_COUNT_INVALID');
+              assert(Number(transport.metrics.settlementsSucceeded || 0) - baseline.settlementsSucceeded === 1, 'H19_PARTY_LEAVE_SETTLEMENT_COUNT_INVALID');
+              assert(Number(transport.metrics.settlementsFailed || 0) === baseline.settlementsFailed, 'H19_PARTY_LEAVE_SETTLEMENT_FAILED');
+              assert(Number(transport.metrics.transportFailures || 0) === baseline.transportFailures, 'H19_PARTY_LEAVE_TRANSPORT_FAILED');
+              return { target: targetName, partyMembersAfterLoss: sortedNames(recovered.party), targetRunning: recovered.peer.running, commandReason: settled.value.reason };
+            }
+          },
+          {
+            id: 'party-recovery', title: 'Remote-Join genau einmal anfordern und durch H19-Leader-Accept terminal wiederherstellen', timeoutMs: 30000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(targetName, 'H19_PARTY_TARGET_MISSING');
+              const join = runtime.lifecycleTransport.requestPartyJoin(targetName);
+              assert(join && join.state === 'DISPATCHED', join && join.error && join.error.message || 'H19_PARTY_JOIN_NOT_DISPATCHED');
+              joinSettlementPromise = Promise.resolve(join.value).then(value => ({ ok: true, value }), error => ({ ok: false, error }));
+              await waitFor(() => {
+                const status = runtime.lifecycle.status();
+                return (status.partySignals || []).some(signal => signal && signal.kind === 'REQUEST' && String(signal.targetName || '') === String(targetName)) ? status : null;
+              }, { timeoutMs: 8000, pollMs: 100, label: 'h19-party-request-signal' });
+              const started = runtime.lifecycle.startAutonomy({ maxActions: 1 });
+              assert(started && started.accepted === true, started && started.reason || 'H19_PARTY_AUTONOMY_START_FAILED');
+              await waitFor(() => {
+                const status = runtime.lifecycle.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H19_PARTY_SUSPENDED_DURING_RECOVERY');
+                if (Number(status.metrics.actionsUnknown || 0) > baseline.actionsUnknown) throw new Error('H19_PARTY_RECOVERY_UNKNOWN');
+                if (Number(status.metrics.actionsRejected || 0) > baseline.actionsRejected) throw new Error('H19_PARTY_RECOVERY_REJECTED');
+                const party = runtime.party.snapshot();
+                return Number(status.metrics.partyAcceptsConfirmed || 0) > baseline.partyAcceptsConfirmed && status.currentAction == null && topologyMatches(party) ? status : null;
+              }, { timeoutMs: 20000, pollMs: 150, label: 'h19-party-membership-restored' });
+              runtime.lifecycle.stopAutonomy('H19_PARTY_RECOVERY_COMPLETE');
+              const joined = await joinSettlementPromise;
+              assert(joined.ok === true, joined.error && joined.error.message || 'H19_PARTY_JOIN_TRANSPORT_UNKNOWN');
+              assert(joined.value && joined.value.success === true, joined.value && joined.value.reason || 'H19_PARTY_JOIN_FAILED');
+              assert(joined.value.reason === 'H19_CROSS_WINDOW_PARTY_JOINED', 'H19_PARTY_JOIN_SETTLEMENT_INVALID');
+              const status = runtime.lifecycle.status(), transport = runtime.lifecycleTransport.status(), party = runtime.party.snapshot();
+              const dispatched = Number(status.metrics.actionsDispatched || 0) - baseline.actionsDispatched;
+              const confirmed = Number(status.metrics.actionsConfirmed || 0) - baseline.actionsConfirmed;
+              const accepts = Number(status.metrics.partyAcceptsConfirmed || 0) - baseline.partyAcceptsConfirmed;
+              const rejected = Number(status.metrics.actionsRejected || 0) - baseline.actionsRejected;
+              const unknown = Number(status.metrics.actionsUnknown || 0) - baseline.actionsUnknown;
+              assert(dispatched === 1, 'H19_PARTY_LIFECYCLE_DISPATCH_COUNT_INVALID');
+              assert(confirmed === 1, 'H19_PARTY_LIFECYCLE_CONFIRM_COUNT_INVALID');
+              assert(accepts === 1, 'H19_PARTY_ACCEPT_CONFIRM_COUNT_INVALID');
+              assert(Number(status.metrics.partyInvitesDispatched || 0) === baseline.partyInvitesDispatched, 'H19_PARTY_INVITE_PINGPONG_DETECTED');
+              assert(Number(status.metrics.partyRequestsDispatched || 0) === baseline.partyRequestsDispatched, 'H19_PARTY_LOCAL_REQUEST_PINGPONG_DETECTED');
+              assert(rejected === 0, 'H19_PARTY_RECOVERY_REJECTED');
+              assert(unknown === 0, 'H19_PARTY_RECOVERY_UNKNOWN');
+              assert(topologyMatches(party), 'H19_PARTY_TOPOLOGY_NOT_RESTORED');
+              assert(Number(transport.metrics.commandsSent || 0) - baseline.commandsSent === 2, 'H19_PARTY_CM_COMMAND_COUNT_INVALID');
+              assert(Number(transport.metrics.acksReceived || 0) - baseline.acksReceived === 2, 'H19_PARTY_CM_ACK_COUNT_INVALID');
+              assert(Number(transport.metrics.settlementsReceived || 0) - baseline.settlementsReceived === 2, 'H19_PARTY_CM_SETTLEMENT_COUNT_INVALID');
+              assert(Number(transport.metrics.settlementsSucceeded || 0) - baseline.settlementsSucceeded === 2, 'H19_PARTY_CM_SETTLEMENT_SUCCESS_COUNT_INVALID');
+              assert(Number(transport.metrics.settlementsFailed || 0) === baseline.settlementsFailed, 'H19_PARTY_CM_SETTLEMENT_FAILED');
+              assert(Number(transport.metrics.transportFailures || 0) === baseline.transportFailures, 'H19_PARTY_CM_TRANSPORT_FAILED');
+              return { target: targetName, partyLeader: party.leader, partyMembers: sortedNames(party), lifecycleDispatched: dispatched, lifecycleConfirmed: confirmed, partyAcceptsConfirmed: accepts, cmCommands: Number(transport.metrics.commandsSent || 0) - baseline.commandsSent, cmAcks: Number(transport.metrics.acksReceived || 0) - baseline.acksReceived, cmSettlements: Number(transport.metrics.settlementsReceived || 0) - baseline.settlementsReceived, rejected, unknown };
+            }
+          },
+          {
+            id: 'stability', title: 'Fuenf Sekunden ohne Party-Retry, Ping-Pong oder UNKNOWN beobachten', timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              const before = runtime.lifecycle.status(), beforeTransport = runtime.lifecycleTransport.status();
+              const beforeDispatch = Number(before.metrics.actionsDispatched || 0), beforeCommands = Number(beforeTransport.metrics.commandsSent || 0);
+              await sleep(5000);
+              const after = runtime.lifecycle.status(), transport = runtime.lifecycleTransport.status(), party = runtime.party.snapshot();
+              const peer = runtime.lifecycleTransport.freshPeer(targetName);
+              assert(after.autonomyEnabled === false, 'H19_PARTY_AUTONOMY_RESTARTED');
+              assert(after.currentAction == null, 'H19_PARTY_ACTION_REMAINS');
+              assert(after.queue.length === 0, 'H19_PARTY_QUEUE_REMAINS');
+              assert(after.suspended === false, after.suspendedReason || 'H19_PARTY_SUSPENDED_DURING_STABILITY');
+              assert(Number(after.metrics.actionsDispatched || 0) === beforeDispatch, 'H19_PARTY_LIFECYCLE_RETRY_DETECTED');
+              assert(Number(transport.metrics.commandsSent || 0) === beforeCommands, 'H19_PARTY_CM_RETRY_DETECTED');
+              assert(Number(after.metrics.actionsUnknown || 0) === baseline.actionsUnknown, 'H19_PARTY_UNKNOWN_DURING_STABILITY');
+              assert(Number(after.metrics.actionsRejected || 0) === baseline.actionsRejected, 'H19_PARTY_REJECT_DURING_STABILITY');
+              assert(topologyMatches(party), 'H19_PARTY_TOPOLOGY_LOST_DURING_STABILITY');
+              assert(peer && peer.running === true, 'H19_PARTY_TARGET_RUNTIME_LOST_DURING_STABILITY');
+              return { target: targetName, partyLeader: party.leader, partyMembers: sortedNames(party), lifecycleDispatches: Number(after.metrics.actionsDispatched || 0) - baseline.actionsDispatched, cmCommands: Number(transport.metrics.commandsSent || 0) - baseline.commandsSent };
+            }
+          },
+          {
+            id: 'cleanup', title: 'Urspruengliche Lifecycle-Policy und Party-Struktur unveraendert hinterlassen', timeoutMs: 10000,
+            run: async ({ runtime, assert }) => {
+              runtime.lifecycle.stopAutonomy('H19_PARTY_LIVE_TEST_COMPLETE');
+              const restored = restorePolicy(runtime);
+              assert(!restored || restored.accepted === true, restored && restored.reason || 'H19_PARTY_POLICY_RESTORE_FAILED');
+              const status = runtime.lifecycle.status(), party = runtime.party.snapshot(), peer = runtime.lifecycleTransport.freshPeer(targetName);
+              assert(status.autonomyEnabled === false, 'H19_PARTY_AUTONOMY_STILL_ENABLED');
+              assert(status.currentAction == null, 'H19_PARTY_CURRENT_ACTION_REMAINS');
+              assert(status.queue.length === 0, 'H19_PARTY_QUEUE_REMAINS');
+              assert(status.suspended === false, status.suspendedReason || 'H19_PARTY_SUSPENDED_AT_CLEANUP');
+              assert(topologyMatches(party), 'H19_PARTY_CLEANUP_TOPOLOGY_MISMATCH');
+              assert(peer && peer.running === true, 'H19_PARTY_TARGET_RUNTIME_NOT_HEALTHY_AT_CLEANUP');
+              return { target: targetName, partyLeader: party.leader, partyMembers: sortedNames(party), autonomyEnabled: status.autonomyEnabled, currentAction: status.currentAction, queueLength: status.queue.length, suspended: status.suspended, targetRunning: peer.running };
+            }
+          }
+        ]
+      });
+    }
+
+    _installErrorCapture() {
+      if (!this.root || typeof this.root.addEventListener !== 'function') return;
+      this._errorHandler = event => {
+        const error = event && event.error;
+        this.lastError = {
+          at: new Date().toISOString(),
+          type: 'error',
+          message: String(error && error.message || event && event.message || 'Unknown error'),
+          stack: error && error.stack || null
+        };
+        this.logger.error('Unbehandelter JavaScript-Fehler', this.lastError);
+      };
+      this._rejectionHandler = event => {
+        const reason = event && event.reason;
+        this.lastError = {
+          at: new Date().toISOString(),
+          type: 'unhandledrejection',
+          message: String(reason && reason.message || reason || 'Unhandled rejection'),
+          stack: reason && reason.stack || null
+        };
+        this.logger.error('Unhandled Promise Rejection', this.lastError);
+      };
+      this.root.addEventListener('error', this._errorHandler);
+      this.root.addEventListener('unhandledrejection', this._rejectionHandler);
+    }
+
+    _removeErrorCapture() {
+      if (!this.root || typeof this.root.removeEventListener !== 'function') return;
+      if (this._errorHandler) this.root.removeEventListener('error', this._errorHandler);
+      if (this._rejectionHandler) this.root.removeEventListener('unhandledrejection', this._rejectionHandler);
+      this._errorHandler = null;
+      this._rejectionHandler = null;
+    }
+
+    _runtimeContext() {
+      return { runtime: this };
+    }
+
+    async start() {
+      if (this._destroyed) throw new Error('ALBOT_RUNTIME_DESTROYED');
+      if (this.stopLatch.status().latched) throw new Error('ALBOT_START_BLOCKED_BY_EMERGENCY_STOP');
+      if (this.running) return this.status();
+
+      this.running = true;
+      this.runEpoch += 1;
+      this.startedAt = new Date().toISOString();
+      this.scheduler.start();
+      try { this.roster.refresh(); } catch (_) {}
+
+      await this.modules.startAll(this._runtimeContext());
+      this.scheduler.interval('runtime', 'module-watchdog', () => {
+        this.modules.checkWatchdogs();
+      }, 1000, { immediate: true });
+
+      this.logger.info('AL Bot gestartet', {
+        runEpoch: this.runEpoch,
+        schedulerGeneration: this.scheduler.status().generation
+      });
+      this.bus.emit('runtime', this.status());
+      return this.status();
+    }
+
+    async stop(reason = 'MANUAL_STOP') {
+      if (this._destroyed) return this.status();
+      this.running = false;
+      await this.modules.stopAll(reason);
+      this.scheduler.stop(reason);
+      this.logger.warn('AL Bot gestoppt', { reason, runEpoch: this.runEpoch });
+      this.bus.emit('runtime', this.status());
+      return this.status();
+    }
+
+    async emergencyStop(reason = 'MANUAL_EMERGENCY_STOP') {
+      const stop = this.stopLatch.latch(reason);
+      this.running = false;
+      try { this.liveTests.cancel('EMERGENCY_STOP'); } catch (_) {}
+
+      // Die Notbremse stoppt zuerst zentral alle Timer/Listener. Modul-Stop-Hooks
+      // laufen danach nur noch zur fachlichen Bereinigung.
+      this.scheduler.stop('EMERGENCY_STOP');
+      await this.modules.stopAll('EMERGENCY_STOP');
+
+      this.bus.emit('emergency-stop', stop);
+      return this.status();
+    }
+
+    resetEmergencyStop() {
+      this.stopLatch.reset();
+      return this.status();
+    }
+
+    async restartModule(id, reason = 'MANUAL_MODULE_RESTART') {
+      if (!this.running || !this.scheduler.status().enabled) throw new Error('ALBOT_RUNTIME_NOT_RUNNING');
+      const result = await this.modules.restartOne(id, this._runtimeContext(), reason);
+      this.bus.emit('module', result);
+      return result;
+    }
+
+    async startModule(id) {
+      if (!this.running || !this.scheduler.status().enabled) throw new Error('ALBOT_RUNTIME_NOT_RUNNING');
+      const result = await this.modules.startOne(id, this._runtimeContext());
+      this.bus.emit('module', result);
+      return result;
+    }
+
+    async stopModule(id, reason = 'MANUAL_MODULE_STOP') {
+      const result = await this.modules.stopOne(id, reason);
+      this.bus.emit('module', result);
+      return result;
+    }
+
+    actionAllowed(action = 'action') {
+      if (!this.running) return false;
+      if (!this.scheduler.status().enabled) return false;
+      if (this.stopLatch.status().latched) return false;
+      return true;
+    }
+
+    assertActionAllowed(action = 'action') {
+      if (!this.running || !this.scheduler.status().enabled) throw new Error('ALBOT_RUNTIME_NOT_RUNNING:' + action);
+      return this.stopLatch.assertAllowed(action);
+    }
+
+    status() {
+      let roster;
+      try { roster = this.roster.status(); } catch (_) { roster = null; }
+      return {
+        product: 'AL Bot',
+        version: this.version,
+        running: this.running,
+        loadedAt: this.loadedAt,
+        startedAt: this.startedAt,
+        runEpoch: this.runEpoch,
+        bootCount: this.bootCount,
+        replacedPrevious: this.replacedPrevious,
+        emergencyStop: this.stopLatch.status(),
+        scheduler: this.scheduler.status(),
+        modules: this.modules.list(),
+        game: this.game.status(),
+        actions: this.actions.status(),
+        movement: this.movement.status(),
+        classSkills: this.classSkills.status(),
+        party: this.party.status(),
+        combat: this.combat.status(),
+        farming: this.farming.status(),
+        farmIntelligence: this.farmIntelligence.status(),
+        inventory: this.inventory.status(),
+        merchant: this.merchant.status(),
+        bank: this.bank.status(),
+        trade: this.trade.status(),
+        gear: this.gear.status(),
+        upgrade: this.upgrade.status(),
+        exchangeCraft: this.exchangeCraft.status(),
+        economy: this.economy.status(),
+        partyLogistics: this.partyLogistics.status(),
+        lifecycleTransport: this.lifecycleTransport.status(),
+        lifecycle: this.lifecycle.status(),
+        accountStrategy: this.accountStrategy.status(),
+        fullAutonomy: this.fullAutonomy.status(),
+        liveTests: this.liveTests.status(),
+        knowledge: this.knowledge.status(),
+        roster,
+        goals: this.goals.list(),
+        strategicPriorities: this.goals.getPriorities(),
+        lastError: ns.helpers.clone(this.lastError)
+      };
+    }
+
+    diagnostics() {
+      const game = this.game.snapshot();
+      return {
+        schemaVersion: 3,
+        createdAt: new Date().toISOString(),
+        runtime: this.status(),
+        game,
+        character: game && game.character ? ns.helpers.clone(game.character) : null,
+        actionBoundary: this.actions.status(),
+        movement: this.movement.status(),
+        classSkills: this.classSkills.status(),
+        party: this.party.status(),
+        combat: this.combat.status(),
+        farming: this.farming.status(),
+        farmIntelligence: this.farmIntelligence.status(),
+        inventory: this.inventory.status(),
+        merchant: this.merchant.status(),
+        bank: this.bank.status(),
+        trade: this.trade.status(),
+        gear: this.gear.status(),
+        upgrade: this.upgrade.status(),
+        exchangeCraft: this.exchangeCraft.status(),
+        economy: this.economy.status(),
+        partyLogistics: this.partyLogistics.status(),
+        lifecycleTransport: this.lifecycleTransport.status(),
+        lifecycle: this.lifecycle.status(),
+        accountStrategy: this.accountStrategy.status(),
+        fullAutonomy: this.fullAutonomy.status(),
+        liveTests: this.liveTests.status(),
+        knowledgeSnapshot: this.knowledge.snapshot(),
+        logs: this.logger.list(160),
+        userAgent: this.root && this.root.navigator && this.root.navigator.userAgent || null
+      };
+    }
+
+    selfTest() {
+      const checks = [];
+      const push = (name, ok, details) => checks.push({ name, ok: !!ok, details: details || null });
+      const roster = this.roster.refresh();
+      const scheduler = this.scheduler.status();
+      push('runtime-created', !!this.version, { version: this.version });
+      push('emergency-stop-api', typeof this.emergencyStop === 'function' && typeof this.resetEmergencyStop === 'function');
+      push('goal-service', Array.isArray(this.goals.list()));
+      push('game-adapter', !!this.game.status() && typeof this.game.snapshot === 'function', this.game.status());
+      push('action-boundary', !!this.actions.status() && this.actions.status().supportedActions.includes('move') && this.actions.status().supportedActions.includes('smart_move'), this.actions.status());
+      push('movement-controller', !!this.movement.status() && typeof this.movement.moveLocal === 'function' && typeof this.movement.smartMove === 'function', this.movement.status());
+      push('class-skill-controller', !!this.classSkills.status() && typeof this.classSkills.maybeUse === 'function', this.classSkills.status());
+      push('party-coordinator', !!this.party.status() && typeof this.party.preferredTargetId === 'function', this.party.status());
+      push('combat-controller', !!this.combat.status() && typeof this.combat.startSession === 'function' && typeof this.combat.stopSession === 'function', this.combat.status());
+      push('adaptive-farming-controller', !!this.farming.status() && typeof this.farming.plan === 'function' && typeof this.farming.startSession === 'function', this.farming.status());
+      push('farm-intelligence-controller', !!this.farmIntelligence.status() && typeof this.farmIntelligence.plan === 'function' && typeof this.farmIntelligence.startAutonomy === 'function', this.farmIntelligence.status());
+      push('loot-inventory-controller', !!this.inventory.status() && typeof this.inventory.plan === 'function' && typeof this.inventory.tick === 'function', this.inventory.status());
+      push('merchant-controller', !!this.merchant.status() && typeof this.merchant.plan === 'function', this.merchant.status());
+      push('bank-controller', !!this.bank.status() && typeof this.bank.plan === 'function' && typeof this.bank.reconcile === 'function', this.bank.status());
+      push('trade-controller', !!this.trade.status() && typeof this.trade.marketAnalysis === 'function' && typeof this.trade.queueAcquire === 'function', this.trade.status());
+      push('gear-controller', !!this.gear.status() && typeof this.gear.plan === 'function' && typeof this.gear.queueBestLocal === 'function', this.gear.status());
+      push('upgrade-compound-controller', !!this.upgrade.status() && typeof this.upgrade.plan === 'function' && typeof this.upgrade.queueBest === 'function', this.upgrade.status());
+      push('exchange-craft-controller', !!this.exchangeCraft.status() && typeof this.exchangeCraft.plan === 'function' && typeof this.exchangeCraft.productionPlan === 'function', this.exchangeCraft.status());
+      push('economy-controller', !!this.economy.status() && typeof this.economy.plan === 'function' && typeof this.economy.startAutonomy === 'function', this.economy.status());
+      push('party-logistics-controller', !!this.partyLogistics.status() && typeof this.partyLogistics.plan === 'function' && typeof this.partyLogistics.queueSupply === 'function', this.partyLogistics.status());
+      push('h19-cross-window-lifecycle-transport', !!this.lifecycleTransport.status()
+        && this.lifecycleTransport.status().protocol === 'albot-h19-cross-window-v1'
+        && typeof this.lifecycleTransport.freshPeer === 'function'
+        && typeof this.lifecycleTransport.requestRuntimeState === 'function', this.lifecycleTransport.status());
+      push('character-lifecycle-controller', !!this.lifecycle.status() && typeof this.lifecycle.plan === 'function' && typeof this.lifecycle.queueStart === 'function' && typeof this.lifecycle.queueRespawn === 'function', this.lifecycle.status());
+      push('account-strategy-controller', !!this.accountStrategy.status() && typeof this.accountStrategy.optimizeTask === 'function' && typeof this.accountStrategy.progressionPlan === 'function', this.accountStrategy.status());
+      push('full-autonomy-controller', !!this.fullAutonomy.status() && typeof this.fullAutonomy.startAutonomy === 'function' && typeof this.fullAutonomy.stopAutonomy === 'function', this.fullAutonomy.status());
+      push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
+      push('knowledge-service', !!this.knowledge.status());
+      push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);
+      push('dynamic-roster-no-hardcoded-names', roster.hardcodedNamesRequired === false, {
+        source: roster.source,
+        farmers: roster.farmers.map(x => ({ name: x.name, ctype: x.ctype }))
+      });
+      push('central-scheduler', !!scheduler && typeof scheduler.totalResources === 'number', scheduler);
+      push('module-lifecycle', typeof this.modules.startOne === 'function' && typeof this.modules.restartOne === 'function' && typeof this.modules.stopOne === 'function');
+      push('hot-reload-cleanup', typeof this.prepareHotReload === 'function');
+      return { passed: checks.every(c => c.ok), at: new Date().toISOString(), checks };
+    }
+
+    async runStabilityProbe() {
+      if (!this.running || !this.scheduler.status().enabled) {
+        return { passed: false, reason: 'RUNTIME_NOT_RUNNING', at: new Date().toISOString() };
+      }
+
+      const id = 'h2-runtime-probe';
+      if (this.modules.has(id)) {
+        try { await this.modules.stopOne(id, 'PROBE_RESET'); } catch (_) {}
+        try { this.modules.unregister(id, 'PROBE_RESET'); } catch (_) {}
+      }
+
+      let beats = 0;
+      this.modules.register({
+        id,
+        title: 'H2 Runtime Probe',
+        version: '1.0.0',
+        watchdogMs: 1000,
+        start: context => {
+          context.scope.interval('probe-heartbeat', () => {
+            beats += 1;
+            context.heartbeat({ beats });
+          }, 50, { immediate: true });
+        },
+        stop: () => {},
+        status: () => ({ beats })
+      });
+
+      const resourceCounts = [];
+      await this.modules.startOne(id, this._runtimeContext());
+      resourceCounts.push(this.scheduler.ownerStatus('module:' + id).resources.length);
+
+      for (let i = 0; i < 3; i += 1) {
+        await this.modules.restartOne(id, this._runtimeContext(), 'H2_PROBE_RESTART_' + (i + 1));
+        resourceCounts.push(this.scheduler.ownerStatus('module:' + id).resources.length);
+      }
+
+      await this.modules.stopOne(id, 'H2_PROBE_DONE');
+      const resourcesAfterStop = this.scheduler.ownerStatus('module:' + id).resources.length;
+      const moduleAfterStop = this.modules.describe(id);
+      this.modules.unregister(id, 'H2_PROBE_DONE');
+
+      const passed = resourceCounts.every(count => count === 1)
+        && resourcesAfterStop === 0
+        && moduleAfterStop
+        && moduleAfterStop.state === 'STOPPED';
+
+      const result = {
+        passed,
+        at: new Date().toISOString(),
+        restartResourceCounts: resourceCounts,
+        resourcesAfterStop,
+        beats,
+        scheduler: this.scheduler.status()
+      };
+      this.logger.info('H2 Runtime-Stabilitätstest abgeschlossen', result);
+      return result;
+    }
+
+    prepareHotReload(reason = 'HOT_RELOAD') {
+      if (this._destroyed) return;
+      this.running = false;
+      try { this.liveTests.cancel(reason); } catch (_) {}
+      try { if (this.lifecycleTransport) this.lifecycleTransport.destroy(reason); } catch (_) {}
+
+      // Zuerst alle zentral verwalteten Ressourcen synchron stoppen. Dadurch kann
+      // ein neu geladenes Bundle niemals alte Timer/Listener weiterlaufen lassen.
+      this.scheduler.stop(reason);
+      this.modules.forceCleanup(reason);
+
+      try { if (this.ui && typeof this.ui.destroy === 'function') this.ui.destroy(); } catch (_) {}
+      this.ui = null;
+      this._removeErrorCapture();
+      this.bus.clear();
+      this._destroyed = true;
+    }
+
+    destroy() {
+      this.prepareHotReload('DESTROY');
+    }
+  }
+
+  ns.ALBotRuntime = ALBotRuntime;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+
+(function (root) {
+  'use strict';
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns) throw new Error('ALBOT_INTERNALS_MISSING');
+
+  function esc(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
+  }
+
+  function formatPosition(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number.toFixed(2) : '-';
+  }
+
+  class ControlCenter {
+    constructor(runtime) {
+      this.runtime = runtime;
+      this.root = runtime.root;
+      this.uiRoot = this._resolveUiRoot(this.root);
+      this.doc = this.uiRoot && this.uiRoot.document ? this.uiRoot.document : this.root.document;
+      this.host = null;
+      this.interval = null;
+      this.activeTab = 'overview';
+      this.minimized = false;
+      this.devResult = null;
+      this.navigationResult = null;
+      this.combatResult = null;
+      this.farmingResult = null;
+      this.farmIntelligenceResult = null;
+      this.inventoryResult = null;
+      this.merchantResult = null;
+      this.bankResult = null;
+      this.tradeResult = null;
+      this.gearResult = null;
+      this.upgradeResult = null;
+      this.exchangeCraftResult = null;
+      this.lifecycleResult = null;
+      this.fullAutonomyResult = null;
+      this.liveTestClipboard = null;
+      this._offLog = null;
+      this._dragCleanup = null;
+    }
+
+    _resolveUiRoot(start) {
+      let current = start;
+      let best = null;
+      for (let depth = 0; depth < 8 && current; depth += 1) {
+        try {
+          if (current.document && current.document.body) best = current;
+        } catch (_) {
+          break;
+        }
+        let parentWindow = null;
+        try {
+          parentWindow = current.parent && current.parent !== current ? current.parent : null;
+          if (parentWindow) void parentWindow.document;
+        } catch (_) {
+          parentWindow = null;
+        }
+        if (!parentWindow) break;
+        current = parentWindow;
+      }
+      return best || start;
+    }
+
+    mount() {
+      if (!this.doc || !this.doc.body) return false;
+      this.destroy();
+      const host = this.doc.createElement('div');
+      host.id = 'albot-control-center';
+      host.innerHTML = this._shell();
+      this.doc.body.appendChild(host);
+      this.host = host;
+      this._bind();
+      this.render();
+      const timerRoot = this.uiRoot && typeof this.uiRoot.setInterval === 'function' ? this.uiRoot : this.root;
+      this.intervalRoot = timerRoot;
+      this.interval = timerRoot.setInterval(() => this._tick(), 1000);
+      this._offLog = this.runtime.bus.on('log', () => this.renderLogs());
+      return true;
+    }
+
+    _shell() {
+      return `<style>
+#albot-control-center{position:fixed;right:18px;top:18px;width:min(700px,calc(100vw - 36px));height:min(780px,calc(100vh - 36px));min-width:min(480px,calc(100vw - 36px));min-height:min(380px,calc(100vh - 36px));max-width:calc(100vw - 8px);max-height:calc(100vh - 8px);z-index:2147483647;background:#111827;color:#e5e7eb;border:1px solid #374151;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.45);font:12px/1.35 Arial,sans-serif;overflow:hidden;resize:both;display:flex;flex-direction:column}
+#albot-control-center *{box-sizing:border-box}#albot-control-center button,#albot-control-center input,#albot-control-center select{font:inherit}
+#albot-control-center.albot-minimized{height:auto!important;min-height:0!important;resize:none}
+#albot-control-center.albot-minimized .albot-tabs,#albot-control-center.albot-minimized .albot-body,#albot-control-center.albot-minimized .albot-footer{display:none}
+.albot-head{display:flex;align-items:center;gap:8px;padding:10px 12px;background:#0b1220;border-bottom:1px solid #374151;cursor:move;user-select:none;flex:none}.albot-title{font-weight:800;font-size:15px;flex:1}.albot-state{font-size:11px;padding:3px 7px;border-radius:999px;background:#374151}.albot-window-btn{background:#374151;color:#fff;border:0;border-radius:7px;padding:6px 9px;font-weight:800;cursor:pointer;line-height:1}.albot-window-btn:hover{background:#4b5563}.albot-stop{background:#b91c1c;color:#fff;border:0;border-radius:8px;padding:8px 14px;font-weight:800;cursor:pointer}.albot-stop:hover{background:#dc2626}
+.albot-tabs{display:flex;gap:2px;padding:6px;background:#0f172a;border-bottom:1px solid #374151;overflow:auto;flex:none}.albot-tab{background:#1f2937;color:#d1d5db;border:0;border-radius:6px;padding:6px 9px;cursor:pointer;white-space:nowrap}.albot-tab.active{background:#4b5563;color:white}
+.albot-body{padding:10px;overflow:auto;flex:1;min-height:0}.albot-panel{display:none}.albot-panel.active{display:block}.albot-card{background:#1f2937;border:1px solid #374151;border-radius:8px;padding:8px;margin-bottom:8px}.albot-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}.albot-k{color:#9ca3af}.albot-v{font-weight:700;word-break:break-word}.albot-row{display:flex;gap:6px;align-items:center;margin:6px 0}.albot-row>*{min-width:0}.albot-row input,.albot-row select{flex:1;background:#111827;color:#e5e7eb;border:1px solid #4b5563;border-radius:6px;padding:6px}.albot-btn{background:#374151;color:#fff;border:0;border-radius:6px;padding:6px 9px;cursor:pointer}.albot-btn:hover{background:#4b5563}.albot-btn:disabled{opacity:.45;cursor:not-allowed}.albot-btn.warn{background:#92400e}.albot-btn.danger{background:#991b1b}.albot-stop-warning{margin-bottom:8px;padding:10px;border:1px solid #ef4444;border-radius:8px;background:#451a1a;color:#fecaca;font-weight:700}.albot-goal{border-left:3px solid #6b7280;padding-left:8px;margin:8px 0}.albot-goal-head{display:flex;align-items:center;gap:8px}.albot-goal-title{flex:1;min-width:0}.albot-goal-delete{width:22px;height:22px;padding:0;border:1px solid #ef4444;border-radius:50%;background:#7f1d1d;color:#fff;font-weight:900;line-height:18px;cursor:pointer;flex:none}.albot-goal-delete:hover{background:#dc2626}.albot-small{font-size:11px;color:#9ca3af}.albot-log{white-space:pre-wrap;background:#030712;border-radius:6px;padding:8px;max-height:250px;overflow:auto;font-family:Consolas,monospace}.albot-ok{color:#86efac}.albot-bad{color:#fca5a5}.albot-muted{color:#9ca3af}.albot-priority-grid{display:grid;grid-template-columns:1fr 120px;gap:6px;align-items:center}.albot-footer{display:flex;gap:6px;padding:8px 10px;border-top:1px solid #374151;background:#0b1220;flex:none}
+</style>
+<div class="albot-head" id="albot-drag-handle"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-minimize" class="albot-window-btn" title="Fenster minimieren" aria-label="Fenster minimieren">—</button><button id="albot-emergency" class="albot-stop">STOP</button></div>
+<div class="albot-tabs">
+<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="merchant">Merchant</button><button class="albot-tab" data-tab="bank">Bank</button><button class="albot-tab" data-tab="trade">Handel</button><button class="albot-tab" data-tab="gear">Gear</button><button class="albot-tab" data-tab="upgrade">Upgrade & Compound</button><button class="albot-tab" data-tab="exchange-craft">Exchange & Craft</button><button class="albot-tab" data-tab="economy">Economy</button><button class="albot-tab" data-tab="lifecycle">Lifecycle</button><button class="albot-tab" data-tab="full-autonomy">Full Live</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
+</div>
+<div class="albot-body">
+<section id="albot-panel-overview" class="albot-panel active"></section>
+<section id="albot-panel-priorities" class="albot-panel"></section>
+<section id="albot-panel-navigation" class="albot-panel"></section>
+<section id="albot-panel-combat" class="albot-panel"></section>
+<section id="albot-panel-party" class="albot-panel"></section>
+<section id="albot-panel-farming" class="albot-panel"></section>
+<section id="albot-panel-farm-intelligence" class="albot-panel"></section>
+<section id="albot-panel-inventory" class="albot-panel"></section>
+<section id="albot-panel-merchant" class="albot-panel"></section>
+<section id="albot-panel-bank" class="albot-panel"></section>
+<section id="albot-panel-trade" class="albot-panel"></section>
+<section id="albot-panel-gear" class="albot-panel"></section>
+<section id="albot-panel-upgrade" class="albot-panel"></section>
+<section id="albot-panel-exchange-craft" class="albot-panel"></section>
+<section id="albot-panel-economy" class="albot-panel"></section>
+<section id="albot-panel-lifecycle" class="albot-panel"></section>
+<section id="albot-panel-full-autonomy" class="albot-panel"></section>
+<section id="albot-panel-live-test" class="albot-panel"></section>
+<section id="albot-panel-knowledge" class="albot-panel"></section>
+<section id="albot-panel-logs" class="albot-panel"></section>
+<section id="albot-panel-dev" class="albot-panel"></section>
+</div>
+<div class="albot-footer"><button id="albot-test-start-main" class="albot-btn">Test starten</button><button id="albot-start" class="albot-btn">Start</button><button id="albot-reset-stop-main" class="albot-btn danger" style="display:none">STOP zurücksetzen</button><button id="albot-stop-normal" class="albot-btn warn">Stop</button><button id="albot-copy" class="albot-btn">Fehlerbericht kopieren</button><button id="albot-hide" class="albot-btn">Ausblenden</button></div>`;
+    }
+
+    _bind() {
+      this.host.querySelectorAll('[data-tab]').forEach(btn => btn.addEventListener('click', () => { this.activeTab = btn.dataset.tab; this._selectTab(); this.render(); }));
+      this.host.querySelector('#albot-emergency').addEventListener('click', async () => { await this.runtime.emergencyStop('GUI_EMERGENCY_STOP'); this.render(); });
+      this.host.querySelector('#albot-minimize').addEventListener('click', (event) => { event.stopPropagation(); this.toggleMinimized(); });
+      this._installDrag();
+      this.host.querySelector('#albot-test-start-main').addEventListener('click', () => this.runRecommendedLiveTest());
+      this.host.querySelector('#albot-start').addEventListener('click', async () => { try { await this.runtime.start(); } catch (e) { this.runtime.logger.error('Start fehlgeschlagen', { error: e.message }); } this.render(); });
+      this.host.querySelector('#albot-reset-stop-main').addEventListener('click', () => { this.runtime.resetEmergencyStop(); this.render(); });
+      this.host.querySelector('#albot-stop-normal').addEventListener('click', async () => { await this.runtime.stop('GUI_MODULE_STOP'); this.render(); });
+      this.host.querySelector('#albot-copy').addEventListener('click', () => this.copyDiagnostics());
+      this.host.querySelector('#albot-hide').addEventListener('click', () => { this.host.style.display = 'none'; });
+    }
+
+    _installDrag() {
+      const handle = this.host && this.host.querySelector('#albot-drag-handle');
+      if (!handle || !this.uiRoot || typeof this.uiRoot.addEventListener !== 'function') return;
+
+      let dragging = false;
+      let startX = 0;
+      let startY = 0;
+      let startLeft = 0;
+      let startTop = 0;
+
+      const move = (event) => {
+        if (!dragging || !this.host) return;
+        const viewportW = Math.max(1, Number(this.uiRoot.innerWidth) || Number(this.doc.documentElement && this.doc.documentElement.clientWidth) || 1);
+        const viewportH = Math.max(1, Number(this.uiRoot.innerHeight) || Number(this.doc.documentElement && this.doc.documentElement.clientHeight) || 1);
+        const rect = this.host.getBoundingClientRect();
+        const maxLeft = Math.max(0, viewportW - Math.min(rect.width, viewportW));
+        const maxTop = Math.max(0, viewportH - Math.min(rect.height, viewportH));
+        const left = Math.max(0, Math.min(maxLeft, startLeft + event.clientX - startX));
+        const top = Math.max(0, Math.min(maxTop, startTop + event.clientY - startY));
+        this.host.style.left = left + 'px';
+        this.host.style.top = top + 'px';
+        this.host.style.right = 'auto';
+      };
+
+      const up = () => {
+        if (!dragging) return;
+        dragging = false;
+        if (this.doc && this.doc.body) this.doc.body.style.userSelect = '';
+      };
+
+      const down = (event) => {
+        if (event.button !== 0 || !this.host) return;
+        if (event.target && event.target.closest && event.target.closest('button,input,select,textarea,a')) return;
+        const rect = this.host.getBoundingClientRect();
+        dragging = true;
+        startX = event.clientX;
+        startY = event.clientY;
+        startLeft = rect.left;
+        startTop = rect.top;
+        this.host.style.left = rect.left + 'px';
+        this.host.style.top = rect.top + 'px';
+        this.host.style.right = 'auto';
+        if (this.doc && this.doc.body) this.doc.body.style.userSelect = 'none';
+        event.preventDefault();
+      };
+
+      handle.addEventListener('mousedown', down);
+      this.uiRoot.addEventListener('mousemove', move);
+      this.uiRoot.addEventListener('mouseup', up);
+      this._dragCleanup = () => {
+        handle.removeEventListener('mousedown', down);
+        this.uiRoot.removeEventListener('mousemove', move);
+        this.uiRoot.removeEventListener('mouseup', up);
+        if (this.doc && this.doc.body) this.doc.body.style.userSelect = '';
+      };
+    }
+
+    toggleMinimized(force) {
+      if (!this.host) return false;
+      this.minimized = typeof force === 'boolean' ? force : !this.minimized;
+      this.host.classList.toggle('albot-minimized', this.minimized);
+      const button = this.host.querySelector('#albot-minimize');
+      if (button) {
+        button.textContent = this.minimized ? '□' : '—';
+        button.title = this.minimized ? 'Fenster ausklappen' : 'Fenster minimieren';
+        button.setAttribute('aria-label', button.title);
+      }
+      return this.minimized;
+    }
+
+    _selectTab() {
+      this.host.querySelectorAll('[data-tab]').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === this.activeTab));
+      this.host.querySelectorAll('.albot-panel').forEach(panel => panel.classList.toggle('active', panel.id === 'albot-panel-' + this.activeTab));
+    }
+
+    _updateHeader(status) {
+      const state = this.host.querySelector('#albot-state');
+      state.textContent = status.emergencyStop.latched ? 'EMERGENCY STOP' : status.running ? 'RUNNING' : 'STOPPED';
+      state.className = 'albot-state ' + (status.emergencyStop.latched ? 'albot-bad' : status.running ? 'albot-ok' : '');
+      const startButton = this.host.querySelector('#albot-start');
+      const testButton = this.host.querySelector('#albot-test-start-main');
+      const resetButton = this.host.querySelector('#albot-reset-stop-main');
+      if (startButton) {
+        startButton.disabled = status.emergencyStop.latched === true;
+        startButton.title = status.emergencyStop.latched ? 'Start ist blockiert, bis der globale STOP manuell zurückgesetzt wurde.' : '';
+      }
+      if (testButton) {
+        const liveTests = status.liveTests || {};
+        testButton.disabled = status.emergencyStop.latched === true || liveTests.running === true || !liveTests.recommended;
+        testButton.title = status.emergencyStop.latched
+          ? 'Live-Test ist blockiert, bis der globale STOP manuell zurückgesetzt wurde.'
+          : liveTests.running
+            ? 'Live-Test läuft bereits.'
+            : !liveTests.recommended
+              ? 'Noch keine empfohlene Live-Testsuite registriert.'
+              : 'Empfohlenen Live-Test automatisch ausführen.';
+      }
+      if (resetButton) resetButton.style.display = status.emergencyStop.latched ? '' : 'none';
+    }
+
+    _tick() {
+      if (!this.host) return;
+      this.runtime.roster.refresh();
+      const status = this.runtime.status();
+      this._updateHeader(status);
+      if (this.activeTab === 'overview') this.renderOverview(status);
+      if (this.activeTab === 'navigation') {
+        const panel = this.host.querySelector('#albot-panel-navigation');
+        const focused = panel && this.doc && this.doc.activeElement && panel.contains(this.doc.activeElement);
+        if (!focused) this.renderNavigation(status);
+      }
+      if (this.activeTab === 'combat') {
+        const panel = this.host.querySelector('#albot-panel-combat');
+        const focused = panel && this.doc && this.doc.activeElement && panel.contains(this.doc.activeElement);
+        if (!focused) this.renderCombat(status);
+      }
+      if (this.activeTab === 'party') this.renderParty(status);
+      if (this.activeTab === 'inventory') this.renderInventory(status);
+      if (this.activeTab === 'merchant') this.renderMerchant(status);
+      if (this.activeTab === 'bank') this.renderBank(status);
+      if (this.activeTab === 'trade') this.renderTrade(status);
+      if (this.activeTab === 'gear') this.renderGear(status);
+      if (this.activeTab === 'upgrade') this.renderUpgrade(status);
+      if (this.activeTab === 'exchange-craft') this.renderExchangeCraft(status);
+      if (this.activeTab === 'economy') this.renderEconomy(status);
+      if (this.activeTab === 'lifecycle') this.renderLifecycle(status);
+      if (this.activeTab === 'full-autonomy') this.renderFullAutonomy(status);
+      if (this.activeTab === 'live-test') this.renderLiveTest(status);
+      if (this.activeTab === 'knowledge') this.renderKnowledge(status);
+      if (this.activeTab === 'logs') this.renderLogs();
+      if (this.activeTab === 'dev') this.renderDev(status);
+    }
+
+    render() {
+      if (!this.host) return;
+      this.runtime.roster.refresh();
+      const status = this.runtime.status();
+      this._updateHeader(status);
+      this.renderOverview(status);
+      this.renderPriorities(status);
+      this.renderNavigation(status);
+      this.renderCombat(status);
+      this.renderParty(status);
+      this.renderFarming(status);
+      this.renderFarmIntelligence(status);
+      this.renderInventory(status);
+      this.renderMerchant(status);
+      this.renderBank(status);
+      this.renderTrade(status);
+      this.renderGear(status);
+      this.renderUpgrade(status);
+      this.renderExchangeCraft(status);
+      this.renderEconomy(status);
+      this.renderLifecycle(status);
+      this.renderFullAutonomy(status);
+      this.renderLiveTest(status);
+      this.renderKnowledge(status);
+      this.renderLogs();
+      this.renderDev(status);
+    }
+
+    renderOverview(status) {
+      const panel = this.host.querySelector('#albot-panel-overview');
+      const roster = status.roster || { farmers: [], characters: [] };
+      const knowledge = status.knowledge || {};
+      const game = status.game || { available: false, character: null, target: null };
+      const gameCharacter = game.character || {};
+      const scheduler = status.scheduler || { enabled: false, totalResources: 0, generation: 0 };
+      panel.innerHTML = `${status.emergencyStop.latched ? '<div class="albot-stop-warning">GLOBALER STOP IST AKTIV. Start ist absichtlich blockiert. Zum Fortfahren unten auf „STOP zurücksetzen“ klicken.</div>' : ''}<div class="albot-card"><b>System</b><div class="albot-grid" style="margin-top:6px">
+<div><span class="albot-k">Version</span><div class="albot-v">${esc(status.version)}</div></div>
+<div><span class="albot-k">Runtime</span><div class="albot-v">${status.running ? 'RUNNING' : 'STOPPED'}</div></div>
+<div><span class="albot-k">STOP</span><div class="albot-v">${status.emergencyStop.latched ? 'AKTIV' : 'bereit'}</div></div>
+<div><span class="albot-k">Knowledge</span><div class="albot-v">${knowledge.provider ? esc(knowledge.provider.state || 'IDLE') : 'nicht konfiguriert'}${knowledge.lastKnownGood ? ' · LKG Gen. '+esc(knowledge.lastKnownGood.generation) : ''}</div></div>
+<div><span class="albot-k">Scheduler</span><div class="albot-v">${scheduler.enabled ? 'ACTIVE' : 'STOPPED'} · ${esc(scheduler.totalResources)} Ressourcen</div></div>
+<div><span class="albot-k">Scheduler Starts</span><div class="albot-v">${esc(scheduler.generation)}</div></div>
+<div><span class="albot-k">Boot / Reload</span><div class="albot-v">#${esc(status.bootCount || 1)}${status.replacedPrevious ? ' · Hot Reload' : ''}</div></div>
+<div><span class="albot-k">Runtime Starts</span><div class="albot-v">${esc(status.runEpoch || 0)}</div></div>
+</div></div>
+<div class="albot-card"><b>Live Game Adapter</b><div class="albot-grid" style="margin-top:6px">
+<div><span class="albot-k">Character</span><div class="albot-v">${game.available ? esc(gameCharacter.name || '-')+' ('+esc(gameCharacter.ctype || '-')+')' : 'nicht verfügbar'}</div></div>
+<div><span class="albot-k">Map</span><div class="albot-v">${esc(gameCharacter.map || '-')}</div></div>
+<div><span class="albot-k">HP / MP</span><div class="albot-v">${esc(gameCharacter.hp)} / ${esc(gameCharacter.maxHp)} · ${esc(gameCharacter.mp)} / ${esc(gameCharacter.maxMp)}</div></div>
+<div><span class="albot-k">Position</span><div class="albot-v">x=${esc(formatPosition(gameCharacter.x))} · y=${esc(formatPosition(gameCharacter.y))}</div></div>
+<div><span class="albot-k">Target</span><div class="albot-v">${game.target ? esc(game.target.name || game.target.id || '-') : 'keins'}</div></div>
+<div><span class="albot-k">Entities</span><div class="albot-v">${esc(game.world && game.world.entityCount != null ? game.world.entityCount : 0)}</div></div>
+</div></div>
+<div class="albot-card"><b>Dynamisch erkannte Charaktere</b><div class="albot-small">Quelle: ${esc(roster.source || 'unbekannt')} · keine hartcodierten Namen</div>
+<div style="margin-top:6px"><span class="albot-k">Farmer:</span> <span class="albot-v">${roster.farmers && roster.farmers.length ? roster.farmers.map(x => esc(x.name)+' ('+esc(x.ctype)+')').join(', ') : 'keine erkannt'}</span></div>
+<div><span class="albot-k">Merchant:</span> <span class="albot-v">${roster.merchant ? esc(roster.merchant.name) : 'nicht erkannt'}</span></div>
+<div><span class="albot-k">Aktiv gesamt:</span> <span class="albot-v">${roster.characters ? roster.characters.length : 0}</span></div></div>
+<div class="albot-card"><b>Module</b><div class="albot-small">${status.modules.length ? status.modules.map(m => esc(m.id)+': '+esc(m.state)+' / '+esc(m.health || 'UNKNOWN')+' · Ressourcen '+esc(m.resources == null ? 0 : m.resources)).join('<br>') : 'Noch keine Module installiert.'}</div></div>`;
+    }
+
+    renderPriorities(status) {
+      const panel = this.host.querySelector('#albot-panel-priorities');
+      const goals = status.goals || [];
+      const p = status.strategicPriorities || {};
+      panel.innerHTML = `<div class="albot-card"><b>Neues Ziel</b>
+<div class="albot-row"><select id="albot-goal-type"><option value="COLLECT_ITEM">Item sammeln</option><option value="LEVEL">Aufleveln</option><option value="GEAR">Bessere Rüstung/Gear</option><option value="GOLD">Gold verdienen</option><option value="CUSTOM">Sonstiges</option></select><input id="albot-goal-target" placeholder="Ziel / Item / Beschreibung"></div>
+<div class="albot-row"><input id="albot-goal-amount" type="number" min="1" placeholder="Menge / Zielwert"><select id="albot-goal-scope"><option value="FARMERS">Erkannte Farmer</option><option value="PARTY">Party</option><option value="ACCOUNT">Account</option><option value="MERCHANT">Merchant</option></select><select id="albot-goal-priority"><option>HIGH</option><option selected>NORMAL</option><option>LOW</option><option>CRITICAL</option></select></div>
+<div class="albot-row"><button id="albot-add-goal" class="albot-btn">+ Ziel anlegen</button></div></div>
+<div class="albot-card"><b>Aktive Ziele</b>${goals.length ? goals.map(g => `<div class="albot-goal"><div class="albot-goal-head"><div class="albot-goal-title"><b>${esc(g.priority)}</b> · ${esc(g.type)} · ${esc(g.target || '(ohne Text)')}</div><button class="albot-goal-delete" data-goal-delete="${esc(g.id)}" title="Ziel löschen" aria-label="Ziel löschen">×</button></div><div class="albot-small">Scope: ${esc(g.scope)} · Status: ${esc(g.status)}${g.amount != null ? ' · Fortschritt: '+esc(g.progress)+' / '+esc(g.amount) : ''}</div><div class="albot-row"><button class="albot-btn" data-goal-action="${g.status === 'PAUSED' ? 'ACTIVE' : 'PAUSED'}" data-goal-id="${esc(g.id)}">${g.status === 'PAUSED' ? 'Fortsetzen' : 'Pause'}</button><button class="albot-btn danger" data-goal-action="CANCELLED" data-goal-id="${esc(g.id)}">Abbrechen</button></div></div>`).join('') : '<div class="albot-small">Noch keine Ziele.</div>'}</div>
+<div class="albot-card"><b>Grundprioritäten</b><div class="albot-priority-grid">${Object.entries(p).map(([k,v]) => `<label>${esc(k)}</label><select data-priority-name="${esc(k)}">${['LOW','NORMAL','HIGH','CRITICAL'].map(x => `<option ${x===v?'selected':''}>${x}</option>`).join('')}</select>`).join('')}</div></div>`;
+      const add = panel.querySelector('#albot-add-goal');
+      if (add) add.onclick = () => {
+        try {
+          this.runtime.goals.add({ type: panel.querySelector('#albot-goal-type').value, target: panel.querySelector('#albot-goal-target').value, amount: panel.querySelector('#albot-goal-amount').value, scope: panel.querySelector('#albot-goal-scope').value, priority: panel.querySelector('#albot-goal-priority').value });
+          this.render();
+        } catch (e) { this.runtime.logger.error('Goal konnte nicht angelegt werden', { error: e.message }); this.render(); }
+      };
+      panel.querySelectorAll('[data-goal-action]').forEach(btn => btn.onclick = () => { try { this.runtime.goals.setStatus(btn.dataset.goalId, btn.dataset.goalAction); } catch (e) { this.runtime.logger.error('Goal-Status fehlgeschlagen', { error: e.message }); } this.render(); });
+      panel.querySelectorAll('[data-goal-delete]').forEach(btn => btn.onclick = () => { try { this.runtime.goals.remove(btn.dataset.goalDelete); } catch (e) { this.runtime.logger.error('Goal konnte nicht gelöscht werden', { error: e.message }); } this.render(); });
+      panel.querySelectorAll('[data-priority-name]').forEach(sel => sel.onchange = () => { try { this.runtime.goals.setPriority(sel.dataset.priorityName, sel.value); } catch (e) { this.runtime.logger.error('Priorität konnte nicht geändert werden', { error: e.message }); } this.render(); });
+    }
+
+    renderNavigation(status) {
+      const panel = this.host.querySelector('#albot-panel-navigation');
+      if (!panel) return;
+      const movement = status.movement || {};
+      const game = status.game || {};
+      const character = game.character || {};
+      const active = movement.activeOrder || null;
+      const last = movement.lastOrder || null;
+      const safe = movement.safePoint || null;
+      const resultText = this.navigationResult ? JSON.stringify(this.navigationResult, null, 2) : 'Noch keine manuelle H4-Bewegungsaktion.';
+
+      panel.innerHTML = `<div class="albot-card"><b>H4 Bewegung</b>
+<div class="albot-small">Alle Aktionen laufen über die zentrale Action-Grenze. Arrival wird aus der beobachteten Position bestätigt; ein Return von smart_move allein gilt nicht als Ankunft.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${movement.enabled ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Zustand</span><div class="albot-v">${esc(movement.state || 'IDLE')}</div></div>
+<div><span class="albot-k">Map</span><div class="albot-v">${esc(character.map || '-')}</div></div>
+<div><span class="albot-k">Position</span><div class="albot-v">x=${esc(formatPosition(character.x))} · y=${esc(formatPosition(character.y))}</div></div>
+<div><span class="albot-k">Aktiver Auftrag</span><div class="albot-v">${active ? esc(active.kind)+' · '+esc(active.id) : 'keiner'}</div></div>
+<div><span class="albot-k">Safe Point</span><div class="albot-v">${safe ? esc(safe.map)+' · '+esc(formatPosition(safe.x))+', '+esc(formatPosition(safe.y)) : 'nicht gesetzt'}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Kontrollierter Zielpunkt</b>
+<div class="albot-row"><input id="albot-nav-map" value="${esc(character.map || '')}" placeholder="Map"><input id="albot-nav-x" type="number" step="0.01" placeholder="x"><input id="albot-nav-y" type="number" step="0.01" placeholder="y"></div>
+<div class="albot-row"><button id="albot-nav-local" class="albot-btn">Lokal bewegen</button><button id="albot-nav-smart" class="albot-btn">Smart Move</button><button id="albot-nav-retarget" class="albot-btn">Retarget</button><button id="albot-nav-cancel" class="albot-btn danger">Bewegung abbrechen</button></div>
+</div>
+
+<div class="albot-card"><b>Zielannäherung & Safe Return</b>
+<div class="albot-row"><input id="albot-nav-distance" type="number" min="0" step="1" placeholder="Abstand zum ausgewählten Target"><button id="albot-nav-approach" class="albot-btn">Target annähern</button></div>
+<div class="albot-row"><button id="albot-nav-safe-capture" class="albot-btn">Safe Point hier setzen</button><button id="albot-nav-safe-return" class="albot-btn">Zum Safe Point zurück</button></div>
+</div>
+
+<div class="albot-card"><b>Letzter Status</b>
+<div class="albot-small">${last ? 'Letzter Auftrag: '+esc(last.state)+' · '+esc(last.reason || '-') : 'Noch kein abgeschlossener Auftrag.'}</div>
+<div class="albot-log" style="margin-top:8px;max-height:220px">${esc(resultText)}</div>
+</div>`;
+
+      const readDestination = () => {
+        const map = panel.querySelector('#albot-nav-map').value.trim();
+        const xRaw = panel.querySelector('#albot-nav-x').value;
+        const yRaw = panel.querySelector('#albot-nav-y').value;
+        const x = xRaw === '' ? null : Number(xRaw);
+        const y = yRaw === '' ? null : Number(yRaw);
+        return { map: map || character.map || null, x, y };
+      };
+      const run = fn => {
+        try { this.navigationResult = fn(); }
+        catch (error) { this.navigationResult = { accepted: false, reason: String(error && error.message || error) }; }
+        this.renderNavigation(this.runtime.status());
+      };
+
+      panel.querySelector('#albot-nav-local').onclick = () => {
+        const destination = readDestination();
+        run(() => this.runtime.movement.moveLocal(destination.x, destination.y, { owner: 'gui-h4-local' }));
+      };
+      panel.querySelector('#albot-nav-smart').onclick = () => {
+        const destination = readDestination();
+        run(() => this.runtime.movement.smartMove(destination, { owner: 'gui-h4-smart' }));
+      };
+      panel.querySelector('#albot-nav-retarget').onclick = () => {
+        const destination = readDestination();
+        run(() => this.runtime.movement.retarget(destination, { owner: 'gui-h4-retarget' }));
+      };
+      panel.querySelector('#albot-nav-cancel').onclick = () => run(() => this.runtime.movement.cancel('GUI_MOVEMENT_CANCEL'));
+      panel.querySelector('#albot-nav-approach').onclick = () => {
+        const raw = panel.querySelector('#albot-nav-distance').value;
+        run(() => this.runtime.movement.approachCurrentTarget({
+          owner: 'gui-h4-target-approach',
+          distance: raw === '' ? undefined : Number(raw)
+        }));
+      };
+      panel.querySelector('#albot-nav-safe-capture').onclick = () => run(() => this.runtime.movement.captureSafePoint('GUI'));
+      panel.querySelector('#albot-nav-safe-return').onclick = () => run(() => this.runtime.movement.safeReturn({ owner: 'gui-h4-safe-return' }));
+    }
+
+    renderCombat(status) {
+      const panel = this.host.querySelector('#albot-panel-combat');
+      if (!panel) return;
+      const combat = status.combat || {};
+      const session = combat.session || null;
+      const metrics = combat.metrics || {};
+      const classSkills = status.classSkills || {};
+      const skillMetrics = classSkills.metrics || {};
+      const pendingSkill = classSkills.pending || null;
+      const liveSkills = Array.isArray(classSkills.liveSkills) ? classSkills.liveSkills.filter(row => row.available).map(row => row.id) : [];
+      const pending = combat.pendingAttack || null;
+      const candidates = Array.isArray(combat.safeCandidates) ? combat.safeCandidates : [];
+      const resultText = this.combatResult ? JSON.stringify(this.combatResult, null, 2) : 'Noch keine manuelle H6-Combat-Session.';
+
+      panel.innerHTML = `<div class="albot-card"><b>H5/H6 Combat & Klassenlogik</b>
+<div class="albot-small">H5 stellt Targeting, Movement und Basisangriff bereit. H6 ergänzt klassenspezifische Skills. H7 liefert Party-Focus; H8 kann sichere Multi-Target-Aktionen ergänzen, ohne die H5/H6/H7-Safety zu umgehen.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${combat.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Combat</span><div class="albot-v">${esc(combat.state || 'IDLE')}</div></div>
+<div><span class="albot-k">Target</span><div class="albot-v">${session && session.targetId ? esc(session.targetType || session.targetId) : 'keins'}</div></div>
+<div><span class="albot-k">Attack Outcome</span><div class="albot-v">${pending ? esc(pending.commandSettlement || 'PENDING') : 'kein offener Angriff'}</div></div>
+<div><span class="albot-k">Angriffe bestätigt</span><div class="albot-v">${esc(metrics.attacksConfirmed || 0)}</div></div>
+<div><span class="albot-k">UNKNOWN</span><div class="albot-v">${esc(metrics.attackUnknown || 0)}</div></div>
+<div><span class="albot-k">Approaches</span><div class="albot-v">${esc(metrics.approaches || 0)}</div></div>
+<div><span class="albot-k">Retreats</span><div class="albot-v">${esc(metrics.retreats || 0)}</div></div>
+</div></div>
+
+<div class="albot-card"><b>H6 Klassen-Skills</b>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Klasse</span><div class="albot-v">${esc(classSkills.currentClass || '-')}</div></div>
+<div><span class="albot-k">Live Skills</span><div class="albot-v">${liveSkills.length ? liveSkills.map(esc).join(', ') : 'keine'}</div></div>
+<div><span class="albot-k">Pending</span><div class="albot-v">${pendingSkill ? esc(pendingSkill.skillId) : 'keiner'}</div></div>
+<div><span class="albot-k">Bestätigt</span><div class="albot-v">${esc(skillMetrics.confirmed || 0)}</div></div>
+<div><span class="albot-k">Abgelehnt</span><div class="albot-v">${esc(skillMetrics.rejected || 0)}</div></div>
+<div><span class="albot-k">UNKNOWN</span><div class="albot-v">${esc(skillMetrics.unknown || 0)}</div></div>
+<div><span class="albot-k">Anti-Spam Skips</span><div class="albot-v">${esc(skillMetrics.spamSkips || 0)}</div></div>
+<div><span class="albot-k">Suspendiert</span><div class="albot-v">${classSkills.suspended ? 'JA · '+esc(classSkills.suspendedReason || '-') : 'NEIN'}</div></div>
+</div>
+<div class="albot-small" style="margin-top:8px">Letzter Skill: ${classSkills.lastUse ? esc(classSkills.lastUse.skillId)+' · '+esc(classSkills.lastUse.state)+' · '+esc(classSkills.lastUse.reason || '-') : 'noch keiner'}</div>
+</div>
+
+<div class="albot-card"><b>Manuelle H6-Session</b>
+<div class="albot-row"><input id="albot-combat-type" placeholder="Monster-Typ optional, z.B. goo"><input id="albot-combat-maxattack" type="number" min="0" step="1" placeholder="Max. Monster-Angriff optional"></div>
+<div class="albot-row"><label class="albot-small"><input id="albot-combat-kiting" type="checkbox"> Kiting-Grundlage aktivieren</label></div>
+<div class="albot-row"><button id="albot-combat-start" class="albot-btn" ${combat.active ? 'disabled' : ''}>Combat starten</button><button id="albot-combat-stop" class="albot-btn warn" ${combat.active ? '' : 'disabled'}>Combat stoppen</button></div>
+<div class="albot-small">Sichere sichtbare Kandidaten: ${candidates.length ? candidates.map(row => esc(row.mtype || row.name || row.id)+' ('+esc(row.distance == null ? '?' : Math.round(row.distance))+')').join(', ') : 'keine'}</div>
+</div>
+
+<div class="albot-card"><b>Letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.combatResult = fn(); }
+        catch (error) { this.combatResult = { accepted: false, reason: String(error && error.message || error) }; }
+        this.renderCombat(this.runtime.status());
+      };
+
+      const start = panel.querySelector('#albot-combat-start');
+      if (start) start.onclick = () => {
+        const type = panel.querySelector('#albot-combat-type').value.trim();
+        const maxRaw = panel.querySelector('#albot-combat-maxattack').value;
+        const kiting = panel.querySelector('#albot-combat-kiting').checked;
+        run(() => this.runtime.combat.startSession({
+          owner: 'gui-h6-combat',
+          monsterType: type || undefined,
+          maxAttack: maxRaw === '' ? undefined : Number(maxRaw),
+          kiting
+        }));
+      };
+      const stop = panel.querySelector('#albot-combat-stop');
+      if (stop) stop.onclick = () => run(() => this.runtime.combat.stopSession('GUI_COMBAT_STOP'));
+    }
+
+    renderFarming(status) {
+      const panel = this.host.querySelector('#albot-panel-farming');
+      if (!panel) return;
+      const farming = status.farming || {};
+      const metrics = farming.metrics || {};
+      const session = farming.session || null;
+      const lastPlan = farming.lastPlan || null;
+      const lastUse = farming.lastUse || null;
+      const liveSkills = Array.isArray(farming.liveAoeSkills)
+        ? farming.liveAoeSkills.filter(row => row && row.definition).map(row => row.id)
+        : [];
+      const pack = lastPlan && Array.isArray(lastPlan.pack) ? lastPlan.pack : [];
+      const resultText = this.farmingResult ? JSON.stringify(this.farmingResult, null, 2) : 'Noch keine manuelle H8-Aktion.';
+
+      panel.innerHTML = `<div class="albot-card"><b>H8 AoE & adaptives Farming</b>
+<div class="albot-small">H8 plant Packs ausschließlich aus H5-sicheren Kandidaten. HP, aggregierter Monster-Angriff, Party-Safety und live-bereite Klassen-AoE begrenzen die Gegnerzahl. UNKNOWN suspendiert AoE ohne Blind-Retry.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${farming.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Session</span><div class="albot-v">${farming.active ? 'ACTIVE' : 'IDLE'}</div></div>
+<div><span class="albot-k">Klasse</span><div class="albot-v">${esc(farming.currentClass || '-')}</div></div>
+<div><span class="albot-k">Live AoE</span><div class="albot-v">${liveSkills.length ? liveSkills.map(esc).join(', ') : 'keine live-bereiten Definitionen'}</div></div>
+<div><span class="albot-k">Combat owned</span><div class="albot-v">${farming.combatOwned ? 'JA' : 'NEIN'}</div></div>
+<div><span class="albot-k">Suspendiert</span><div class="albot-v">${farming.suspended ? 'JA · '+esc(farming.suspendedReason || '-') : 'NEIN'}</div></div>
+<div><span class="albot-k">AoE bestätigt</span><div class="albot-v">${esc(metrics.aoeConfirmed || 0)}</div></div>
+<div><span class="albot-k">AoE UNKNOWN</span><div class="albot-v">${esc(metrics.aoeUnknown || 0)}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Aktueller adaptiver Plan</b>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Zustand</span><div class="albot-v">${esc(lastPlan && lastPlan.state || '-')}</div></div>
+<div><span class="albot-k">Grund</span><div class="albot-v">${esc(lastPlan && lastPlan.reason || '-')}</div></div>
+<div><span class="albot-k">Pack</span><div class="albot-v">${esc(pack.length)} / ${esc(lastPlan && lastPlan.capacity != null ? lastPlan.capacity : '-')}</div></div>
+<div><span class="albot-k">Aggregate Attack</span><div class="albot-v">${esc(lastPlan && lastPlan.aggregateAttack != null ? Math.round(lastPlan.aggregateAttack) : '-')}</div></div>
+<div><span class="albot-k">AoE Skill</span><div class="albot-v">${esc(lastPlan && lastPlan.aoe && lastPlan.aoe.skillId || '-')}</div></div>
+<div><span class="albot-k">Letzter Outcome</span><div class="albot-v">${lastUse ? esc(lastUse.skillId)+' · '+esc(lastUse.state) : '-'}</div></div>
+</div>
+<div class="albot-small" style="margin-top:8px">Pack: ${pack.length ? pack.map(row => esc(row.mtype || row.id)+'['+esc(row.id)+']').join(', ') : 'keins'}</div>
+</div>
+
+<div class="albot-card"><b>Manuelle H8-Session</b>
+<div class="albot-row"><input id="albot-farming-type" placeholder="Monster-Typ optional, z.B. goo"></div>
+<div class="albot-row"><button id="albot-farming-plan" class="albot-btn">Plan prüfen</button><button id="albot-farming-start" class="albot-btn" ${farming.active || (status.combat && status.combat.active) ? 'disabled' : ''}>Farming starten</button><button id="albot-farming-stop" class="albot-btn warn" ${farming.active ? '' : 'disabled'}>Farming stoppen</button></div>
+<div class="albot-small">Globaler STOP und Runtime-Stop bleiben jederzeit vorrangig.</div>
+</div>
+
+<div class="albot-card"><b>H8 Metriken</b><div class="albot-small">Plans: ${esc(metrics.plans || 0)} · Packs: ${esc(metrics.packsPlanned || 0)} · Single: ${esc(metrics.singleTargetPlans || 0)} · Retreat: ${esc(metrics.retreatPlans || 0)} · Max Pack: ${esc(metrics.maxPackObserved || 0)} · Rejected: ${esc(metrics.aoeRejected || 0)}</div></div>
+<div class="albot-card"><b>Letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.farmingResult = fn(); }
+        catch (error) { this.farmingResult = { accepted: false, reason: String(error && error.message || error) }; }
+        this.renderFarming(this.runtime.status());
+      };
+      const plan = panel.querySelector('#albot-farming-plan');
+      if (plan) plan.onclick = () => run(() => this.runtime.farming.plan());
+      const start = panel.querySelector('#albot-farming-start');
+      if (start) start.onclick = () => {
+        const type = panel.querySelector('#albot-farming-type').value.trim();
+        run(() => this.runtime.farming.startSession({
+          owner: 'gui-h8-farming',
+          monsterType: type || undefined,
+          partyAssist: true
+        }));
+      };
+      const stop = panel.querySelector('#albot-farming-stop');
+      if (stop) stop.onclick = () => run(() => this.runtime.farming.stopSession('GUI_H8_STOP'));
+    }
+
+    renderParty(status) {
+      const panel = this.host.querySelector('#albot-panel-party');
+      if (!panel) return;
+      const partyStatus = status.party || {};
+      const party = partyStatus.party || {};
+      const focus = partyStatus.focus || {};
+      const support = partyStatus.support || {};
+      const metrics = partyStatus.metrics || {};
+      const members = Array.isArray(party.members) ? party.members : [];
+      const logistics = status.partyLogistics || {};
+      const logisticsMetrics = logistics.metrics || {};
+      const logisticsPolicy = logistics.config || {};
+      const logisticsPlan = logistics.lastPlan || null;
+      const logisticsAction = logistics.currentAction || null;
+      const logisticsQueue = Array.isArray(logistics.queue) ? logistics.queue : [];
+      const catalog = Array.isArray(logistics.supplyCatalog) ? logistics.supplyCatalog : [];
+      const ownedTargets = members.filter(member => member.owned && !member.local);
+      const targetOptions = ownedTargets.length
+        ? ownedTargets.map(member => '<option value="'+esc(member.name)+'">'+esc(member.name)+' · '+esc(member.ctype || '-')+(member.visible ? '' : ' · nicht sichtbar')+'</option>').join('')
+        : '<option value="">kein eigenes Party-Ziel</option>';
+      const supplyOptions = catalog.length
+        ? catalog.slice(0, 30).map(row => '<option value="'+esc(row.name)+'">'+esc(row.name)+' x'+esc(row.quantity)+' · '+esc(row.type || '-')+(row.utility ? ' · Utility' : '')+'</option>').join('')
+        : '<option value="">kein sicheres Supply-Item</option>';
+      const resultText = this.partyLogisticsResult
+        ? JSON.stringify(this.partyLogisticsResult, null, 2)
+        : 'Noch keine manuelle H18-Aktion.';
+
+      panel.innerHTML = `<div class="albot-card"><b>H7 Party</b>
+<div class="albot-small">Koordination ist nur aktiv, wenn mindestens zwei eigene Party-Mitglieder erkannt wurden und kein fremdes Mitglied enthalten ist. Focus Fire basiert auf frischen sichtbaren Targets; Healing/Revive laufen nur über bestätigte Live-Readiness.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Party</span><div class="albot-v">${party.available ? esc(party.size)+' Mitglieder' : 'keine'}</div></div>
+<div><span class="albot-k">Koordination</span><div class="albot-v">${party.coordinationEnabled ? 'AKTIV' : 'BLOCKIERT / SOLO'}</div></div>
+<div><span class="albot-k">Leader</span><div class="albot-v">${esc(party.leader || '-')}</div></div>
+<div><span class="albot-k">Lokale Rolle</span><div class="albot-v">${esc(party.localRole || '-')}</div></div>
+<div><span class="albot-k">Focus Target</span><div class="albot-v">${esc(focus.targetId || '-')}</div></div>
+<div><span class="albot-k">Focus Quelle</span><div class="albot-v">${esc(focus.source || '-')}</div></div>
+<div><span class="albot-k">Support</span><div class="albot-v">${support.suspended ? 'SUSPENDIERT' : support.pending ? 'PENDING' : 'bereit'}</div></div>
+<div><span class="albot-k">Support bestätigt</span><div class="albot-v">${esc(metrics.supportConfirmed || 0)}</div></div>
+</div></div>
+<div class="albot-card"><b>Party-Mitglieder & Rollen</b>
+${members.length ? members.map(member => '<div class="albot-small"><b>'+esc(member.name)+'</b> · '+esc(member.ctype || '?')+' · '+esc(member.role || 'UNKNOWN')+' · '+(member.owned ? 'OWNED' : 'FOREIGN')+' · '+(member.rip ? 'DOWN' : member.hpRatio == null ? 'HP ?' : 'HP '+esc(Math.round(member.hpRatio*100))+'%')+' · Target '+esc(member.targetId || '-')+'</div>').join('') : '<div class="albot-small">Keine Party-Mitglieder erkannt.</div>'}
+</div>
+<div class="albot-card"><b>Support / Recovery</b>
+<div class="albot-small">Party-Buffs/Auras aus Live-Skills: ${partyStatus.partyBuffSkills && partyStatus.partyBuffSkills.length ? partyStatus.partyBuffSkills.map(esc).join(', ') : 'keine für lokale Klasse erkannt'}</div>
+<div class="albot-small">Heal Dispatches: ${esc(metrics.healsDispatched || 0)} · Party Heal: ${esc(metrics.partyHealsDispatched || 0)} · Revive: ${esc(metrics.revivesDispatched || 0)} · UNKNOWN: ${esc(metrics.supportUnknown || 0)} · Focus-Pingpong: ${esc(metrics.focusPingPongs || 0)}</div>
+${party.foreignMemberNames && party.foreignMemberNames.length ? '<div class="albot-small albot-bad">Fremde Party-Mitglieder blockieren automatische Koordination: '+party.foreignMemberNames.map(esc).join(', ')+'</div>' : ''}
+${support.suspended ? '<div class="albot-small albot-bad">Support suspendiert: '+esc(support.suspendedReason || '-')+'</div>' : ''}
+</div>
+
+<div class="albot-card"><b>H18 Party Logistics</b>
+<div class="albot-small">Supply-Items und Gold gehen nur an eigene Party-Mitglieder. Transfers werden nur aus Sender-Deltas bestätigt; Promise-/Movement-UNKNOWN suspendiert H18 ohne Blind-Retry. Regrouping besitzt Movement exklusiv über <code>party-logistics-h18</code>.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${logistics.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Autonomie</span><div class="albot-v">${logistics.autonomyEnabled ? 'AKTIV' : 'AUS'}</div></div>
+<div><span class="albot-k">Plan</span><div class="albot-v">${esc(logisticsPlan && logisticsPlan.state || '-')} · ${esc(logisticsPlan && logisticsPlan.reason || '-')}</div></div>
+<div><span class="albot-k">Queue</span><div class="albot-v">${esc(logisticsQueue.length)}</div></div>
+<div><span class="albot-k">Aktive Aktion</span><div class="albot-v">${logisticsAction ? esc(logisticsAction.kind)+' · '+esc(logisticsAction.targetName || '-') : 'keine'}</div></div>
+<div><span class="albot-k">Session-Aktionen</span><div class="albot-v">${esc(logistics.actionsThisSession || 0)} / ${esc(logisticsPolicy.maxActionsPerSession || '-')}</div></div>
+<div><span class="albot-k">Supply bestätigt / UNKNOWN</span><div class="albot-v">${esc(logisticsMetrics.suppliesConfirmed || 0)} / ${esc(logisticsMetrics.suppliesUnknown || 0)}</div></div>
+<div><span class="albot-k">Gold bestätigt / UNKNOWN</span><div class="albot-v">${esc(logisticsMetrics.goldConfirmed || 0)} / ${esc(logisticsMetrics.goldUnknown || 0)}</div></div>
+<div><span class="albot-k">Regroups bestätigt / UNKNOWN</span><div class="albot-v">${esc(logisticsMetrics.regroupsConfirmed || 0)} / ${esc(logisticsMetrics.regroupsUnknown || 0)}</div></div>
+<div><span class="albot-k">Suspendiert</span><div class="albot-v">${logistics.suspended ? 'JA · '+esc(logistics.suspendedReason || '-') : 'NEIN'}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Supply / Gold vormerken</b>
+<div class="albot-row"><select id="albot-h18-target">${targetOptions}</select></div>
+<div class="albot-row"><select id="albot-h18-item">${supplyOptions}</select><input id="albot-h18-quantity" type="number" min="1" step="1" value="1" style="max-width:90px"><button id="albot-h18-supply" class="albot-btn">Supply vormerken</button></div>
+<div class="albot-row"><input id="albot-h18-gold" type="number" min="1" step="1" value="10000" placeholder="Gold"><button id="albot-h18-gold-queue" class="albot-btn">Gold vormerken</button></div>
+<div class="albot-small">Goldreserve aktuell: ${esc(logisticsPolicy.goldReserve == null ? '-' : logisticsPolicy.goldReserve)}. Leveled/gelockte/Gift/Quest/Cash/Equipment-Items sind vom Supply-Pfad ausgeschlossen.</div>
+</div>
+
+<div class="albot-card"><b>H18 Steuerung</b>
+<div class="albot-row"><label>Max Aktionen <input id="albot-h18-max-actions" type="number" min="1" max="50" value="${esc(logisticsPolicy.maxActionsPerSession == null ? 6 : logisticsPolicy.maxActionsPerSession)}"></label><label>Regroup Distanz <input id="albot-h18-regroup-distance" type="number" min="100" max="5000" value="${esc(logisticsPolicy.regroupDistance == null ? 700 : logisticsPolicy.regroupDistance)}"></label></div>
+<div class="albot-row"><button id="albot-h18-start" class="albot-btn" ${logistics.autonomyEnabled || logisticsAction ? 'disabled' : ''}>Autonomie starten</button><button id="albot-h18-stop" class="albot-btn warn" ${logistics.autonomyEnabled ? '' : 'disabled'}>Autonomie stoppen</button><button id="albot-h18-plan" class="albot-btn">Plan</button><button id="albot-h18-tick" class="albot-btn">Tick</button></div>
+<div class="albot-row"><button id="albot-h18-cancel" class="albot-btn warn" ${logisticsAction ? 'disabled' : ''}>Queue leeren</button><button id="albot-h18-reset" class="albot-btn warn" ${logistics.suspended && !logisticsAction ? '' : 'disabled'}>Safety zurücksetzen</button></div>
+</div>
+
+<div class="albot-card"><b>H18 letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.partyLogisticsResult = fn(); }
+        catch (error) { this.partyLogisticsResult = { ok: false, reason: String(error && error.message || error) }; }
+        this.renderParty(this.runtime.status());
+      };
+      const targetValue = () => {
+        const el = panel.querySelector('#albot-h18-target');
+        return el ? el.value : '';
+      };
+      const supplyButton = panel.querySelector('#albot-h18-supply');
+      if (supplyButton) supplyButton.onclick = () => {
+        const item = panel.querySelector('#albot-h18-item');
+        const quantity = panel.querySelector('#albot-h18-quantity');
+        run(() => this.runtime.partyLogistics.queueSupply(
+          targetValue(),
+          item ? item.value : '',
+          Math.max(1, Math.floor(Number(quantity && quantity.value) || 1))
+        ));
+      };
+      const goldButton = panel.querySelector('#albot-h18-gold-queue');
+      if (goldButton) goldButton.onclick = () => {
+        const amount = panel.querySelector('#albot-h18-gold');
+        run(() => this.runtime.partyLogistics.queueGold(targetValue(), Math.floor(Number(amount && amount.value) || 0)));
+      };
+      const startButton = panel.querySelector('#albot-h18-start');
+      if (startButton) startButton.onclick = () => run(() => this.runtime.partyLogistics.startAutonomy({
+        maxActions: Math.max(1, Math.floor(Number(panel.querySelector('#albot-h18-max-actions').value) || 1))
+      }));
+      const stopButton = panel.querySelector('#albot-h18-stop');
+      if (stopButton) stopButton.onclick = () => run(() => this.runtime.partyLogistics.stopAutonomy('GUI_H18_AUTONOMY_STOP'));
+      const planButton = panel.querySelector('#albot-h18-plan');
+      if (planButton) planButton.onclick = () => run(() => this.runtime.partyLogistics.plan());
+      const tickButton = panel.querySelector('#albot-h18-tick');
+      if (tickButton) tickButton.onclick = () => run(() => this.runtime.partyLogistics.tick());
+      const cancelButton = panel.querySelector('#albot-h18-cancel');
+      if (cancelButton) cancelButton.onclick = () => run(() => this.runtime.partyLogistics.cancelQueue('GUI_H18_QUEUE_CANCEL'));
+      const resetButton = panel.querySelector('#albot-h18-reset');
+      if (resetButton) resetButton.onclick = () => run(() => this.runtime.partyLogistics.resetSafety('GUI_H18_RESET'));
+      const regroupInput = panel.querySelector('#albot-h18-regroup-distance');
+      if (regroupInput) regroupInput.onchange = () => run(() => this.runtime.partyLogistics.policy({
+        regroupDistance: Number(regroupInput.value)
+      }));
+    }
+
+    renderFarmIntelligence(status) {
+      const panel = this.host.querySelector('#albot-panel-farm-intelligence');
+      if (!panel) return;
+      const intelligence = status.farmIntelligence || {};
+      const metrics = intelligence.metrics || {};
+      const selection = intelligence.currentSelection || null;
+      const plan = intelligence.lastPlan || null;
+      const candidates = plan && Array.isArray(plan.candidates) ? plan.candidates : [];
+      const action = intelligence.lastAction || null;
+      const resultText = this.farmIntelligenceResult
+        ? JSON.stringify(this.farmIntelligenceResult, null, 2)
+        : 'Noch keine manuelle H9-Aktion.';
+
+      panel.innerHTML = `<div class="albot-card"><b>H9 Farm Intelligence</b>
+<div class="albot-small">H9 bewertet Farmziele anhand live-sicherer Monster, XP-/Gold-/Drop-Signal, Dichte, Reisezeit, Respawn-Signal und Konkurrenz. Wechsel brauchen einen klaren Vorteil; Hold/Cooldown und A→B→A-Schutz verhindern Score-Pingpong.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${intelligence.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Autonomie</span><div class="albot-v">${intelligence.active ? 'ACTIVE' : 'IDLE'}</div></div>
+<div><span class="albot-k">Suspendiert</span><div class="albot-v">${intelligence.suspended ? 'JA · '+esc(intelligence.suspendedReason || '-') : 'NEIN'}</div></div>
+<div><span class="albot-k">Entscheidungen</span><div class="albot-v">${esc(metrics.decisions || 0)}</div></div>
+<div><span class="albot-k">Wechsel</span><div class="albot-v">${esc(metrics.switches || 0)}</div></div>
+<div><span class="albot-k">Anti-Pingpong Blocks</span><div class="albot-v">${esc(metrics.pingPongBlocks || 0)}</div></div>
+<div><span class="albot-k">H8 Starts</span><div class="albot-v">${esc(metrics.farmingStarts || 0)}</div></div>
+<div><span class="albot-k">H4 Reisen</span><div class="albot-v">${esc(metrics.travelOrders || 0)}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Aktuelle Wahl</b>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Monster</span><div class="albot-v">${esc(selection && selection.mtype || '-')}</div></div>
+<div><span class="albot-k">Score</span><div class="albot-v">${esc(selection && selection.score != null ? selection.score : '-')}</div></div>
+<div><span class="albot-k">Quelle</span><div class="albot-v">${esc(selection && selection.source || '-')}</div></div>
+<div><span class="albot-k">Grund</span><div class="albot-v">${esc(selection && selection.reason || plan && plan.reason || '-')}</div></div>
+<div><span class="albot-k">Spot</span><div class="albot-v">${selection ? esc(selection.map || '-')+' · '+esc(formatPosition(selection.x))+', '+esc(formatPosition(selection.y)) : '-'}</div></div>
+<div><span class="albot-k">Letzte Aktion</span><div class="albot-v">${esc(action && action.type || '-')}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Top-Kandidaten</b>
+${candidates.length ? candidates.slice(0, 8).map((row, index) => {
+  const c = row.components || {};
+  return '<div class="albot-small"><b>#'+esc(index+1)+' '+esc(row.mtype || '?')+'</b> · Score '+esc(row.score)+' · '+esc(row.source || '-')+' · safe '+esc(row.visibleSafeCount || 0)+' · Konkurrenz '+esc(row.competitors || 0)+' · XP '+esc(c.xp == null ? '-' : Number(c.xp).toFixed(2))+' · Gold '+esc(c.gold == null ? '-' : Number(c.gold).toFixed(2))+' · Drop '+esc(c.drops == null ? '-' : Number(c.drops).toFixed(2))+' · Reise '+esc(c.travel == null ? '-' : Number(c.travel).toFixed(2))+'</div>';
+}).join('') : '<div class="albot-small">Noch kein H9-Plan vorhanden.</div>'}
+</div>
+
+<div class="albot-card"><b>Steuerung</b>
+<div class="albot-row"><label class="albot-small"><input id="albot-h9-travel" type="checkbox" checked> H4-Reise zu besserem Spot erlauben</label></div>
+<div class="albot-row"><button id="albot-h9-plan" class="albot-btn">Scoring prüfen</button><button id="albot-h9-start" class="albot-btn" ${intelligence.active ? 'disabled' : ''}>Autonomie starten</button><button id="albot-h9-stop" class="albot-btn warn" ${intelligence.active ? '' : 'disabled'}>Autonomie stoppen</button></div>
+<div class="albot-small">H9 delegiert Bewegung an H4 und Combat/Farming an H8. Globaler STOP bleibt immer vorrangig.</div>
+</div>
+
+<div class="albot-card"><b>Letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.farmIntelligenceResult = fn(); }
+        catch (error) { this.farmIntelligenceResult = { accepted: false, reason: String(error && error.message || error) }; }
+        this.renderFarmIntelligence(this.runtime.status());
+      };
+      const planButton = panel.querySelector('#albot-h9-plan');
+      if (planButton) planButton.onclick = () => run(() => this.runtime.farmIntelligence.plan());
+      const startButton = panel.querySelector('#albot-h9-start');
+      if (startButton) startButton.onclick = () => {
+        const allowTravel = panel.querySelector('#albot-h9-travel').checked;
+        run(() => this.runtime.farmIntelligence.startAutonomy({ owner: 'gui-h9', allowTravel }));
+      };
+      const stopButton = panel.querySelector('#albot-h9-stop');
+      if (stopButton) stopButton.onclick = () => run(() => this.runtime.farmIntelligence.stopAutonomy('GUI_H9_STOP'));
+    }
+
+    renderInventory(status) {
+      const panel = this.host.querySelector('#albot-panel-inventory');
+      if (!panel) return;
+      const inventory = status.inventory || {};
+      const metrics = inventory.metrics || {};
+      const plan = inventory.lastPlan || null;
+      const items = plan && Array.isArray(plan.items) ? plan.items : [];
+      const counts = plan && plan.counts || {};
+      const slots = plan && plan.inventory || {};
+      const action = inventory.lastAction || null;
+      const resultText = this.inventoryResult
+        ? JSON.stringify(this.inventoryResult, null, 2)
+        : 'Noch keine manuelle H10-Aktion.';
+
+      panel.innerHTML = `<div class="albot-card"><b>H10 Loot & Inventar</b>
+<div class="albot-small">H10 lootet nur über die zentrale ActionBoundary und klassifiziert Items konservativ. Unbekannter Wert wird niemals automatisch zu SELL. Sell/Bank/Exchange werden in H10 nicht ausgeführt.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${inventory.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Suspendiert</span><div class="albot-v">${inventory.suspended ? 'JA · '+esc(inventory.suspendedReason || '-') : 'NEIN'}</div></div>
+<div><span class="albot-k">Slots</span><div class="albot-v">${esc(slots.usedSlots == null ? '-' : slots.usedSlots)} / ${esc(slots.capacity == null ? '-' : slots.capacity)}</div></div>
+<div><span class="albot-k">Frei</span><div class="albot-v">${esc(slots.freeSlots == null ? '-' : slots.freeSlots)} · Reserve ${esc(plan && plan.reserveFreeSlots != null ? plan.reserveFreeSlots : '-')}</div></div>
+<div><span class="albot-k">Chests sichtbar</span><div class="albot-v">${esc(plan && plan.chests ? plan.chests.length : 0)}</div></div>
+<div><span class="albot-k">Chests lootbar</span><div class="albot-v">${esc(plan && plan.lootableChestIds ? plan.lootableChestIds.length : 0)}</div></div>
+<div><span class="albot-k">Loot bestätigt</span><div class="albot-v">${esc(metrics.lootConfirmed || 0)}</div></div>
+<div><span class="albot-k">Loot UNKNOWN</span><div class="albot-v">${esc(metrics.lootUnknown || 0)}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Dispositionen</b><div class="albot-small">
+PROTECT ${esc(counts.PROTECT || 0)} · RESERVE ${esc(counts.RESERVE || 0)} · KEEP ${esc(counts.KEEP || 0)} · BANK ${esc(counts.BANK || 0)} · EXCHANGE ${esc(counts.EXCHANGE || 0)} · SELL ${esc(counts.SELL || 0)}
+</div></div>
+
+<div class="albot-card"><b>Inventar</b>
+${items.length ? items.slice(0, 24).map(row => '<div class="albot-small">#'+esc(row.slot)+' · <b>'+esc(row.name)+'</b> x'+esc(row.quantity || 1)+' · L'+esc(row.level || 0)+' · '+esc(row.disposition || '-')+' · '+esc(row.reason || '-')+'</div>').join('') : '<div class="albot-small">Noch kein H10-Inventarplan vorhanden.</div>'}
+</div>
+
+<div class="albot-card"><b>Steuerung</b>
+<div class="albot-row"><button id="albot-h10-plan" class="albot-btn">Inventar neu bewerten</button><button id="albot-h10-reset" class="albot-btn warn" ${inventory.suspended ? '' : 'disabled'}>Safety zurücksetzen</button></div>
+<div class="albot-small">Ein Safety-Reset ist explizit. UNKNOWN wird niemals automatisch zurückgesetzt.</div>
+</div>
+
+<div class="albot-card"><b>Letzte Aktion</b><div class="albot-small">${esc(action && action.type || '-')} · ${esc(action && (action.reason || action.chestId) || '-')}</div></div>
+<div class="albot-card"><b>Letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.inventoryResult = fn(); }
+        catch (error) { this.inventoryResult = { ok: false, reason: String(error && error.message || error) }; }
+        this.renderInventory(this.runtime.status());
+      };
+      const planButton = panel.querySelector('#albot-h10-plan');
+      if (planButton) planButton.onclick = () => run(() => this.runtime.inventory.plan());
+      const resetButton = panel.querySelector('#albot-h10-reset');
+      if (resetButton) resetButton.onclick = () => run(() => this.runtime.inventory.resetSafety('GUI_H10_RESET'));
+    }
+
+    renderMerchant(status) {
+      const panel = this.host.querySelector('#albot-panel-merchant');
+      if (!panel) return;
+      const merchant = status.merchant || {};
+      const metrics = merchant.metrics || {};
+      const plan = merchant.lastPlan || null;
+      const pressure = plan && plan.pressure || {};
+      const service = plan && plan.service || {};
+      const farmers = plan && Array.isArray(plan.visibleOwnedFarmers) ? plan.visibleOwnedFarmers : [];
+      const candidates = plan && Array.isArray(plan.handoffCandidates) ? plan.handoffCandidates : [];
+      const pending = merchant.pending || null;
+      const delivery = merchant.delivery || null;
+      const target = merchant.serviceTarget || null;
+      const resultText = this.merchantResult
+        ? JSON.stringify(this.merchantResult, null, 2)
+        : 'Noch keine manuelle H11-Aktion.';
+
+      const farmerOptions = farmers.length
+        ? farmers.map(row => '<option value="'+esc(row.name)+'">'+esc(row.name)+' · '+esc(row.ctype || '-')+'</option>').join('')
+        : '<option value="">kein eigener Farmer sichtbar</option>';
+      const itemOptions = candidates.length
+        ? candidates.map(row => '<option value="'+esc(row.name)+'">'+esc(row.name)+' x'+esc(row.quantity || 1)+' · '+esc(row.disposition || '-')+'</option>').join('')
+        : '<option value="">kein sicheres Transfer-Item</option>';
+
+      panel.innerHTML = `<div class="albot-card"><b>H11 Merchant-Grundbetrieb</b>
+<div class="albot-small">Eigene Farmer↔Merchant-Logistik, MLuck, Inventory Pressure und Service-Anti-Pingpong. Alle Item-Transfers laufen über die zentrale ActionBoundary. Gold, Bank und Markt bleiben in H11 geschlossen.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${merchant.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Rolle</span><div class="albot-v">${esc(plan && plan.role || '-')}</div></div>
+<div><span class="albot-k">Druck</span><div class="albot-v">${esc(pressure.state || '-')} · frei ${esc(pressure.freeSlots == null ? '-' : pressure.freeSlots)}</div></div>
+<div><span class="albot-k">Service</span><div class="albot-v">${esc(service.type || '-')} · ${esc(service.reason || '-')}</div></div>
+<div><span class="albot-k">Ziel</span><div class="albot-v">${esc(target && target.name || service.targetName || '-')}</div></div>
+<div><span class="albot-k">Suspendiert</span><div class="albot-v">${merchant.suspended ? 'JA · '+esc(merchant.suspendedReason || '-') : 'NEIN'}</div></div>
+<div><span class="albot-k">Transfers bestätigt</span><div class="albot-v">${esc(metrics.transfersConfirmed || 0)}</div></div>
+<div><span class="albot-k">MLuck bestätigt</span><div class="albot-v">${esc(metrics.mluckConfirmed || 0)}</div></div>
+<div><span class="albot-k">Transfer UNKNOWN</span><div class="albot-v">${esc(metrics.transfersUnknown || 0)}</div></div>
+<div><span class="albot-k">MLuck UNKNOWN</span><div class="albot-v">${esc(metrics.mluckUnknown || 0)}</div></div>
+<div><span class="albot-k">Pingpong-Blocks</span><div class="albot-v">${esc(metrics.pingPongBlocks || 0)}</div></div>
+<div><span class="albot-k">Movement-Requests</span><div class="albot-v">${esc(metrics.movementRequests || 0)}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Aktueller Service</b>
+<div class="albot-small">Pending: ${pending ? esc(pending.kind)+' → '+esc(pending.targetName || '-') : 'nein'} · Delivery: ${delivery ? esc(delivery.itemName)+' x'+esc(delivery.quantity)+' → '+esc(delivery.targetName) : 'keine'}</div>
+<div class="albot-small">Eigene sichtbare Farmer: ${farmers.length ? farmers.map(row => esc(row.name)+' ('+esc(row.distance == null ? '?' : Math.round(row.distance))+'u)').join(' · ') : 'keine'}</div>
+</div>
+
+<div class="albot-card"><b>Kontrollierte Delivery</b>
+<div class="albot-row"><select id="albot-h11-target">${farmerOptions}</select></div>
+<div class="albot-row"><select id="albot-h11-item">${itemOptions}</select><input id="albot-h11-quantity" type="number" min="1" step="1" value="1" style="max-width:90px"><button id="albot-h11-deliver" class="albot-btn">Delivery planen</button></div>
+<div class="albot-small">Nur eigene Farmer und konservativ transferierbare Items. Gear, Quest-/Goal-Reserve, gelevelte/gelockte und unbekannt riskante Items sind ausgeschlossen.</div>
+</div>
+
+<div class="albot-card"><b>Steuerung</b>
+<div class="albot-row"><button id="albot-h11-plan" class="albot-btn">Service neu bewerten</button><button id="albot-h11-tick" class="albot-btn">Service-Tick</button><button id="albot-h11-reset" class="albot-btn warn" ${merchant.suspended ? '' : 'disabled'}>Safety zurücksetzen</button></div>
+</div>
+
+<div class="albot-card"><b>Letzte Aktion</b><div class="albot-small">${esc(merchant.lastAction && merchant.lastAction.type || '-')} · ${esc(merchant.lastAction && (merchant.lastAction.reason || merchant.lastAction.target) || '-')}</div></div>
+<div class="albot-card"><b>Letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.merchantResult = fn(); }
+        catch (error) { this.merchantResult = { ok: false, reason: String(error && error.message || error) }; }
+        this.renderMerchant(this.runtime.status());
+      };
+      const planButton = panel.querySelector('#albot-h11-plan');
+      if (planButton) planButton.onclick = () => run(() => this.runtime.merchant.plan());
+      const tickButton = panel.querySelector('#albot-h11-tick');
+      if (tickButton) tickButton.onclick = () => run(() => this.runtime.merchant.tick());
+      const resetButton = panel.querySelector('#albot-h11-reset');
+      if (resetButton) resetButton.onclick = () => run(() => this.runtime.merchant.resetSafety('GUI_H11_RESET'));
+      const deliverButton = panel.querySelector('#albot-h11-deliver');
+      if (deliverButton) deliverButton.onclick = () => {
+        const targetName = panel.querySelector('#albot-h11-target').value;
+        const itemName = panel.querySelector('#albot-h11-item').value;
+        const quantity = Number(panel.querySelector('#albot-h11-quantity').value) || 1;
+        run(() => this.runtime.merchant.queueDelivery(targetName, itemName, quantity));
+      };
+    }
+
+    renderBank(status) {
+      const panel = this.host.querySelector('#albot-panel-bank');
+      if (!panel) return;
+      const bank = status.bank || {};
+      const metrics = bank.metrics || {};
+      const plan = bank.lastPlan || null;
+      const bankInfo = plan && plan.bank || {};
+      const packs = plan && Array.isArray(plan.packs) ? plan.packs : [];
+      const safe = plan && Array.isArray(plan.safeDepositRows) ? plan.safeDepositRows : [];
+      const bankRows = [];
+      for (const pack of packs) {
+        for (const row of pack.items || []) bankRows.push({ ...row, pack: pack.name });
+      }
+      const resultText = this.bankResult ? JSON.stringify(this.bankResult, null, 2) : 'Noch keine manuelle H12-Aktion.';
+      const depositOptions = safe.length
+        ? safe.map(row => '<option value="'+esc(row.slot)+'">'+esc(row.name)+' x'+esc(row.quantity || 1)+' · Slot '+esc(row.slot)+'</option>').join('')
+        : '<option value="">kein sicheres BANK-Item</option>';
+      const withdrawOptions = bankRows.length
+        ? bankRows.map(row => '<option value="'+esc(row.pack)+'|'+esc(row.slot)+'">'+esc(row.name)+' x'+esc(row.quantity || 1)+' · '+esc(row.pack)+'/'+esc(row.slot)+'</option>').join('')
+        : '<option value="">keine sichtbaren Bank-Items</option>';
+      const packOptions = packs.length
+        ? '<option value="">automatisch</option>'+packs.map(row => '<option value="'+esc(row.name)+'">'+esc(row.name)+' · frei '+esc(row.freeSlots)+'</option>').join('')
+        : '<option value="">Bank nicht gemountet</option>';
+
+      panel.innerHTML = `<div class="albot-card"><b>H12 Bank</b>
+<div class="albot-small">Sichere Bankfahrt, Packs, Workspace, Reservierungen und Inventory/Bank-Reconciliation. Bankwrites laufen ausschließlich über die zentrale ActionBoundary und gelten erst nach beobachtetem Zustandsdelta als bestätigt.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${bank.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Plan</span><div class="albot-v">${esc(plan && plan.state || '-')} · ${esc(plan && plan.reason || '-')}</div></div>
+<div><span class="albot-k">Bank</span><div class="albot-v">${bankInfo.available ? 'GEMOUNTET' : 'nicht gemountet'} · ${esc(bankInfo.map || '-')}</div></div>
+<div><span class="albot-k">Slots</span><div class="albot-v">${esc(bankInfo.usedSlots == null ? '-' : bankInfo.usedSlots)} / ${esc(bankInfo.capacity == null ? '-' : bankInfo.capacity)} · frei ${esc(bankInfo.freeSlots == null ? '-' : bankInfo.freeSlots)}</div></div>
+<div><span class="albot-k">Packs</span><div class="albot-v">${esc(packs.length)}</div></div>
+<div><span class="albot-k">Suspendiert</span><div class="albot-v">${bank.suspended ? 'JA · '+esc(bank.suspendedReason || '-') : 'NEIN'}</div></div>
+<div><span class="albot-k">Deposits bestätigt</span><div class="albot-v">${esc(metrics.depositsConfirmed || 0)}</div></div>
+<div><span class="albot-k">Withdraws bestätigt</span><div class="albot-v">${esc(metrics.withdrawalsConfirmed || 0)}</div></div>
+<div><span class="albot-k">Deposit UNKNOWN</span><div class="albot-v">${esc(metrics.depositsUnknown || 0)}</div></div>
+<div><span class="albot-k">Withdraw UNKNOWN</span><div class="albot-v">${esc(metrics.withdrawalsUnknown || 0)}</div></div>
+<div><span class="albot-k">Movement UNKNOWN</span><div class="albot-v">${esc(metrics.movementUnknown || 0)}</div></div>
+<div><span class="albot-k">Reconciliation Fail</span><div class="albot-v">${esc(metrics.reconciliationFailures || 0)}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Workspace & Reservierung</b>
+<div class="albot-row"><select id="albot-h12-workspace">${packOptions}</select><button id="albot-h12-workspace-set" class="albot-btn">Workspace setzen</button></div>
+<div class="albot-row"><input id="albot-h12-reserve-name" placeholder="Item-ID"><input id="albot-h12-reserve-qty" type="number" min="1" step="1" value="1" style="max-width:90px"><button id="albot-h12-reserve-set" class="albot-btn">Reservieren</button></div>
+<div class="albot-small">Withdraw wird fail-closed blockiert, wenn die konfigurierte Mindestreserve in der Bank unterschritten würde.</div>
+</div>
+
+<div class="albot-card"><b>Kontrollierte Bankaktionen</b>
+<div class="albot-row"><select id="albot-h12-deposit">${depositOptions}</select><button id="albot-h12-deposit-btn" class="albot-btn">BANK-Item einlagern</button></div>
+<div class="albot-row"><select id="albot-h12-withdraw">${withdrawOptions}</select><button id="albot-h12-withdraw-btn" class="albot-btn">Bank-Item holen</button></div>
+<div class="albot-small">Einlagern ist nur für H10-Disposition BANK erlaubt. PROTECT/RESERVE/KEEP/EXCHANGE werden nicht automatisch eingelagert.</div>
+</div>
+
+<div class="albot-card"><b>Steuerung</b>
+<div class="albot-row"><button id="albot-h12-plan" class="albot-btn">Plan</button><button id="albot-h12-reconcile" class="albot-btn">Reconcile</button><button id="albot-h12-tick" class="albot-btn">Tick</button><button id="albot-h12-reset" class="albot-btn warn" ${bank.suspended ? '' : 'disabled'}>Safety zurücksetzen</button></div>
+<div class="albot-small">Pending: ${bank.pending ? esc(bank.pending.kind) : 'nein'} · Request: ${bank.request ? esc(bank.request.kind) : 'keiner'} · Workspace: ${esc(bank.workspace && bank.workspace.preferredPack || 'auto')}</div>
+</div>
+
+<div class="albot-card"><b>Letzte Aktion</b><div class="albot-small">${esc(bank.lastAction && bank.lastAction.type || '-')} · ${esc(bank.lastAction && bank.lastAction.reason || '-')}</div></div>
+<div class="albot-card"><b>Letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.bankResult = fn(); }
+        catch (error) { this.bankResult = { ok: false, reason: String(error && error.message || error) }; }
+        this.renderBank(this.runtime.status());
+      };
+      const planButton = panel.querySelector('#albot-h12-plan');
+      if (planButton) planButton.onclick = () => run(() => this.runtime.bank.plan());
+      const reconcileButton = panel.querySelector('#albot-h12-reconcile');
+      if (reconcileButton) reconcileButton.onclick = () => run(() => this.runtime.bank.reconcile());
+      const tickButton = panel.querySelector('#albot-h12-tick');
+      if (tickButton) tickButton.onclick = () => run(() => this.runtime.bank.tick());
+      const resetButton = panel.querySelector('#albot-h12-reset');
+      if (resetButton) resetButton.onclick = () => run(() => this.runtime.bank.resetSafety('GUI_H12_RESET'));
+      const workspaceButton = panel.querySelector('#albot-h12-workspace-set');
+      if (workspaceButton) workspaceButton.onclick = () => run(() => this.runtime.bank.setWorkspace({
+        preferredPack: panel.querySelector('#albot-h12-workspace').value || null
+      }));
+      const reserveButton = panel.querySelector('#albot-h12-reserve-set');
+      if (reserveButton) reserveButton.onclick = () => {
+        const name = panel.querySelector('#albot-h12-reserve-name').value;
+        const quantity = Number(panel.querySelector('#albot-h12-reserve-qty').value) || 1;
+        run(() => this.runtime.bank.setReservations(name ? { [name]: quantity } : {}));
+      };
+      const depositButton = panel.querySelector('#albot-h12-deposit-btn');
+      if (depositButton) depositButton.onclick = () => {
+        const slot = Number(panel.querySelector('#albot-h12-deposit').value);
+        const row = safe.find(item => Number(item.slot) === slot);
+        run(() => row ? this.runtime.bank.queueDeposit(row.name, { inventorySlot: row.slot }) : { accepted: false, reason: 'H12_GUI_NO_DEPOSIT_ITEM' });
+      };
+      const withdrawButton = panel.querySelector('#albot-h12-withdraw-btn');
+      if (withdrawButton) withdrawButton.onclick = () => {
+        const raw = panel.querySelector('#albot-h12-withdraw').value || '';
+        const split = raw.lastIndexOf('|');
+        const pack = split >= 0 ? raw.slice(0, split) : '';
+        const slot = split >= 0 ? Number(raw.slice(split + 1)) : NaN;
+        run(() => pack && Number.isFinite(slot)
+          ? this.runtime.bank.queueWithdraw(pack, slot, {})
+          : { accepted: false, reason: 'H12_GUI_NO_WITHDRAW_ITEM' });
+      };
+    }
+
+    renderTrade(status) {
+      const panel = this.host.querySelector('#albot-panel-trade');
+      if (!panel) return;
+      const trade = status.trade || {};
+      const metrics = trade.metrics || {};
+      const plan = trade.lastPlan || null;
+      const resultText = this.tradeResult ? JSON.stringify(this.tradeResult, null, 2) : 'Noch keine manuelle H13-Aktion.';
+      let market = null;
+      try { market = this.runtime.trade.marketAnalysis(null); } catch (_) { market = null; }
+      const asks = market && Array.isArray(market.asks) ? market.asks : [];
+      const bids = market && Array.isArray(market.bids) ? market.bids : [];
+      const safeSell = plan && Array.isArray(plan.safeSellRows) ? plan.safeSellRows : [];
+
+      const askOptions = asks.length
+        ? asks.slice(0, 40).map(row => '<option value="'+esc(row.playerName)+'|'+esc(row.slot)+'">'+esc(row.name)+' +'+esc(row.level || 0)+' · '+esc(row.price)+'g · '+esc(row.playerName)+'</option>').join('')
+        : '<option value="">keine sichtbaren Verkaufsangebote</option>';
+      const bidOptions = bids.length
+        ? bids.slice(0, 40).map(row => '<option value="'+esc(row.playerName)+'|'+esc(row.slot)+'">'+esc(row.name)+' +'+esc(row.level || 0)+' · '+esc(row.price)+'g · '+esc(row.playerName)+'</option>').join('')
+        : '<option value="">keine sichtbaren Kaufangebote</option>';
+      const sellOptions = safeSell.length
+        ? safeSell.map(row => '<option value="'+esc(row.slot)+'">'+esc(row.name)+' x'+esc(row.quantity || 1)+' · Slot '+esc(row.slot)+'</option>').join('')
+        : '<option value="">kein H10-SELL-Item</option>';
+
+      panel.innerHTML = `<div class="albot-card"><b>H13 Handel</b>
+<div class="albot-small">NPC Buy/Sell, sichtbare Player-Market-Analyse und explizit preisgedeckelte Acquisition. Kein Player-Market-Write ohne konkrete Preisgrenze und erneute Listing-Prüfung unmittelbar vor Dispatch.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${trade.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Plan</span><div class="albot-v">${esc(plan && plan.state || '-')} · ${esc(plan && plan.reason || '-')}</div></div>
+<div><span class="albot-k">Goldreserve</span><div class="albot-v">${esc(trade.config && trade.config.goldReserve || 0)}</div></div>
+<div><span class="albot-k">Suspendiert</span><div class="albot-v">${trade.suspended ? 'JA · '+esc(trade.suspendedReason || '-') : 'NEIN'}</div></div>
+<div><span class="albot-k">NPC Käufe bestätigt</span><div class="albot-v">${esc(metrics.npcBuysConfirmed || 0)}</div></div>
+<div><span class="albot-k">NPC Verkäufe bestätigt</span><div class="albot-v">${esc(metrics.npcSellsConfirmed || 0)}</div></div>
+<div><span class="albot-k">Markt Käufe bestätigt</span><div class="albot-v">${esc(metrics.marketBuysConfirmed || 0)}</div></div>
+<div><span class="albot-k">Markt Verkäufe bestätigt</span><div class="albot-v">${esc(metrics.marketSellsConfirmed || 0)}</div></div>
+<div><span class="albot-k">Price Blocks</span><div class="albot-v">${esc(metrics.priceBlocks || 0)}</div></div>
+<div><span class="albot-k">Safety Blocks</span><div class="albot-v">${esc(metrics.safetyBlocks || 0)}</div></div>
+<div><span class="albot-k">Sichtbare Asks</span><div class="albot-v">${esc(asks.length)}</div></div>
+<div><span class="albot-k">Sichtbare Bids</span><div class="albot-v">${esc(bids.length)}</div></div>
+</div></div>
+
+<div class="albot-card"><b>NPC Acquisition</b>
+<div class="albot-row"><input id="albot-h13-npc-item" value="hpot0" placeholder="Item-ID"><input id="albot-h13-npc-qty" type="number" min="1" step="1" value="1" style="max-width:80px"><input id="albot-h13-npc-max" type="number" min="1" step="1" placeholder="Max. Stückpreis"><button id="albot-h13-acquire" class="albot-btn">Acquisition planen</button></div>
+<div class="albot-small">Der Maximalpreis ist Pflicht. NPC-Festpreis und sichtbare Player-Asks werden verglichen; gewählt wird nur eine Quelle innerhalb des Limits.</div>
+</div>
+
+<div class="albot-card"><b>NPC SELL</b>
+<div class="albot-row"><select id="albot-h13-sell-item">${sellOptions}</select><input id="albot-h13-sell-qty" type="number" min="1" step="1" value="1" style="max-width:80px"><button id="albot-h13-sell-npc" class="albot-btn">SELL-Item verkaufen</button></div>
+<div class="albot-small">Nur Items mit H10-Disposition SELL. KEEP/PROTECT/RESERVE/BANK/EXCHANGE sind blockiert.</div>
+</div>
+
+<div class="albot-card"><b>Player Market – explizit</b>
+<div class="albot-small">Analyse ist read-only. Kauf/Verkauf prüft Listing-RID und Preis unmittelbar vor Dispatch erneut.</div>
+<div class="albot-row"><select id="albot-h13-ask">${askOptions}</select><input id="albot-h13-ask-max" type="number" min="1" step="1" placeholder="Max. Stückpreis"><button id="albot-h13-buy-market" class="albot-btn">Ask kaufen</button></div>
+<div class="albot-row"><select id="albot-h13-bid">${bidOptions}</select><input id="albot-h13-bid-min" type="number" min="0" step="1" placeholder="Min. Stückpreis"><button id="albot-h13-sell-market" class="albot-btn">In Bid verkaufen</button></div>
+</div>
+
+<div class="albot-card"><b>Steuerung</b>
+<div class="albot-row"><button id="albot-h13-plan" class="albot-btn">Plan</button><button id="albot-h13-analysis" class="albot-btn">Markt analysieren</button><button id="albot-h13-tick" class="albot-btn">Tick</button><button id="albot-h13-reset" class="albot-btn warn" ${trade.suspended ? '' : 'disabled'}>Safety zurücksetzen</button></div>
+<div class="albot-small">Pending: ${trade.pending ? esc(trade.pending.kind) : 'nein'} · Request: ${trade.request ? esc(trade.request.kind) : 'keiner'}</div>
+</div>
+
+<div class="albot-card"><b>Letzte Aktion</b><div class="albot-small">${esc(trade.lastAction && trade.lastAction.type || '-')} · ${esc(trade.lastAction && trade.lastAction.reason || '-')}</div></div>
+<div class="albot-card"><b>Letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.tradeResult = fn(); }
+        catch (error) { this.tradeResult = { ok: false, reason: String(error && error.message || error) }; }
+        this.renderTrade(this.runtime.status());
+      };
+      const planButton = panel.querySelector('#albot-h13-plan');
+      if (planButton) planButton.onclick = () => run(() => this.runtime.trade.plan());
+      const analysisButton = panel.querySelector('#albot-h13-analysis');
+      if (analysisButton) analysisButton.onclick = () => run(() => this.runtime.trade.marketAnalysis(null));
+      const tickButton = panel.querySelector('#albot-h13-tick');
+      if (tickButton) tickButton.onclick = () => run(() => this.runtime.trade.tick());
+      const resetButton = panel.querySelector('#albot-h13-reset');
+      if (resetButton) resetButton.onclick = () => run(() => this.runtime.trade.resetSafety('GUI_H13_RESET'));
+
+      const acquireButton = panel.querySelector('#albot-h13-acquire');
+      if (acquireButton) acquireButton.onclick = () => {
+        const itemName = panel.querySelector('#albot-h13-npc-item').value;
+        const quantity = Number(panel.querySelector('#albot-h13-npc-qty').value) || 1;
+        const maxUnitPrice = Number(panel.querySelector('#albot-h13-npc-max').value);
+        run(() => this.runtime.trade.queueAcquire(itemName, quantity, { maxUnitPrice }));
+      };
+
+      const sellNpcButton = panel.querySelector('#albot-h13-sell-npc');
+      if (sellNpcButton) sellNpcButton.onclick = () => {
+        const slot = Number(panel.querySelector('#albot-h13-sell-item').value);
+        const quantity = Number(panel.querySelector('#albot-h13-sell-qty').value) || 1;
+        run(() => Number.isFinite(slot)
+          ? this.runtime.trade.queueNpcSell(slot, quantity, {})
+          : { accepted: false, reason: 'H13_GUI_NO_SELL_ITEM' });
+      };
+
+      const buyMarketButton = panel.querySelector('#albot-h13-buy-market');
+      if (buyMarketButton) buyMarketButton.onclick = () => {
+        const raw = panel.querySelector('#albot-h13-ask').value || '';
+        const split = raw.lastIndexOf('|');
+        const playerName = split >= 0 ? raw.slice(0, split) : '';
+        const tradeSlot = split >= 0 ? raw.slice(split + 1) : '';
+        const maxUnitPrice = Number(panel.querySelector('#albot-h13-ask-max').value);
+        run(() => playerName && tradeSlot
+          ? this.runtime.trade.queueMarketBuy(playerName, tradeSlot, 1, { maxUnitPrice })
+          : { accepted: false, reason: 'H13_GUI_NO_MARKET_ASK' });
+      };
+
+      const sellMarketButton = panel.querySelector('#albot-h13-sell-market');
+      if (sellMarketButton) sellMarketButton.onclick = () => {
+        const raw = panel.querySelector('#albot-h13-bid').value || '';
+        const split = raw.lastIndexOf('|');
+        const playerName = split >= 0 ? raw.slice(0, split) : '';
+        const tradeSlot = split >= 0 ? raw.slice(split + 1) : '';
+        const minUnitPrice = Number(panel.querySelector('#albot-h13-bid-min').value);
+        run(() => playerName && tradeSlot
+          ? this.runtime.trade.queueMarketSell(playerName, tradeSlot, 1, { minUnitPrice })
+          : { accepted: false, reason: 'H13_GUI_NO_MARKET_BID' });
+      };
+    }
+
+    renderGear(status) {
+      const panel = this.host.querySelector('#albot-panel-gear');
+      if (!panel) return;
+      const gear = status.gear || {};
+      const metrics = gear.metrics || {};
+      let plan = gear.lastPlan || null;
+      try { if (!plan || plan.state !== 'READY') plan = this.runtime.gear.plan(); } catch (_) {}
+      const local = plan && plan.local || {};
+      const improvements = Array.isArray(local.improvements) ? local.improvements : [];
+      const proposals = plan && plan.group && Array.isArray(plan.group.proposals) ? plan.group.proposals : [];
+      const goals = Array.isArray(gear.goals) ? gear.goals : [];
+      const upgradeCandidates = Array.isArray(local.upgradeCandidates) ? local.upgradeCandidates : [];
+      const resultText = this.gearResult ? JSON.stringify(this.gearResult, null, 2) : 'Noch keine manuelle H14-Aktion.';
+
+      const improvementOptions = improvements.length
+        ? improvements.map(row => '<option value="'+esc(row.bestInventory.inventorySlot)+'|'+esc(row.slot)+'">'+esc(row.slot)+' · '+esc(row.bestInventory.item.name)+' +'+esc(row.bestInventory.item.level || 0)+' · Δ '+esc(row.delta)+'</option>').join('')
+        : '<option value="">keine sichere lokale Verbesserung</option>';
+      const slotOptions = (local.slots || []).filter(row => row.current)
+        .map(row => '<option value="'+esc(row.slot)+'">'+esc(row.slot)+' · '+esc(row.current.name)+' +'+esc(row.current.level || 0)+'</option>').join('') || '<option value="">kein belegter Gear-Slot</option>';
+      const proposalOptions = proposals.length
+        ? proposals.map(row => '<option value="'+esc(row.targetName)+'|'+esc(row.inventorySlot)+'">'+esc(row.targetName)+' · '+esc(row.slot)+' · '+esc(row.item.name)+' +'+esc(row.item.level || 0)+' · Δ '+esc(row.delta)+'</option>').join('')
+        : '<option value="">kein sichtbarer Farmer-Upgrade-Vorschlag</option>';
+
+      panel.innerHTML = `<div class="albot-card"><b>H14 Gear</b>
+<div class="albot-small">Klassenkompatibles Gear-Ranking, Farmer-vor-Merchant-Allokation, Gear Goals und bestätigte lokale Swaps. Upgrade/Compound bleibt hier reine Planung für H15.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${gear.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Plan</span><div class="albot-v">${esc(plan && plan.state || '-')} · ${esc(plan && plan.reason || '-')}</div></div>
+<div><span class="albot-k">Lokale Verbesserungen</span><div class="albot-v">${esc(improvements.length)}</div></div>
+<div><span class="albot-k">Farmer-Proposals</span><div class="albot-v">${esc(proposals.length)}</div></div>
+<div><span class="albot-k">Upgrade-Kandidaten</span><div class="albot-v">${esc(upgradeCandidates.length)}</div></div>
+<div><span class="albot-k">Gear Goals</span><div class="albot-v">${esc(goals.length)}</div></div>
+<div><span class="albot-k">Equip bestätigt</span><div class="albot-v">${esc(metrics.equipsConfirmed || 0)}</div></div>
+<div><span class="albot-k">Delivery bestätigt</span><div class="albot-v">${esc(metrics.deliveriesConfirmed || 0)}</div></div>
+<div><span class="albot-k">Safety Blocks</span><div class="albot-v">${esc(metrics.safetyBlocks || 0)}</div></div>
+<div><span class="albot-k">Suspendiert</span><div class="albot-v">${gear.suspended ? 'JA · '+esc(gear.suspendedReason || '-') : 'NEIN'}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Lokaler Swap</b>
+<div class="albot-row"><select id="albot-h14-improvement">${improvementOptions}</select><button id="albot-h14-equip" class="albot-btn">Verbesserung ausrüsten</button></div>
+<div class="albot-row"><select id="albot-h14-equipped">${slotOptions}</select><button id="albot-h14-unequip" class="albot-btn warn">Slot ausziehen</button></div>
+<div class="albot-small">Zwei-Hand-Konflikte und laufender Combat werden fail-closed blockiert. Erfolg zählt erst nach Live-Equipment- und Inventar-Delta.</div>
+</div>
+
+<div class="albot-card"><b>Farmer-Priorität / Gear Delivery</b>
+<div class="albot-small">Farmer-Priorität ${esc(plan && plan.farmerPriority || 100)} · Merchant-Priorität ${esc(plan && plan.merchantPriority || 10)}. Delivery ist immer explizit; H14 verschickt kein Gear automatisch.</div>
+<div class="albot-row"><select id="albot-h14-proposal">${proposalOptions}</select><button id="albot-h14-deliver" class="albot-btn">Vorschlag senden</button></div>
+</div>
+
+<div class="albot-card"><b>Gear Goals</b>
+<div class="albot-row"><input id="albot-h14-goal-target" placeholder="Character"><select id="albot-h14-goal-slot"><option>helmet</option><option>coat</option><option>pants</option><option>gloves</option><option>shoes</option><option>cape</option><option>belt</option><option>amulet</option><option>orb</option><option>ring1</option><option>ring2</option><option>earring1</option><option>earring2</option><option>mainhand</option><option>offhand</option></select></div>
+<div class="albot-row"><input id="albot-h14-goal-item" placeholder="Item-ID"><input id="albot-h14-goal-level" type="number" min="0" step="1" value="0" style="max-width:90px"><button id="albot-h14-goal-add" class="albot-btn">Goal hinzufügen</button><button id="albot-h14-goal-clear" class="albot-btn warn">Goals leeren</button></div>
+<div class="albot-small">${goals.length ? goals.map(row => esc(row.targetName)+' · '+esc(row.slot)+' · '+esc(row.itemName || '*')+' +'+esc(row.minLevel || 0)).join('<br>') : 'keine Gear Goals'}</div>
+</div>
+
+<div class="albot-card"><b>Steuerung</b>
+<div class="albot-row"><button id="albot-h14-plan" class="albot-btn">Plan</button><button id="albot-h14-tick" class="albot-btn">Tick</button><button id="albot-h14-reset" class="albot-btn warn" ${gear.suspended ? '' : 'disabled'}>Safety zurücksetzen</button></div>
+<div class="albot-small">Pending: ${gear.pending ? esc(gear.pending.kind) : 'nein'} · Request: ${gear.request ? esc(gear.request.kind) : 'keiner'}</div>
+</div>
+
+<div class="albot-card"><b>Letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.gearResult = fn(); }
+        catch (error) { this.gearResult = { ok: false, reason: String(error && error.message || error) }; }
+        this.renderGear(this.runtime.status());
+      };
+      const planButton = panel.querySelector('#albot-h14-plan');
+      if (planButton) planButton.onclick = () => run(() => this.runtime.gear.plan());
+      const tickButton = panel.querySelector('#albot-h14-tick');
+      if (tickButton) tickButton.onclick = () => run(() => this.runtime.gear.tick());
+      const resetButton = panel.querySelector('#albot-h14-reset');
+      if (resetButton) resetButton.onclick = () => run(() => this.runtime.gear.resetSafety('GUI_H14_RESET'));
+
+      const equipButton = panel.querySelector('#albot-h14-equip');
+      if (equipButton) equipButton.onclick = () => {
+        const raw = panel.querySelector('#albot-h14-improvement').value || '';
+        const split = raw.lastIndexOf('|');
+        const inventorySlot = split >= 0 ? Number(raw.slice(0, split)) : NaN;
+        const targetSlot = split >= 0 ? raw.slice(split + 1) : '';
+        run(() => Number.isInteger(inventorySlot) && targetSlot
+          ? this.runtime.gear.queueEquip(inventorySlot, targetSlot)
+          : { accepted: false, reason: 'H14_GUI_NO_IMPROVEMENT' });
+      };
+      const unequipButton = panel.querySelector('#albot-h14-unequip');
+      if (unequipButton) unequipButton.onclick = () => {
+        const targetSlot = panel.querySelector('#albot-h14-equipped').value || '';
+        run(() => targetSlot
+          ? this.runtime.gear.queueUnequip(targetSlot)
+          : { accepted: false, reason: 'H14_GUI_NO_EQUIPPED_SLOT' });
+      };
+      const deliverButton = panel.querySelector('#albot-h14-deliver');
+      if (deliverButton) deliverButton.onclick = () => {
+        const raw = panel.querySelector('#albot-h14-proposal').value || '';
+        const split = raw.lastIndexOf('|');
+        const targetName = split >= 0 ? raw.slice(0, split) : '';
+        const inventorySlot = split >= 0 ? Number(raw.slice(split + 1)) : NaN;
+        run(() => targetName && Number.isInteger(inventorySlot)
+          ? this.runtime.gear.queueDelivery(targetName, inventorySlot)
+          : { accepted: false, reason: 'H14_GUI_NO_DELIVERY_PROPOSAL' });
+      };
+      const addGoal = panel.querySelector('#albot-h14-goal-add');
+      if (addGoal) addGoal.onclick = () => {
+        const targetName = panel.querySelector('#albot-h14-goal-target').value || '';
+        const slot = panel.querySelector('#albot-h14-goal-slot').value || '';
+        const itemName = panel.querySelector('#albot-h14-goal-item').value || '';
+        const minLevel = Number(panel.querySelector('#albot-h14-goal-level').value) || 0;
+        const next = this.runtime.gear.goalSnapshot().concat([{ targetName, slot, itemName, minLevel, priority: 0 }]);
+        run(() => this.runtime.gear.setGoals(next));
+      };
+      const clearGoal = panel.querySelector('#albot-h14-goal-clear');
+      if (clearGoal) clearGoal.onclick = () => run(() => this.runtime.gear.setGoals([]));
+    }
+
+    renderUpgrade(status) {
+      const panel = this.host.querySelector('#albot-panel-upgrade');
+      if (!panel) return;
+      const upgrade = status.upgrade || {};
+      const metrics = upgrade.metrics || {};
+      let plan = upgrade.lastPlan || null;
+      try { if (!plan || plan.state !== 'READY') plan = this.runtime.upgrade.plan(); } catch (_) {}
+      const upgrades = plan && Array.isArray(plan.upgradeCandidates) ? plan.upgradeCandidates : [];
+      const compounds = plan && Array.isArray(plan.compoundCandidates) ? plan.compoundCandidates : [];
+      const policy = upgrade.config || {};
+      const workspace = plan && plan.workspace || {};
+      const resultText = this.upgradeResult ? JSON.stringify(this.upgradeResult, null, 2) : 'Noch keine manuelle H15-Aktion.';
+
+      const upgradeOptions = upgrades.length
+        ? upgrades.map(row => '<option value="'+esc(row.itemSlot)+'">'+esc(row.item.name)+' +'+esc(row.fromLevel)+' → +'+esc(row.targetLevel)+' · '+esc(row.scrollName)+' · Risiko '+esc(row.budget.itemValueAtRisk)+'</option>').join('')
+        : '<option value="">kein sicherer Upgrade-Kandidat</option>';
+      const compoundOptions = compounds.length
+        ? compounds.map(row => '<option value="'+esc(row.itemSlots.join(','))+'">'+esc(row.items[0].name)+' +'+esc(row.fromLevel)+' · Slots '+esc(row.itemSlots.join(', '))+' · '+esc(row.scrollName)+'</option>').join('')
+        : '<option value="">kein sicherer Compound-Kandidat</option>';
+
+      panel.innerHTML = `<div class="albot-card"><b>H15 Upgrade & Compound</b>
+<div class="albot-small">Scroll-/Offering-Auswahl, Risiko- und Kostenbudgets, Workspace-Slotreservierung sowie Live-Delta-Ergebnisprüfung. Promise-Erfolg allein bestätigt nichts.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${upgrade.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Plan</span><div class="albot-v">${esc(plan && plan.state || '-')} · ${esc(plan && plan.reason || '-')}</div></div>
+<div><span class="albot-k">Upgrade-Kandidaten</span><div class="albot-v">${esc(upgrades.length)}</div></div>
+<div><span class="albot-k">Compound-Kandidaten</span><div class="albot-v">${esc(compounds.length)}</div></div>
+<div><span class="albot-k">Versuche Session</span><div class="albot-v">${esc(upgrade.attemptsThisSession || 0)} / ${esc(policy.maxAttemptsPerSession || '-')}</div></div>
+<div><span class="albot-k">Reservierte Slots</span><div class="albot-v">${esc((workspace.reservedSlots || []).join(', ') || 'keine')}</div></div>
+<div><span class="albot-k">Upgrade Erfolg / Fail / Unknown</span><div class="albot-v">${esc(metrics.upgradesSucceeded || 0)} / ${esc(metrics.upgradesFailed || 0)} / ${esc(metrics.upgradesUnknown || 0)}</div></div>
+<div><span class="albot-k">Compound Erfolg / Fail / Unknown</span><div class="albot-v">${esc(metrics.compoundsSucceeded || 0)} / ${esc(metrics.compoundsFailed || 0)} / ${esc(metrics.compoundsUnknown || 0)}</div></div>
+<div><span class="albot-k">Budget Blocks</span><div class="albot-v">${esc(metrics.budgetBlocks || 0)}</div></div>
+<div><span class="albot-k">Suspendiert</span><div class="albot-v">${upgrade.suspended ? 'JA · '+esc(upgrade.suspendedReason || '-') : 'NEIN'}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Einzelaktion</b>
+<div class="albot-row"><select id="albot-h15-upgrade">${upgradeOptions}</select><button id="albot-h15-upgrade-run" class="albot-btn">Upgrade vormerken</button></div>
+<div class="albot-row"><select id="albot-h15-compound">${compoundOptions}</select><button id="albot-h15-compound-run" class="albot-btn">Compound vormerken</button></div>
+<div class="albot-small">Jeder Quell-, Scroll- und Offering-Slot wird unmittelbar vor Dispatch erneut validiert. Während Combat wird fail-closed blockiert.</div>
+</div>
+
+<div class="albot-card"><b>Budget / Offering Policy</b>
+<div class="albot-row"><label>Upgrade max +<input id="albot-h15-max-up" type="number" min="0" max="20" value="${esc(policy.maxUpgradeLevel == null ? 8 : policy.maxUpgradeLevel)}"></label><label>Compound max +<input id="albot-h15-max-comp" type="number" min="0" max="20" value="${esc(policy.maxCompoundLevel == null ? 4 : policy.maxCompoundLevel)}"></label></div>
+<div class="albot-row"><label>Item-Risiko max <input id="albot-h15-max-risk" type="number" min="0" value="${esc(policy.maxItemValueAtRisk == null ? 250000 : policy.maxItemValueAtRisk)}"></label><label>Consumables max <input id="albot-h15-max-cost" type="number" min="0" value="${esc(policy.maxConsumableCost == null ? 250000 : policy.maxConsumableCost)}"></label></div>
+<div class="albot-row"><select id="albot-h15-offering-mode"><option ${policy.offeringMode==='DISABLED'?'selected':''}>DISABLED</option><option ${policy.offeringMode==='OPTIONAL'?'selected':''}>OPTIONAL</option><option ${policy.offeringMode==='REQUIRED'?'selected':''}>REQUIRED</option></select><input id="albot-h15-offering-level" type="number" min="0" max="20" value="${esc(policy.offeringFromLevel == null ? 7 : policy.offeringFromLevel)}"><button id="albot-h15-policy-save" class="albot-btn">Policy speichern</button></div>
+</div>
+
+<div class="albot-card"><b>Steuerung</b>
+<div class="albot-row"><button id="albot-h15-plan" class="albot-btn">Plan</button><button id="albot-h15-tick" class="albot-btn">Tick</button><button id="albot-h15-best" class="albot-btn">Sichersten Kandidaten vormerken</button><button id="albot-h15-reset" class="albot-btn warn" ${upgrade.suspended ? '' : 'disabled'}>Safety zurücksetzen</button></div>
+<div class="albot-small">Pending: ${upgrade.pending ? esc(upgrade.pending.kind) : 'nein'} · Request: ${upgrade.request ? esc(upgrade.request.kind) : 'keiner'}</div>
+</div>
+
+<div class="albot-card"><b>Letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.upgradeResult = fn(); }
+        catch (error) { this.upgradeResult = { ok: false, reason: String(error && error.message || error) }; }
+        this.renderUpgrade(this.runtime.status());
+      };
+      const planButton = panel.querySelector('#albot-h15-plan');
+      if (planButton) planButton.onclick = () => run(() => this.runtime.upgrade.plan());
+      const tickButton = panel.querySelector('#albot-h15-tick');
+      if (tickButton) tickButton.onclick = () => run(() => this.runtime.upgrade.tick());
+      const bestButton = panel.querySelector('#albot-h15-best');
+      if (bestButton) bestButton.onclick = () => run(() => this.runtime.upgrade.queueBest());
+      const resetButton = panel.querySelector('#albot-h15-reset');
+      if (resetButton) resetButton.onclick = () => run(() => this.runtime.upgrade.resetSafety('GUI_H15_RESET'));
+      const upgradeButton = panel.querySelector('#albot-h15-upgrade-run');
+      if (upgradeButton) upgradeButton.onclick = () => {
+        const slot = Number(panel.querySelector('#albot-h15-upgrade').value);
+        run(() => Number.isInteger(slot) ? this.runtime.upgrade.queueUpgrade(slot) : { accepted: false, reason: 'H15_GUI_NO_UPGRADE_CANDIDATE' });
+      };
+      const compoundButton = panel.querySelector('#albot-h15-compound-run');
+      if (compoundButton) compoundButton.onclick = () => {
+        const raw = panel.querySelector('#albot-h15-compound').value || '';
+        const slots = raw ? raw.split(',').map(Number) : [];
+        run(() => slots.length === 3 && slots.every(Number.isInteger)
+          ? this.runtime.upgrade.queueCompound(slots)
+          : { accepted: false, reason: 'H15_GUI_NO_COMPOUND_CANDIDATE' });
+      };
+      const policyButton = panel.querySelector('#albot-h15-policy-save');
+      if (policyButton) policyButton.onclick = () => run(() => this.runtime.upgrade.policy({
+        maxUpgradeLevel: Number(panel.querySelector('#albot-h15-max-up').value),
+        maxCompoundLevel: Number(panel.querySelector('#albot-h15-max-comp').value),
+        maxItemValueAtRisk: Number(panel.querySelector('#albot-h15-max-risk').value),
+        maxConsumableCost: Number(panel.querySelector('#albot-h15-max-cost').value),
+        offeringMode: panel.querySelector('#albot-h15-offering-mode').value,
+        offeringFromLevel: Number(panel.querySelector('#albot-h15-offering-level').value)
+      }));
+    }
+
+    renderExchangeCraft(status) {
+      const panel = this.host.querySelector('#albot-panel-exchange-craft');
+      if (!panel) return;
+      const ec = status.exchangeCraft || {};
+      const metrics = ec.metrics || {};
+      const policy = ec.config || {};
+      let plan = ec.lastPlan || null;
+      try { if (!plan || plan.state !== 'READY') plan = this.runtime.exchangeCraft.plan(); } catch (_) {}
+      const exchanges = plan && Array.isArray(plan.exchangeCandidates) ? plan.exchangeCandidates : [];
+      const crafts = plan && Array.isArray(plan.craftCandidates) ? plan.craftCandidates : [];
+      const safeExchanges = exchanges.filter(row => row.safe);
+      const safeCrafts = crafts.filter(row => row.safe);
+      const questOptInReason = 'H16_QUEST_EVENT_REQUIRES_EXPLICIT_OPT_IN';
+      const selectableExchanges = exchanges.filter(row => row.safe || row.reason === questOptInReason);
+      const selectableCrafts = crafts.filter(row => row.safe || row.reason === questOptInReason);
+      const resultText = this.exchangeCraftResult ? JSON.stringify(this.exchangeCraftResult, null, 2) : 'Noch keine manuelle H16-Aktion.';
+
+      const exchangeOptions = selectableExchanges.length
+        ? selectableExchanges.map(row => '<option value="'+esc(row.inventorySlot)+'">'+esc(row.itemName)+' · '+esc(row.requiredQuantity)+' Stück · Risiko '+esc(row.valueAtRisk)+(row.safe ? '' : ' · QUEST/EVENT OPT-IN')+'</option>').join('')
+        : '<option value="">kein sicherer oder explizit freigebbarer Exchange-Kandidat</option>';
+      const craftOptions = selectableCrafts.length
+        ? selectableCrafts.map(row => '<option value="'+esc(row.itemName)+'">'+esc(row.itemName)+' · Gold '+esc(row.cost)+' · Input-Risiko '+esc(row.inputValueAtRisk)+(row.safe ? '' : ' · QUEST/EVENT OPT-IN')+'</option>').join('')
+        : '<option value="">kein sicherer oder explizit freigebbarer Craft-Kandidat</option>';
+
+      panel.innerHTML = `<div class="albot-card"><b>H16 Exchange & Craft</b>
+<div class="albot-small">Live Exchange-Mengen, Craft-Rezepte aus G.craft, Produktionsgraph, Materialquellen und konservative Risiko-/Kostenbudgets. Quest-/Event-Rezepte und -Exchanges sind standardmäßig blockiert.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${ec.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Plan</span><div class="albot-v">${esc(plan && plan.state || '-')} · ${esc(plan && plan.reason || '-')}</div></div>
+<div><span class="albot-k">Sichere Exchanges</span><div class="albot-v">${esc(safeExchanges.length)} / ${esc(exchanges.length)}</div></div>
+<div><span class="albot-k">Sichere Crafts</span><div class="albot-v">${esc(safeCrafts.length)} / ${esc(crafts.length)}</div></div>
+<div><span class="albot-k">Session-Versuche</span><div class="albot-v">${esc(ec.attemptsThisSession || 0)} / ${esc(policy.maxAttemptsPerSession || '-')}</div></div>
+<div><span class="albot-k">Material-Delegationen</span><div class="albot-v">${esc(metrics.materialDelegations || 0)}</div></div>
+<div><span class="albot-k">Exchange bestätigt / Unknown</span><div class="albot-v">${esc(metrics.exchangesConfirmed || 0)} / ${esc(metrics.exchangesUnknown || 0)}</div></div>
+<div><span class="albot-k">Craft bestätigt / Unknown</span><div class="albot-v">${esc(metrics.craftsConfirmed || 0)} / ${esc(metrics.craftsUnknown || 0)}</div></div>
+<div><span class="albot-k">Budget Blocks</span><div class="albot-v">${esc(metrics.budgetBlocks || 0)}</div></div>
+<div><span class="albot-k">Suspendiert</span><div class="albot-v">${ec.suspended ? 'JA · '+esc(ec.suspendedReason || '-') : 'NEIN'}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Direkte Aktionen</b>
+<div class="albot-row"><select id="albot-h16-exchange">${exchangeOptions}</select><button id="albot-h16-exchange-run" class="albot-btn">Exchange vormerken</button></div>
+<div class="albot-row"><select id="albot-h16-craft">${craftOptions}</select><button id="albot-h16-craft-run" class="albot-btn">Craft vormerken</button></div>
+<div class="albot-row"><label><input id="albot-h16-quest-optin" type="checkbox" style="flex:none"> Quest/Event für diese Aktion explizit erlauben</label></div>
+<div class="albot-small">Die Opt-in-Checkbox ist absichtlich nicht vorausgewählt. Alle Quellitems und Definitionen werden unmittelbar vor Dispatch erneut geprüft.</div>
+</div>
+
+<div class="albot-card"><b>Produktionsgraph</b>
+<div class="albot-row"><input id="albot-h16-production-name" placeholder="Ziel-Item-ID"><input id="albot-h16-production-qty" type="number" min="1" step="1" value="1" style="max-width:90px"><button id="albot-h16-production-plan" class="albot-btn">Produktionsplan</button></div>
+<div class="albot-small">Der Plan nutzt lokales Inventar und gemounteten Bankbestand. Fehlende Blätter zeigen Bank-, NPC- und Marktquellen; die eigentliche gemeinsame Economy-Autonomie folgt in H17.</div>
+</div>
+
+<div class="albot-card"><b>Safety Policy</b>
+<div class="albot-row"><label>Exchange-Risiko max <input id="albot-h16-ex-risk" type="number" min="0" value="${esc(policy.maxExchangeValueAtRisk == null ? 100000 : policy.maxExchangeValueAtRisk)}"></label><label>Craft-Gold max <input id="albot-h16-craft-cost" type="number" min="0" value="${esc(policy.maxCraftGoldCost == null ? 250000 : policy.maxCraftGoldCost)}"></label></div>
+<div class="albot-row"><label>Craft-Input-Risiko max <input id="albot-h16-craft-risk" type="number" min="0" value="${esc(policy.maxCraftInputValueAtRisk == null ? 250000 : policy.maxCraftInputValueAtRisk)}"></label><label>Goldreserve <input id="albot-h16-reserve" type="number" min="0" value="${esc(policy.goldReserve == null ? 10000 : policy.goldReserve)}"></label></div>
+<div class="albot-row"><button id="albot-h16-policy-save" class="albot-btn">Policy speichern</button></div>
+</div>
+
+<div class="albot-card"><b>Steuerung</b>
+<div class="albot-row"><button id="albot-h16-plan" class="albot-btn">Plan</button><button id="albot-h16-tick" class="albot-btn">Tick</button><button id="albot-h16-best" class="albot-btn">Sichersten Kandidaten vormerken</button><button id="albot-h16-reset" class="albot-btn warn" ${ec.suspended ? '' : 'disabled'}>Safety zurücksetzen</button></div>
+<div class="albot-small">Pending: ${ec.pending ? esc(ec.pending.kind) : 'nein'} · Request: ${ec.request ? esc(ec.request.kind) : 'keiner'}</div>
+</div>
+
+<div class="albot-card"><b>Letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.exchangeCraftResult = fn(); }
+        catch (error) { this.exchangeCraftResult = { ok: false, reason: String(error && error.message || error) }; }
+        this.renderExchangeCraft(this.runtime.status());
+      };
+      const questAllowed = () => !!(panel.querySelector('#albot-h16-quest-optin') && panel.querySelector('#albot-h16-quest-optin').checked);
+      const planButton = panel.querySelector('#albot-h16-plan');
+      if (planButton) planButton.onclick = () => run(() => this.runtime.exchangeCraft.plan());
+      const tickButton = panel.querySelector('#albot-h16-tick');
+      if (tickButton) tickButton.onclick = () => run(() => this.runtime.exchangeCraft.tick());
+      const bestButton = panel.querySelector('#albot-h16-best');
+      if (bestButton) bestButton.onclick = () => run(() => this.runtime.exchangeCraft.queueBest());
+      const resetButton = panel.querySelector('#albot-h16-reset');
+      if (resetButton) resetButton.onclick = () => run(() => this.runtime.exchangeCraft.resetSafety('GUI_H16_RESET'));
+      const exchangeButton = panel.querySelector('#albot-h16-exchange-run');
+      if (exchangeButton) exchangeButton.onclick = () => {
+        const slot = Number(panel.querySelector('#albot-h16-exchange').value);
+        run(() => Number.isInteger(slot)
+          ? this.runtime.exchangeCraft.queueExchange(slot, { allowQuestEvent: questAllowed() })
+          : { accepted: false, reason: 'H16_GUI_NO_EXCHANGE_CANDIDATE' });
+      };
+      const craftButton = panel.querySelector('#albot-h16-craft-run');
+      if (craftButton) craftButton.onclick = () => {
+        const name = panel.querySelector('#albot-h16-craft').value || '';
+        run(() => name
+          ? this.runtime.exchangeCraft.queueCraft(name, { allowQuestEvent: questAllowed() })
+          : { accepted: false, reason: 'H16_GUI_NO_CRAFT_CANDIDATE' });
+      };
+      const productionButton = panel.querySelector('#albot-h16-production-plan');
+      if (productionButton) productionButton.onclick = () => {
+        const name = panel.querySelector('#albot-h16-production-name').value.trim();
+        const quantity = Math.max(1, Math.floor(Number(panel.querySelector('#albot-h16-production-qty').value) || 1));
+        run(() => name
+          ? this.runtime.exchangeCraft.productionPlan(name, quantity, { allowQuestEvent: questAllowed() })
+          : { state: 'BLOCKED', reason: 'H16_GUI_PRODUCTION_TARGET_REQUIRED' });
+      };
+      const policyButton = panel.querySelector('#albot-h16-policy-save');
+      if (policyButton) policyButton.onclick = () => run(() => this.runtime.exchangeCraft.policy({
+        maxExchangeValueAtRisk: Number(panel.querySelector('#albot-h16-ex-risk').value),
+        maxCraftGoldCost: Number(panel.querySelector('#albot-h16-craft-cost').value),
+        maxCraftInputValueAtRisk: Number(panel.querySelector('#albot-h16-craft-risk').value),
+        goldReserve: Number(panel.querySelector('#albot-h16-reserve').value)
+      }));
+    }
+
+    renderEconomy(status) {
+      const panel = this.host.querySelector('#albot-panel-economy');
+      if (!panel) return;
+      const economy = status.economy || {};
+      const metrics = economy.metrics || {};
+      const policy = economy.config || {};
+      let plan = economy.lastPlan || null;
+      try {
+        if (!plan || !['READY', 'IDLE', 'WAITING', 'BLOCKED'].includes(String(plan.state || ''))) {
+          plan = this.runtime.economy.plan();
+        }
+      } catch (_) {}
+      const proposals = plan && Array.isArray(plan.proposals) ? plan.proposals : [];
+      const selected = plan && plan.selected || null;
+      const action = economy.currentAction || null;
+      const resultText = this.economyResult ? JSON.stringify(this.economyResult, null, 2) : 'Noch keine manuelle H17-Steuerung.';
+      const proposalText = proposals.length
+        ? proposals.slice(0, 10).map((row, index) =>
+          (index + 1)+'. '+esc(row.kind)+' · Priorität '+esc(row.priority)+' · Risiko '+esc(row.risk || 0)
+          +(row.itemName ? ' · '+esc(row.itemName) : '')
+        ).join('<br>')
+        : 'Keine sichere Economy-Aktion vorgeschlagen.';
+
+      panel.innerHTML = `<div class="albot-card"><b>H17 Economy Autonomy</b>
+<div class="albot-small">Gemeinsamer Planner für Bank, Markt, Gear, Upgrade, Compound, Exchange und Craft. Der Planner schreibt nie direkt ins Spiel, sondern delegiert ausschließlich an die bestehenden H12–H16-Safety-Pfade.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${economy.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Autonomie</span><div class="albot-v">${economy.autonomyEnabled ? 'AKTIV' : 'AUS'}</div></div>
+<div><span class="albot-k">Plan</span><div class="albot-v">${esc(plan && plan.state || '-')} · ${esc(plan && plan.reason || '-')}</div></div>
+<div><span class="albot-k">Auswahl</span><div class="albot-v">${selected ? esc(selected.kind) : '-'}</div></div>
+<div><span class="albot-k">Session-Aktionen</span><div class="albot-v">${esc(economy.actionsThisSession || 0)} / ${esc(policy.maxActionsPerSession || '-')}</div></div>
+<div><span class="albot-k">Aktive Aktion</span><div class="albot-v">${action ? esc(action.kind)+' · '+esc(action.module) : 'keine'}</div></div>
+<div><span class="albot-k">Bestätigt / Reject / Unknown</span><div class="albot-v">${esc(metrics.actionsConfirmed || 0)} / ${esc(metrics.actionsRejected || 0)} / ${esc(metrics.actionsUnknown || 0)}</div></div>
+<div><span class="albot-k">Konflikt-/Movement-Blocks</span><div class="albot-v">${esc(metrics.conflictBlocks || 0)} / ${esc(metrics.movementBlocks || 0)}</div></div>
+<div><span class="albot-k">Suspendiert</span><div class="albot-v">${economy.suspended ? 'JA · '+esc(economy.suspendedReason || '-') : 'NEIN'}</div></div>
+<div><span class="albot-k">Druck</span><div class="albot-v">${esc(plan && plan.pressure || '-')}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Priorisierte Vorschläge</b><div class="albot-small">${proposalText}</div></div>
+
+<div class="albot-card"><b>Autonomie-Steuerung</b>
+<div class="albot-row"><label>Max Aktionen <input id="albot-h17-max-actions" type="number" min="1" max="100" value="${esc(policy.maxActionsPerSession == null ? 12 : policy.maxActionsPerSession)}"></label><label>Market/NPC Mindestfaktor <input id="albot-h17-market-ratio" type="number" min="1" max="10" step="0.05" value="${esc(policy.minMarketPremiumRatio == null ? 1 : policy.minMarketPremiumRatio)}"></label></div>
+<div class="albot-row"><button id="albot-h17-start" class="albot-btn" ${economy.autonomyEnabled || action ? 'disabled' : ''}>Autonomie starten</button><button id="albot-h17-stop" class="albot-btn warn" ${economy.autonomyEnabled ? '' : 'disabled'}>Autonomie stoppen</button><button id="albot-h17-policy-save" class="albot-btn">Policy speichern</button></div>
+<div class="albot-small">Autonomie startet nie automatisch durch das Öffnen des Tabs. STOP, Combat, Movement-Ownership, Child-Suspension und Session-Budget bleiben harte Gates.</div>
+</div>
+
+<div class="albot-card"><b>Manuelle Planner-Steuerung</b>
+<div class="albot-row"><button id="albot-h17-plan" class="albot-btn">Plan</button><button id="albot-h17-tick" class="albot-btn">Tick</button><button id="albot-h17-queue" class="albot-btn" ${action ? 'disabled' : ''}>Auswahl vormerken</button><button id="albot-h17-reset" class="albot-btn warn" ${economy.suspended && !action ? '' : 'disabled'}>Safety zurücksetzen</button></div>
+</div>
+
+<div class="albot-card"><b>Letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.economyResult = fn(); }
+        catch (error) { this.economyResult = { ok: false, reason: String(error && error.message || error) }; }
+        this.renderEconomy(this.runtime.status());
+      };
+      const planButton = panel.querySelector('#albot-h17-plan');
+      if (planButton) planButton.onclick = () => run(() => this.runtime.economy.plan());
+      const tickButton = panel.querySelector('#albot-h17-tick');
+      if (tickButton) tickButton.onclick = () => run(() => this.runtime.economy.tick());
+      const queueButton = panel.querySelector('#albot-h17-queue');
+      if (queueButton) queueButton.onclick = () => run(() => this.runtime.economy.queueSelected());
+      const resetButton = panel.querySelector('#albot-h17-reset');
+      if (resetButton) resetButton.onclick = () => run(() => this.runtime.economy.resetSafety('GUI_H17_RESET'));
+      const startButton = panel.querySelector('#albot-h17-start');
+      if (startButton) startButton.onclick = () => run(() => this.runtime.economy.startAutonomy({
+        maxActions: Math.max(1, Math.floor(Number(panel.querySelector('#albot-h17-max-actions').value) || 1))
+      }));
+      const stopButton = panel.querySelector('#albot-h17-stop');
+      if (stopButton) stopButton.onclick = () => run(() => this.runtime.economy.stopAutonomy('GUI_H17_AUTONOMY_STOP'));
+      const policyButton = panel.querySelector('#albot-h17-policy-save');
+      if (policyButton) policyButton.onclick = () => run(() => this.runtime.economy.policy({
+        maxActionsPerSession: Math.max(1, Math.floor(Number(panel.querySelector('#albot-h17-max-actions').value) || 1)),
+        minMarketPremiumRatio: Number(panel.querySelector('#albot-h17-market-ratio').value)
+      }));
+    }
+
+    renderLifecycle(status) {
+      const panel = this.host.querySelector('#albot-panel-lifecycle');
+      if (!panel) return;
+      const lifecycle = status.lifecycle || {};
+      const metrics = lifecycle.metrics || {};
+      const policy = lifecycle.policy || {};
+      const roster = status.roster || {};
+      let plan = lifecycle.lastPlan || null;
+      try {
+        if (!plan || !['READY', 'IDLE', 'OBSERVE', 'PENDING', 'BLOCKED', 'SUSPENDED'].includes(String(plan.state || ''))) {
+          plan = this.runtime.lifecycle.plan();
+        }
+      } catch (_) {}
+      const localName = roster.local && roster.local.name || '';
+      const accountRows = Array.isArray(roster.accountCharacters) ? roster.accountCharacters : [];
+      const targetRows = accountRows.filter(row => String(row.name || '') !== String(localName));
+      const targetOptions = targetRows.length
+        ? targetRows.map(row => '<option value="'+esc(row.name)+'">'+esc(row.name)+' · '+esc(row.ctype || '-')+'</option>').join('')
+        : '<option value="">Kein Remote-Character verfügbar</option>';
+      const desired = Array.isArray(policy.desiredActiveNames) ? policy.desiredActiveNames : [];
+      const desiredParty = Array.isArray(policy.desiredPartyMemberNames) ? policy.desiredPartyMemberNames : [];
+      const action = lifecycle.currentAction || null;
+      const resultText = this.lifecycleResult ? JSON.stringify(this.lifecycleResult, null, 2) : 'Noch keine manuelle H19-Steuerung.';
+
+      panel.innerHTML = `<div class="albot-card"><b>H19 Character Lifecycle & Recovery</b>
+<div class="albot-small">Fail-closed Start/Stop/Respawn mit Account-Ownership, Live-Roster-Evidence und persistentem Pending-Reconcile über Runtime-/Bundle-Restarts. Autonomie ist standardmäßig AUS.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${lifecycle.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Autonomie</span><div class="albot-v">${lifecycle.autonomyEnabled ? 'AKTIV' : 'AUS'}</div></div>
+<div><span class="albot-k">Plan</span><div class="albot-v">${esc(plan && plan.state || '-')} · ${esc(plan && plan.reason || '-')}</div></div>
+<div><span class="albot-k">Aktive Aktion</span><div class="albot-v">${action ? esc(action.kind)+' · '+esc(action.targetName || '-')+' · '+esc(action.settlement || '-') : 'keine'}</div></div>
+<div><span class="albot-k">Desired Active</span><div class="albot-v">${desired.length ? desired.map(esc).join(', ') : 'nicht erfasst'}</div></div>
+<div><span class="albot-k">Desired Party Members</span><div class="albot-v">${desiredParty.length ? desiredParty.map(esc).join(', ') : 'nicht erfasst'}</div></div>\n<div><span class="albot-k">Desired Party Leader</span><div class="albot-v">${esc(policy.desiredPartyLeader || '-')}</div></div>
+<div><span class="albot-k">Session-Aktionen</span><div class="albot-v">${esc(lifecycle.actionsThisSession || 0)} / ${esc(policy.maxActionsPerSession || '-')}</div></div>
+<div><span class="albot-k">Bestätigt / Reject / Unknown</span><div class="albot-v">${esc(metrics.actionsConfirmed || 0)} / ${esc(metrics.actionsRejected || 0)} / ${esc(metrics.actionsUnknown || 0)}</div></div>
+<div><span class="albot-k">Start / Stop / Respawn bestätigt</span><div class="albot-v">${esc(metrics.startsConfirmed || 0)} / ${esc(metrics.stopsConfirmed || 0)} / ${esc(metrics.respawnsConfirmed || 0)}</div></div>
+<div><span class="albot-k">Party Invite / Request / Accept bestätigt</span><div class="albot-v">${esc(metrics.partyInvitesConfirmed || 0)} / ${esc(metrics.partyRequestsConfirmed || 0)} / ${esc(metrics.partyAcceptsConfirmed || 0)}</div></div>
+<div><span class="albot-k">Party Signals / Konflikt-Blocks</span><div class="albot-v">${esc((lifecycle.partySignals || []).length)} / ${esc(metrics.partyConflictBlocks || 0)}</div></div>
+<div><span class="albot-k">Reconciliations</span><div class="albot-v">${esc(metrics.reconciliations || 0)}</div></div>
+<div><span class="albot-k">Suspendiert</span><div class="albot-v">${lifecycle.suspended ? 'JA · '+esc(lifecycle.suspendedReason || '-') : 'NEIN'}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Gewünschtes aktives Team</b>
+<div class="albot-row"><button id="albot-h19-capture" class="albot-btn">Aktive Characters erfassen</button><label>Max Aktionen <input id="albot-h19-max-actions" type="number" min="1" max="20" value="${esc(policy.maxActionsPerSession == null ? 4 : policy.maxActionsPerSession)}"></label></div>
+<div class="albot-row"><button id="albot-h19-start-auto" class="albot-btn" ${lifecycle.autonomyEnabled || action ? 'disabled' : ''}>Recovery starten</button><button id="albot-h19-stop-auto" class="albot-btn warn" ${lifecycle.autonomyEnabled ? '' : 'disabled'}>Recovery stoppen</button></div>
+<div class="albot-small">„Aktive Characters erfassen“ speichert ausschließlich aktuell live beobachtete, account-eigene Characters als Desired-Set und übernimmt einen live beobachteten eigenen Party-Leader. Fehlende Desired-Characters dürfen bounded wieder gestartet werden; Party-Recovery läuft nur mit eindeutig gespeichertem Leader.</div>
+</div>
+
+<div class="albot-card"><b>Manuelle Lifecycle-Aktion</b>
+<div class="albot-row"><select id="albot-h19-target">${targetOptions}</select></div>
+<div class="albot-row"><button id="albot-h19-start-char" class="albot-btn" ${action ? 'disabled' : ''}>Character starten</button><button id="albot-h19-stop-char" class="albot-btn warn" ${action ? 'disabled' : ''}>Character stoppen</button><button id="albot-h19-respawn" class="albot-btn" ${action ? 'disabled' : ''}>Lokalen Respawn vormerken</button></div>
+<div class="albot-row"><button id="albot-h19-plan" class="albot-btn">Plan</button><button id="albot-h19-tick" class="albot-btn">Tick</button><button id="albot-h19-cancel" class="albot-btn warn" ${action ? 'disabled' : ''}>Queue leeren</button><button id="albot-h19-ack-unknown" class="albot-btn warn" ${lifecycle.suspended && action && action.unknownRecorded ? '' : 'disabled'}>UNKNOWN bestätigen</button><button id="albot-h19-reset" class="albot-btn warn" ${lifecycle.suspended && !action ? '' : 'disabled'}>Safety zurücksetzen</button></div>
+</div>
+
+<div class="albot-card"><b>Letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.lifecycleResult = fn(); }
+        catch (error) { this.lifecycleResult = { ok: false, reason: String(error && error.message || error) }; }
+        this.renderLifecycle(this.runtime.status());
+      };
+      const target = () => {
+        const el = panel.querySelector('#albot-h19-target');
+        return el ? el.value : '';
+      };
+      const capture = panel.querySelector('#albot-h19-capture');
+      if (capture) capture.onclick = () => run(() => this.runtime.lifecycle.captureDesiredActive());
+      const startAuto = panel.querySelector('#albot-h19-start-auto');
+      if (startAuto) startAuto.onclick = () => run(() => this.runtime.lifecycle.startAutonomy({
+        maxActions: Math.max(1, Math.floor(Number(panel.querySelector('#albot-h19-max-actions').value) || 1))
+      }));
+      const stopAuto = panel.querySelector('#albot-h19-stop-auto');
+      if (stopAuto) stopAuto.onclick = () => run(() => this.runtime.lifecycle.stopAutonomy('GUI_H19_AUTONOMY_STOP'));
+      const startChar = panel.querySelector('#albot-h19-start-char');
+      if (startChar) startChar.onclick = () => run(() => this.runtime.lifecycle.queueStart(target()));
+      const stopChar = panel.querySelector('#albot-h19-stop-char');
+      if (stopChar) stopChar.onclick = () => run(() => this.runtime.lifecycle.queueStop(target()));
+      const respawn = panel.querySelector('#albot-h19-respawn');
+      if (respawn) respawn.onclick = () => run(() => this.runtime.lifecycle.queueRespawn());
+      const planButton = panel.querySelector('#albot-h19-plan');
+      if (planButton) planButton.onclick = () => run(() => this.runtime.lifecycle.plan());
+      const tickButton = panel.querySelector('#albot-h19-tick');
+      if (tickButton) tickButton.onclick = () => run(() => this.runtime.lifecycle.tick());
+      const cancel = panel.querySelector('#albot-h19-cancel');
+      if (cancel) cancel.onclick = () => run(() => this.runtime.lifecycle.cancelQueued());
+      const acknowledgeUnknown = panel.querySelector('#albot-h19-ack-unknown');
+      if (acknowledgeUnknown) acknowledgeUnknown.onclick = () => run(() => this.runtime.lifecycle.acknowledgeUnknown('GUI_H19_UNKNOWN_ACK'));
+      const reset = panel.querySelector('#albot-h19-reset');
+      if (reset) reset.onclick = () => run(() => this.runtime.lifecycle.resetSafety('GUI_H19_RESET'));
+    }
+
+
+    renderFullAutonomy(status) {
+      const panel = this.host.querySelector('#albot-panel-full-autonomy');
+      if (!panel) return;
+      const full = status.fullAutonomy || {};
+      const strategy = status.accountStrategy || {};
+      let profiles = Array.isArray(strategy.profiles) ? strategy.profiles : [];
+      let progression = strategy.progression || null;
+      try {
+        if (!profiles.length && this.runtime.accountStrategy && typeof this.runtime.accountStrategy.profiles === 'function') {
+          profiles = this.runtime.accountStrategy.profiles();
+        }
+        if (!progression && this.runtime.accountStrategy && typeof this.runtime.accountStrategy.progressionPlan === 'function') {
+          progression = this.runtime.accountStrategy.progressionPlan();
+        }
+      } catch (_) {}
+      const plan = full.lastPlan || strategy.taskPlan || null;
+      const decision = full.lastDecision || null;
+      const selected = plan && plan.selected && Array.isArray(plan.selected.memberNames) ? plan.selected.memberNames : [];
+      const support = plan && Array.isArray(plan.supportMemberNames) ? plan.supportMemberNames : [];
+      const resultText = this.fullAutonomyResult
+        ? JSON.stringify(this.fullAutonomyResult, null, 2)
+        : 'Noch keine manuelle Full-Live-Aktion.';
+
+      panel.innerHTML = '<div class="albot-card"><b>V6 Full Live · Account & Party Optimizer</b>'
+        + '<div class="albot-small">Startet die vorhandenen Bot-Module gemeinsam und verteilt Rollen accountweit. Combat-Characters farmen/kaempfen nach Task-Plan, der Merchant uebernimmt Economy und bei Bedarf Party-Logistik. Sicherheits-Suspensions und UNKNOWN werden niemals automatisch zurueckgesetzt.</div>'
+        + '<div class="albot-grid" style="margin-top:8px">'
+        + '<div><span class="albot-k">Full Live</span><div class="albot-v">'+(full.enabled ? 'AKTIV' : 'AUS')+'</div></div>'
+        + '<div><span class="albot-k">Task</span><div class="albot-v">'+esc(full.config && full.config.taskType || '-')+'</div></div>'
+        + '<div><span class="albot-k">Status</span><div class="albot-v">'+esc(decision && decision.state || '-')+' · '+esc(decision && decision.reason || '-')+'</div></div>'
+        + '<div><span class="albot-k">Leader</span><div class="albot-v">'+esc(plan && plan.leaderName || decision && decision.leader || '-')+'</div></div>'
+        + '<div><span class="albot-k">Execution Group</span><div class="albot-v">'+(selected.length ? selected.map(esc).join(', ') : '-')+'</div></div>'
+        + '<div><span class="albot-k">Support</span><div class="albot-v">'+(support.length ? support.map(esc).join(', ') : '-')+'</div></div>'
+        + '<div><span class="albot-k">Catch-up Ziel</span><div class="albot-v">'+esc(progression && progression.selectedCharacterName || plan && plan.progression && plan.progression.selectedCharacterName || '-')+'</div></div>'
+        + '<div><span class="albot-k">Lokale Rolle</span><div class="albot-v">'+esc(decision && decision.localRole || '-')+'</div></div>'
+        + '</div></div>'
+        + '<div class="albot-card"><b>Account-Profile</b>'
+        + (profiles.length ? profiles.map(row => '<div class="albot-small"><b>'+esc(row.name)+'</b> · '+esc(row.ctype || '?')+' · Lv '+esc(row.level == null ? '?' : row.level)+' · Gear '+esc(row.gearScore == null ? '?' : Math.round(Number(row.gearScore)))+' · Training '+esc(Math.round(Number(row.trainingMs || 0)/1000))+'s · '+(row.local ? 'LOCAL' : row.peerFresh ? 'FRESH PEER' : row.online ? 'ROSTER ONLY' : 'OFFLINE')+'</div>').join('') : '<div class="albot-small">Noch keine Character-Profile.</div>')
+        + '</div>'
+        + '<div class="albot-card"><b>Steuerung</b>'
+        + '<div class="albot-row"><select id="albot-full-task">'
+        + ['FARM','QUEST','BOSS','EVENT','SPECIAL'].map(value => '<option value="'+value+'" '+((full.config && full.config.taskType || 'FARM') === value ? 'selected' : '')+'>'+value+'</option>').join('')
+        + '</select><button id="albot-full-start" class="albot-btn" '+(full.enabled || status.emergencyStop && status.emergencyStop.latched ? 'disabled' : '')+'>Full Live starten</button><button id="albot-full-stop" class="albot-btn warn" '+(full.enabled ? '' : 'disabled')+'>Full Live stoppen</button></div>'
+        + '<div class="albot-small">Auf allen vier Fenstern denselben aktuellen Build laden. Der Modus bleibt WARMING, bis fuer jeden online gemeldeten Character ein frisches Cross-Window-Profil vorliegt.</div>'
+        + '<div class="albot-log" style="margin-top:8px">'+esc(resultText)+'</div></div>';
+
+      const start = panel.querySelector('#albot-full-start');
+      if (start) start.onclick = async () => {
+        try {
+          if (!this.runtime.running) await this.runtime.start();
+          const taskType = panel.querySelector('#albot-full-task').value;
+          this.fullAutonomyResult = this.runtime.fullAutonomy.startAutonomy({ taskType });
+        } catch (error) {
+          this.fullAutonomyResult = { accepted: false, reason: String(error && error.message || error) };
+        }
+        this.render();
+      };
+      const stop = panel.querySelector('#albot-full-stop');
+      if (stop) stop.onclick = () => {
+        try { this.fullAutonomyResult = this.runtime.fullAutonomy.stopAutonomy('GUI_FULL_AUTONOMY_STOP'); }
+        catch (error) { this.fullAutonomyResult = { stopped: false, reason: String(error && error.message || error) }; }
+        this.render();
+      };
+    }
+
+    async runRecommendedLiveTest() {
+      const state = this.runtime.status();
+      if (state.emergencyStop && state.emergencyStop.latched) {
+        this.runtime.logger.warn('Live-Test durch globalen STOP blockiert');
+        this.activeTab = 'live-test';
+        this._selectTab();
+        this.renderLiveTest(state);
+        return null;
+      }
+      this.activeTab = 'live-test';
+      this._selectTab();
+      this.liveTestClipboard = { pending: true, copied: false, error: null };
+      this.render();
+      let result = null;
+      try {
+        result = await this.runtime.liveTests.startRecommended();
+      } catch (error) {
+        this.runtime.logger.error('Live-Test konnte nicht gestartet werden', { error: String(error && error.message || error) });
+      }
+      const copy = await this.copyDiagnostics();
+      this.liveTestClipboard = { pending: false, copied: copy.copied === true, error: copy.error || null };
+      this.render();
+      return result;
+    }
+
+    renderLiveTest(status) {
+      const panel = this.host.querySelector('#albot-panel-live-test');
+      if (!panel) return;
+      const tests = status.liveTests || {};
+      const recommended = tests.recommended || null;
+      const run = tests.current || tests.lastRun || null;
+      const running = tests.running === true;
+      const state = run ? run.state : 'BEREIT';
+      const stateClass = state === 'PASSED' ? 'albot-ok' : (state === 'FAILED' || state === 'CANCELLED' ? 'albot-bad' : '');
+      const clipboard = this.liveTestClipboard;
+      const clipboardText = clipboard == null
+        ? 'Nach Testende wird der vollständige Fehlerbericht automatisch in die Zwischenablage kopiert.'
+        : clipboard.copied
+          ? 'Test beendet · Fehlerbericht automatisch in die Zwischenablage kopiert.'
+          : clipboard.pending
+            ? 'Test läuft · Bericht wird nach Abschluss automatisch kopiert.'
+            : 'Test beendet · automatische Zwischenablage-Kopie fehlgeschlagen: ' + esc(clipboard.error || 'unbekannt');
+
+      const steps = run && Array.isArray(run.steps) ? run.steps : recommended && Array.isArray(recommended.steps)
+        ? recommended.steps.map(step => ({ ...step, state: 'PENDING' }))
+        : [];
+
+      panel.innerHTML = `<div class="albot-card"><b>Ein-Klick-Live-Test</b>
+<div class="albot-small">Ab H5 laufen Live-Tests automatisch als definierte Schrittfolge. Du musst nur „Test starten“ drücken. Bei einem Fehler wird fail-safe abgebrochen; der globale rote STOP bleibt jederzeit verfügbar.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Testsuite</span><div class="albot-v">${recommended ? esc(recommended.title) : 'noch nicht registriert'}</div></div>
+<div><span class="albot-k">Status</span><div class="albot-v ${stateClass}">${esc(state)}</div></div>
+<div><span class="albot-k">Aktueller Schritt</span><div class="albot-v">${run && run.currentStepId ? esc(run.currentStepId) : '-'}</div></div>
+<div><span class="albot-k">Runtime</span><div class="albot-v">${status.running ? 'RUNNING' : 'STOPPED'}</div></div>
+</div>
+<div class="albot-row"><button id="albot-live-test-start" class="albot-btn" ${running || !recommended ? 'disabled' : ''}>Test starten</button>${running ? '<span class="albot-small">Test läuft automatisch …</span>' : ''}</div>
+<div class="albot-small ${clipboard && clipboard.copied ? 'albot-ok' : clipboard && !clipboard.pending ? 'albot-bad' : ''}">${clipboardText}</div>
+</div>
+
+<div class="albot-card"><b>Testschritte</b>
+${steps.length ? steps.map((step, index) => {
+  const stepClass = step.state === 'PASSED' ? 'albot-ok' : (step.state === 'FAILED' || step.state === 'CANCELLED' ? 'albot-bad' : 'albot-muted');
+  const details = step.error ? ' · '+esc(step.error.message || step.error) : step.result != null ? ' · '+esc(JSON.stringify(step.result)) : '';
+  return '<div class="'+stepClass+'">'+esc(index + 1)+'. '+esc(step.title || step.id)+' — '+esc(step.state || 'PENDING')+details+'</div>';
+}).join('') : '<div class="albot-small">Für den aktuellen Entwicklungsstand ist noch keine Live-Testsuite registriert.</div>'}
+</div>
+
+${run ? `<div class="albot-card"><b>Letztes Testergebnis</b>
+<div class="${stateClass}"><b>${state === 'PASSED' ? 'TEST BEENDET – BESTANDEN' : state === 'RUNNING' ? 'TEST LÄUFT' : 'TEST BEENDET – '+esc(state)}</b></div>
+<div class="albot-small">Grund: ${esc(run.reason || '-')}</div>
+<div class="albot-small">Start: ${esc(run.startedAt || '-')} · Ende: ${esc(run.finishedAt || '-')}</div>
+</div>` : ''}`;
+
+      const start = panel.querySelector('#albot-live-test-start');
+      if (start) start.onclick = () => this.runRecommendedLiveTest();
+    }
+
+    renderKnowledge(status) {
+      const panel = this.host.querySelector('#albot-panel-knowledge');
+      if (!panel) return;
+      const knowledge = status.knowledge || {};
+      const provider = knowledge.provider || {};
+      const lkg = knowledge.lastKnownGood || null;
+      const error = knowledge.lastRefreshError || provider.lastError || null;
+      panel.innerHTML = `<div class="albot-card"><b>Windows Bridge Knowledge</b>
+<div class="albot-grid" style="margin-top:6px">
+<div><span class="albot-k">Provider</span><div class="albot-v">${esc(provider.name || 'nicht konfiguriert')}</div></div>
+<div><span class="albot-k">Status</span><div class="albot-v">${esc(provider.state || 'IDLE')}</div></div>
+<div><span class="albot-k">Modus</span><div class="albot-v">${esc(provider.mode || '-')}</div></div>
+<div><span class="albot-k">Read-only</span><div class="albot-v">${provider.readOnly === true ? 'JA' : 'unbekannt'}</div></div>
+<div><span class="albot-k">Bridge-Handoff</span><div class="albot-v">${provider.handoffAvailable ? 'verfügbar' : 'nicht verfügbar'}</div></div>
+<div><span class="albot-k">Mirror</span><div class="albot-v">${esc(provider.repository || '-')} · ${esc(provider.ref || '-')}</div></div>
+</div>
+<div class="albot-row"><button id="albot-knowledge-refresh" class="albot-btn">Knowledge aktualisieren</button></div>
+${error ? '<div class="albot-small albot-bad">Letzter Refresh: '+esc(error)+'</div>' : '<div class="albot-small">Kein Knowledge-Fehler gemeldet.</div>'}
+</div>
+<div class="albot-card"><b>Last Known Good</b>
+${lkg ? `<div class="albot-grid" style="margin-top:6px">
+<div><span class="albot-k">Generation</span><div class="albot-v">${esc(lkg.generation)}</div></div>
+<div><span class="albot-k">Quelle</span><div class="albot-v">${esc(lkg.source || '-')}</div></div>
+<div><span class="albot-k">Fakten</span><div class="albot-v">${esc(lkg.factCount == null ? 0 : lkg.factCount)}</div></div>
+<div><span class="albot-k">Alter</span><div class="albot-v">${lkg.ageMs == null ? '-' : esc(Math.round(lkg.ageMs / 1000))+' s'}</div></div>
+</div><div class="albot-small" style="margin-top:6px">Snapshot: ${esc(lkg.snapshotSha256 || '-')}</div>` : '<div class="albot-small">Noch kein validierter Snapshot gespeichert. Das ist zulässig, solange die Bridge bzw. ihr GitHub-Spiegel noch keinen Snapshot bereitstellt.</div>'}
+</div>`;
+
+      const refresh = panel.querySelector('#albot-knowledge-refresh');
+      if (refresh) refresh.onclick = async () => {
+        refresh.disabled = true;
+        refresh.textContent = 'Aktualisiere ...';
+        await this.runtime.knowledge.refresh();
+        this.renderKnowledge(this.runtime.status());
+      };
+    }
+
+    renderLogs() {
+      if (!this.host) return;
+      const panel = this.host.querySelector('#albot-panel-logs');
+      const lines = this.runtime.logger.list(100).map(x => `[${x.at}] ${x.level} ${x.message}${x.data == null ? '' : ' '+JSON.stringify(x.data)}`).join('\n');
+      panel.innerHTML = `<div class="albot-card"><b>Logs</b><div class="albot-log">${esc(lines || 'Noch keine Logs.')}</div></div>`;
+    }
+
+    renderDev(status) {
+      const panel = this.host.querySelector('#albot-panel-dev');
+      const scheduler = status.scheduler || {};
+      const resultText = this.devResult ? JSON.stringify(this.devResult, null, 2) : 'H7 Party · ' + status.version;
+      panel.innerHTML = `<div class="albot-card"><b>Entwicklung</b>
+<div class="albot-row"><button id="albot-selftest" class="albot-btn">Selftest</button><button id="albot-stability-test" class="albot-btn">H2 Runtime-Test</button><button id="albot-reset-stop" class="albot-btn danger">STOP zurücksetzen</button><button id="albot-show" class="albot-btn">GUI anzeigen</button></div>
+<div class="albot-small">Scheduler: ${scheduler.enabled ? 'ACTIVE' : 'STOPPED'} · Ressourcen: ${esc(scheduler.totalResources || 0)} · Generation: ${esc(scheduler.generation || 0)} · Boot: #${esc(status.bootCount || 1)}</div>
+<div id="albot-selftest-result" class="albot-log" style="margin-top:8px;max-height:220px">${esc(resultText)}</div></div>`;
+      panel.querySelector('#albot-selftest').onclick = () => {
+        this.devResult = this.runtime.selfTest();
+        this.renderDev(this.runtime.status());
+      };
+      panel.querySelector('#albot-stability-test').onclick = async () => {
+        this.devResult = { running: true, message: 'H2 Runtime-Test läuft ...' };
+        this.renderDev(this.runtime.status());
+        this.devResult = await this.runtime.runStabilityProbe();
+        this.renderDev(this.runtime.status());
+      };
+      panel.querySelector('#albot-reset-stop').onclick = () => { this.runtime.resetEmergencyStop(); this.render(); };
+      panel.querySelector('#albot-show').onclick = () => { this.host.style.display = 'block'; };
+    }
+
+    async copyDiagnostics() {
+      const text = JSON.stringify(this.runtime.diagnostics(), null, 2);
+      try {
+        const nav = this.uiRoot && this.uiRoot.navigator || this.root.navigator;
+        if (nav && nav.clipboard && typeof nav.clipboard.writeText === 'function') {
+          await nav.clipboard.writeText(text);
+        } else {
+          const area = this.doc.createElement('textarea'); area.value = text; area.style.position='fixed'; area.style.opacity='0'; this.doc.body.appendChild(area); area.select(); this.doc.execCommand('copy'); area.remove();
+        }
+        this.runtime.logger.info('Fehlerbericht in Zwischenablage kopiert');
+        this.renderLogs();
+        return { copied: true, text, error: null };
+      } catch (e) {
+        this.runtime.logger.error('Clipboard-Kopie fehlgeschlagen', { error: e.message });
+        this.renderLogs();
+        return { copied: false, text, error: String(e && e.message || e) };
+      }
+    }
+
+    show() { if (this.host) this.host.style.display = 'block'; }
+    hide() { if (this.host) this.host.style.display = 'none'; }
+    destroy() {
+      if (this.interval != null) { try { (this.intervalRoot || this.root).clearInterval(this.interval); } catch (_) {} this.interval = null; }
+      if (this._offLog) { try { this._offLog(); } catch (_) {} this._offLog = null; }
+      if (this._dragCleanup) { try { this._dragCleanup(); } catch (_) {} this._dragCleanup = null; }
+      const old = this.doc && this.doc.getElementById('albot-control-center');
+      if (old) old.remove();
+      this.host = null;
+    }
+  }
+
+  ns.ControlCenter = ControlCenter;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+
+(function (root) {
+  'use strict';
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns || !ns.ALBotRuntime) throw new Error('ALBOT_RUNTIME_MISSING');
+
+  function resolveSharedHost(start) {
+    let current = start;
+    let best = start;
+    for (let depth = 0; depth < 8 && current; depth += 1) {
+      let parentWindow = null;
+      try {
+        parentWindow = current.parent && current.parent !== current ? current.parent : null;
+        if (parentWindow) void parentWindow.document;
+      } catch (_) {
+        parentWindow = null;
+      }
+      if (!parentWindow) break;
+      best = parentWindow;
+      current = parentWindow;
+    }
+    return best || start;
+  }
+
+  const sharedHost = resolveSharedHost(root);
+  let sharedState = null;
+  try {
+    sharedState = sharedHost.__ALBOT_SHARED_RUNTIME__ && typeof sharedHost.__ALBOT_SHARED_RUNTIME__ === 'object'
+      ? sharedHost.__ALBOT_SHARED_RUNTIME__
+      : null;
+  } catch (_) {}
+
+  const localPrevious = root.ALBot && root.ALBot.__runtime || null;
+  const previous = localPrevious || sharedState && sharedState.runtime || null;
+  const previousBootCount = Number(sharedState && sharedState.bootCount)
+    || Number(previous && previous.bootCount)
+    || Number(sharedHost && sharedHost.__ALBOT_BOOT_COUNT__)
+    || Number(root.__ALBOT_BOOT_COUNT__)
+    || 0;
+
+  if (previous) {
+    try {
+      if (typeof previous.prepareHotReload === 'function') previous.prepareHotReload('BUNDLE_RELOAD');
+      else if (typeof previous.destroy === 'function') previous.destroy();
+    } catch (_) {}
+  }
+
+  const bootCount = previousBootCount + 1;
+  root.__ALBOT_BOOT_COUNT__ = bootCount;
+  try { sharedHost.__ALBOT_BOOT_COUNT__ = bootCount; } catch (_) {}
+
+  const runtime = new ns.ALBotRuntime({
+    root,
+    version: '0.20.0-h20',
+    bootCount,
+    replacedPrevious: !!previous
+  });
+
+  if (root.document && root.document.body && ns.ControlCenter) {
+    const ui = new ns.ControlCenter(runtime);
+    runtime.ui = ui;
+    ui.mount();
+  }
+
+  const api = {
+    product: 'AL Bot',
+    version: runtime.version,
+    __runtime: runtime,
+
+    start: () => runtime.start(),
+    stop: reason => runtime.stop(reason || 'API_STOP'),
+    emergencyStop: reason => runtime.emergencyStop(reason || 'API_EMERGENCY_STOP'),
+    resetEmergencyStop: () => runtime.resetEmergencyStop(),
+    status: () => runtime.status(),
+    selfTest: () => runtime.selfTest(),
+    diagnostics: () => runtime.diagnostics(),
+
+    scheduler: {
+      status: () => runtime.scheduler.status(),
+      owner: owner => runtime.scheduler.ownerStatus(owner)
+    },
+
+    modules: {
+      register: definition => runtime.modules.register(definition),
+      list: () => runtime.modules.list(),
+      start: id => runtime.startModule(id),
+      stop: (id, reason) => runtime.stopModule(id, reason || 'API_MODULE_STOP'),
+      restart: (id, reason) => runtime.restartModule(id, reason || 'API_MODULE_RESTART'),
+      unregister: id => runtime.modules.unregister(id, 'API_UNREGISTER')
+    },
+
+    goals: {
+      add: goal => runtime.goals.add(goal),
+      list: () => runtime.goals.list(),
+      pause: id => runtime.goals.setStatus(id, 'PAUSED'),
+      resume: id => runtime.goals.setStatus(id, 'ACTIVE'),
+      cancel: id => runtime.goals.setStatus(id, 'CANCELLED'),
+      remove: id => runtime.goals.remove(id),
+      setProgress: (id, value) => runtime.goals.setProgress(id, value),
+      priorities: () => runtime.goals.getPriorities(),
+      setPriority: (name, value) => runtime.goals.setPriority(name, value)
+    },
+
+    game: {
+      snapshot: () => runtime.game.snapshot(),
+      status: () => runtime.game.status(),
+      visibleMonsters: options => runtime.game.visibleMonsters(options || {}),
+      visiblePlayers: options => runtime.game.visiblePlayers(options || {}),
+      monsterDefinition: mtype => runtime.game.monsterDefinition(mtype),
+      itemDefinition: name => runtime.game.itemDefinition(name),
+      craftDefinition: name => runtime.game.craftDefinition(name),
+      craftCatalog: () => runtime.game.craftCatalog(),
+      equipmentDefinition: name => runtime.game.equipmentDefinition(name),
+      equipment: name => runtime.game.equipmentSnapshot(name),
+      classEquipmentProfile: ctype => runtime.game.classEquipmentProfile(ctype),
+      farmSpots: options => runtime.game.farmSpotCatalog(options || {}),
+      inventory: () => runtime.game.inventorySnapshot(),
+      bank: () => runtime.game.bankSnapshot(),
+      market: options => runtime.game.marketSnapshot(options || {}),
+      npcLocation: npcId => runtime.game.npcLocation(npcId),
+      npcSources: itemName => runtime.game.npcShopSources(itemName),
+      chests: () => runtime.game.chestSnapshot()
+    },
+
+    movement: {
+      status: () => runtime.movement.status(),
+      local: (x, y, options) => runtime.movement.moveLocal(x, y, options || {}),
+      smart: (destination, options) => runtime.movement.smartMove(destination, options || {}),
+      approachTarget: options => runtime.movement.approachCurrentTarget(options || {}),
+      retarget: (destination, options) => runtime.movement.retarget(destination, options || {}),
+      cancel: reason => runtime.movement.cancel(reason || 'API_MOVEMENT_CANCEL'),
+      captureSafePoint: source => runtime.movement.captureSafePoint(source || 'API'),
+      safeReturn: options => runtime.movement.safeReturn(options || {})
+    },
+
+    combat: {
+      status: () => runtime.combat.status(),
+      start: options => runtime.combat.startSession(options || {}),
+      stop: reason => runtime.combat.stopSession(reason || 'API_COMBAT_STOP'),
+      candidates: options => runtime.combat.safeCandidates(options || {})
+    },
+
+    classSkills: {
+      status: () => runtime.classSkills.status(),
+      supported: ctype => runtime.classSkills.supportedSkills(ctype),
+      live: ctype => runtime.classSkills.liveSkillSummary(ctype),
+      preview: targetId => runtime.classSkills.preview(targetId)
+    },
+
+    party: {
+      status: () => runtime.party.status(),
+      snapshot: () => runtime.party.snapshot(),
+      focusTarget: () => runtime.party.preferredTargetId()
+    },
+
+    partyLogistics: {
+      status: () => runtime.partyLogistics.status(),
+      plan: () => runtime.partyLogistics.plan(),
+      tick: () => runtime.partyLogistics.tick(),
+      policy: value => runtime.partyLogistics.policy(value),
+      catalog: () => runtime.partyLogistics.supplyCatalog(),
+      supply: (targetName, itemName, quantity) => runtime.partyLogistics.queueSupply(targetName, itemName, quantity),
+      gold: (targetName, amount) => runtime.partyLogistics.queueGold(targetName, amount),
+      cancel: reason => runtime.partyLogistics.cancelQueue(reason || 'API_H18_QUEUE_CANCEL'),
+      start: options => runtime.partyLogistics.startAutonomy(options || {}),
+      stop: reason => runtime.partyLogistics.stopAutonomy(reason || 'API_H18_AUTONOMY_STOP'),
+      reset: reason => runtime.partyLogistics.resetSafety(reason || 'API_H18_RESET')
+    },
+
+    lifecycle: {
+      status: () => runtime.lifecycle.status(),
+      plan: () => runtime.lifecycle.plan(),
+      tick: () => runtime.lifecycle.tick(),
+      policy: value => runtime.lifecycle.setPolicy(value || {}),
+      captureActive: () => runtime.lifecycle.captureDesiredActive(),
+      startCharacter: name => runtime.lifecycle.queueStart(name),
+      stopCharacter: name => runtime.lifecycle.queueStop(name),
+      respawn: () => runtime.lifecycle.queueRespawn(),
+      cancel: requestId => runtime.lifecycle.cancelQueued(requestId),
+      acknowledgeUnknown: reason => runtime.lifecycle.acknowledgeUnknown(reason || 'API_H19_UNKNOWN_ACK'),
+      start: options => runtime.lifecycle.startAutonomy(options || {}),
+      stop: reason => runtime.lifecycle.stopAutonomy(reason || 'API_H19_AUTONOMY_STOP'),
+      reset: reason => runtime.lifecycle.resetSafety(reason || 'API_H19_RESET')
+    },
+
+    accountStrategy: {
+      status: () => runtime.accountStrategy.status(),
+      profiles: () => runtime.accountStrategy.profiles(),
+      progression: () => runtime.accountStrategy.progressionPlan(),
+      optimize: task => runtime.accountStrategy.optimizeTask(task || {})
+    },
+
+    fullAutonomy: {
+      status: () => runtime.fullAutonomy.status(),
+      configure: options => runtime.fullAutonomy.configure(options || {}),
+      start: async options => {
+        if (!runtime.running) await runtime.start();
+        return runtime.fullAutonomy.startAutonomy(options || {});
+      },
+      stop: reason => runtime.fullAutonomy.stopAutonomy(reason || 'API_FULL_AUTONOMY_STOP'),
+      tick: () => runtime.fullAutonomy.tick()
+    },
+
+    farming: {
+      status: () => runtime.farming.status(),
+      start: options => runtime.farming.startSession(options || {}),
+      stop: reason => runtime.farming.stopSession(reason || 'API_H8_STOP'),
+      plan: () => runtime.farming.plan(),
+      supportedAoeSkills: ctype => runtime.farming.supportedAoeSkills(ctype),
+      liveAoeSkills: ctype => runtime.farming.liveAoeSkills(ctype)
+    },
+
+    farmIntelligence: {
+      status: () => runtime.farmIntelligence.status(),
+      start: options => runtime.farmIntelligence.startAutonomy(options || {}),
+      stop: reason => runtime.farmIntelligence.stopAutonomy(reason || 'API_H9_STOP'),
+      plan: () => runtime.farmIntelligence.plan(),
+      tick: () => runtime.farmIntelligence.tick()
+    },
+
+    inventory: {
+      status: () => runtime.inventory.status(),
+      plan: () => runtime.inventory.plan(),
+      tick: () => runtime.inventory.tick(),
+      reset: reason => runtime.inventory.resetSafety(reason || 'API_H10_RESET'),
+      rules: rules => rules == null ? runtime.inventory.ruleSnapshot() : runtime.inventory.setRules(rules)
+    },
+
+    merchant: {
+      status: () => runtime.merchant.status(),
+      plan: () => runtime.merchant.plan(),
+      tick: () => runtime.merchant.tick(),
+      reset: reason => runtime.merchant.resetSafety(reason || 'API_H11_RESET'),
+      deliver: (targetName, itemName, quantity) => runtime.merchant.queueDelivery(targetName, itemName, quantity),
+      cancelDelivery: reason => runtime.merchant.cancelDelivery(reason || 'API_H11_DELIVERY_CANCEL')
+    },
+
+    bank: {
+      status: () => runtime.bank.status(),
+      plan: () => runtime.bank.plan(),
+      tick: () => runtime.bank.tick(),
+      search: itemName => runtime.bank.search(itemName),
+      reconcile: () => runtime.bank.reconcile(),
+      reset: reason => runtime.bank.resetSafety(reason || 'API_H12_RESET'),
+      cancel: reason => runtime.bank.cancelRequest(reason || 'API_H12_REQUEST_CANCEL'),
+      reservations: value => value == null ? { ...runtime.bank.reservations } : runtime.bank.setReservations(value),
+      workspace: value => value == null ? { ...runtime.bank.workspace } : runtime.bank.setWorkspace(value),
+      deposit: (itemName, options) => runtime.bank.queueDeposit(itemName, options || {}),
+      withdraw: (packName, bankSlot, options) => runtime.bank.queueWithdraw(packName, bankSlot, options || {}),
+      depositGold: amount => runtime.bank.queueGoldDeposit(amount),
+      withdrawGold: amount => runtime.bank.queueGoldWithdraw(amount)
+    },
+
+    trade: {
+      status: () => runtime.trade.status(),
+      plan: () => runtime.trade.plan(),
+      tick: () => runtime.trade.tick(),
+      reset: reason => runtime.trade.resetSafety(reason || 'API_H13_RESET'),
+      cancel: reason => runtime.trade.cancelRequest(reason || 'API_H13_REQUEST_CANCEL'),
+      market: (itemName, options) => runtime.trade.marketAnalysis(itemName, options || {}),
+      acquire: (itemName, quantity, options) => runtime.trade.queueAcquire(itemName, quantity, options || {}),
+      buyNpc: (itemName, quantity, options) => runtime.trade.queueNpcBuy(itemName, quantity, options || {}),
+      sellNpc: (slot, quantity, options) => runtime.trade.queueNpcSell(slot, quantity, options || {}),
+      buyMarket: (playerName, tradeSlot, quantity, options) => runtime.trade.queueMarketBuy(playerName, tradeSlot, quantity, options || {}),
+      sellMarket: (playerName, tradeSlot, quantity, options) => runtime.trade.queueMarketSell(playerName, tradeSlot, quantity, options || {})
+    },
+
+    gear: {
+      status: () => runtime.gear.status(),
+      plan: () => runtime.gear.plan(),
+      tick: () => runtime.gear.tick(),
+      reset: reason => runtime.gear.resetSafety(reason || 'API_H14_RESET'),
+      cancel: reason => runtime.gear.cancelRequest(reason || 'API_H14_REQUEST_CANCEL'),
+      goals: value => value == null ? runtime.gear.goalSnapshot() : runtime.gear.setGoals(value),
+      score: (item, ctype) => runtime.gear.score(item, ctype),
+      equipBest: slot => runtime.gear.queueBestLocal(slot),
+      equip: (inventorySlot, targetSlot) => runtime.gear.queueEquip(inventorySlot, targetSlot),
+      unequip: targetSlot => runtime.gear.queueUnequip(targetSlot),
+      deliver: (targetName, inventorySlot) => runtime.gear.queueDelivery(targetName, inventorySlot)
+    },
+
+    upgrade: {
+      status: () => runtime.upgrade.status(),
+      plan: () => runtime.upgrade.plan(),
+      tick: () => runtime.upgrade.tick(),
+      reset: reason => runtime.upgrade.resetSafety(reason || 'API_H15_RESET'),
+      cancel: reason => runtime.upgrade.cancelRequest(reason || 'API_H15_REQUEST_CANCEL'),
+      policy: value => runtime.upgrade.policy(value),
+      best: kind => runtime.upgrade.queueBest(kind),
+      item: (inventorySlot, options) => runtime.upgrade.queueUpgrade(inventorySlot, options || {}),
+      compound: (inventorySlots, options) => runtime.upgrade.queueCompound(inventorySlots, options || {})
+    },
+
+    exchangeCraft: {
+      status: () => runtime.exchangeCraft.status(),
+      plan: () => runtime.exchangeCraft.plan(),
+      tick: () => runtime.exchangeCraft.tick(),
+      reset: reason => runtime.exchangeCraft.resetSafety(reason || 'API_H16_RESET'),
+      cancel: reason => runtime.exchangeCraft.cancelRequest(reason || 'API_H16_REQUEST_CANCEL'),
+      policy: value => runtime.exchangeCraft.policy(value),
+      exchanges: options => runtime.exchangeCraft.exchangeCandidates(options || {}),
+      crafts: options => runtime.exchangeCraft.craftCandidates(options || {}),
+      production: (itemName, quantity, options) => runtime.exchangeCraft.productionPlan(itemName, quantity, options || {}),
+      best: kind => runtime.exchangeCraft.queueBest(kind),
+      exchange: (inventorySlot, options) => runtime.exchangeCraft.queueExchange(inventorySlot, options || {}),
+      craft: (itemName, options) => runtime.exchangeCraft.queueCraft(itemName, options || {}),
+      acquire: (itemName, quantity, options) => runtime.exchangeCraft.queueMaterialAcquire(itemName, quantity, options || {})
+    },
+
+    economy: {
+      status: () => runtime.economy.status(),
+      plan: () => runtime.economy.plan(),
+      tick: () => runtime.economy.tick(),
+      policy: value => runtime.economy.policy(value),
+      start: options => runtime.economy.startAutonomy(options || {}),
+      stop: reason => runtime.economy.stopAutonomy(reason || 'API_H17_AUTONOMY_STOP'),
+      reset: reason => runtime.economy.resetSafety(reason || 'API_H17_RESET'),
+      queueSelected: () => runtime.economy.queueSelected()
+    },
+
+    liveTests: {
+      status: () => runtime.liveTests.status(),
+      list: () => runtime.liveTests.list(),
+      start: id => runtime.liveTests.start(id),
+      startRecommended: () => runtime.liveTests.startRecommended(),
+      cancel: reason => runtime.liveTests.cancel(reason || 'API_LIVE_TEST_CANCEL')
+    },
+
+    knowledge: {
+      setProvider: provider => runtime.knowledge.setProvider(provider),
+      refresh: () => runtime.knowledge.refresh(),
+      status: () => runtime.knowledge.status(),
+      snapshot: () => runtime.knowledge.snapshot(),
+      fact: id => runtime.knowledge.fact(id)
+    },
+
+    roster: {
+      refresh: () => runtime.roster.refresh(),
+      status: () => runtime.roster.status(),
+      farmers: () => runtime.roster.status().farmers,
+      merchant: () => runtime.roster.status().merchant
+    },
+
+    actions: {
+      canAct: action => runtime.actionAllowed(action),
+      assertAllowed: action => runtime.assertActionAllowed(action)
+    },
+
+    dev: {
+      stabilityProbe: () => runtime.runStabilityProbe(),
+      knowledgeRefresh: () => runtime.knowledge.refresh()
+    },
+
+    ui: {
+      show: () => runtime.ui && runtime.ui.show(),
+      hide: () => runtime.ui && runtime.ui.hide(),
+      render: () => runtime.ui && runtime.ui.render()
+    }
+  };
+
+  Object.freeze(api.scheduler);
+  Object.freeze(api.modules);
+  Object.freeze(api.game);
+  Object.freeze(api.movement);
+  Object.freeze(api.combat);
+  Object.freeze(api.classSkills);
+  Object.freeze(api.party);
+  Object.freeze(api.partyLogistics);
+  Object.freeze(api.lifecycle);
+  Object.freeze(api.accountStrategy);
+  Object.freeze(api.fullAutonomy);
+  Object.freeze(api.farming);
+  Object.freeze(api.farmIntelligence);
+  Object.freeze(api.inventory);
+  Object.freeze(api.merchant);
+  Object.freeze(api.bank);
+  Object.freeze(api.trade);
+  Object.freeze(api.gear);
+  Object.freeze(api.upgrade);
+  Object.freeze(api.exchangeCraft);
+  Object.freeze(api.economy);
+  Object.freeze(api.liveTests);
+  Object.freeze(api.knowledge);
+  Object.freeze(api.roster);
+  Object.freeze(api.actions);
+  Object.freeze(api.dev);
+  Object.freeze(api.ui);
+
+  root.ALBot = api;
+  try {
+    sharedHost.__ALBOT_SHARED_RUNTIME__ = {
+      runtime,
+      bootCount,
+      runnerRoot: root,
+      loadedAt: runtime.loadedAt
+    };
+  } catch (_) {}
+
+  runtime.logger.info('AL Bot H20 geladen', {
+    version: api.version,
+    bootCount,
+    hotReload: !!previous,
+    sharedHost: sharedHost !== root
+  });
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
