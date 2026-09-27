@@ -51,7 +51,7 @@
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.20.0-h20',
+    version: '0.21.0-h21',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -404,7 +404,7 @@
     };
   } catch (_) {}
 
-  runtime.logger.info('AL Bot H20 geladen', {
+  runtime.logger.info('AL Bot H21 geladen', {
     version: api.version,
     bootCount,
     hotReload: !!previous,
