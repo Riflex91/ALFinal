@@ -963,3 +963,45 @@ Bei Fehler:
 ## Nächster Schritt
 
 H16 v2 ist technisch und reviewseitig grün (Head `9e007bc6...`, Run #362: 213/213 PASS). Jetzt nur noch den neuen Exact-Head-CI der finalen Dokucommits bestätigen und das vollständige Pre-Live-Gate frisch prüfen. Danach den Nutzer genau einmal den zweiten `h16-exchange-craft`-Live-Test starten lassen.
+
+## H16 v5 Live-Auswertung → v6 Bank-Material-Discovery
+
+Stand 2026-09-27, PR #20 `H16: Discover bank materials before live craft`.
+
+Die strukturierte v5-Live-Evidence hat den verbleibenden Blocker auf Materialquellen eingegrenzt:
+
+- finaler Fail: `H16_NEEDS_LOW_RISK_CRAFT_OR_ACQUIRABLE_MATERIALS`;
+- `MISSING_LEAF_NO_NPC_OR_MARKET_SOURCE = 31`;
+- weitere Rejects u. a. Quest/Event 28, Craft-Cost 15, Input-Risk 9, Nested/Multi-Stage 7;
+- mehrere Near-Matches hatten zwar einen Item-Grundpreis, aber weder live nutzbare NPC-Location noch sichtbaren Market-Ask;
+- keine weitere Safety-Limit-Erhöhung wurde vorgenommen.
+
+PR #20 / Suite v6 ergänzt deshalb:
+
+- H12 `queueMount()` für read-only Bank-Mount/Discovery;
+- H16-Schritt `bank-discovery` vor dem Preflight-Materialfallback;
+- Nicht-Merchant überspringt Bank-Discovery statt lokale H16-Pfade zu blockieren;
+- Bankquelle nur bei passender gemounteter Map;
+- protected/locked/gift/giveaway/expiring Bankstacks ausgeschlossen;
+- H12-Reservierungen bereits in der Planung berücksichtigt;
+- Bankstack muss groß genug für einen nach dem Withdraw craftbaren Einzelstack sein;
+- Preflight reserviert für jeden geplanten Bank-Withdraw einen eigenen freien Inventory-Slot;
+- bei nicht nutzbarer BANK-Quelle bleibt ein vorhandener NPC-/Market-Fallback wählbar;
+- BANK-Materialien über H12, NPC/MARKET weiter über H13;
+- UNKNOWN-/Suspension-/STOP-/ActionBoundary-/Movement-Safety unverändert.
+
+Technischer Stand:
+
+- technischer Head: `c96b01d50dcd91f93ad76f3b56c145e0c336b077`;
+- CI #417: **222/222 PASS, 0 FAIL, 0 SKIP**;
+- beim technischen Check `behind_by=0`, PR #20 `mergeable=true`;
+- `dist/al-bot.js` source-synchron zu den geänderten H12/H16-Sources;
+- alle bekannten Review-Threads addressed/resolved;
+- kein `CHANGES_REQUESTED`.
+
+Externer Blocker:
+
+- der angeforderte frische Codex-Review auf `c96b01d5...` wurde vom Connector wegen ausgeschöpftem Code-Review-Kontingent abgelehnt;
+- **PR #20 darf deshalb noch nicht gemergt werden**;
+- sobald ein frischer Codex-Review wieder möglich ist: Review auf exakt aktuellem Head anfordern, echte Funde beheben, anschließend finalen Exact-Head-CI und vollständigen Merge-Gate frisch prüfen;
+- erst nach sauberem Merge nach `main` genau einen neuen echten `h16-exchange-craft`-v6-Live-Test anfordern.
