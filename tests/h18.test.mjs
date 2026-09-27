@@ -285,3 +285,29 @@ test('H18 session action budget stops bounded autonomy', async () => {
   assert.equal(controller.status().queue.length, 1);
   assert.equal(controller.status().autonomyEnabled, false);
 });
+
+
+test('H18 runtime, API, UI, ActionBoundary, build and generated bundle are wired', () => {
+  const runtime = fs.readFileSync(path.resolve(here, '../src/runtime.js'), 'utf8');
+  const entry = fs.readFileSync(path.resolve(here, '../src/entry.js'), 'utf8');
+  const ui = fs.readFileSync(path.resolve(here, '../src/ui.js'), 'utf8');
+  const boundary = fs.readFileSync(path.resolve(here, '../src/action-boundary.js'), 'utf8');
+  const build = fs.readFileSync(path.resolve(here, '../scripts/build.mjs'), 'utf8');
+  const dist = fs.readFileSync(path.resolve(here, '../dist/al-bot.js'), 'utf8');
+  const pkg = JSON.parse(fs.readFileSync(path.resolve(here, '../package.json'), 'utf8'));
+
+  assert.match(runtime, /new ns\.PartyLogisticsController/);
+  assert.match(runtime, /id: 'party-logistics'/);
+  assert.match(runtime, /id: 'h18-party-logistics'/);
+  assert.match(runtime, /options\.version \|\| '0\.18\.0-h18'/);
+  assert.match(entry, /runtime\.partyLogistics\.queueSupply/);
+  assert.match(entry, /runtime\.partyLogistics\.queueGold/);
+  assert.match(entry, /Object\.freeze\(api\.partyLogistics\)/);
+  assert.match(ui, /H18 Party Logistics/);
+  assert.match(boundary, /send_gold: Object\.freeze/);
+  assert.match(build, /src\/party-logistics\.js/);
+  assert.match(build, /AL Bot 0\.18\.0-h18/);
+  assert.match(dist, /AL Bot 0\.18\.0-h18/);
+  assert.match(dist, /class PartyLogisticsController/);
+  assert.equal(pkg.version, '0.18.0');
+});
