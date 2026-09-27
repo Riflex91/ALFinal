@@ -594,54 +594,97 @@ Finale Live-Evidence:
 - Cleanup ohne Pending/Request/H12-Movement
 - Runtime STOPPED, Scheduler 0 Ressourcen
 
-## H13 – Handel – live bestanden, finaler Merge-Gate offen
+## H13 – Handel – abgeschlossen und gemergt
 
-Aktiver Branch:
+H13 ist live bestanden und gemergt.
+
+Finaler Branch:
 `chatgpt/h13-handel-v2`
 
 PR:
 `#14 – H13: Handel (H12-merged main)`
 
-Version:
-`0.13.0-h13`
+Merge-Commit auf `main`:
+`5238d4af8bfb99e6f6fe04d13029b80f77a9f420`
 
-Finale Live-Evidence vom 2026-09-27:
+Finale Live-Evidence:
 - Suite `h13-trade`: **PASSED / ALL_STEPS_PASSED**
-- Merchant `My_Merchant`
-- Start-Map `bank`
-- Testitem `hpot0`
-- genau 1 Stück zum Live-NPC-Preis `20` Gold gekauft
+- 1 x `hpot0` zum Live-NPC-Preis gekauft
 - Inventar `5999 -> 6000`
 - Gold `14195004 -> 14194984`
-- `npcBuysConfirmed=1`
-- `movementRequests=1`
-- Player-Market read-only: 51 Asks, 1 Bid
-- `marketBuysDispatched=0`
-- `marketSellsDispatched=0`
-- `npcBuyUnknown=0`
-- `npcSellUnknown=0`
-- `marketBuyUnknown=0`
-- `marketSellUnknown=0`
-- `movementUnknown=0`
-- Cleanup: `pending=false`, `request=false`, `movementActive=false`
-- Runtime danach wieder STOPPED
-- Scheduler danach `totalResources=0`
+- Player-Market im Live-Test read-only
+- alle H13-UNKNOWN-Deltas 0
+- Cleanup vollständig
+- Runtime STOPPED, Scheduler 0 Ressourcen
 
-Post-Live-Hardening:
-- globaler Spread nur noch bei gleichem Item+Level;
-- NPC-Buy und Market-Buy prüfen die Goldreserve direkt vor Dispatch erneut;
-- NPC-Sell prüft H10-SELL-Safety und Menge direkt vor Dispatch erneut;
-- Player-Market-Sell verlangt exakten Bid-Fingerprint inklusive Stat-Type/Property und prüft H10-Safety/Menge direkt vor Dispatch erneut;
-- Regressionen hinzugefügt;
-- Bundle synchronisiert;
-- ausschließlich zusätzliche fail-closed Guards, keine neuen Write-Pfade.
+Finale Post-Live-Härtung:
+- Spread nur bei gleichem Item+Level;
+- Goldreserve direkt vor Buy-Dispatch erneut geprüft;
+- NPC-/Market-Sell-Safety unmittelbar vor Dispatch erneut geprüft;
+- exakter Bid-Fingerprint inklusive Stat-Type/Property;
+- finaler Exact-Head-CI und Review-Gate grün.
 
-Nächster verbindlicher H13-Ablauf:
-1. neuen exakten Head nach Hardening/Evidence-Commits bestimmen;
-2. dessen CI bis completed/success abwarten;
-3. frisch prüfen: `behind_by=0`, keine pending/failing Runs oder Checks, keine offenen Review-Threads, kein `CHANGES_REQUESTED`, `mergeable=true`;
-4. PR #14 ausschließlich mit Methode `merge` und exaktem `expected_head_sha` mergen;
-5. Merge auf `main` verifizieren.
+## H14 – Gear – implementiert, Live-Test offen
+
+Aktiver Branch:
+`chatgpt/h14-gear`
+
+PR:
+`#15 – H14: Gear`
+
+Basis:
+`main` bei H13-Merge-Commit `5238d4af8bfb99e6f6fe04d13029b80f77a9f420`
+
+Version:
+`0.14.0-h14`
+
+Implementiert:
+- `src/gear.js` / `GearController`;
+- Live-Equipment-Snapshot;
+- Live-Equipment-Definitionen und Klassenprofile;
+- klassenabhängiges Gear-Ranking;
+- sichere lokale Equip-/Unequip-Swaps;
+- Combat-Block;
+- Zielslot-Revalidation direkt vor Equip;
+- Zwei-Hand-/Offhand-Konflikt-Schutz;
+- locked/gift/giveaway/expiring Gear aus Automation ausgeschlossen;
+- Farmer-Priorität 100 vor Merchant-Priorität 10;
+- Remote-Proposals nur vom Merchant und nur mit transfer-sicherem Gear;
+- Gear Goals mit `ACHIEVED`, `READY_TO_EQUIP`, `READY_TO_DELIVER`, `NEEDS_ACQUISITION`;
+- explizite Merchant→eigener-Farmer-Gear-Delivery;
+- Replacement- und read-only Upgrade-/Compound-Planung;
+- Bestätigung nur über Equipment-/Inventar-Live-Deltas;
+- bounded UNKNOWN + Suspension ohne Blind-Retry;
+- Gear-Control-Center-Tab;
+- `ALBot.gear.*`;
+- `dist/al-bot.js` source-synchron auf `0.14.0-h14`;
+- Ein-Klick-Suite `h14-gear`;
+- `docs/H14-LIVE-TEST.md`.
+
+Pre-Live-Teststand:
+- Run #276: 179 Tests, 178 PASS, 1 Safety-Fund;
+- locked Gear als automatische Verbesserung erkannt;
+- behoben in Planung, Queue und unmittelbarer Dispatch-Revalidation;
+- Run #279: `npm test` 180/180 PASS;
+- GitHub markierte Workflow #279 trotzdem als `cancelled`, daher nicht final gate-fähig;
+- neuer Exact-Head-CI nach Dokucommits erforderlich.
+
+H14-Live-Test:
+1. Charakter + Equipment-Snapshot prüfen;
+2. reversiblen kompatiblen Gear-Kandidaten auswählen;
+3. Gear Goal und Farmer-vor-Merchant-Priorität read-only prüfen;
+4. Kandidaten echt ausrüsten und Live-Deltas bestätigen;
+5. ursprüngliches Gear exakt zurückrüsten;
+6. fünf Sekunden ohne Equip-/Unequip-/Delivery-UNKNOWN;
+7. Cleanup ohne Pending/Request und mit restauriertem Original-Gear;
+8. vorherigen Runtime-Zustand automatisch wiederherstellen.
+
+Falls kein reversibler Kandidat vorhanden ist:
+`H14_NEEDS_REVERSIBLE_COMPATIBLE_INVENTORY_GEAR`
+
+Dann wird kein Gear verändert.
+
+H14 darf erst nach grünem Exact-Head-CI, sauberem Review-Gate und echtem Adventure-Land-Live-PASS gemergt werden.
 
 ## H2 Architekturregel für spätere Module
 
@@ -736,4 +779,4 @@ Bei Fehler:
 
 ## Nächster Schritt
 
-H13 ist live bestanden. Jetzt nur noch finalen Exact-Head-CI und vollständigen Merge-Gate auf PR #14 prüfen und danach mit exaktem Head per `merge` mergen.
+H14 Exact-Head-CI und Review-Gate auf PR #15 sauber bestätigen. Danach auf dem eigenen Charakter die Suite `h14-gear` einmal starten. Bei PASS finale Evidence dokumentieren und erst dann mergen.
