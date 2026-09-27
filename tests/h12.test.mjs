@@ -269,6 +269,19 @@ test('H12 synchronous UNKNOWN suspends immediately and never retries', () => {
   assert.equal(f.state.dispatches.length, 1);
 });
 
+test('H12 rejects zero, negative, fractional and nonnumeric gold amounts without a write', () => {
+  const f = fixture();
+  for (const value of [0, -5, 1.5, NaN, 'abc']) {
+    const deposit = f.controller.queueGoldDeposit(value);
+    assert.equal(deposit.accepted, false);
+    assert.equal(deposit.reason, 'H12_GOLD_AMOUNT_INVALID');
+    const withdraw = f.controller.queueGoldWithdraw(value);
+    assert.equal(withdraw.accepted, false);
+    assert.equal(withdraw.reason, 'H12_GOLD_AMOUNT_INVALID');
+  }
+  assert.equal(f.state.dispatches.length, 0);
+});
+
 test('H12 gold operations require observable bank gold and confirm both-sided deltas', async () => {
   const f = fixture();
   assert.equal(f.controller.queueGoldDeposit(1000).accepted, true);
