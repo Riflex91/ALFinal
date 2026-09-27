@@ -4217,7 +4217,7 @@
           if (current.currentAction) throw new Error('H19_ACTIVE_ACTION_BEFORE_LIVE_TEST');
           try { runtime.lifecycle.cancelQueued(); } catch (_) {}
           try {
-            if (!current.suspended) runtime.lifecycle.resetSafety('H19_LIVE_TEST_RESET');
+            if (!current.currentAction) runtime.lifecycle.resetSafety('H19_LIVE_TEST_RESET');
           } catch (_) {}
           const status = runtime.lifecycle.status();
           baseline = {
