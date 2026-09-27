@@ -364,5 +364,5 @@ test('H11 runtime, API, UI, build and ActionBoundary are wired', () => {
   assert.match(build, /AL Bot 0\.20\.0-h20/);
   assert.match(boundary, /send_item: Object\.freeze\(\{ publicName: 'send_item'/);
   assert.match(adapter, /playerCondition\(name, conditionId\)/);
-  assert.equal(pkg.version, '0.19.0');
+  assert.equal(pkg.version, '0.20.0');
 });
