@@ -12800,6 +12800,7 @@
 
     _childRows() {
       return [
+        { name: 'inventory', controller: this.inventory },
         { name: 'merchant', controller: this.merchant },
         { name: 'bank', controller: this.bank },
         { name: 'trade', controller: this.trade },
@@ -12816,7 +12817,7 @@
     }
 
     _childBusy(child) {
-      return !!(child && (child.pending || child.request || child.delivery));
+      return !!(child && (child.pending || child.request || child.delivery || child.pendingLoot));
     }
 
     _proposal(kind, module, details = {}) {
@@ -13150,6 +13151,7 @@
     }
 
     queueSelected() {
+      if (!this.moduleActive) return { accepted: false, reason: 'H17_MODULE_NOT_ACTIVE' };
       if (this.suspendedReason) return { accepted: false, reason: this.suspendedReason };
       if (this.currentAction) return { accepted: false, reason: 'H17_ACTION_ACTIVE' };
       if (this.canAct && this.canAct('economy') !== true) return { accepted: false, reason: 'H17_RUNTIME_ACTION_BLOCKED' };
@@ -13207,7 +13209,7 @@
         if (type.includes('CONFIRMED') || type.includes('SUCCEEDED') || type === 'BANK_ALREADY_MOUNTED' || type === 'BANK_MOUNTED') {
           return { state: 'CONFIRMED', result: this._finishCurrent('CONFIRMED', { childLastAction: clone(child.lastAction) }) };
         }
-        if (type.includes('REJECTED') || type.includes('FAILED') || type.includes('CANCELLED')) {
+        if (type.includes('REJECTED') || type.includes('FAILED') || type.includes('CANCELLED') || type.includes('BLOCKED')) {
           return { state: 'REJECTED', result: this._finishCurrent('REJECTED', { childLastAction: clone(child.lastAction) }) };
         }
       }
@@ -13227,7 +13229,7 @@
 
       if (this.currentAction) {
         const observed = this._observeCurrent();
-        if (observed.state === 'WAITING' || observed.state === 'SUSPENDED') return observed;
+        if (observed.state !== 'IDLE') return observed;
       }
 
       const plan = this.plan();
@@ -13289,6 +13291,7 @@
 
   ns.EconomyController = EconomyController;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
+
 
 
 (function (root) {
@@ -17336,12 +17339,14 @@
       let previousPolicy = null;
 
       const childUnknownTotal = runtime => {
+        const inventory = runtime.inventory.status().metrics || {};
         const bank = runtime.bank.status().metrics || {};
         const trade = runtime.trade.status().metrics || {};
         const gear = runtime.gear.status().metrics || {};
         const upgrade = runtime.upgrade.status().metrics || {};
         const exchange = runtime.exchangeCraft.status().metrics || {};
-        return Number(bank.withdrawalsUnknown || 0)
+        return Number(inventory.lootUnknown || 0)
+          + Number(bank.withdrawalsUnknown || 0)
           + Number(bank.depositsUnknown || 0)
           + Number(bank.goldWithdrawalsUnknown || 0)
           + Number(bank.goldDepositsUnknown || 0)
@@ -17362,13 +17367,14 @@
 
       const childBusy = runtime => {
         const statuses = [
+          runtime.inventory.status(),
           runtime.bank.status(),
           runtime.trade.status(),
           runtime.gear.status(),
           runtime.upgrade.status(),
           runtime.exchangeCraft.status()
         ];
-        return statuses.some(status => status && (status.pending || status.request));
+        return statuses.some(status => status && (status.pending || status.request || status.pendingLoot));
       };
 
       this.liveTests.register({
@@ -17857,6 +17863,7 @@
 
   ns.ALBotRuntime = ALBotRuntime;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
+
 
 
 
