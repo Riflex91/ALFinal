@@ -518,6 +518,9 @@ test('H16 runtime, API, UI, build, adapter and ActionBoundary are wired', () => 
   assert.match(runtime, /maxExchangeValueAtRisk: 2000000/);
   assert.match(runtime, /maxCraftGoldCost: 1000000/);
   assert.match(runtime, /maxCraftInputValueAtRisk: 2000000/);
+  assert.match(runtime, /version: '4'/);
+  assert.match(runtime, /acquisitionGold > 1000000/);
+  assert.match(runtime, /materialAcquisitionGold <= 1000000/);
   assert.match(runtime, /outputRisk == null \|\| outputRisk > 2000000/);
   assert.match(runtime, /Number\(row\.cost \|\| 0\) <= 1000000/);
   assert.match(runtime, /Number\(row\.inputValueAtRisk \|\| 0\) <= 2000000/);
