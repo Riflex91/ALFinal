@@ -50,7 +50,7 @@
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.19.0-h19',
+    version: '0.20.0-h20',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -180,6 +180,24 @@
       start: options => runtime.lifecycle.startAutonomy(options || {}),
       stop: reason => runtime.lifecycle.stopAutonomy(reason || 'API_H19_AUTONOMY_STOP'),
       reset: reason => runtime.lifecycle.resetSafety(reason || 'API_H19_RESET')
+    },
+
+    accountStrategy: {
+      status: () => runtime.accountStrategy.status(),
+      profiles: () => runtime.accountStrategy.profiles(),
+      progression: () => runtime.accountStrategy.progressionPlan(),
+      optimize: task => runtime.accountStrategy.optimizeTask(task || {})
+    },
+
+    fullAutonomy: {
+      status: () => runtime.fullAutonomy.status(),
+      configure: options => runtime.fullAutonomy.configure(options || {}),
+      start: async options => {
+        if (!runtime.running) await runtime.start();
+        return runtime.fullAutonomy.startAutonomy(options || {});
+      },
+      stop: reason => runtime.fullAutonomy.stopAutonomy(reason || 'API_FULL_AUTONOMY_STOP'),
+      tick: () => runtime.fullAutonomy.tick()
     },
 
     farming: {
@@ -348,6 +366,8 @@
   Object.freeze(api.party);
   Object.freeze(api.partyLogistics);
   Object.freeze(api.lifecycle);
+  Object.freeze(api.accountStrategy);
+  Object.freeze(api.fullAutonomy);
   Object.freeze(api.farming);
   Object.freeze(api.farmIntelligence);
   Object.freeze(api.inventory);
@@ -375,7 +395,7 @@
     };
   } catch (_) {}
 
-  runtime.logger.info('AL Bot H19 geladen', {
+  runtime.logger.info('AL Bot H20 geladen', {
     version: api.version,
     bootCount,
     hotReload: !!previous,
