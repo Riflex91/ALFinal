@@ -515,7 +515,13 @@ test('H16 runtime, API, UI, build, adapter and ActionBoundary are wired', () => 
   assert.match(runtime, /H16_NEEDS_LOW_RISK_CRAFT_OR_ACQUIRABLE_MATERIALS/);
   assert.match(runtime, /ACQUIRE_CRAFT_AND_EXCHANGE_COVERAGE/);
   assert.match(runtime, /allowBank: false/);
-  assert.match(runtime, /outputRisk == null \|\| outputRisk > 20000/);
+  assert.match(runtime, /maxExchangeValueAtRisk: 2000000/);
+  assert.match(runtime, /maxCraftGoldCost: 1000000/);
+  assert.match(runtime, /maxCraftInputValueAtRisk: 2000000/);
+  assert.match(runtime, /outputRisk == null \|\| outputRisk > 2000000/);
+  assert.match(runtime, /Number\(row\.cost \|\| 0\) <= 1000000/);
+  assert.match(runtime, /Number\(row\.inputValueAtRisk \|\| 0\) <= 2000000/);
+  assert.match(runtime, /Number\(row\.valueAtRisk \|\| 0\) <= 2000000/);
   assert.match(runtime, /if \(!current\.suspended\) runtime\.exchangeCraft\.resetSafety/);
   assert.match(runtime, /currentGold - totalEstimatedGold < 10000/);
   assert.match(runtime, /requiredGoldWithReserve/);
