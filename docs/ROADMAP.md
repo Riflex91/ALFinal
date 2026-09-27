@@ -1303,3 +1303,35 @@ ALFinal H19 fuehrt deshalb einen nativen Cross-Window-Lifecycle-Kanal ein:
 PR #35 (`chatgpt/h19-cross-window-lifecycle`) enthaelt Implementierung, Live-Test v2 und Regressionstests. Nach erfolgreichem Merge muessen alle separat geoeffneten Adventure-Land-Fenster denselben neuen ALFinal-Build laden, bevor der naechste echte `h19-remote-recovery`-Lauf ausgefuehrt wird.
 
 H19 bleibt bis zum vollstaendigen Remote-Recovery-PASS und anschliessendem Party-Recovery-Gate offen.
+
+
+
+### H19 – Finale Live-Validation: Remote-Recovery und Party-Recovery PASSED
+
+Stand 2026-09-27.
+
+Die verbleibenden dedizierten H19-Live-Gates sind erfolgreich abgeschlossen.
+
+Cross-Window Remote-Recovery:
+
+- `h19-remote-recovery` v2: `PASSED / ALL_STEPS_PASSED`;
+- `My_Priest` steuerte `My_Merchant` ueber `cross-window-runtime`;
+- 1 Remote STOP + 1 Recovery START terminal bestaetigt;
+- insgesamt 2 Dispatch / 2 Confirm;
+- 2 CM-Commands / 2 ACKs / 2 erfolgreiche Settlements;
+- 0 Rejects / 0 UNKNOWNs;
+- 5 Sekunden stabil ohne Retry und Cleanup erfolgreich.
+
+Party-Recovery:
+
+- `h19-party-recovery` v1: `PASSED / ALL_STEPS_PASSED`;
+- `My_Priest` blieb geschuetzter Party-Leader;
+- `My_Merchant` verliess kontrolliert genau einmal die eigene Vierer-Party und blieb runtime-seitig aktiv;
+- anschliessend exakt 1 Lifecycle-Dispatch / 1 Lifecycle-Confirm / 1 bestaetigter Party-Accept;
+- 2 CM-Commands / 2 ACKs / 2 Settlements;
+- 0 Rejects / 0 UNKNOWNs;
+- exakte Ausgangstopologie `My_Priest`, `My_Ranger1`, `My_Warrior`, `My_Merchant` wiederhergestellt;
+- 5 Sekunden stabil ohne Party-Retry/Ping-Pong;
+- Cleanup PASS: Autonomie aus, keine aktive Aktion, Queue leer, keine Suspension, Zielruntime aktiv.
+
+Damit ist die H19-Live-Validation abgeschlossen. H20 bleibt nur noch bis zum Merge dieser append-only Evidence blockiert; mit diesem Merge ist H19 abgeschlossen und H20 freigegeben.
