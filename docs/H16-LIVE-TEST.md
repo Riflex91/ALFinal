@@ -78,6 +78,8 @@ Die eigentliche gemeinsame autonome Auswahl zwischen Bank, Markt und anderen Eco
 
 ## Ein-Klick-Live-Test
 
+Aktueller Stand: **Suite-Version 4**.
+
 Suite:
 
 `h16-exchange-craft`
@@ -92,7 +94,7 @@ Die Suite startet eine zuvor gestoppte Runtime automatisch und stellt den vorher
 - Craft-Input-Value-at-Risk maximal 2.000.000 Gold;
 - Goldreserve 10.000 Gold;
 - fehlende direkte Craft-Materialien dürfen nur beschafft werden, wenn höchstens 2 Leaf-Materialien fehlen;
-- Materialbeschaffung maximal 10.000 Gold gesamt;
+- Materialbeschaffung maximal 1.000.000 Gold gesamt;
 - nur Level-0-Materialien im automatischen Beschaffungsfallback;
 - Beschaffung im Live-Test explizit über H13 Trade (`allowBank:false`);
 - Quest-/Event-Aktionen deaktiviert;
@@ -121,7 +123,7 @@ Dafür gilt zusätzlich:
 - höchstens 2 fehlende Leaf-Materialien;
 - nur Level 0;
 - jedes fehlende Material braucht eine live sichtbare NPC-Quelle oder einen ausreichend großen sichtbaren Market-Ask;
-- Materialbeschaffung zusammen höchstens 10.000 Gold;
+- Materialbeschaffung zusammen höchstens 1.000.000 Gold;
 - Craft-Input-Risiko weiterhin höchstens 2.000.000 Gold;
 - Materialkäufe laufen über H16 → H13 mit explizitem Max-Unit-Price;
 - H13-UNKNOWN bleibt ein harter FAIL.
@@ -271,7 +273,7 @@ Der Fail-Closed-Pfad hat korrekt funktioniert. Die Lücke lag nicht in Safety od
 Daraufhin wurde Suite-Version 2 implementiert:
 - begrenzter Materialbeschaffungsfallback;
 - maximal zwei fehlende Level-0-Leaf-Materialien;
-- maximal 10.000 Gold Materialbeschaffung;
+- maximal 1.000.000 Gold Materialbeschaffung;
 - live sichtbare NPC- oder Market-Quelle zwingend;
 - H16 delegiert explizit an H13;
 - Bank wird im Testpfad mit `allowBank:false` umgangen;
@@ -305,7 +307,7 @@ v2-Hardening gegenüber Live-Versuch 1:
 - Regression: Bank kann für den Testpfad explizit umgangen werden;
 - Produktionsplan-Evidence enthält NPC- und Market-Quellen für fehlende Leaves;
 - Fallback nur für direkte Rezepte mit höchstens 2 fehlenden Level-0-Leaf-Materialien;
-- gesamtes Materialbeschaffungsbudget maximal 10.000 Gold;
+- gesamtes Materialbeschaffungsbudget maximal 1.000.000 Gold;
 - Craft-Input-Value-at-Risk weiterhin maximal 20.000 Gold;
 - Exchange-Value-at-Risk weiterhin maximal 20.000 Gold;
 - Craft→Exchange prüft jetzt bereits im Preflight das Risiko des erzeugten Exchange-Outputs;
