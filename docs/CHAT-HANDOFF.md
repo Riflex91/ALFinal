@@ -1538,3 +1538,46 @@ Noch zu tun:
 - danach genau einen neuen echten `H19 – Remote Start/Stop & Restart Recovery`-Live-Test anfordern.
 
 Kein Blind-Rerun der beiden fehlgeschlagenen Preflight-Läufe.
+
+
+## H19 v2 – Runner-Controllability-Korrektur nach Remote-STOP-Live-Fail
+
+Stand: 2026-09-27
+
+Der Live-Test nach dem accountweiten Online-Fix erreichte erstmals den Remote-STOP. `My_Warrior` wählte `My_Merchant`, weil Merchant accountweit online war. Die lokale Runner-Active-Sicht enthielt aber weiterhin nur `My_Warrior`.
+
+Live-Ergebnis:
+
+- Preflight: PASS;
+- 1 `stop_character("My_Merchant")` dispatcht;
+- Merchant blieb accountweit online;
+- 0 Stop-Confirms;
+- 0 Rejects;
+- 1 UNKNOWN;
+- Fail: `H19_STOP_UNVERIFIED_TIMEOUT`;
+- Restart-/Stability-Schritte nicht mutierend fortgesetzt;
+- kein Blind-Retry.
+
+Root Cause:
+
+`get_characters().online` beantwortet „ist accountweit online?“. `get_active_characters()` beantwortet für diesen Browser-/Runner-Kontext, welche Character als lokale/Child-Runner aktiv sind. `stop_character(name)` kann nur einen solchen vom aktuellen Runner geführten Remote-Character zuverlässig stoppen.
+
+Aktueller Fix:
+
+- Branch: `chatgpt/h19-runner-controllability`;
+- PR: #34;
+- Remote START bleibt auf accountweiter Online-Wahrheit;
+- Remote STOP verlangt accountweit online **und** runner-active;
+- fehlende Runner-Sicht → `H19_RUNNER_ACTIVE_STATE_UNAVAILABLE`;
+- online, aber nicht runner-kontrollierbar → `H19_REMOTE_TARGET_NOT_RUNNER_CONTROLLABLE`;
+- Live-Preflight wählt nur account-online ∩ runner-active;
+- kein passendes Ziel → `H19_REMOTE_CONTROLLABLE_TARGET_UNAVAILABLE`;
+- Regressionstests decken die getrennten START-/STOP-Semantiken ab;
+- `dist/al-bot.js` wird aus exakt diesem Source-Stand synchronisiert;
+- Workflow wird danach wieder read-only geführt.
+
+Nächster Live-Test nach finalem Merge:
+
+Mindestens ein nichtlokaler eigener Character muss vom Test-Runner selbst über Adventure Lands `start_character(...)` als Child-Character gestartet worden sein. Separat geöffnete Browserfenster reichen für Remote STOP nicht aus.
+
+H19 ist weiterhin nicht abgeschlossen. Nach einem vollständigen Remote-Recovery-PASS bleibt Party Recovery als letzter gezielter H19-Live-Gate.
