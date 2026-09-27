@@ -4628,10 +4628,10 @@
                       name,
                       ctype: row.ctype || null,
                       peer,
-                      controlMode: peer && peer.running === true
-                        ? 'cross-window-runtime'
-                        : runnerActive.has(name)
-                          ? 'child-character'
+                      controlMode: runnerActive.has(name)
+                        ? 'child-character'
+                        : peer && peer.running === true
+                          ? 'cross-window-runtime'
                           : null
                     };
                   })
