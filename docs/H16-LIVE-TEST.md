@@ -277,3 +277,45 @@ Daraufhin wurde Suite-Version 2 implementiert:
 - Bank wird im Testpfad mit `allowBank:false` umgangen;
 - H13-UNKNOWN/Suspension ist ein harter Test-Fail;
 - erst nach bestätigter Beschaffung darf Craft folgen.
+
+
+## v2 Pre-Live Technical Evidence
+
+Technischer v2-Head vor den finalen Dokucommits:
+
+`3e36f6ccaa34d7359e8cf7d26e5d44af942811cc`
+
+Evidence:
+
+- Exact-Head-CI Run `#355`: **completed / success**
+- `npm test`: **211/211 PASS, 0 FAIL, 0 SKIP**
+- Branch bei Prüfung `behind_by=0`
+- PR #17 `mergeable=true`
+- keine offenen Review-Threads
+- kein `CHANGES_REQUESTED`
+- `dist/al-bot.js` enthält exakt den aktuellen `src/exchange-craft.js`-Block
+- `dist/al-bot.js` enthält exakt den aktuellen `src/runtime.js`-Block
+- `dist/al-bot.js` enthält exakt den aktuellen `src/ui.js`-Block
+- Bundle-Banner `AL Bot 0.16.0-h16`
+- Build-Pipeline enthält `src/exchange-craft.js`
+
+v2-Hardening gegenüber Live-Versuch 1:
+
+- `queueMaterialAcquire(..., {allowBank:false})` ermöglicht im Live-Test eindeutig belegbare H16→H13-Beschaffung;
+- Regression: Bank kann für den Testpfad explizit umgangen werden;
+- Produktionsplan-Evidence enthält NPC- und Market-Quellen für fehlende Leaves;
+- Fallback nur für direkte Rezepte mit höchstens 2 fehlenden Level-0-Leaf-Materialien;
+- gesamtes Materialbeschaffungsbudget maximal 10.000 Gold;
+- Craft-Input-Value-at-Risk weiterhin maximal 20.000 Gold;
+- Exchange-Value-at-Risk weiterhin maximal 20.000 Gold;
+- Craft→Exchange prüft jetzt bereits im Preflight das Risiko des erzeugten Exchange-Outputs;
+- Materialbeschaffung wird nur auf Merchant und ohne bereits suspendierten H13 gestartet;
+- H13-NPC-/Market-Buy-UNKNOWN ist ein harter FAIL;
+- H16-UNKNOWN-Suspension wird im Suite-Cleanup **nicht automatisch zurückgesetzt**;
+- Material-, Craft- und Exchange-Wechsel erhalten Anti-Pingpong-Abstand;
+- kompletter v2-Wiring-/Safety-Stand ist regressionsseitig abgedeckt.
+
+Ein frischer Codex-Review wurde auf diesem technischen v2-Stand explizit angefordert. Der zweite echte H16-Live-Test darf erst freigegeben werden, wenn:
+1. der neue Review abgeschlossen bzw. ohne offene Threads ist,
+2. die finalen Dokucommits einen neuen Exact-Head-CI mit `completed/success` haben,
+3. `behind_by=0`, `mergeable=true`, kein `CHANGES_REQUESTED` und keine pending/failing Checks vorliegen.
