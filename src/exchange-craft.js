@@ -615,7 +615,7 @@
       if (!name) return { accepted: false, reason: 'H16_MATERIAL_NAME_REQUIRED' };
 
       const bank = this._bankSnapshot();
-      if (bank && bank.available !== false && this.bank && typeof this.bank.queueWithdraw === 'function') {
+      if (options.allowBank !== false && bank && bank.available !== false && this.bank && typeof this.bank.queueWithdraw === 'function') {
         for (const pack of bank.packs || []) {
           const row = (pack.items || []).find(item =>
             String(item.name) === name
