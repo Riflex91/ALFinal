@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.14.0-h14';
+      this.version = options.version || '0.15.0-h15';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -117,6 +117,13 @@
         actions: this.actions,
         inventory: this.inventory,
         roster: this.roster,
+        combat: this.combat
+      });
+      this.upgrade = new ns.UpgradeCompoundController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
         combat: this.combat
       });
       this.liveTests = new ns.LiveTestRunner({
@@ -262,6 +269,15 @@
         start: context => this.gear.start(context),
         stop: reason => this.gear.stop(reason),
         status: () => this.gear.status()
+      });
+
+      this.modules.register({
+        id: 'upgrade-compound',
+        title: 'Upgrade & Compound',
+        version: '0.15.0',
+        start: context => this.upgrade.start(context),
+        stop: reason => this.upgrade.stop(reason),
+        status: () => this.upgrade.status()
       });
     }
 
@@ -2715,6 +2731,7 @@
         bank: this.bank.status(),
         trade: this.trade.status(),
         gear: this.gear.status(),
+        upgrade: this.upgrade.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
         roster,
@@ -2744,6 +2761,7 @@
         bank: this.bank.status(),
         trade: this.trade.status(),
         gear: this.gear.status(),
+        upgrade: this.upgrade.status(),
         liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
         logs: this.logger.list(160),
@@ -2772,6 +2790,7 @@
       push('bank-controller', !!this.bank.status() && typeof this.bank.plan === 'function' && typeof this.bank.reconcile === 'function', this.bank.status());
       push('trade-controller', !!this.trade.status() && typeof this.trade.marketAnalysis === 'function' && typeof this.trade.queueAcquire === 'function', this.trade.status());
       push('gear-controller', !!this.gear.status() && typeof this.gear.plan === 'function' && typeof this.gear.queueBestLocal === 'function', this.gear.status());
+      push('upgrade-compound-controller', !!this.upgrade.status() && typeof this.upgrade.plan === 'function' && typeof this.upgrade.queueBest === 'function', this.upgrade.status());
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
       push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);
