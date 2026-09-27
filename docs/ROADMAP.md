@@ -652,6 +652,12 @@ v2 finaler technischer Pre-Live-Stand:
 - P2 recoverable Bank-Stacks werden weitergesucht, non-recoverable Rejects bleiben fail-closed;
 - alle Review-Threads resolved, kein `CHANGES_REQUESTED`;
 - finaler Doku-Exact-Head-CI noch erforderlich.
+- Review Round 2: Gesamt-Golddeckung vor Materialkäufen ergänzt;
+- Review Round 2: recoverable Bank-Stacks werden weiter durchsucht, globale Bankfehler blockieren Trade-Fallback;
+- neuer technischer Head `9e007bc6bfdf872ebf91ecd9f8dbf7f7c2140428`;
+- CI Run #362: **213/213 PASS, 0 FAIL, 0 SKIP, completed/success**;
+- beide neuen Review-Threads resolved;
+- finaler Codex-Review auf diesem Fix-Head angefordert.
 
 H16 wird erst nach grünem Exact-Head-CI, sauberem Review-Gate und echtem Adventure-Land-Live-PASS gemergt.
 
