@@ -17,6 +17,7 @@
     change_target: Object.freeze({ publicName: 'change_target', family: 'combat-target' }),
     loot: Object.freeze({ publicName: 'loot', family: 'loot' }),
     send_item: Object.freeze({ publicName: 'send_item', family: 'merchant-logistics' }),
+    send_gold: Object.freeze({ publicName: 'send_gold', family: 'party-logistics' }),
     bank_store: Object.freeze({ publicName: 'bank_store', family: 'bank' }),
     bank_retrieve: Object.freeze({ publicName: 'bank_retrieve', family: 'bank' }),
     bank_deposit: Object.freeze({ publicName: 'bank_deposit', family: 'bank-gold' }),
