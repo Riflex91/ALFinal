@@ -90,7 +90,7 @@
 </style>
 <div class="albot-head" id="albot-drag-handle"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-minimize" class="albot-window-btn" title="Fenster minimieren" aria-label="Fenster minimieren">—</button><button id="albot-emergency" class="albot-stop">STOP</button></div>
 <div class="albot-tabs">
-<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="merchant">Merchant</button><button class="albot-tab" data-tab="bank">Bank</button><button class="albot-tab" data-tab="trade">Handel</button><button class="albot-tab" data-tab="gear">Gear</button><button class="albot-tab" data-tab="upgrade">Upgrade & Compound</button><button class="albot-tab" data-tab="exchange-craft">Exchange & Craft</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
+<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="merchant">Merchant</button><button class="albot-tab" data-tab="bank">Bank</button><button class="albot-tab" data-tab="trade">Handel</button><button class="albot-tab" data-tab="gear">Gear</button><button class="albot-tab" data-tab="upgrade">Upgrade & Compound</button><button class="albot-tab" data-tab="exchange-craft">Exchange & Craft</button><button class="albot-tab" data-tab="economy">Economy</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
 </div>
 <div class="albot-body">
 <section id="albot-panel-overview" class="albot-panel active"></section>
@@ -107,6 +107,7 @@
 <section id="albot-panel-gear" class="albot-panel"></section>
 <section id="albot-panel-upgrade" class="albot-panel"></section>
 <section id="albot-panel-exchange-craft" class="albot-panel"></section>
+<section id="albot-panel-economy" class="albot-panel"></section>
 <section id="albot-panel-live-test" class="albot-panel"></section>
 <section id="albot-panel-knowledge" class="albot-panel"></section>
 <section id="albot-panel-logs" class="albot-panel"></section>
@@ -252,6 +253,7 @@
       if (this.activeTab === 'gear') this.renderGear(status);
       if (this.activeTab === 'upgrade') this.renderUpgrade(status);
       if (this.activeTab === 'exchange-craft') this.renderExchangeCraft(status);
+      if (this.activeTab === 'economy') this.renderEconomy(status);
       if (this.activeTab === 'live-test') this.renderLiveTest(status);
       if (this.activeTab === 'knowledge') this.renderKnowledge(status);
       if (this.activeTab === 'logs') this.renderLogs();
@@ -277,6 +279,7 @@
       this.renderGear(status);
       this.renderUpgrade(status);
       this.renderExchangeCraft(status);
+      this.renderEconomy(status);
       this.renderLiveTest(status);
       this.renderKnowledge(status);
       this.renderLogs();
@@ -1317,6 +1320,84 @@ ${items.length ? items.slice(0, 24).map(row => '<div class="albot-small">#'+esc(
         maxCraftGoldCost: Number(panel.querySelector('#albot-h16-craft-cost').value),
         maxCraftInputValueAtRisk: Number(panel.querySelector('#albot-h16-craft-risk').value),
         goldReserve: Number(panel.querySelector('#albot-h16-reserve').value)
+      }));
+    }
+
+    renderEconomy(status) {
+      const panel = this.host.querySelector('#albot-panel-economy');
+      if (!panel) return;
+      const economy = status.economy || {};
+      const metrics = economy.metrics || {};
+      const policy = economy.config || {};
+      let plan = economy.lastPlan || null;
+      try {
+        if (!plan || !['READY', 'IDLE', 'WAITING', 'BLOCKED'].includes(String(plan.state || ''))) {
+          plan = this.runtime.economy.plan();
+        }
+      } catch (_) {}
+      const proposals = plan && Array.isArray(plan.proposals) ? plan.proposals : [];
+      const selected = plan && plan.selected || null;
+      const action = economy.currentAction || null;
+      const resultText = this.economyResult ? JSON.stringify(this.economyResult, null, 2) : 'Noch keine manuelle H17-Steuerung.';
+      const proposalText = proposals.length
+        ? proposals.slice(0, 10).map((row, index) =>
+          (index + 1)+'. '+esc(row.kind)+' · Priorität '+esc(row.priority)+' · Risiko '+esc(row.risk || 0)
+          +(row.itemName ? ' · '+esc(row.itemName) : '')
+        ).join('<br>')
+        : 'Keine sichere Economy-Aktion vorgeschlagen.';
+
+      panel.innerHTML = `<div class="albot-card"><b>H17 Economy Autonomy</b>
+<div class="albot-small">Gemeinsamer Planner für Bank, Markt, Gear, Upgrade, Compound, Exchange und Craft. Der Planner schreibt nie direkt ins Spiel, sondern delegiert ausschließlich an die bestehenden H12–H16-Safety-Pfade.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${economy.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Autonomie</span><div class="albot-v">${economy.autonomyEnabled ? 'AKTIV' : 'AUS'}</div></div>
+<div><span class="albot-k">Plan</span><div class="albot-v">${esc(plan && plan.state || '-')} · ${esc(plan && plan.reason || '-')}</div></div>
+<div><span class="albot-k">Auswahl</span><div class="albot-v">${selected ? esc(selected.kind) : '-'}</div></div>
+<div><span class="albot-k">Session-Aktionen</span><div class="albot-v">${esc(economy.actionsThisSession || 0)} / ${esc(policy.maxActionsPerSession || '-')}</div></div>
+<div><span class="albot-k">Aktive Aktion</span><div class="albot-v">${action ? esc(action.kind)+' · '+esc(action.module) : 'keine'}</div></div>
+<div><span class="albot-k">Bestätigt / Reject / Unknown</span><div class="albot-v">${esc(metrics.actionsConfirmed || 0)} / ${esc(metrics.actionsRejected || 0)} / ${esc(metrics.actionsUnknown || 0)}</div></div>
+<div><span class="albot-k">Konflikt-/Movement-Blocks</span><div class="albot-v">${esc(metrics.conflictBlocks || 0)} / ${esc(metrics.movementBlocks || 0)}</div></div>
+<div><span class="albot-k">Suspendiert</span><div class="albot-v">${economy.suspended ? 'JA · '+esc(economy.suspendedReason || '-') : 'NEIN'}</div></div>
+<div><span class="albot-k">Druck</span><div class="albot-v">${esc(plan && plan.pressure || '-')}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Priorisierte Vorschläge</b><div class="albot-small">${proposalText}</div></div>
+
+<div class="albot-card"><b>Autonomie-Steuerung</b>
+<div class="albot-row"><label>Max Aktionen <input id="albot-h17-max-actions" type="number" min="1" max="100" value="${esc(policy.maxActionsPerSession == null ? 12 : policy.maxActionsPerSession)}"></label><label>Market/NPC Mindestfaktor <input id="albot-h17-market-ratio" type="number" min="1" max="10" step="0.05" value="${esc(policy.minMarketPremiumRatio == null ? 1 : policy.minMarketPremiumRatio)}"></label></div>
+<div class="albot-row"><button id="albot-h17-start" class="albot-btn" ${economy.autonomyEnabled || action ? 'disabled' : ''}>Autonomie starten</button><button id="albot-h17-stop" class="albot-btn warn" ${economy.autonomyEnabled ? '' : 'disabled'}>Autonomie stoppen</button><button id="albot-h17-policy-save" class="albot-btn">Policy speichern</button></div>
+<div class="albot-small">Autonomie startet nie automatisch durch das Öffnen des Tabs. STOP, Combat, Movement-Ownership, Child-Suspension und Session-Budget bleiben harte Gates.</div>
+</div>
+
+<div class="albot-card"><b>Manuelle Planner-Steuerung</b>
+<div class="albot-row"><button id="albot-h17-plan" class="albot-btn">Plan</button><button id="albot-h17-tick" class="albot-btn">Tick</button><button id="albot-h17-queue" class="albot-btn" ${action ? 'disabled' : ''}>Auswahl vormerken</button><button id="albot-h17-reset" class="albot-btn warn" ${economy.suspended && !action ? '' : 'disabled'}>Safety zurücksetzen</button></div>
+</div>
+
+<div class="albot-card"><b>Letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.economyResult = fn(); }
+        catch (error) { this.economyResult = { ok: false, reason: String(error && error.message || error) }; }
+        this.renderEconomy(this.runtime.status());
+      };
+      const planButton = panel.querySelector('#albot-h17-plan');
+      if (planButton) planButton.onclick = () => run(() => this.runtime.economy.plan());
+      const tickButton = panel.querySelector('#albot-h17-tick');
+      if (tickButton) tickButton.onclick = () => run(() => this.runtime.economy.tick());
+      const queueButton = panel.querySelector('#albot-h17-queue');
+      if (queueButton) queueButton.onclick = () => run(() => this.runtime.economy.queueSelected());
+      const resetButton = panel.querySelector('#albot-h17-reset');
+      if (resetButton) resetButton.onclick = () => run(() => this.runtime.economy.resetSafety('GUI_H17_RESET'));
+      const startButton = panel.querySelector('#albot-h17-start');
+      if (startButton) startButton.onclick = () => run(() => this.runtime.economy.startAutonomy({
+        maxActions: Math.max(1, Math.floor(Number(panel.querySelector('#albot-h17-max-actions').value) || 1))
+      }));
+      const stopButton = panel.querySelector('#albot-h17-stop');
+      if (stopButton) stopButton.onclick = () => run(() => this.runtime.economy.stopAutonomy('GUI_H17_AUTONOMY_STOP'));
+      const policyButton = panel.querySelector('#albot-h17-policy-save');
+      if (policyButton) policyButton.onclick = () => run(() => this.runtime.economy.policy({
+        maxActionsPerSession: Math.max(1, Math.floor(Number(panel.querySelector('#albot-h17-max-actions').value) || 1)),
+        minMarketPremiumRatio: Number(panel.querySelector('#albot-h17-market-ratio').value)
       }));
     }
 
