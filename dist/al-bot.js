@@ -12648,10 +12648,12 @@
       this.sequence = 0;
       this.actionsThisSession = 0;
       this.cooldownUntilMs = null;
+      this.rejectionBackoff = new Map();
 
       this.config = {
         tickMs: Math.max(250, Math.min(5000, Number(options.tickMs) || 1000)),
         actionCooldownMs: Math.max(0, Math.min(60000, Number(options.actionCooldownMs) || 1500)),
+        rejectionBackoffMs: Math.max(1000, Math.min(300000, Number(options.rejectionBackoffMs) || 15000)),
         actionTimeoutMs: Math.max(5000, Math.min(300000, Number(options.actionTimeoutMs) || 120000)),
         maxActionsPerSession: Math.max(1, Math.min(100, Math.floor(Number(options.maxActionsPerSession) || 12))),
         minMarketPremiumRatio: Math.max(1, Math.min(10, finite(options.minMarketPremiumRatio) == null ? 1 : finite(options.minMarketPremiumRatio))),
@@ -12670,6 +12672,7 @@
         actionsConfirmed: 0,
         actionsRejected: 0,
         actionsUnknown: 0,
+        rejectionBackoffs: 0,
         sessionBudgetBlocks: 0,
         byKind: {}
       };
@@ -12684,6 +12687,7 @@
       this.currentAction = null;
       this.actionsThisSession = 0;
       this.cooldownUntilMs = null;
+      this.rejectionBackoff.clear();
       if (this.scope && typeof this.scope.interval === 'function') {
         this.scope.interval('economy-tick', () => this.tick(), this.config.tickMs, { immediate: true });
       }
@@ -12696,6 +12700,7 @@
       this.scope = null;
       this.currentAction = null;
       this.cooldownUntilMs = null;
+      this.rejectionBackoff.clear();
       this.lastAction = { at: nowIso(), type: 'STOP', reason: cleanText(reason, 240) };
       return { stopped: true };
     }
@@ -12730,6 +12735,7 @@
       this.autonomyEnabled = false;
       this.actionsThisSession = 0;
       this.cooldownUntilMs = null;
+      this.rejectionBackoff.clear();
       this.lastAction = { at: nowIso(), type: 'RESET', reason: cleanText(reason, 240) };
       return this.status();
     }
@@ -12739,6 +12745,7 @@
       if (!value || typeof value !== 'object') throw new Error('H17_POLICY_MUST_BE_OBJECT');
       if (value.maxActionsPerSession != null) this.config.maxActionsPerSession = Math.max(1, Math.min(100, Math.floor(Number(value.maxActionsPerSession) || 1)));
       if (value.actionCooldownMs != null) this.config.actionCooldownMs = Math.max(0, Math.min(60000, Math.floor(Number(value.actionCooldownMs) || 0)));
+      if (value.rejectionBackoffMs != null) this.config.rejectionBackoffMs = Math.max(1000, Math.min(300000, Math.floor(Number(value.rejectionBackoffMs) || 1000)));
       if (value.actionTimeoutMs != null) this.config.actionTimeoutMs = Math.max(5000, Math.min(300000, Math.floor(Number(value.actionTimeoutMs) || 5000)));
       if (value.minMarketPremiumRatio != null) this.config.minMarketPremiumRatio = Math.max(1, Math.min(10, Number(value.minMarketPremiumRatio) || 1));
       if (value.priorities && typeof value.priorities === 'object') {
@@ -12814,8 +12821,12 @@
 
     _proposal(kind, module, details = {}) {
       if (this.config.allowKinds[kind] !== true) return null;
+      const id = 'h17-proposal-' + kind + '-' + cleanText(details.key || details.itemName || details.slot || '', 120);
+      const blockedUntil = Number(this.rejectionBackoff.get(id) || 0);
+      if (blockedUntil > Date.now()) return null;
+      if (blockedUntil) this.rejectionBackoff.delete(id);
       return {
-        id: 'h17-proposal-' + kind + '-' + cleanText(details.key || details.itemName || details.slot || '', 120),
+        id,
         kind,
         module,
         priority: Number(this.config.priorities[kind] || 0),
@@ -13237,7 +13248,9 @@
       const queued = this._queueProposal(plan.selected);
       if (!queued || queued.accepted !== true) {
         this.metrics.actionsRejected += 1;
+        this.metrics.rejectionBackoffs += 1;
         this.cooldownUntilMs = Date.now() + this.config.actionCooldownMs;
+        this.rejectionBackoff.set(plan.selected.id, Date.now() + this.config.rejectionBackoffMs);
         this.lastAction = {
           at: nowIso(),
           type: 'ACTION_QUEUE_REJECTED',
@@ -13265,6 +13278,7 @@
         currentAction: clone(this.currentAction),
         actionsThisSession: this.actionsThisSession,
         cooldownUntilMs: this.cooldownUntilMs,
+        rejectionBackoff: Array.from(this.rejectionBackoff.entries()).map(([proposalId, untilMs]) => ({ proposalId, untilMs })),
         lastPlan: clone(this.lastPlan),
         lastAction: clone(this.lastAction),
         config: clone(this.config),
@@ -13275,6 +13289,7 @@
 
   ns.EconomyController = EconomyController;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
+
 
 (function (root) {
   'use strict';
@@ -17335,6 +17350,7 @@
           + Number(trade.npcSellsUnknown || 0)
           + Number(trade.marketBuysUnknown || 0)
           + Number(trade.marketSellsUnknown || 0)
+          + Number(trade.movementUnknown || 0)
           + Number(gear.equipsUnknown || 0)
           + Number(gear.unequipsUnknown || 0)
           + Number(gear.deliveriesUnknown || 0)
@@ -17841,6 +17857,7 @@
 
   ns.ALBotRuntime = ALBotRuntime;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
+
 
 
 
