@@ -30,6 +30,7 @@
       this.inventoryResult = null;
       this.merchantResult = null;
       this.bankResult = null;
+      this.tradeResult = null;
       this.liveTestClipboard = null;
       this._offLog = null;
       this._dragCleanup = null;
@@ -86,7 +87,7 @@
 </style>
 <div class="albot-head" id="albot-drag-handle"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-minimize" class="albot-window-btn" title="Fenster minimieren" aria-label="Fenster minimieren">—</button><button id="albot-emergency" class="albot-stop">STOP</button></div>
 <div class="albot-tabs">
-<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="merchant">Merchant</button><button class="albot-tab" data-tab="bank">Bank</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
+<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="merchant">Merchant</button><button class="albot-tab" data-tab="bank">Bank</button><button class="albot-tab" data-tab="trade">Handel</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
 </div>
 <div class="albot-body">
 <section id="albot-panel-overview" class="albot-panel active"></section>
@@ -99,6 +100,7 @@
 <section id="albot-panel-inventory" class="albot-panel"></section>
 <section id="albot-panel-merchant" class="albot-panel"></section>
 <section id="albot-panel-bank" class="albot-panel"></section>
+<section id="albot-panel-trade" class="albot-panel"></section>
 <section id="albot-panel-live-test" class="albot-panel"></section>
 <section id="albot-panel-knowledge" class="albot-panel"></section>
 <section id="albot-panel-logs" class="albot-panel"></section>
@@ -240,6 +242,7 @@
       if (this.activeTab === 'inventory') this.renderInventory(status);
       if (this.activeTab === 'merchant') this.renderMerchant(status);
       if (this.activeTab === 'bank') this.renderBank(status);
+      if (this.activeTab === 'trade') this.renderTrade(status);
       if (this.activeTab === 'live-test') this.renderLiveTest(status);
       if (this.activeTab === 'knowledge') this.renderKnowledge(status);
       if (this.activeTab === 'logs') this.renderLogs();
@@ -261,6 +264,7 @@
       this.renderInventory(status);
       this.renderMerchant(status);
       this.renderBank(status);
+      this.renderTrade(status);
       this.renderLiveTest(status);
       this.renderKnowledge(status);
       this.renderLogs();
@@ -867,6 +871,126 @@ ${items.length ? items.slice(0, 24).map(row => '<div class="albot-small">#'+esc(
         run(() => pack && Number.isFinite(slot)
           ? this.runtime.bank.queueWithdraw(pack, slot, {})
           : { accepted: false, reason: 'H12_GUI_NO_WITHDRAW_ITEM' });
+      };
+    }
+
+    renderTrade(status) {
+      const panel = this.host.querySelector('#albot-panel-trade');
+      if (!panel) return;
+      const trade = status.trade || {};
+      const metrics = trade.metrics || {};
+      const plan = trade.lastPlan || null;
+      const resultText = this.tradeResult ? JSON.stringify(this.tradeResult, null, 2) : 'Noch keine manuelle H13-Aktion.';
+      let market = null;
+      try { market = this.runtime.trade.marketAnalysis(null); } catch (_) { market = null; }
+      const asks = market && Array.isArray(market.asks) ? market.asks : [];
+      const bids = market && Array.isArray(market.bids) ? market.bids : [];
+      const safeSell = plan && Array.isArray(plan.safeSellRows) ? plan.safeSellRows : [];
+
+      const askOptions = asks.length
+        ? asks.slice(0, 40).map(row => '<option value="'+esc(row.playerName)+'|'+esc(row.slot)+'">'+esc(row.name)+' +'+esc(row.level || 0)+' · '+esc(row.price)+'g · '+esc(row.playerName)+'</option>').join('')
+        : '<option value="">keine sichtbaren Verkaufsangebote</option>';
+      const bidOptions = bids.length
+        ? bids.slice(0, 40).map(row => '<option value="'+esc(row.playerName)+'|'+esc(row.slot)+'">'+esc(row.name)+' +'+esc(row.level || 0)+' · '+esc(row.price)+'g · '+esc(row.playerName)+'</option>').join('')
+        : '<option value="">keine sichtbaren Kaufangebote</option>';
+      const sellOptions = safeSell.length
+        ? safeSell.map(row => '<option value="'+esc(row.slot)+'">'+esc(row.name)+' x'+esc(row.quantity || 1)+' · Slot '+esc(row.slot)+'</option>').join('')
+        : '<option value="">kein H10-SELL-Item</option>';
+
+      panel.innerHTML = `<div class="albot-card"><b>H13 Handel</b>
+<div class="albot-small">NPC Buy/Sell, sichtbare Player-Market-Analyse und explizit preisgedeckelte Acquisition. Kein Player-Market-Write ohne konkrete Preisgrenze und erneute Listing-Prüfung unmittelbar vor Dispatch.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${trade.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Plan</span><div class="albot-v">${esc(plan && plan.state || '-')} · ${esc(plan && plan.reason || '-')}</div></div>
+<div><span class="albot-k">Goldreserve</span><div class="albot-v">${esc(trade.config && trade.config.goldReserve || 0)}</div></div>
+<div><span class="albot-k">Suspendiert</span><div class="albot-v">${trade.suspended ? 'JA · '+esc(trade.suspendedReason || '-') : 'NEIN'}</div></div>
+<div><span class="albot-k">NPC Käufe bestätigt</span><div class="albot-v">${esc(metrics.npcBuysConfirmed || 0)}</div></div>
+<div><span class="albot-k">NPC Verkäufe bestätigt</span><div class="albot-v">${esc(metrics.npcSellsConfirmed || 0)}</div></div>
+<div><span class="albot-k">Markt Käufe bestätigt</span><div class="albot-v">${esc(metrics.marketBuysConfirmed || 0)}</div></div>
+<div><span class="albot-k">Markt Verkäufe bestätigt</span><div class="albot-v">${esc(metrics.marketSellsConfirmed || 0)}</div></div>
+<div><span class="albot-k">Price Blocks</span><div class="albot-v">${esc(metrics.priceBlocks || 0)}</div></div>
+<div><span class="albot-k">Safety Blocks</span><div class="albot-v">${esc(metrics.safetyBlocks || 0)}</div></div>
+<div><span class="albot-k">Sichtbare Asks</span><div class="albot-v">${esc(asks.length)}</div></div>
+<div><span class="albot-k">Sichtbare Bids</span><div class="albot-v">${esc(bids.length)}</div></div>
+</div></div>
+
+<div class="albot-card"><b>NPC Acquisition</b>
+<div class="albot-row"><input id="albot-h13-npc-item" value="hpot0" placeholder="Item-ID"><input id="albot-h13-npc-qty" type="number" min="1" step="1" value="1" style="max-width:80px"><input id="albot-h13-npc-max" type="number" min="1" step="1" placeholder="Max. Stückpreis"><button id="albot-h13-acquire" class="albot-btn">Acquisition planen</button></div>
+<div class="albot-small">Der Maximalpreis ist Pflicht. NPC-Festpreis und sichtbare Player-Asks werden verglichen; gewählt wird nur eine Quelle innerhalb des Limits.</div>
+</div>
+
+<div class="albot-card"><b>NPC SELL</b>
+<div class="albot-row"><select id="albot-h13-sell-item">${sellOptions}</select><input id="albot-h13-sell-qty" type="number" min="1" step="1" value="1" style="max-width:80px"><button id="albot-h13-sell-npc" class="albot-btn">SELL-Item verkaufen</button></div>
+<div class="albot-small">Nur Items mit H10-Disposition SELL. KEEP/PROTECT/RESERVE/BANK/EXCHANGE sind blockiert.</div>
+</div>
+
+<div class="albot-card"><b>Player Market – explizit</b>
+<div class="albot-small">Analyse ist read-only. Kauf/Verkauf prüft Listing-RID und Preis unmittelbar vor Dispatch erneut.</div>
+<div class="albot-row"><select id="albot-h13-ask">${askOptions}</select><input id="albot-h13-ask-max" type="number" min="1" step="1" placeholder="Max. Stückpreis"><button id="albot-h13-buy-market" class="albot-btn">Ask kaufen</button></div>
+<div class="albot-row"><select id="albot-h13-bid">${bidOptions}</select><input id="albot-h13-bid-min" type="number" min="0" step="1" placeholder="Min. Stückpreis"><button id="albot-h13-sell-market" class="albot-btn">In Bid verkaufen</button></div>
+</div>
+
+<div class="albot-card"><b>Steuerung</b>
+<div class="albot-row"><button id="albot-h13-plan" class="albot-btn">Plan</button><button id="albot-h13-analysis" class="albot-btn">Markt analysieren</button><button id="albot-h13-tick" class="albot-btn">Tick</button><button id="albot-h13-reset" class="albot-btn warn" ${trade.suspended ? '' : 'disabled'}>Safety zurücksetzen</button></div>
+<div class="albot-small">Pending: ${trade.pending ? esc(trade.pending.kind) : 'nein'} · Request: ${trade.request ? esc(trade.request.kind) : 'keiner'}</div>
+</div>
+
+<div class="albot-card"><b>Letzte Aktion</b><div class="albot-small">${esc(trade.lastAction && trade.lastAction.type || '-')} · ${esc(trade.lastAction && trade.lastAction.reason || '-')}</div></div>
+<div class="albot-card"><b>Letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.tradeResult = fn(); }
+        catch (error) { this.tradeResult = { ok: false, reason: String(error && error.message || error) }; }
+        this.renderTrade(this.runtime.status());
+      };
+      const planButton = panel.querySelector('#albot-h13-plan');
+      if (planButton) planButton.onclick = () => run(() => this.runtime.trade.plan());
+      const analysisButton = panel.querySelector('#albot-h13-analysis');
+      if (analysisButton) analysisButton.onclick = () => run(() => this.runtime.trade.marketAnalysis(null));
+      const tickButton = panel.querySelector('#albot-h13-tick');
+      if (tickButton) tickButton.onclick = () => run(() => this.runtime.trade.tick());
+      const resetButton = panel.querySelector('#albot-h13-reset');
+      if (resetButton) resetButton.onclick = () => run(() => this.runtime.trade.resetSafety('GUI_H13_RESET'));
+
+      const acquireButton = panel.querySelector('#albot-h13-acquire');
+      if (acquireButton) acquireButton.onclick = () => {
+        const itemName = panel.querySelector('#albot-h13-npc-item').value;
+        const quantity = Number(panel.querySelector('#albot-h13-npc-qty').value) || 1;
+        const maxUnitPrice = Number(panel.querySelector('#albot-h13-npc-max').value);
+        run(() => this.runtime.trade.queueAcquire(itemName, quantity, { maxUnitPrice }));
+      };
+
+      const sellNpcButton = panel.querySelector('#albot-h13-sell-npc');
+      if (sellNpcButton) sellNpcButton.onclick = () => {
+        const slot = Number(panel.querySelector('#albot-h13-sell-item').value);
+        const quantity = Number(panel.querySelector('#albot-h13-sell-qty').value) || 1;
+        run(() => Number.isFinite(slot)
+          ? this.runtime.trade.queueNpcSell(slot, quantity, {})
+          : { accepted: false, reason: 'H13_GUI_NO_SELL_ITEM' });
+      };
+
+      const buyMarketButton = panel.querySelector('#albot-h13-buy-market');
+      if (buyMarketButton) buyMarketButton.onclick = () => {
+        const raw = panel.querySelector('#albot-h13-ask').value || '';
+        const split = raw.lastIndexOf('|');
+        const playerName = split >= 0 ? raw.slice(0, split) : '';
+        const tradeSlot = split >= 0 ? raw.slice(split + 1) : '';
+        const maxUnitPrice = Number(panel.querySelector('#albot-h13-ask-max').value);
+        run(() => playerName && tradeSlot
+          ? this.runtime.trade.queueMarketBuy(playerName, tradeSlot, 1, { maxUnitPrice })
+          : { accepted: false, reason: 'H13_GUI_NO_MARKET_ASK' });
+      };
+
+      const sellMarketButton = panel.querySelector('#albot-h13-sell-market');
+      if (sellMarketButton) sellMarketButton.onclick = () => {
+        const raw = panel.querySelector('#albot-h13-bid').value || '';
+        const split = raw.lastIndexOf('|');
+        const playerName = split >= 0 ? raw.slice(0, split) : '';
+        const tradeSlot = split >= 0 ? raw.slice(split + 1) : '';
+        const minUnitPrice = Number(panel.querySelector('#albot-h13-bid-min').value);
+        run(() => playerName && tradeSlot
+          ? this.runtime.trade.queueMarketSell(playerName, tradeSlot, 1, { minUnitPrice })
+          : { accepted: false, reason: 'H13_GUI_NO_MARKET_BID' });
       };
     }
 

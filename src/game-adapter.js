@@ -354,6 +354,122 @@
       return clone(rows);
     }
 
+    npcLocation(npcId) {
+      const id = cleanText(npcId || '', 120);
+      if (!id) return null;
+      const findNpc = this._resolveFunction('find_npc');
+      if (!findNpc) return null;
+      let raw = null;
+      try { raw = findNpc.fn.call(findNpc.owner, id); } catch (_) { raw = null; }
+      if (!raw || typeof raw !== 'object') return null;
+      const x = finite(raw.x != null ? raw.x : raw.real_x);
+      const y = finite(raw.y != null ? raw.y : raw.real_y);
+      const map = cleanText(raw.map || '', 120) || null;
+      if (!map || x == null || y == null) return null;
+      return { npcId: id, map, x, y };
+    }
+
+    npcShopSources(itemName) {
+      const wanted = cleanText(itemName || '', 160);
+      if (!wanted) return [];
+      const G = this._gameData();
+      const npcs = G && G.npcs && typeof G.npcs === 'object' ? G.npcs : {};
+      const rows = [];
+      for (const [npcId, raw] of Object.entries(npcs)) {
+        if (!raw || !Array.isArray(raw.items) || !raw.items.includes(wanted)) continue;
+        const location = this.npcLocation(npcId);
+        rows.push({
+          npcId: String(npcId),
+          name: raw.name == null ? String(npcId) : cleanText(raw.name, 160),
+          role: raw.role == null ? null : cleanText(raw.role, 80),
+          location
+        });
+      }
+      return clone(rows);
+    }
+
+    marketSnapshot(options = {}) {
+      const character = this._character();
+      if (!character || !character.name) {
+        return {
+          schemaVersion: 1,
+          available: false,
+          reason: 'CHARACTER_UNAVAILABLE',
+          players: [],
+          listings: []
+        };
+      }
+      const radius = finite(options.radius);
+      const charPos = this._position(character);
+      const players = [];
+      const listings = [];
+      for (const row of this._entityEntries()) {
+        const entity = row.entity;
+        if (!entity || entity.visible === false || entity.dead === true || entity.rip === true) continue;
+        const isPlayer = entity.type === 'character' || entity.player === true || entity.ctype != null;
+        if (!isPlayer) continue;
+        const name = cleanText(entity.name || entity.id || row.key || '', 120);
+        if (!name || name === String(character.name || '')) continue;
+        if (entity.map && character.map && String(entity.map) !== String(character.map)) continue;
+        const pos = this._position(entity);
+        const distance = charPos.x != null && charPos.y != null && pos.x != null && pos.y != null
+          ? Math.hypot(charPos.x - pos.x, charPos.y - pos.y)
+          : null;
+        if (radius != null && (distance == null || distance > radius)) continue;
+
+        const player = {
+          id: entity.id == null ? String(row.key) : String(entity.id),
+          name,
+          ctype: entity.ctype == null ? null : cleanText(entity.ctype, 80),
+          map: entity.map || character.map || null,
+          x: pos.x,
+          y: pos.y,
+          distance,
+          stand: !!(entity.stand || entity.p && entity.p.stand)
+        };
+        players.push(player);
+
+        const slots = entity.slots && typeof entity.slots === 'object' ? entity.slots : {};
+        for (const [slot, rawListing] of Object.entries(slots)) {
+          if (!String(slot).startsWith('trade') || !rawListing || !rawListing.name) continue;
+          const price = finite(rawListing.price);
+          if (price == null || price <= 0) continue;
+          listings.push({
+            playerId: player.id,
+            playerName: player.name,
+            distance,
+            slot: String(slot),
+            rid: rawListing.rid == null ? null : cleanText(rawListing.rid, 160),
+            name: cleanText(rawListing.name, 160),
+            level: Math.max(0, finite(rawListing.level) || 0),
+            quantity: Math.max(1, finite(rawListing.q) || 1),
+            price,
+            buying: rawListing.b === true,
+            giveaway: rawListing.giveaway === true,
+            statType: rawListing.stat_type == null ? null : cleanText(rawListing.stat_type, 80),
+            property: rawListing.p == null ? null : clone(rawListing.p)
+          });
+        }
+      }
+      players.sort((a, b) => {
+        const ad = a.distance == null ? Number.POSITIVE_INFINITY : a.distance;
+        const bd = b.distance == null ? Number.POSITIVE_INFINITY : b.distance;
+        return ad - bd;
+      });
+      listings.sort((a, b) => {
+        if (String(a.name) !== String(b.name)) return String(a.name).localeCompare(String(b.name));
+        if (a.buying !== b.buying) return a.buying ? 1 : -1;
+        return a.buying ? Number(b.price) - Number(a.price) : Number(a.price) - Number(b.price);
+      });
+      return {
+        schemaVersion: 1,
+        available: true,
+        reason: null,
+        players: clone(players),
+        listings: clone(listings)
+      };
+    }
+
     itemDefinition(name) {
       const id = cleanText(name || '', 160);
       if (!id) return null;
