@@ -148,6 +148,7 @@ function loadFullAutonomy({ missingPeer = false, localName = 'My_Warrior', party
   const state = {
     lifecyclePolicy: null,
     lifecycleStarts: 0,
+    lifecycleAutonomyEnabled: false,
     farmStarts: 0,
     economyStarts: 0,
     logisticsStarts: 0,
@@ -183,9 +184,23 @@ function loadFullAutonomy({ missingPeer = false, localName = 'My_Warrior', party
   };
   const lifecycle = {
     setPolicy: value => { state.lifecyclePolicy = clone(value); return { accepted: true }; },
-    status: () => ({ autonomyEnabled: state.lifecycleStarts > 0, suspended: false, currentAction: null }),
-    startAutonomy: () => { state.lifecycleStarts += 1; return { accepted: true }; },
-    stopAutonomy: () => ({ accepted: true })
+    status: () => ({
+      autonomyEnabled: state.lifecycleAutonomyEnabled,
+      suspended: false,
+      currentAction: null,
+      lastAction: state.lifecycleLastAction || null,
+      actionsThisSession: state.lifecycleActionsThisSession || 0
+    }),
+    startAutonomy: () => {
+      state.lifecycleStarts += 1;
+      state.lifecycleAutonomyEnabled = true;
+      return { accepted: true };
+    },
+    stopAutonomy: reason => {
+      state.lifecycleAutonomyEnabled = false;
+      state.lifecycleLastAction = { type: 'AUTONOMY_STOPPED', reason };
+      return { accepted: true };
+    }
   };
   const farmIntelligence = {
     status: () => ({ active: state.farmStarts > 0 }),
@@ -291,4 +306,25 @@ test('full autonomy refuses to start unless the configured four-character live r
   const started = controller.startAutonomy({ taskType: 'FARM' });
   assert.equal(started.accepted, false);
   assert.equal(started.reason, 'FULL_AUTONOMY_EXPECTED_ONLINE_COUNT_MISMATCH');
+});
+
+
+test('full autonomy honors a lifecycle self-stop and does not restart it on the next tick', () => {
+  const { controller, state } = loadFullAutonomy();
+  const started = controller.startAutonomy({ taskType: 'FARM' });
+  assert.equal(started.accepted, true);
+  assert.equal(state.lifecycleStarts, 1);
+
+  state.lifecycleAutonomyEnabled = false;
+  state.lifecycleLastAction = {
+    type: 'START_REJECTED',
+    reason: 'H19_SERVER_REJECTED',
+    autonomyStopped: true
+  };
+  state.lifecycleActionsThisSession = 1;
+
+  const next = controller.tick();
+  assert.equal(next.state, 'BLOCKED');
+  assert.equal(next.reason, 'FULL_AUTONOMY_LIFECYCLE_STOP_REQUIRES_EXPLICIT_RESTART');
+  assert.equal(state.lifecycleStarts, 1);
 });
