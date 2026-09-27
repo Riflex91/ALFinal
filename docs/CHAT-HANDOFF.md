@@ -783,17 +783,45 @@ Implementiert:
 - H16-Regressionen;
 - `dist/al-bot.js` auf H16-Source synchronisiert.
 
-H16 Live-Test:
+H16 Live-Test v2:
 - bevorzugt echte `CRAFT_TO_EXCHANGE_CHAIN`;
-- sonst `CRAFT_AND_EXCHANGE_COVERAGE` mit disjunkten Quellslots;
-- maximal zwei echte H16-Aktionen;
+- sonst `CRAFT_AND_EXCHANGE_COVERAGE`;
+- wenn kein lokaler Craft bereit ist: `ACQUIRE_CRAFT_AND_EXCHANGE_COVERAGE`;
+- maximal zwei echte H16-Aktionen (Craft + Exchange);
+- bei Bedarf höchstens zwei fehlende Level-0-Leaf-Materialien;
+- Materialbeschaffung maximal 10.000 Gold gesamt;
+- Materialquelle muss live als NPC-Quelle oder ausreichender sichtbarer Market-Ask belegbar sein;
+- Beschaffung läuft explizit über H16 → H13 mit `allowBank:false`;
 - niedrige temporäre Risiko-/Kostenbudgets;
 - keine Quest-/Event-Aktionen;
 - Craft und Exchange müssen durch Live-Deltas bestätigt werden;
-- beide UNKNOWN-Deltas müssen 0 bleiben;
+- Exchange-, Craft- und Material-Trade-UNKNOWN-Deltas müssen 0 bleiben;
 - fünf Sekunden Stabilität;
 - Cleanup + Runtime Auto-Restore;
-- fehlt ein sicherer Craft-/Exchange-Kandidat: `H16_NEEDS_LOW_RISK_CRAFT_AND_EXCHANGE_CANDIDATES` ohne Mutation.
+- fehlt weiterhin ein sicherer Pfad, fail-closed ohne weitere Mutation.
+
+Live-Versuch 1 am 2026-09-27:
+- Suite `h16-exchange-craft` auf Runtime `0.16.0-h16`;
+- FAIL bereits im Preflight mit `H16_NEEDS_LOW_RISK_CRAFT_AND_EXCHANGE_CANDIDATES`;
+- 1 sicherer Exchange (`anniversarygift`, Value-at-Risk 100 Gold);
+- 0 lokal sichere Crafts;
+- 106 Rezepte mit fehlenden Materialien, 28 Quest/Event;
+- `attemptsThisSession=0`;
+- 0 Exchange-/Craft-Dispatches;
+- alle H16-UNKNOWN-Zähler 0;
+- 0 Movement-Requests;
+- Suite-Cleanup `ok=true`;
+- Runtime Auto-Restore erfolgreich, Scheduler danach `totalResources=0`.
+Der Test hat damit korrekt fail-closed gearbeitet; die fehlende Materialbeschaffung im Testdesign wurde als Lücke identifiziert.
+
+v2-Fix:
+- Live-Test kann nun begrenzt fehlende Materialien beschaffen;
+- `queueMaterialAcquire(..., {allowBank:false})` ergänzt;
+- Beschaffung nur über H13 und explizites Max-Unit-Price;
+- maximal 2 fehlende Level-0-Leaf-Materialien;
+- Materialbudget maximal 10.000 Gold;
+- H13-UNKNOWN/Suspension ist harter FAIL;
+- nach Beschaffung muss `productionPlan(...).state === READY` sein.
 
 Pre-Live-Hardening:
 - rejected dispatched Promise -> UNKNOWN-Suspension ohne Blind-Retry;
@@ -810,11 +838,13 @@ Pre-Live-Hardening:
 - `behind_by=0`, `mergeable=true`.
 
 Noch offen:
-- nach diesen finalen Pre-Live-Evidence-Dokucommits neuen Exact-Head-CI abwarten;
-- vollständiges Pre-Live-Gate frisch prüfen;
-- danach Nutzer genau einmal `Test starten` für `h16-exchange-craft` drücken lassen;
+- v2-Code, Regressionen und Bundle über neuen Exact-Head-CI prüfen;
+- neuen Codex-Review auf v2-Funde auswerten;
+- alle neuen Threads resolve;
+- finalen v2-Pre-Live-Head vollständig grün prüfen;
+- danach Nutzer genau einmal den zweiten echten `h16-exchange-craft`-Test starten lassen;
 - Diagnose vollständig auswerten;
-- bei PASS finale Evidence anhängen und erst danach PR #17 mergen.
+- bei PASS finale Evidence anhängen, erneut Exact-Head-CI + Merge-Gate und erst danach PR #17 mergen.
 
 ## H2 Architekturregel für spätere Module
 
@@ -909,4 +939,4 @@ Bei Fehler:
 
 ## Nächster Schritt
 
-H16 steht unmittelbar vor dem Live-Test. Nach dem neuen Exact-Head-CI der finalen Pre-Live-Evidence-Dokucommits den vollständigen Gate frisch prüfen. Nur bei komplett grünem Gate den Build `chatgpt/h16-exchange-craft/dist/al-bot.js` für genau einen echten `h16-exchange-craft`-Ein-Klick-Test freigeben. H16 erst nach bestandenem Live-Test, finaler Evidence und erneut grünem Merge-Gate mergen.
+H16 Live-Versuch 1 war ein sauberer fail-closed Preflight-Abbruch ohne Mutation. Jetzt v2-Materialbeschaffungsfallback über CI und Review härten. Erst wenn der neue Exact-Head-CI vollständig grün, der Branch `behind_by=0`, Review-Threads resolved und PR mergeable ist, den Nutzer genau einmal den zweiten `h16-exchange-craft`-Live-Test starten lassen. Erst nach PASS finale Evidence und Merge-Gate.
