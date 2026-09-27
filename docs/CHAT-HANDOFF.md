@@ -566,46 +566,82 @@ Finale Live-Evidence:
 - Cleanup vollständig
 - Runtime wieder STOPPED, Scheduler 0 Ressourcen
 
-## H12 – Bank – live bestanden, finaler Merge-Gate offen
+## H12 – Bank – abgeschlossen und gemergt
 
-Aktiver Branch:
+H12 ist live bestanden und gemergt.
+
+Finaler Branch:
 `chatgpt/h12-bank`
 
 PR:
 `#12 – H12: Bank`
 
-Version:
-`0.12.0-h12`
+Finaler Evidence-Head:
+`8a6a89f0434a8c7b9aa9cf9ddfc7909b30a69d18`
 
-Finale Live-Evidence vom 2026-09-27:
+Merge-Commit auf `main`:
+`b68e3f2934877e001f0e5454d83117ef43f7b9e3`
+
+Finale Live-Evidence:
 - Suite `h12-bank`: **PASSED / ALL_STEPS_PASSED**
 - Merchant `My_Merchant`
-- sicheres H10-BANK-Item `slice_honey`
-- Menge `155`
-- ursprünglicher Inventarslot `3`
-- automatische Bankfahrt: `movementRequests=1`
-- Deposit nach `items0/0` bestätigt
-- Withdraw aus exakt `items0/0` zurück in Slot 3 bestätigt
-- `depositsConfirmed=1`
-- `withdrawalsConfirmed=1`
-- `depositsUnknown=0`
-- `withdrawalsUnknown=0`
-- `movementUnknown=0`
-- `reconciliationEntries=43`
-- `reconciliationFailures=0`
+- `slice_honey` x155 aus Slot 3 nach `items0/0` eingelagert
+- exakt derselbe Stack vollständig in Slot 3 zurückgeholt
+- `depositsConfirmed=1`, `withdrawalsConfirmed=1`
+- `depositsUnknown=0`, `withdrawalsUnknown=0`, `movementUnknown=0`
+- `reconciliationEntries=43`, `reconciliationFailures=0`
 - `itemRestored=true`
-- Cleanup PASSED: `pending=false`, `request=false`, `movementActive=false`
+- Cleanup ohne Pending/Request/H12-Movement
+- Runtime STOPPED, Scheduler 0 Ressourcen
+
+## H13 – Handel – live bestanden, finaler Merge-Gate offen
+
+Aktiver Branch:
+`chatgpt/h13-handel-v2`
+
+PR:
+`#14 – H13: Handel (H12-merged main)`
+
+Version:
+`0.13.0-h13`
+
+Finale Live-Evidence vom 2026-09-27:
+- Suite `h13-trade`: **PASSED / ALL_STEPS_PASSED**
+- Merchant `My_Merchant`
+- Start-Map `bank`
+- Testitem `hpot0`
+- genau 1 Stück zum Live-NPC-Preis `20` Gold gekauft
+- Inventar `5999 -> 6000`
+- Gold `14195004 -> 14194984`
+- `npcBuysConfirmed=1`
+- `movementRequests=1`
+- Player-Market read-only: 51 Asks, 1 Bid
+- `marketBuysDispatched=0`
+- `marketSellsDispatched=0`
+- `npcBuyUnknown=0`
+- `npcSellUnknown=0`
+- `marketBuyUnknown=0`
+- `marketSellUnknown=0`
+- `movementUnknown=0`
+- Cleanup: `pending=false`, `request=false`, `movementActive=false`
 - Runtime danach wieder STOPPED
 - Scheduler danach `totalResources=0`
 
-Nächster verbindlicher H12-Ablauf:
-1. neuen exakten Head nach diesen Evidence-Commits bestimmen;
+Post-Live-Hardening:
+- globaler Spread nur noch bei gleichem Item+Level;
+- NPC-Buy und Market-Buy prüfen die Goldreserve direkt vor Dispatch erneut;
+- NPC-Sell prüft H10-SELL-Safety und Menge direkt vor Dispatch erneut;
+- Player-Market-Sell verlangt exakten Bid-Fingerprint inklusive Stat-Type/Property und prüft H10-Safety/Menge direkt vor Dispatch erneut;
+- Regressionen hinzugefügt;
+- Bundle synchronisiert;
+- ausschließlich zusätzliche fail-closed Guards, keine neuen Write-Pfade.
+
+Nächster verbindlicher H13-Ablauf:
+1. neuen exakten Head nach Hardening/Evidence-Commits bestimmen;
 2. dessen CI bis completed/success abwarten;
 3. frisch prüfen: `behind_by=0`, keine pending/failing Runs oder Checks, keine offenen Review-Threads, kein `CHANGES_REQUESTED`, `mergeable=true`;
-4. PR #12 ausschließlich mit Methode `merge` und exaktem `expected_head_sha` mergen;
+4. PR #14 ausschließlich mit Methode `merge` und exaktem `expected_head_sha` mergen;
 5. Merge auf `main` verifizieren.
-
-H13 ist bereits vorbereitet, darf aber erst nach H12-Merge sauber auf den neuen `main` gebracht und danach live getestet werden.
 
 ## H2 Architekturregel für spätere Module
 
@@ -700,4 +736,4 @@ Bei Fehler:
 
 ## Nächster Schritt
 
-H11-Dokumentations-Head exakt prüfen und CI grün bestätigen. Danach den Nutzer nur für den echten Adventure-Land-H11-Live-Test auf dem eigenen Merchant benötigen: aktuellen `dist/al-bot.js` des Branches `chatgpt/h11-merchant-grundbetrieb` laden und einmal **Test starten**. Diagnose anschließend auswerten; bei PASS finale Evidence dokumentieren und erst danach Merge-Gate.
+H13 ist live bestanden. Jetzt nur noch finalen Exact-Head-CI und vollständigen Merge-Gate auf PR #14 prüfen und danach mit exaktem Head per `merge` mergen.

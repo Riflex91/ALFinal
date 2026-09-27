@@ -417,15 +417,54 @@ Vor Merge: neuen Exact-Head-CI und vollständigen Merge-Gate erneut prüfen.
 
 ## H13 – Handel
 
-**🟦 BAU**
-- NPC Buy/Sell
-- Player Market Analysis
-- sichere Preis-/Kauf-/Verkaufsregeln
-- Acquisition
+**🟩 BESTANDEN – 2026-09-27**
 
-**🟧 LIVE-TEST**
-- kleine kontrollierte reale Handelsaktionen
+H13 basiert nach bestandenem und gemergtem H12 direkt auf dem aktuellen `main`.
 
+**BAU**
+- NPC Buy via ActionBoundary `buy_with_gold`
+- NPC Sell via ActionBoundary `sell`
+- Player Market Buy/Sell via `trade_buy` / `trade_sell`
+- Live-NPC-Shopquellen aus `G.npcs` + `find_npc`
+- sichtbare Player-Listings aus Live-Trade-Slots
+- Ask/Bid-Trennung (`b=true` = Buy-Order)
+- verpflichtende Maximalpreise für Käufe
+- verpflichtende Mindestpreise für Player-Market-Verkäufe
+- Listing-`rid` + Preis + Menge direkt vor Dispatch erneut geprüft
+- CODE-Wrapper/native Trade-Signaturen werden über ActionBoundary normalisiert
+- Goldreserve
+- automatische Sell-Auswahl ausschließlich H10-Disposition `SELL`
+- Acquisition wählt nur eine Quelle, die die komplette angeforderte Menge innerhalb des Preislimits liefern kann
+- H4-NPC-Fahrt mit Owner `trade-h13`
+- Inventory-/Gold-Delta-Bestätigung
+- bounded UNKNOWN + Suspension, kein Blind-Retry
+- Headless API `ALBot.trade.*`
+- Control-Center-Tab **Handel**
+- H13-Ein-Klick-Suite `h13-trade`
+- `docs/H13-LIVE-TEST.md`
+
+**🟩 PRE-LIVE CI**
+- vorheriger gestapelter H13-Head: Run #256, 160/160 Tests grün
+- alle Codex-Review-Funde behoben und resolved
+- neuer H13-v2-Branch wird auf aktuellem H12-Merge-`main` erneut Exact-Head-CI geprüft
+- `dist/al-bot.js` source-synchron auf `0.13.0-h13`
+
+**🟩 LIVE-TEST BESTANDEN**
+- Suite `h13-trade`: `PASSED / ALL_STEPS_PASSED`
+- Merchant `My_Merchant`
+- 1 x `hpot0` zum Live-NPC-Preis 20 Gold gekauft
+- Inventar: `5999 -> 6000`
+- Gold: `14195004 -> 14194984`
+- `npcBuysConfirmed=1`
+- Player-Market read-only: 51 Asks, 1 Bid
+- `marketBuysDispatched=0`, `marketSellsDispatched=0`
+- alle H13-UNKNOWN-Deltas 0
+- Cleanup ohne Pending/Request/H13-Movement
+- Runtime wieder STOPPED, Scheduler `totalResources=0`
+- Post-Live Hardening: globaler Spread nur bei gleichem Item+Level; Goldreserve vor Buy-Dispatch erneut geprüft; NPC-/Market-Sell-Safety und exakte Bid-Variante unmittelbar vor Dispatch erneut geprüft
+- finale Evidence in `docs/H13-LIVE-TEST.md`
+
+Vor Merge: neuen Exact-Head-CI und vollständigen Merge-Gate erneut prüfen.
 ---
 
 ## H14 – Gear

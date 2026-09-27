@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.12.0-h12';
+      this.version = options.version || '0.13.0-h13';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -102,6 +102,14 @@
         movement: this.movement,
         inventory: this.inventory
       });
+      this.trade = new ns.TradeController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        movement: this.movement,
+        inventory: this.inventory
+      });
       this.liveTests = new ns.LiveTestRunner({
         runtime: this,
         logger: this.logger,
@@ -114,6 +122,7 @@
       this._registerLiveTests();
       this._registerH11LiveTest();
       this._registerH12LiveTest();
+      this._registerH13LiveTest();
       this._installErrorCapture();
       this.logger.info('AL Bot Runtime erstellt', {
         version: this.version,
@@ -225,6 +234,15 @@
         start: context => this.bank.start(context),
         stop: reason => this.bank.stop(reason),
         status: () => this.bank.status()
+      });
+
+      this.modules.register({
+        id: 'trade',
+        title: 'Handel',
+        version: '0.13.0',
+        start: context => this.trade.start(context),
+        stop: reason => this.trade.stop(reason),
+        status: () => this.trade.status()
       });
     }
 
@@ -2033,6 +2051,208 @@
       });
     }
 
+    _registerH13LiveTest() {
+      let baseline = null;
+      let testPlan = null;
+      this.liveTests.register({
+        id: 'h13-trade',
+        title: 'H13 – Handel',
+        description: 'Ein-Klick-Live-Test für preisgedeckelten NPC-Kauf, Live-Deltas und read-only Player-Market-Analyse.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.trade.resetSafety('H13_LIVE_TEST_RESET'); } catch (_) {}
+          try { runtime.trade.cancelRequest('H13_LIVE_TEST_RESET'); } catch (_) {}
+          try {
+            const movement = runtime.movement.status();
+            if (movement.activeOrder && String(movement.activeOrder.owner || '') === 'trade-h13') {
+              runtime.movement.cancel('H13_LIVE_TEST_RESET');
+            }
+          } catch (_) {}
+          const metrics = runtime.trade.status().metrics;
+          baseline = {
+            npcBuysConfirmed: metrics.npcBuysConfirmed,
+            npcBuysUnknown: metrics.npcBuysUnknown,
+            npcSellsUnknown: metrics.npcSellsUnknown,
+            marketBuysUnknown: metrics.marketBuysUnknown,
+            marketSellsUnknown: metrics.marketSellsUnknown,
+            movementUnknown: metrics.movementUnknown
+          };
+          testPlan = null;
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.trade.cancelRequest('H13_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try {
+            const movement = runtime.movement.status();
+            if (movement.activeOrder && String(movement.activeOrder.owner || '') === 'trade-h13') {
+              runtime.movement.cancel('H13_LIVE_TEST_CLEANUP');
+            }
+          } catch (_) {}
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Merchant, Handels-APIs, hpot0-Festpreis und NPC-Quelle prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(String(game.character.ctype || '').toLowerCase() === 'merchant', 'H13_LIVE_TEST_REQUIRES_MERCHANT');
+              assert(game.character.rip !== true, 'CHARACTER_DEAD');
+              const module = runtime.modules.describe('trade');
+              assert(module && module.state === 'ACTIVE', 'H13_MODULE_NOT_ACTIVE');
+              assert(runtime.actions.available('buy_with_gold'), 'BUY_WITH_GOLD_API_UNAVAILABLE');
+              assert(runtime.actions.available('sell'), 'SELL_API_UNAVAILABLE');
+              assert(runtime.actions.available('trade_buy'), 'TRADE_BUY_API_UNAVAILABLE');
+              assert(runtime.actions.available('trade_sell'), 'TRADE_SELL_API_UNAVAILABLE');
+              assert(runtime.actions.available('smart_move'), 'SMART_MOVE_API_UNAVAILABLE');
+
+              const definition = runtime.game.itemDefinition('hpot0');
+              assert(definition && Number.isFinite(Number(definition.g)) && Number(definition.g) > 0,
+                'H13_HPOT0_PRICE_UNAVAILABLE');
+              const sources = runtime.game.npcShopSources('hpot0');
+              const source = (sources || []).find(row => row && row.location);
+              assert(source, 'H13_HPOT0_NPC_SOURCE_UNAVAILABLE');
+
+              const inventory = runtime.game.inventorySnapshot();
+              assert(inventory && inventory.available !== false && Number(inventory.freeSlots) > 0,
+                'H13_INVENTORY_FULL_OR_UNAVAILABLE');
+              const beforeQuantity = (inventory.items || []).reduce((sum, row) =>
+                sum + (String(row.name) === 'hpot0' && Number(row.level || 0) === 0 ? Number(row.quantity || 1) : 0), 0);
+              const beforeGold = Number(game.character.gold);
+              const unitPrice = Number(definition.g);
+              assert(Number.isFinite(beforeGold) && beforeGold - unitPrice >= runtime.trade.config.goldReserve,
+                'H13_LIVE_TEST_GOLD_RESERVE_BLOCKED');
+
+              testPlan = {
+                itemName: 'hpot0',
+                quantity: 1,
+                unitPrice,
+                beforeQuantity,
+                beforeGold,
+                npcId: source.npcId,
+                location: source.location
+              };
+              return {
+                merchant: game.character.name,
+                map: game.character.map,
+                itemName: testPlan.itemName,
+                quantity: 1,
+                unitPrice,
+                beforeQuantity,
+                beforeGold,
+                goldReserve: runtime.trade.config.goldReserve,
+                npcId: source.npcId,
+                npcLocation: source.location
+              };
+            }
+          },
+          {
+            id: 'npc-buy',
+            title: 'Genau ein hpot0 zum live bekannten NPC-Festpreis kaufen und Delta bestätigen',
+            timeoutMs: 90000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(testPlan, 'H13_LIVE_TEST_PLAN_MISSING');
+              const queued = runtime.trade.queueNpcBuy(testPlan.itemName, 1, {
+                maxUnitPrice: testPlan.unitPrice
+              });
+              assert(queued && queued.accepted === true, queued && queued.reason || 'H13_NPC_BUY_QUEUE_FAILED');
+              const confirmed = await waitFor(() => {
+                const status = runtime.trade.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H13_SUSPENDED');
+                if (status.metrics.npcBuysUnknown > baseline.npcBuysUnknown) throw new Error('H13_NPC_BUY_UNKNOWN');
+                if (status.metrics.movementUnknown > baseline.movementUnknown) throw new Error('H13_MOVEMENT_UNKNOWN');
+                return status.metrics.npcBuysConfirmed > baseline.npcBuysConfirmed ? status : null;
+              }, { timeoutMs: 85000, pollMs: 150, label: 'h13-npc-buy-confirmed' });
+
+              const inventory = runtime.game.inventorySnapshot();
+              const afterQuantity = (inventory.items || []).reduce((sum, row) =>
+                sum + (String(row.name) === testPlan.itemName && Number(row.level || 0) === 0 ? Number(row.quantity || 1) : 0), 0);
+              const afterGame = runtime.game.snapshot();
+              const afterGold = Number(afterGame && afterGame.character && afterGame.character.gold);
+              assert(afterQuantity >= testPlan.beforeQuantity + 1, 'H13_NPC_BUY_INVENTORY_DELTA_NOT_CONFIRMED');
+              assert(Number.isFinite(afterGold) && afterGold <= testPlan.beforeGold - testPlan.unitPrice,
+                'H13_NPC_BUY_GOLD_DELTA_NOT_CONFIRMED');
+              return {
+                itemName: testPlan.itemName,
+                quantity: 1,
+                unitPrice: testPlan.unitPrice,
+                beforeQuantity: testPlan.beforeQuantity,
+                afterQuantity,
+                beforeGold: testPlan.beforeGold,
+                afterGold,
+                npcBuysConfirmed: confirmed.metrics.npcBuysConfirmed - baseline.npcBuysConfirmed,
+                movementRequests: confirmed.metrics.movementRequests
+              };
+            }
+          },
+          {
+            id: 'market-analysis',
+            title: 'Sichtbare Player-Listings read-only analysieren ohne Kauf oder Verkauf',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const before = runtime.trade.status().metrics;
+              const analysis = runtime.trade.marketAnalysis(null);
+              assert(analysis && analysis.available === true, analysis && analysis.reason || 'H13_MARKET_ANALYSIS_UNAVAILABLE');
+              const after = runtime.trade.status().metrics;
+              assert(after.marketBuysDispatched === before.marketBuysDispatched, 'H13_MARKET_ANALYSIS_DISPATCHED_BUY');
+              assert(after.marketSellsDispatched === before.marketSellsDispatched, 'H13_MARKET_ANALYSIS_DISPATCHED_SELL');
+              return {
+                asks: analysis.asks.length,
+                bids: analysis.bids.length,
+                bestAsk: analysis.bestAsk,
+                bestBid: analysis.bestBid,
+                spread: analysis.spread
+              };
+            }
+          },
+          {
+            id: 'stability',
+            title: 'Fünf Sekunden ohne Trade-UNKNOWN beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              await sleep(5000);
+              const status = runtime.trade.status();
+              assert(status.suspended === false, status.suspendedReason || 'H13_SUSPENDED');
+              assert(status.metrics.npcBuysUnknown === baseline.npcBuysUnknown, 'H13_NPC_BUY_UNKNOWN_DURING_STABILITY');
+              assert(status.metrics.npcSellsUnknown === baseline.npcSellsUnknown, 'H13_NPC_SELL_UNKNOWN_DURING_STABILITY');
+              assert(status.metrics.marketBuysUnknown === baseline.marketBuysUnknown, 'H13_MARKET_BUY_UNKNOWN_DURING_STABILITY');
+              assert(status.metrics.marketSellsUnknown === baseline.marketSellsUnknown, 'H13_MARKET_SELL_UNKNOWN_DURING_STABILITY');
+              assert(status.metrics.movementUnknown === baseline.movementUnknown, 'H13_MOVEMENT_UNKNOWN_DURING_STABILITY');
+              return {
+                npcBuyUnknown: status.metrics.npcBuysUnknown - baseline.npcBuysUnknown,
+                npcSellUnknown: status.metrics.npcSellsUnknown - baseline.npcSellsUnknown,
+                marketBuyUnknown: status.metrics.marketBuysUnknown - baseline.marketBuysUnknown,
+                marketSellUnknown: status.metrics.marketSellsUnknown - baseline.marketSellsUnknown,
+                movementUnknown: status.metrics.movementUnknown - baseline.movementUnknown
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'H13 Pending/Request und H13-eigene Bewegung vollständig freigeben',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.trade.cancelRequest('H13_LIVE_TEST_COMPLETE');
+              const trade = runtime.trade.status();
+              const movement = runtime.movement.status();
+              assert(trade.pending == null, 'H13_PENDING_ACTION_REMAINS');
+              assert(trade.request == null, 'H13_REQUEST_REMAINS');
+              assert(!(movement.activeOrder && String(movement.activeOrder.owner || '') === 'trade-h13'),
+                'H13_MOVEMENT_REMAINS');
+              return {
+                pending: !!trade.pending,
+                request: !!trade.request,
+                movementActive: !!(movement.activeOrder && String(movement.activeOrder.owner || '') === 'trade-h13')
+              };
+            }
+          }
+        ]
+      });
+    }
+
     _installErrorCapture() {
       if (!this.root || typeof this.root.addEventListener !== 'function') return;
       this._errorHandler = event => {
@@ -2182,6 +2402,7 @@
         inventory: this.inventory.status(),
         merchant: this.merchant.status(),
         bank: this.bank.status(),
+        trade: this.trade.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
         roster,
@@ -2209,6 +2430,7 @@
         inventory: this.inventory.status(),
         merchant: this.merchant.status(),
         bank: this.bank.status(),
+        trade: this.trade.status(),
         liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
         logs: this.logger.list(160),
@@ -2235,6 +2457,7 @@
       push('loot-inventory-controller', !!this.inventory.status() && typeof this.inventory.plan === 'function' && typeof this.inventory.tick === 'function', this.inventory.status());
       push('merchant-controller', !!this.merchant.status() && typeof this.merchant.plan === 'function', this.merchant.status());
       push('bank-controller', !!this.bank.status() && typeof this.bank.plan === 'function' && typeof this.bank.reconcile === 'function', this.bank.status());
+      push('trade-controller', !!this.trade.status() && typeof this.trade.marketAnalysis === 'function' && typeof this.trade.queueAcquire === 'function', this.trade.status());
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
       push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);

@@ -50,7 +50,7 @@
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.12.0-h12',
+    version: '0.13.0-h13',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -110,6 +110,9 @@
       farmSpots: options => runtime.game.farmSpotCatalog(options || {}),
       inventory: () => runtime.game.inventorySnapshot(),
       bank: () => runtime.game.bankSnapshot(),
+      market: options => runtime.game.marketSnapshot(options || {}),
+      npcLocation: npcId => runtime.game.npcLocation(npcId),
+      npcSources: itemName => runtime.game.npcShopSources(itemName),
       chests: () => runtime.game.chestSnapshot()
     },
 
@@ -194,6 +197,20 @@
       withdrawGold: amount => runtime.bank.queueGoldWithdraw(amount)
     },
 
+    trade: {
+      status: () => runtime.trade.status(),
+      plan: () => runtime.trade.plan(),
+      tick: () => runtime.trade.tick(),
+      reset: reason => runtime.trade.resetSafety(reason || 'API_H13_RESET'),
+      cancel: reason => runtime.trade.cancelRequest(reason || 'API_H13_REQUEST_CANCEL'),
+      market: (itemName, options) => runtime.trade.marketAnalysis(itemName, options || {}),
+      acquire: (itemName, quantity, options) => runtime.trade.queueAcquire(itemName, quantity, options || {}),
+      buyNpc: (itemName, quantity, options) => runtime.trade.queueNpcBuy(itemName, quantity, options || {}),
+      sellNpc: (slot, quantity, options) => runtime.trade.queueNpcSell(slot, quantity, options || {}),
+      buyMarket: (playerName, tradeSlot, quantity, options) => runtime.trade.queueMarketBuy(playerName, tradeSlot, quantity, options || {}),
+      sellMarket: (playerName, tradeSlot, quantity, options) => runtime.trade.queueMarketSell(playerName, tradeSlot, quantity, options || {})
+    },
+
     liveTests: {
       status: () => runtime.liveTests.status(),
       list: () => runtime.liveTests.list(),
@@ -246,6 +263,7 @@
   Object.freeze(api.inventory);
   Object.freeze(api.merchant);
   Object.freeze(api.bank);
+  Object.freeze(api.trade);
   Object.freeze(api.liveTests);
   Object.freeze(api.knowledge);
   Object.freeze(api.roster);
@@ -263,7 +281,7 @@
     };
   } catch (_) {}
 
-  runtime.logger.info('AL Bot H12 geladen', {
+  runtime.logger.info('AL Bot H13 geladen', {
     version: api.version,
     bootCount,
     hotReload: !!previous,

@@ -20,7 +20,11 @@
     bank_store: Object.freeze({ publicName: 'bank_store', family: 'bank' }),
     bank_retrieve: Object.freeze({ publicName: 'bank_retrieve', family: 'bank' }),
     bank_deposit: Object.freeze({ publicName: 'bank_deposit', family: 'bank-gold' }),
-    bank_withdraw: Object.freeze({ publicName: 'bank_withdraw', family: 'bank-gold' })
+    bank_withdraw: Object.freeze({ publicName: 'bank_withdraw', family: 'bank-gold' }),
+    buy_with_gold: Object.freeze({ publicName: 'buy_with_gold', family: 'npc-trade' }),
+    sell: Object.freeze({ publicName: 'sell', family: 'npc-trade' }),
+    trade_buy: Object.freeze({ publicName: 'trade_buy', family: 'player-trade' }),
+    trade_sell: Object.freeze({ publicName: 'trade_sell', family: 'player-trade' })
   });
 
   function errorDetails(error) {
@@ -90,6 +94,30 @@
       return !!this._resolve(def.publicName);
     }
 
+    _normalizedCallArgs(action, resolved, args) {
+      if (!['trade_buy', 'trade_sell'].includes(action) || !Array.isArray(args) || args.length < 4) return args;
+      const target = args[0];
+      const tradeSlot = cleanText(args[1] || '', 80);
+      const rid = cleanText(args[2] || '', 160);
+      const quantity = Number(args[3]);
+      if (!target || !target.id || !tradeSlot || !rid || !Number.isFinite(quantity) || quantity <= 0) {
+        throw new Error('ALBOT_PLAYER_TRADE_ARGS_INVALID:' + action);
+      }
+      const live = target.slots && target.slots[tradeSlot];
+      if (!live || String(live.rid || '') !== rid) {
+        throw new Error('ALBOT_PLAYER_TRADE_RID_MISMATCH:' + action);
+      }
+
+      // Adventure Land exposes two compatible layers:
+      // CODE wrapper: trade_buy(target, slot, quantity)
+      // native parent: trade_buy(slot, id, rid, quantity)
+      // Keep one logical boundary contract and adapt only at dispatch time.
+      if (Number(resolved && resolved.fn && resolved.fn.length) >= 4) {
+        return [tradeSlot, target.id, rid, quantity];
+      }
+      return [target, tradeSlot, quantity];
+    }
+
     dispatch(action, args = [], options = {}) {
       const def = ACTIONS[action];
       if (!def) throw new Error('ALBOT_ACTION_UNKNOWN:' + cleanText(action, 80));
@@ -133,7 +161,8 @@
       }
 
       try {
-        const value = resolved.fn.apply(resolved.owner, args);
+        const callArgs = this._normalizedCallArgs(action, resolved, args);
+        const value = resolved.fn.apply(resolved.owner, callArgs);
         this.metrics.dispatched += 1;
         if (cleanup) this.metrics.cleanupDispatches += 1;
         const result = {
