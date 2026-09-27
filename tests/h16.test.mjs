@@ -522,7 +522,9 @@ test('H16 runtime, API, UI, build, adapter and ActionBoundary are wired', () => 
   assert.match(runtime, /localCraftRejects/);
   assert.match(runtime, /fallbackRejects/);
   assert.match(runtime, /topNearMatches: nearMatches\.slice\(0, 5\)/);
-  assert.match(runtime, /note\(preflightDiagnostics\)/);
+  assert.match(runtime, /buildPreflightDiagnostics/);
+  assert.match(runtime, /note\(buildPreflightDiagnostics\(\)\)/);
+  assert.match(runtime, /H16_NEEDS_LOW_RISK_EXCHANGE_CANDIDATE/);
   assert.match(runtime, /TOO_MANY_MISSING_LEAVES/);
   assert.match(runtime, /MISSING_LEAF_NO_NPC_OR_MARKET_SOURCE/);
   assert.match(runtime, /MATERIAL_ACQUISITION_OVER_CAP/);
