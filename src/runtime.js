@@ -3710,12 +3710,14 @@
       let previousPolicy = null;
 
       const childUnknownTotal = runtime => {
+        const inventory = runtime.inventory.status().metrics || {};
         const bank = runtime.bank.status().metrics || {};
         const trade = runtime.trade.status().metrics || {};
         const gear = runtime.gear.status().metrics || {};
         const upgrade = runtime.upgrade.status().metrics || {};
         const exchange = runtime.exchangeCraft.status().metrics || {};
-        return Number(bank.withdrawalsUnknown || 0)
+        return Number(inventory.lootUnknown || 0)
+          + Number(bank.withdrawalsUnknown || 0)
           + Number(bank.depositsUnknown || 0)
           + Number(bank.goldWithdrawalsUnknown || 0)
           + Number(bank.goldDepositsUnknown || 0)
@@ -3736,13 +3738,14 @@
 
       const childBusy = runtime => {
         const statuses = [
+          runtime.inventory.status(),
           runtime.bank.status(),
           runtime.trade.status(),
           runtime.gear.status(),
           runtime.upgrade.status(),
           runtime.exchangeCraft.status()
         ];
-        return statuses.some(status => status && (status.pending || status.request));
+        return statuses.some(status => status && (status.pending || status.request || status.pendingLoot));
       };
 
       this.liveTests.register({
