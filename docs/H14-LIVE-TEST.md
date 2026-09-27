@@ -253,3 +253,69 @@ Danach:
 Nach diesem Dokumentationscommit ist noch ein neuer Exact-Head-CI erforderlich. Der H14-Live-Test wird erst freigegeben, wenn auch dieser aktuelle Head `completed/success`, `behind_by=0`, review-clean und mergeable ist.
 
 H14 wird erst nach grünem Exact-Head-CI, sauberem Review-Gate und echtem Adventure-Land-Live-Test gemergt.
+
+
+## Live-Evidence – 2026-09-27
+
+Echter Adventure-Land-Live-Test auf dem H14-Testbuild:
+
+- Diagnose erstellt: `2026-09-27T08:56:35.153Z`
+- Runtime: `0.14.0-h14`
+- Suite: `h14-gear`
+- Gesamtergebnis: **PASSED / ALL_STEPS_PASSED**
+- Runtime vor Test: STOPPED (`runtimeWasRunning=false`)
+- Runtime für den Test automatisch gestartet und danach automatisch wieder gestoppt
+
+Preflight:
+- Character: `My_Merchant` / `merchant`
+- Zielslot: `shoes`
+- Modus: `IMPROVEMENT`
+- Original: `wshoes +5`, Score `59.2375`
+- Kandidat: Inventarslot `10`, `shoes1 +3`, Score `73.9675`
+- Score-Delta: `+14.73`
+- Farmer-Priorität: `100`
+- Merchant-Priorität: `10`
+- Preflight: **PASSED**
+
+Planning:
+- temporäres Gear Goal: `READY_TO_EQUIP`
+- echte Verbesserung bestätigt
+- Gruppenreihenfolge: Farmer vor Merchant
+- `groupProposals=4`
+- `upgradeCandidates=23`
+- Planning: **PASSED**
+
+Echter Swap:
+- Kandidat real in `shoes` ausgerüstet
+- `equipsConfirmed=1` nach Equip
+- ursprüngliches `wshoes +5` im Inventar beobachtet
+- Equip Swap: **PASSED**
+
+Restore:
+- ursprüngliches `wshoes +5` exakt wieder in `shoes` ausgerüstet
+- Testkandidat `shoes1 +3` wieder im Inventarslot `10`
+- `equipsConfirmed=2`
+- Restore: **PASSED**
+
+Stability:
+- `equipUnknown=0`
+- `unequipUnknown=0`
+- `deliveryUnknown=0`
+- Original-Gear blieb restauriert
+- keine H14-Suspension
+- Stability: **PASSED**
+
+Cleanup:
+- kein Pending
+- kein Request
+- Original weiterhin restauriert
+- vorherige Gear Goals wiederhergestellt
+- Cleanup: **PASSED**
+- Live-Test-Cleanup `attempted=true`, `ok=true`
+
+Runtime-Restore:
+- Runtime nach Suite wieder STOPPED
+- Scheduler `totalResources=0`
+- keine Emergency-STOP-Latch
+
+**H14 Live-Gate ist damit bestanden.** Vor Merge bleiben ausschließlich neuer Exact-Head-CI und der vollständige frische Merge-Gate-Check erforderlich.
