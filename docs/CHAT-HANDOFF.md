@@ -792,7 +792,7 @@ H16 Live-Test v2:
 - Materialbeschaffung maximal 10.000 Gold gesamt;
 - Materialquelle muss live als NPC-Quelle oder ausreichender sichtbarer Market-Ask belegbar sein;
 - Beschaffung läuft explizit über H16 → H13 mit `allowBank:false`;
-- niedrige temporäre Risiko-/Kostenbudgets;
+- temporäre Live-Test-Grenzen: Exchange-Risiko ≤ 2.000.000 Gold, Craft-Input-Risiko ≤ 2.000.000 Gold, Craft-Kosten ≤ 1.000.000 Gold;
 - keine Quest-/Event-Aktionen;
 - Craft und Exchange müssen durch Live-Deltas bestätigt werden;
 - Exchange-, Craft- und Material-Trade-UNKNOWN-Deltas müssen 0 bleiben;
