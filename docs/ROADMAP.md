@@ -984,3 +984,30 @@ Technischer Head vor finaler Doku:
 - historische globale Versions-/Recommended-/Scheduler-Assertions auf H17 fortgeschrieben.
 
 Nächster Gate-Schritt: finaler Doku-Head durch Exact-Head-CI und vollständigen Merge-Gate. Danach genau **einen** echten `h17-economy-autonomy`-Live-Test auf dem Merchant.
+
+
+### H17 abgeschlossen – echter Live-PASS nach Settlement-Race-Fix
+
+Stand 2026-09-27:
+
+- PR #22 `H17: Add bounded economy autonomy planner` ist auf `main` gemergt;
+- erster echter H17-Live-Lauf hat fail-safe einen Exchange-`in_progress`-Race aufgedeckt;
+- gezielter Fix über PR #23 `H17: Hold exchange ownership until dispatch settles`;
+- PR #23 Exact-Head-CI #470: **PASS**;
+- PR #23 per `merge` gemergt, Merge-Commit `e8baa9f0719c752625333deb53efc6bf9431e8a1`;
+- H16 hält Exchange-/Craft-Ownership nun bis Live-Evidence **und** abgeschlossener Dispatch-Settlement;
+- zweiter echter `h17-economy-autonomy`-Live-Test: **PASSED / ALL_STEPS_PASSED**;
+- Preflight `READY / H17_PLAN_READY`;
+- 3 Economy-Aktionen queued / 3 confirmed / 0 rejected / 0 UNKNOWN;
+- alle drei bestätigten Aktionen waren `EXCHANGE`;
+- H16 Exchange: 3 dispatched / 3 confirmed / 0 rejected / 0 UNKNOWN;
+- Stability: PASS, Child-UNKNOWN-Delta 0;
+- Cleanup: PASS, Autonomie AUS, `currentAction=null`, keine Suspension;
+- Runtime Auto-Restore erfolgreich;
+- keine Safety-Limits gelockert.
+
+**H17 – Economy Autonomy: abgeschlossen.**
+
+Damit ist **Meilenstein 2 – Farming plus vollständige Merchant-/Economy-Basis** erreicht.
+
+Nächster Entwicklungsblock: **H18 – Party-Logistik**.

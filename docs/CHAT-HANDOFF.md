@@ -1132,3 +1132,67 @@ Weitere Gates:
 Finalen Doku-Head durch Exact-Head-CI laufen lassen und den vollständigen Merge-Gate frisch prüfen. Wenn alles grün bleibt, PR #22 ausschließlich per `merge` mit exaktem aktuellem `expected_head_sha` mergen und `main` verifizieren.
 
 Danach Nutzer genau einmal `h17-economy-autonomy` auf dem Merchant starten lassen und den vollständigen Bericht auswerten. Bei FAIL kein Blind-Rerun.
+
+
+## H17 abgeschlossen – finaler Adventure-Land-Live-PASS
+
+Stand 2026-09-27.
+
+H17 wurde nach dem Merge von PR #22 erstmals live getestet. Der erste Lauf hat korrekt fail-safe einen Settlement-Race isoliert: H16 konnte einen Exchange bereits durch sichtbares Inventardelta bestätigen, obwohl der zugrunde liegende Adventure-Land-Call noch `in_progress` war. Dadurch konnte H17 zu früh eine zweite Exchange-Aktion freigeben.
+
+Gezielter Fix:
+
+- PR #23 `H17: Hold exchange ownership until dispatch settles`;
+- H16 bestätigt Exchange/Craft erst nach Live-Deltas **und** beendeter Dispatch-Settlement;
+- Regression für sichtbares Delta bei noch offenem Promise;
+- Source/Dist synchron;
+- Exact-Head-CI #470 erfolgreich;
+- Merge per Methode `merge`;
+- Merge-Commit `e8baa9f0719c752625333deb53efc6bf9431e8a1`;
+- `main` danach auf exakt diesem Commit verifiziert.
+
+Finaler echter H17-Live-Test:
+
+- Suite `h17-economy-autonomy`, Version 1;
+- Runtime `0.17.0-h17`;
+- Ergebnis **PASSED / ALL_STEPS_PASSED**;
+- Preflight PASS, `READY / H17_PLAN_READY`;
+- Preflight-Vorschläge: `EXCHANGE anniversarygift` und `CRAFT cake`;
+- 3 Aktionen queued / 3 confirmed / 0 rejected / 0 UNKNOWN;
+- `byKind.EXCHANGE = 3`;
+- H16: 3 Exchanges dispatched / 3 confirmed / 0 rejected / 0 UNKNOWN;
+- 3 Movement-Requests / 0 Movement-Blocks;
+- Stability PASS, Child-UNKNOWN-Delta 0;
+- Cleanup PASS;
+- Autonomie danach AUS;
+- keine aktive H17-Aktion;
+- keine H17-Suspension;
+- Runtime Auto-Restore erfolgreich.
+
+Damit ist **H17 – Economy Autonomy vollständig abgeschlossen**.
+
+### Nächster Entwicklungsblock
+
+**H18 – Party-Logistik**
+
+Geplanter Scope laut Roadmap:
+
+- Potions;
+- Scrolls;
+- Elixiere;
+- Items-/Gold-Verteilung;
+- Supplies;
+- Regrouping.
+
+Safety-Regeln bleiben unverändert:
+
+- GLOBAL STOP höchste Priorität;
+- Live Truth > Knowledge;
+- keine hartcodierten Charakternamen;
+- zentrale Roster-/Ownership-Schicht verwenden;
+- Movement-/Scheduler-/ActionBoundary-Safety erhalten;
+- keine direkten Gameplay-Writes außerhalb bestehender sicherer Pfade;
+- UNKNOWN niemals blind wiederholen;
+- Supabase READ-ONLY;
+- vor jedem GitHub-Write frisch `main` gegen Arbeitsbranch vergleichen und nur bei `behind_by=0` schreiben;
+- Merge nur nach vollständigem frischem Gate per `merge` und exaktem `expected_head_sha`.
