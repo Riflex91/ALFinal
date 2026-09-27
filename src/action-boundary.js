@@ -12,6 +12,8 @@
     smart_move: Object.freeze({ publicName: 'smart_move', family: 'movement' }),
     stop: Object.freeze({ publicName: 'stop', family: 'movement-cleanup' }),
     use_skill: Object.freeze({ publicName: 'use_skill', family: 'skill' }),
+    use_hp: Object.freeze({ publicName: 'use_hp', family: 'recovery' }),
+    use_mp: Object.freeze({ publicName: 'use_mp', family: 'recovery' }),
     attack: Object.freeze({ publicName: 'attack', family: 'combat' }),
     heal: Object.freeze({ publicName: 'heal', family: 'party-heal' }),
     change_target: Object.freeze({ publicName: 'change_target', family: 'combat-target' }),
@@ -88,17 +90,56 @@
     }
 
     _resolve(publicName) {
-      for (const candidate of this._roots()) {
+      const roots = this._roots();
+      for (const candidate of roots) {
         try {
           if (candidate && typeof candidate[publicName] === 'function') {
-            return { owner: candidate, fn: candidate[publicName] };
+            return { owner: candidate, fn: candidate[publicName], resolvedName: publicName };
           }
         } catch (_) {}
         try {
           if (candidate && candidate.parent && typeof candidate.parent[publicName] === 'function') {
-            return { owner: candidate.parent, fn: candidate.parent[publicName] };
+            return { owner: candidate.parent, fn: candidate.parent[publicName], resolvedName: publicName };
           }
         } catch (_) {}
+      }
+
+      if (publicName === 'use_hp' || publicName === 'use_mp') {
+        for (const candidate of roots) {
+          try {
+            if (candidate && typeof candidate.use === 'function') {
+              const use = candidate.use;
+              return {
+                owner: candidate,
+                resolvedName: 'use',
+                fn: function () { return use.call(candidate, publicName); }
+              };
+            }
+          } catch (_) {}
+          try {
+            if (candidate && candidate.parent && typeof candidate.parent.use === 'function') {
+              const owner = candidate.parent;
+              const use = owner.use;
+              return {
+                owner,
+                resolvedName: 'use',
+                fn: function () { return use.call(owner, publicName); }
+              };
+            }
+          } catch (_) {}
+        }
+        for (const candidate of roots) {
+          try {
+            if (candidate && typeof candidate.use_hp_or_mp === 'function') {
+              return { owner: candidate, fn: candidate.use_hp_or_mp, resolvedName: 'use_hp_or_mp' };
+            }
+          } catch (_) {}
+          try {
+            if (candidate && candidate.parent && typeof candidate.parent.use_hp_or_mp === 'function') {
+              return { owner: candidate.parent, fn: candidate.parent.use_hp_or_mp, resolvedName: 'use_hp_or_mp' };
+            }
+          } catch (_) {}
+        }
       }
       return null;
     }
