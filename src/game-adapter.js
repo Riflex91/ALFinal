@@ -505,7 +505,7 @@
         const definition = definitions[String(packName)] || null;
         packs.push({
           name: String(packName),
-          map: definition && definition.map || (character.map == null ? null : cleanText(character.map, 120)),
+          map: definition && definition.map || null,
           capacity: packCapacity,
           usedSlots: items.length,
           freeSlots: Math.max(0, packCapacity - items.length),
