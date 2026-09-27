@@ -413,6 +413,9 @@
 
       if (mode === 'STOP') {
         if (!active) return { ok: false, reason: 'H19_TARGET_ALREADY_STOPPED' };
+        if (roster.activeStateAvailable === true && runnerActive) {
+          return { ok: true, roster, owned, active, runnerActive, peer, transport: 'child-character' };
+        }
         if (peer) {
           if (peer.running !== true) return { ok: false, reason: 'H19_TARGET_RUNTIME_ALREADY_STOPPED' };
           return { ok: true, roster, owned, active, runnerActive, peer, transport: 'cross-window-runtime' };
@@ -420,10 +423,7 @@
         if (roster.activeStateAvailable !== true) {
           return { ok: false, reason: 'H19_RUNNER_ACTIVE_STATE_UNAVAILABLE' };
         }
-        if (!runnerActive) {
-          return { ok: false, reason: 'H19_REMOTE_TARGET_NOT_RUNNER_CONTROLLABLE' };
-        }
-        return { ok: true, roster, owned, active, runnerActive, peer: null, transport: 'child-character' };
+        return { ok: false, reason: 'H19_REMOTE_TARGET_NOT_RUNNER_CONTROLLABLE' };
       }
 
       if (mode === 'START') {
@@ -534,6 +534,18 @@
         const normalized = [...new Set(next.desiredActiveNames.map(name => cleanText(name, 120)).filter(Boolean))];
         if (normalized.some(name => !owned.has(name))) return { accepted: false, reason: 'H19_POLICY_CONTAINS_NON_OWNED_CHARACTER' };
         this.policyState.desiredActiveNames = normalized.sort((a,b) => a.localeCompare(b));
+        const activeDesired = new Set(this.policyState.desiredActiveNames.map(String));
+        this.policyState.desiredRuntimeRunningNames = this.policyState.desiredRuntimeRunningNames
+          .filter(name => activeDesired.has(String(name)));
+      }
+      if (Array.isArray(next.desiredRuntimeRunningNames)) {
+        if (!roster || roster.accountStateAvailable !== true) return { accepted: false, reason: 'H19_ACCOUNT_ROSTER_UNAVAILABLE' };
+        const owned = new Set((roster.accountCharacters || []).map(row => String(row.name || '')));
+        const activeDesired = new Set(this.policyState.desiredActiveNames.map(String));
+        const normalizedRuntime = [...new Set(next.desiredRuntimeRunningNames.map(name => cleanText(name, 120)).filter(Boolean))];
+        if (normalizedRuntime.some(name => !owned.has(name))) return { accepted: false, reason: 'H19_RUNTIME_POLICY_CONTAINS_NON_OWNED_CHARACTER' };
+        if (normalizedRuntime.some(name => !activeDesired.has(name))) return { accepted: false, reason: 'H19_RUNTIME_TARGET_NOT_DESIRED_ACTIVE' };
+        this.policyState.desiredRuntimeRunningNames = normalizedRuntime.sort((a,b) => a.localeCompare(b));
       }
       if (Array.isArray(next.desiredPartyMemberNames)) {
         if (!roster || roster.accountStateAvailable !== true) return { accepted: false, reason: 'H19_ACCOUNT_ROSTER_UNAVAILABLE' };
