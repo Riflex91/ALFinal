@@ -16154,6 +16154,11 @@
                   let viabilityReason = null;
                   let viabilityDetails = null;
                   let acquisitionGold = 0;
+                  const inventoryForAcquisition = runtime.game.inventorySnapshot();
+                  const availableInventorySlots = inventoryForAcquisition && inventoryForAcquisition.available !== false
+                    ? Math.max(0, Math.floor(Number(inventoryForAcquisition.freeSlots) || 0))
+                    : 0;
+                  let plannedBankWithdrawals = 0;
                   const plannedMaterials = [];
                   for (const row of missing) {
                     const quantity = Math.max(1, Math.floor(Number(row.quantity) || 1));
@@ -16173,10 +16178,13 @@
                       .reduce((max, ingredient) =>
                         Math.max(max, Math.max(1, Math.floor(Number(ingredient.quantity) || 1))), quantity);
                     const minBankStackQuantity = Math.max(quantity, recipeIngredientQuantity);
-                    const bankRow = (row.bankRows || []).find(source =>
-                      source
-                      && source.withdrawable === true
-                      && Math.max(1, Math.floor(Number(source.quantity) || 1)) >= minBankStackQuantity);
+                    const bankSlotAvailable = plannedBankWithdrawals < availableInventorySlots;
+                    const bankRow = bankSlotAvailable
+                      ? (row.bankRows || []).find(source =>
+                        source
+                        && source.withdrawable === true
+                        && Math.max(1, Math.floor(Number(source.quantity) || 1)) >= minBankStackQuantity)
+                      : null;
                     if (bankRow) {
                       offers.push({
                         source: 'BANK',
@@ -16221,7 +16229,10 @@
                           reservedQuantity: Number(source.reservedQuantity || 0),
                           remainingAfterWholeStack: Number(source.remainingAfterWholeStack || 0),
                           withdrawable: source.withdrawable === true,
-                          minBankStackQuantity
+                          minBankStackQuantity,
+                          availableInventorySlots,
+                          plannedBankWithdrawals,
+                          bankSlotAvailable
                         })),
                         npcPrice: Number.isFinite(npcPrice) ? npcPrice : null,
                         npcSources: (row.npcSources || []).slice(0, 4).map(source => ({
@@ -16235,6 +16246,7 @@
 
                     const estimatedCost = chosen.unitPrice * quantity;
                     acquisitionGold += estimatedCost;
+                    if (chosen.source === 'BANK') plannedBankWithdrawals += 1;
                     plannedMaterials.push({
                       itemName: row.itemName,
                       level,
@@ -16243,6 +16255,7 @@
                       expectedSource: chosen.source,
                       bankSource: chosen.bankRow || null,
                       minBankStackQuantity: chosen.source === 'BANK' ? minBankStackQuantity : null,
+                      inventorySlotReservation: chosen.source === 'BANK' ? plannedBankWithdrawals : null,
                       estimatedCost
                     });
                   }
