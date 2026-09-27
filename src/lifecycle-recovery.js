@@ -368,13 +368,13 @@
       return roster.accountCharacters.find(row => String(row && row.name || '') === wanted) || null;
     }
 
-    _activeSet(roster) {
-      return new Set(roster && Array.isArray(roster.activeCharacterNames) ? roster.activeCharacterNames.map(String) : []);
+    _onlineSet(roster) {
+      return new Set(roster && Array.isArray(roster.onlineCharacterNames) ? roster.onlineCharacterNames.map(String) : []);
     }
 
     _validateRemoteTarget(name, mode) {
       const roster = this._roster();
-      if (!roster || roster.accountStateAvailable !== true || roster.activeStateAvailable !== true) {
+      if (!roster || roster.accountStateAvailable !== true || roster.onlineStateAvailable !== true) {
         return { ok: false, reason: 'H19_ROSTER_LIVE_STATE_UNAVAILABLE' };
       }
       const owned = this._ownedRow(name, roster);
@@ -386,7 +386,7 @@
       if (String(owned.name) === String(localName)) {
         return { ok: false, reason: 'H19_REMOTE_TARGET_IS_LOCAL' };
       }
-      const active = this._activeSet(roster).has(String(owned.name));
+      const active = this._onlineSet(roster).has(String(owned.name));
       if (mode === 'START' && active) return { ok: false, reason: 'H19_TARGET_ALREADY_ACTIVE' };
       if (mode === 'STOP' && !active) return { ok: false, reason: 'H19_TARGET_ALREADY_STOPPED' };
       return { ok: true, roster, owned, active };
@@ -444,11 +444,11 @@
 
     captureDesiredActive() {
       const roster = this._roster();
-      if (!roster || roster.accountStateAvailable !== true || roster.activeStateAvailable !== true) {
+      if (!roster || roster.accountStateAvailable !== true || roster.onlineStateAvailable !== true) {
         return { accepted: false, reason: 'H19_ROSTER_LIVE_STATE_UNAVAILABLE' };
       }
       const owned = new Set((roster.accountCharacters || []).map(row => String(row.name || '')));
-      this.policyState.desiredActiveNames = (roster.activeCharacterNames || [])
+      this.policyState.desiredActiveNames = (roster.onlineCharacterNames || [])
         .map(String)
         .filter(name => owned.has(name))
         .sort((a, b) => a.localeCompare(b));
@@ -591,7 +591,7 @@
           this.partySignals.shift();
           continue;
         }
-        const active = this._activeSet(roster);
+        const active = this._onlineSet(roster);
         if (!active.has(String(signal.targetName || '')) || !this._ownedRow(signal.targetName, roster)) {
           this.partySignals.shift();
           continue;
@@ -631,14 +631,14 @@
 
     _proposalFromDesired() {
       const roster = this._roster();
-      if (!roster || roster.accountStateAvailable !== true || roster.activeStateAvailable !== true) {
+      if (!roster || roster.accountStateAvailable !== true || roster.onlineStateAvailable !== true) {
         return { state: 'BLOCKED', reason: 'H19_ROSTER_LIVE_STATE_UNAVAILABLE' };
       }
 
       const signalProposal = this._proposalPartySignal(roster);
       if (signalProposal) return signalProposal;
 
-      const active = this._activeSet(roster);
+      const active = this._onlineSet(roster);
       const localName = this._localName();
       for (const name of this.policyState.desiredActiveNames) {
         if (name === localName) continue;
@@ -766,7 +766,7 @@
         actionName = request.kind === 'START' ? 'start_character' : 'stop_character';
         args = [request.targetName];
         before = {
-          activeStateAvailable: true,
+          onlineStateAvailable: true,
           targetWasActive: check.active
         };
       } else if (request.kind === 'RESPAWN') {
@@ -790,14 +790,14 @@
         };
       } else if (['PARTY_INVITE', 'PARTY_REQUEST', 'PARTY_ACCEPT_INVITE', 'PARTY_ACCEPT_REQUEST'].includes(request.kind)) {
         const roster = this._roster();
-        if (!roster || roster.accountStateAvailable !== true || roster.activeStateAvailable !== true) {
+        if (!roster || roster.accountStateAvailable !== true || roster.onlineStateAvailable !== true) {
           return { accepted: false, reason: 'H19_ROSTER_LIVE_STATE_UNAVAILABLE' };
         }
         if (!this._ownedRow(request.targetName, roster)) {
           this.metrics.ownershipBlocks += 1;
           return { accepted: false, reason: 'H19_PARTY_TARGET_NOT_OWNED' };
         }
-        if (!this._activeSet(roster).has(String(request.targetName || ''))) {
+        if (!this._onlineSet(roster).has(String(request.targetName || ''))) {
           return { accepted: false, reason: 'H19_PARTY_TARGET_NOT_ACTIVE' };
         }
         const party = this._partySnapshot();
@@ -934,8 +934,8 @@
       const settlementFinished = current.settlement !== 'PENDING' && current.settlement !== 'PREPARED';
       if (current.kind === 'START' || current.kind === 'STOP') {
         const roster = this._roster();
-        if (roster && roster.activeStateAvailable === true) {
-          const active = this._activeSet(roster).has(String(current.targetName || ''));
+        if (roster && roster.onlineStateAvailable === true) {
+          const active = this._onlineSet(roster).has(String(current.targetName || ''));
           if (settlementFinished && current.kind === 'START' && active) {
             return this._confirmCurrent({ evidence: 'ACTIVE_ROSTER_PRESENT' });
           }
