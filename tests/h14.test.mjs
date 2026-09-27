@@ -268,8 +268,8 @@ test('H14 ranks a real local improvement and exposes upgrade candidates', () => 
   assert.ok(gloves);
   assert.equal(gloves.improvement, true);
   assert.equal(gloves.safeSwitch, true);
-  assert.equal(gloves.bestInventory.item.name, 'gloves_locked');
-  assert.equal(gloves.bestInventory.item.locked, true);
+  assert.equal(gloves.bestInventory.item.name, 'gloves_new');
+  assert.equal(gloves.bestInventory.item.locked, false);
   assert.ok(gloves.delta > 0);
   assert.ok(plan.local.upgradeCandidates.some(row => row.item.name === 'gloves_new'));
 });
