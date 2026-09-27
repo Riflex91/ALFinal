@@ -670,6 +670,15 @@ test('H16 runtime, API, UI, build, adapter and ActionBoundary are wired', () => 
   assert.match(source, /row\.withdrawable === true && row\.quantity >= minBankStackQuantity/);
   assert.match(runtime, /recipeIngredientQuantity/);
   assert.match(runtime, /minBankStackQuantity: material\.minBankStackQuantity/);
+  assert.match(runtime, /availableInventorySlots/);
+  assert.match(runtime, /plannedBankWithdrawals/);
+  assert.match(runtime, /bankSlotAvailable = plannedBankWithdrawals < availableInventorySlots/);
+  assert.match(runtime, /if \(chosen\.source === 'BANK'\) plannedBankWithdrawals \+= 1/);
+  assert.match(runtime, /inventorySlotReservation: chosen\.source === 'BANK' \? plannedBankWithdrawals : null/);
+  const bankOfferStart = runtime.indexOf("const bankSlotAvailable = plannedBankWithdrawals < availableInventorySlots");
+  const bankChoiceStart = runtime.indexOf("offers.sort((a, b) => a.unitPrice - b.unitPrice)", bankOfferStart);
+  const bankReservationIncrement = runtime.indexOf("if (chosen.source === 'BANK') plannedBankWithdrawals += 1", bankChoiceStart);
+  assert.ok(bankOfferStart > -1 && bankChoiceStart > bankOfferStart && bankReservationIncrement > bankChoiceStart);
   assert.match(runtime, /queued\.delegatedTo === \(bankExpected \? 'bank' : 'trade'\)/);
   assert.match(runtime, /MATERIAL_ACQUISITION_OVER_CAP/);
   assert.match(runtime, /GOLD_RESERVE_AFTER_ACQUISITION_AND_CRAFT/);
