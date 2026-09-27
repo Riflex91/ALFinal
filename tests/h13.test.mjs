@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const tradeSource = fs.readFileSync(path.resolve(here, '../src/trade.js'), 'utf8');
+const boundarySource = fs.readFileSync(path.resolve(here, '../src/action-boundary.js'), 'utf8');
 
 function internals() {
   return {
@@ -180,15 +181,17 @@ function fixture(options = {}) {
             state.local.gold += 50 * q;
           }
         } else if (name === 'trade_buy') {
-          const [target, tradeSlot, q] = args;
+          const [target, tradeSlot, rid, q] = args;
           const listing = target.slots[tradeSlot];
+          assert.equal(String(listing.rid), String(rid));
           state.local.gold -= Number(listing.price) * q;
           addInventory(listing.name, q, listing.level || 0);
           const live = state.listings.find(x => x.playerName === target.name && x.slot === tradeSlot);
           if (live) live.quantity -= q;
         } else if (name === 'trade_sell') {
-          const [target, tradeSlot, q] = args;
+          const [target, tradeSlot, rid, q] = args;
           const listing = target.slots[tradeSlot];
+          assert.equal(String(listing.rid), String(rid));
           removeFingerprint(listing.name, q);
           state.local.gold += Number(listing.price) * q;
           const live = state.listings.find(x => x.playerName === target.name && x.slot === tradeSlot);
@@ -301,6 +304,14 @@ test('H13 market buy dispatches trade_buy and confirms inventory plus gold delta
   assert.equal(f.state.local.gold, 49820);
 });
 
+test('H13 market sell rejects quantity larger than the live bid', () => {
+  const f = fixture();
+  const blocked = f.controller.queueMarketSell('Buyer1', 'trade2', 3, { minUnitPrice: 150 });
+  assert.equal(blocked.accepted, false);
+  assert.equal(blocked.reason, 'H13_MARKET_BID_QUANTITY_UNAVAILABLE');
+  assert.equal(f.state.dispatches.length, 0);
+});
+
 test('H13 market sell requires a safe SELL item and minimum bid price', async () => {
   const f = fixture();
   assert.equal(f.controller.queueMarketSell('Buyer1', 'trade2', 1, { minUnitPrice: 151 }).reason, 'H13_MARKET_BID_BELOW_LIMIT');
@@ -326,6 +337,75 @@ test('H13 acquisition chooses cheaper visible ask over NPC and otherwise NPC wit
   assert.equal(b.accepted, true);
   assert.equal(b.request.kind, 'NPC_BUY');
   assert.equal(b.request.unitPrice, 200);
+});
+
+test('H13 acquisition skips undersized cheap asks and chooses a source that can fill the request', () => {
+  const f = fixture({
+    listings: [
+      { playerId:'Tiny', playerName:'Tiny', slot:'trade1', rid:'tiny', name:'hpot0', level:0, quantity:1, price:100, buying:false, giveaway:false },
+      { playerId:'Enough', playerName:'Enough', slot:'trade2', rid:'enough', name:'hpot0', level:0, quantity:3, price:190, buying:false, giveaway:false }
+    ]
+  });
+  f.state.players.Tiny = { id:'Tiny', name:'Tiny', slots:{ trade1:{ name:'hpot0', level:0, q:1, price:100, rid:'tiny' } } };
+  f.state.players.Enough = { id:'Enough', name:'Enough', slots:{ trade2:{ name:'hpot0', level:0, q:3, price:190, rid:'enough' } } };
+  const selected = f.controller.queueAcquire('hpot0', 2, { maxUnitPrice: 200 });
+  assert.equal(selected.accepted, true);
+  assert.equal(selected.request.kind, 'MARKET_BUY');
+  assert.equal(selected.request.playerName, 'Enough');
+  assert.equal(selected.request.quantity, 2);
+
+  const fallback = fixture({
+    listings: [
+      { playerId:'Tiny', playerName:'Tiny', slot:'trade1', rid:'tiny', name:'hpot0', level:0, quantity:1, price:100, buying:false, giveaway:false }
+    ]
+  });
+  const npc = fallback.controller.queueAcquire('hpot0', 2, { maxUnitPrice: 200 });
+  assert.equal(npc.accepted, true);
+  assert.equal(npc.request.kind, 'NPC_BUY');
+  assert.equal(npc.request.quantity, 2);
+});
+
+test('H13 ActionBoundary preserves listing RID across CODE-wrapper and native parent trade signatures', () => {
+  const ctx = {
+    console, Date, Math, JSON, Map, Set, Promise, Object, Array, String, Number, Boolean, Error,
+    __ALBOT_INTERNALS__: internals()
+  };
+  ctx.globalThis = ctx;
+  vm.runInNewContext(boundarySource, ctx, { filename: 'action-boundary.js' });
+  const Boundary = ctx.__ALBOT_INTERNALS__.GameActionBoundary;
+  const target = { id: 'Seller1', slots: { trade1: { rid: 'rid-1' } } };
+
+  const wrapperCalls = [];
+  const wrapperRoot = {
+    trade_buy(targetArg, slotArg, quantityArg) {
+      wrapperCalls.push([targetArg, slotArg, quantityArg]);
+      return Promise.resolve({ success: true });
+    }
+  };
+  const wrapper = new Boundary({ root: wrapperRoot, assertAllowed: () => true });
+  assert.equal(wrapper.dispatch('trade_buy', [target, 'trade1', 'rid-1', 2]).state, 'DISPATCHED');
+  assert.equal(wrapperCalls.length, 1);
+  assert.equal(wrapperCalls[0][0], target);
+  assert.equal(wrapperCalls[0][1], 'trade1');
+  assert.equal(wrapperCalls[0][2], 2);
+
+  const nativeCalls = [];
+  const parent = {
+    document: {},
+    trade_sell(slotArg, idArg, ridArg, quantityArg) {
+      nativeCalls.push([slotArg, idArg, ridArg, quantityArg]);
+      return Promise.resolve({ success: true });
+    }
+  };
+  const child = { parent };
+  const native = new Boundary({ root: child, assertAllowed: () => true });
+  assert.equal(native.dispatch('trade_sell', [target, 'trade1', 'rid-1', 3]).state, 'DISPATCHED');
+  assert.deepEqual(nativeCalls[0], ['trade1', 'Seller1', 'rid-1', 3]);
+
+  const mismatch = new Boundary({ root: wrapperRoot, assertAllowed: () => true });
+  const bad = mismatch.dispatch('trade_buy', [target, 'trade1', 'wrong-rid', 1]);
+  assert.equal(bad.state, 'UNKNOWN');
+  assert.equal(wrapperCalls.length, 1);
 });
 
 test('H13 UNKNOWN suspends immediately and is never blindly retried', () => {
@@ -371,6 +451,7 @@ test('H13 runtime, API, UI, build, adapter and ActionBoundary are wired', () => 
   assert.match(build, /AL Bot 0\.13\.0-h13/);
   assert.match(boundary, /buy_with_gold: Object\.freeze\(\{ publicName: 'buy_with_gold'/);
   assert.match(boundary, /trade_buy: Object\.freeze\(\{ publicName: 'trade_buy'/);
+  assert.match(boundary, /ALBOT_PLAYER_TRADE_RID_MISMATCH/);
   assert.match(adapter, /marketSnapshot\(options = \{\}\)/);
   assert.match(adapter, /npcShopSources\(itemName\)/);
   assert.equal(pkg.version, '0.13.0');
