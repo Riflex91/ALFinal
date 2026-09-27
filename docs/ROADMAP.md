@@ -581,15 +581,48 @@ H15-Live-Gate ist bestanden. Nach den Evidence-Dokucommits ist nur noch der neue
 
 ## H16 – Exchange & Craft
 
-**🟦 BAU**
-- Exchange NPCs
-- Quest-/Event Exchange
-- Crafting
-- Produktionsgraph
-- Materialbeschaffung
+**🟦 IMPLEMENTIERT · CI/REVIEW IN ARBEIT · LIVE-TEST OFFEN**
 
-**🟧 LIVE-TEST**
-- kleine vollständige Produktions-/Exchange-Kette automatisch durchlaufen lassen
+**BAU**
+- eigener `ExchangeCraftController`
+- Exchange-/Craft-Writes ausschließlich über ActionBoundary
+- Exchange-Mengen aus Live-`G.items[*].e`
+- Craft-Rezepte aus Live-`G.craft`
+- Quest-/Event Exchange und Craft standardmäßig fail-closed; nur explizites Opt-in
+- protected Items aus Automation ausgeschlossen
+- Craft-Quellslotwahl passend zu Adventure Lands `auto_craft`
+- unmittelbare Source-/Definition-Revalidation vor Dispatch
+- Exchange-Value-at-Risk-, Craft-Gold-, Craft-Input- und Session-Budgets
+- Goldreserve und Combat-Block
+- Live-Deltas als Ergebnis-Wahrheit
+- bounded UNKNOWN + Suspension ohne Blind-Retry
+- rekursiver Produktionsgraph mit Cycle-/Depth-Guard
+- lokales Inventar + optional gemounteter Bankbestand in Produktionsplanung
+- fehlende Materialien mit Bank-/NPC-/Marktquellen
+- explizite Materialbeschaffung via H12 Bank oder H13 Handel
+- gemeinsamer autonomer Economy-Konfliktlöser bewusst erst H17
+- Headless API `ALBot.exchangeCraft.*`
+- Control-Center-Tab **Exchange & Craft**
+- H16-Regressionen und `docs/H16-LIVE-TEST.md`
+
+**🟧 LIVE-TEST NOCH AUSSTEHEND**
+- Suite `h16-exchange-craft`
+- bevorzugt echte `CRAFT_TO_EXCHANGE_CHAIN`
+- sonst sichere `CRAFT_AND_EXCHANGE_COVERAGE`
+- maximal zwei echte H16-Aktionen
+- niedrige temporäre Risiko-/Kostenbudgets
+- keine Quest-/Event-Aktion im automatischen Live-Test
+- Craft und Exchange jeweils über Live-Deltas bestätigen
+- beide UNKNOWN-Deltas 0
+- 5-Sekunden-Stabilität ohne Retry/Suspension
+- Cleanup + Runtime Auto-Restore
+
+Fehlen sichere Craft-/Exchange-Kandidaten:
+`H16_NEEDS_LOW_RISK_CRAFT_AND_EXCHANGE_CANDIDATES`
+
+Dann wird nichts verändert.
+
+H16 wird erst nach grünem Exact-Head-CI, sauberem Review-Gate und echtem Adventure-Land-Live-PASS gemergt.
 
 ---
 
