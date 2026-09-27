@@ -1,4 +1,4 @@
-/* AL Bot 0.13.0-h13 | generated file | do not edit dist directly */
+/* AL Bot 0.14.0-h14 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -1420,6 +1420,124 @@
       };
     }
 
+    equipmentDefinition(name) {
+      const id = cleanText(name || '', 160);
+      if (!id) return null;
+      const G = this._gameData();
+      const raw = G && G.items && G.items[id];
+      if (!raw || typeof raw !== 'object') return null;
+      const statNames = ['attack', 'armor', 'resistance', 'hp', 'mp', 'speed', 'range', 'str', 'dex', 'int', 'vit', 'stat'];
+      const stats = {};
+      const upgradeGrowth = {};
+      for (const key of statNames) {
+        const value = finite(raw[key]);
+        if (value != null) stats[key] = value;
+        const growth = raw.upgrade && typeof raw.upgrade === 'object' ? finite(raw.upgrade[key]) : null;
+        if (growth != null) upgradeGrowth[key] = growth;
+      }
+      const classes = Array.isArray(raw.class)
+        ? raw.class.map(value => cleanText(value, 60).toLowerCase()).filter(Boolean)
+        : [];
+      return {
+        id,
+        name: raw.name == null ? id : cleanText(raw.name, 200),
+        type: raw.type == null ? null : cleanText(raw.type, 80).toLowerCase(),
+        wtype: raw.wtype == null ? null : cleanText(raw.wtype, 80).toLowerCase(),
+        classes,
+        stats,
+        upgradeGrowth,
+        upgradeable: raw.upgrade === true || !!(raw.upgrade && typeof raw.upgrade === 'object'),
+        compoundable: raw.compound === true || !!(raw.compound && typeof raw.compound === 'object'),
+        grades: Array.isArray(raw.grades) ? clone(raw.grades) : null,
+        g: finite(raw.g),
+        cash: safeBoolean(raw.cash),
+        quest: safeBoolean(raw.quest) || String(raw.type || '').toLowerCase() === 'quest'
+      };
+    }
+
+    classEquipmentProfile(ctype) {
+      const id = cleanText(ctype || '', 60).toLowerCase();
+      if (!id) return null;
+      const G = this._gameData();
+      const raw = G && G.classes && G.classes[id];
+      if (!raw || typeof raw !== 'object') return null;
+      const allowed = value => {
+        if (!value || typeof value !== 'object') return [];
+        return Object.entries(value)
+          .filter(([, enabled]) => enabled !== false && enabled != null)
+          .map(([name]) => cleanText(name, 80).toLowerCase())
+          .filter(Boolean)
+          .sort();
+      };
+      return {
+        ctype: id,
+        mainhand: allowed(raw.mainhand),
+        offhand: allowed(raw.offhand),
+        doublehand: allowed(raw.doublehand)
+      };
+    }
+
+    equipmentSnapshot(name = null) {
+      const character = this._character();
+      if (!character || !character.name) {
+        return {
+          schemaVersion: 1,
+          available: false,
+          reason: 'CHARACTER_UNAVAILABLE',
+          character: null,
+          slots: {}
+        };
+      }
+      const wanted = cleanText(name || character.name, 120);
+      let entity = null;
+      if (!wanted || wanted === String(character.name || '') || wanted === String(character.id || '')) entity = character;
+      else entity = this.playerReference(wanted, { allowDead: true });
+      if (!entity) {
+        return {
+          schemaVersion: 1,
+          available: false,
+          reason: 'PLAYER_NOT_VISIBLE',
+          character: { name: wanted || null, ctype: null },
+          slots: {}
+        };
+      }
+
+      const ctype = cleanText(entity.ctype || entity.type || '', 60).toLowerCase() || null;
+      const rawSlots = entity.slots && typeof entity.slots === 'object' ? entity.slots : {};
+      const slots = {};
+      for (const [slot, raw] of Object.entries(rawSlots)) {
+        if (String(slot).startsWith('trade') || String(slot) === 'elixir') continue;
+        if (!raw || !raw.name) continue;
+        const itemName = cleanText(raw.name, 160);
+        slots[String(slot)] = {
+          slot: String(slot),
+          name: itemName,
+          quantity: Math.max(1, finite(raw.q) || 1),
+          level: Math.max(0, finite(raw.level) || 0),
+          statType: raw.stat_type == null ? null : cleanText(raw.stat_type, 80),
+          locked: !!raw.l,
+          giveaway: !!raw.giveaway,
+          gift: !!raw.gift,
+          property: raw.p == null ? null : clone(raw.p),
+          expiresAt: raw.expires == null ? null : raw.expires,
+          definition: this.equipmentDefinition(itemName)
+        };
+      }
+      return {
+        schemaVersion: 1,
+        available: true,
+        reason: null,
+        character: {
+          name: cleanText(entity.name || wanted || '', 120) || null,
+          ctype,
+          map: entity.map == null ? (character.map || null) : entity.map,
+          rip: !!(entity.rip || entity.dead)
+        },
+        profile: this.classEquipmentProfile(ctype),
+        slots
+      };
+    }
+
     itemDefinition(name) {
       const id = cleanText(name || '', 160);
       if (!id) return null;
@@ -2618,7 +2736,9 @@
     buy_with_gold: Object.freeze({ publicName: 'buy_with_gold', family: 'npc-trade' }),
     sell: Object.freeze({ publicName: 'sell', family: 'npc-trade' }),
     trade_buy: Object.freeze({ publicName: 'trade_buy', family: 'player-trade' }),
-    trade_sell: Object.freeze({ publicName: 'trade_sell', family: 'player-trade' })
+    trade_sell: Object.freeze({ publicName: 'trade_sell', family: 'player-trade' }),
+    equip: Object.freeze({ publicName: 'equip', family: 'gear' }),
+    unequip: Object.freeze({ publicName: 'unequip', family: 'gear' })
   });
 
   function errorDetails(error) {
@@ -9633,6 +9753,987 @@
   const clone = ns.helpers.clone;
   const cleanText = ns.helpers.cleanText;
 
+  const GEAR_SLOTS = Object.freeze([
+    'helmet', 'coat', 'pants', 'gloves', 'shoes', 'cape', 'belt',
+    'amulet', 'orb', 'ring1', 'ring2', 'earring1', 'earring2',
+    'mainhand', 'offhand'
+  ]);
+
+  const PRIMARY_STAT = Object.freeze({
+    warrior: 'str',
+    paladin: 'str',
+    ranger: 'dex',
+    rogue: 'dex',
+    mage: 'int',
+    priest: 'int',
+    merchant: 'int'
+  });
+
+  function finite(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function nowIso() {
+    return new Date().toISOString();
+  }
+
+  function stableProperty(value) {
+    if (value == null) return '';
+    try {
+      if (typeof value !== 'object') return String(value);
+      const keys = Object.keys(value).sort();
+      const ordered = {};
+      for (const key of keys) ordered[key] = value[key];
+      return JSON.stringify(ordered);
+    } catch (_) {
+      return String(value);
+    }
+  }
+
+  class GearController {
+    constructor(options = {}) {
+      this.root = options.root || root;
+      this.logger = options.logger || null;
+      this.game = options.game || null;
+      this.actions = options.actions || null;
+      this.inventory = options.inventory || null;
+      this.roster = options.roster || null;
+      this.combat = options.combat || null;
+      this.moduleActive = false;
+      this.scope = null;
+      this.pending = null;
+      this.request = null;
+      this.suspendedReason = null;
+      this.lastPlan = null;
+      this.lastAction = null;
+      this.sequence = 0;
+      this.goals = [];
+      this.config = {
+        tickMs: Math.max(250, Math.min(5000, Number(options.tickMs) || 750)),
+        outcomeTimeoutMs: Math.max(1000, Math.min(60000, Number(options.outcomeTimeoutMs) || 6000)),
+        improvementEpsilon: Math.max(0, Number(options.improvementEpsilon) || 0.01)
+      };
+      this.metrics = {
+        ticks: 0,
+        plans: 0,
+        localImprovements: 0,
+        groupProposals: 0,
+        equipsDispatched: 0,
+        equipsConfirmed: 0,
+        equipsRejected: 0,
+        equipsUnknown: 0,
+        unequipsDispatched: 0,
+        unequipsConfirmed: 0,
+        unequipsRejected: 0,
+        unequipsUnknown: 0,
+        deliveriesDispatched: 0,
+        deliveriesConfirmed: 0,
+        deliveriesRejected: 0,
+        deliveriesUnknown: 0,
+        safetyBlocks: 0,
+        twoHandBlocks: 0,
+        combatBlocks: 0,
+        goalEvaluations: 0
+      };
+    }
+
+    start(context = {}) {
+      if (this.moduleActive) return { started: false, reason: 'H14_ALREADY_ACTIVE' };
+      this.moduleActive = true;
+      this.scope = context.scope || null;
+      this.suspendedReason = null;
+      if (this.scope && typeof this.scope.interval === 'function') {
+        this.scope.interval('gear-tick', () => this.tick(), this.config.tickMs, { immediate: true });
+      }
+      return { started: true };
+    }
+
+    stop(reason = 'H14_MODULE_STOP') {
+      this.moduleActive = false;
+      this.scope = null;
+      this.pending = null;
+      this.request = null;
+      this.lastAction = { at: nowIso(), type: 'STOP', reason: cleanText(reason, 240) };
+      return { stopped: true };
+    }
+
+    resetSafety(reason = 'H14_EXPLICIT_RESET') {
+      this.pending = null;
+      this.request = null;
+      this.suspendedReason = null;
+      this.lastAction = { at: nowIso(), type: 'RESET', reason: cleanText(reason, 240) };
+      return this.status();
+    }
+
+    cancelRequest(reason = 'H14_REQUEST_CANCELLED') {
+      this.pending = null;
+      this.request = null;
+      this.lastAction = { at: nowIso(), type: 'REQUEST_CANCELLED', reason: cleanText(reason, 240) };
+      return this.status();
+    }
+
+    setGoals(rows = []) {
+      if (!Array.isArray(rows)) throw new Error('H14_GOALS_MUST_BE_ARRAY');
+      const next = [];
+      for (const raw of rows) {
+        if (!raw || typeof raw !== 'object') continue;
+        const targetName = cleanText(raw.targetName || raw.characterName || '', 120);
+        const slot = cleanText(raw.slot || '', 40);
+        const itemName = cleanText(raw.itemName || raw.name || '', 160);
+        const minLevel = Math.max(0, Math.floor(finite(raw.minLevel) || 0));
+        const priority = Math.max(0, Math.floor(finite(raw.priority) || 0));
+        if (!targetName || !GEAR_SLOTS.includes(slot)) continue;
+        if (!itemName && minLevel <= 0) continue;
+        next.push({
+          id: cleanText(raw.id || ('gear-goal-' + (next.length + 1)), 120),
+          targetName,
+          slot,
+          itemName: itemName || null,
+          minLevel,
+          priority
+        });
+      }
+      this.goals = next;
+      return clone(this.goals);
+    }
+
+    goalSnapshot() {
+      return clone(this.goals);
+    }
+
+    _snapshot() {
+      return this.game && typeof this.game.snapshot === 'function' ? this.game.snapshot() : null;
+    }
+
+    _inventorySnapshot() {
+      try { return this.game && this.game.inventorySnapshot ? this.game.inventorySnapshot() : null; }
+      catch (_) { return null; }
+    }
+
+    _equipmentSnapshot(name = null) {
+      try { return this.game && this.game.equipmentSnapshot ? this.game.equipmentSnapshot(name) : null; }
+      catch (_) { return null; }
+    }
+
+    _roster() {
+      try {
+        if (!this.roster) return null;
+        if (typeof this.roster.refresh === 'function') return this.roster.refresh();
+        if (typeof this.roster.status === 'function') return this.roster.status();
+      } catch (_) {}
+      return null;
+    }
+
+    _combatActive() {
+      try {
+        const status = this.combat && typeof this.combat.status === 'function' ? this.combat.status() : null;
+        return !!(status && (status.active || status.state && !['IDLE', 'STOPPED'].includes(String(status.state))));
+      } catch (_) {
+        return false;
+      }
+    }
+
+    _equipmentDefinition(name) {
+      try { return this.game && this.game.equipmentDefinition ? this.game.equipmentDefinition(name) : null; }
+      catch (_) { return null; }
+    }
+
+    _classProfile(ctype) {
+      try { return this.game && this.game.classEquipmentProfile ? this.game.classEquipmentProfile(ctype) : null; }
+      catch (_) { return null; }
+    }
+
+    _normalizedItem(row) {
+      if (!row || !row.name) return null;
+      const definition = this._equipmentDefinition(row.name);
+      if (!definition) return null;
+      return { ...row, definition };
+    }
+
+    _fingerprint(row) {
+      if (!row || !row.name) return null;
+      return [
+        String(row.name),
+        String(Math.max(0, Number(row.level) || 0)),
+        cleanText(row.statType != null ? row.statType : row.stat_type || '', 80),
+        stableProperty(row.property != null ? row.property : row.p)
+      ].join('|');
+    }
+
+    _quantity(snapshot, fingerprint) {
+      if (!snapshot || snapshot.available === false || !fingerprint) return null;
+      return (snapshot.items || []).reduce((sum, row) =>
+        sum + (this._fingerprint(row) === fingerprint ? Math.max(1, Math.floor(Number(row.quantity) || 1)) : 0), 0);
+    }
+
+    _primary(ctype) {
+      return PRIMARY_STAT[String(ctype || '').toLowerCase()] || null;
+    }
+
+    score(row, ctype) {
+      const item = this._normalizedItem(row);
+      if (!item || !item.definition) return Number.NEGATIVE_INFINITY;
+      const definition = item.definition;
+      const level = Math.max(0, Number(item.level) || 0);
+      const primary = this._primary(ctype);
+      const weights = {
+        attack: 8,
+        armor: 2,
+        resistance: 2,
+        hp: 1.2,
+        mp: 1,
+        speed: 1.5,
+        range: 2,
+        str: primary === 'str' ? 6 : 1,
+        dex: primary === 'dex' ? 6 : 1,
+        int: primary === 'int' ? 6 : 1,
+        vit: 2,
+        stat: 6
+      };
+      let score = 0;
+      for (const [stat, weight] of Object.entries(weights)) {
+        const base = finite(definition.stats && definition.stats[stat]) || 0;
+        const growth = finite(definition.upgradeGrowth && definition.upgradeGrowth[stat]) || 0;
+        score += (base + growth * level) * weight;
+      }
+      if (primary && cleanText(item.statType || '', 80).toLowerCase() === primary) score += 25;
+      score += level * 0.01;
+      return Number(score.toFixed(4));
+    }
+
+    _canEquip(row, slot, ctype) {
+      const item = this._normalizedItem(row);
+      if (!item || !item.definition || !GEAR_SLOTS.includes(slot)) return { ok: false, reason: 'H14_NOT_EQUIPMENT' };
+      const def = item.definition;
+      const type = String(def.type || '').toLowerCase();
+      const profile = this._classProfile(ctype);
+      if ((def.classes || []).length && !def.classes.includes(String(ctype || '').toLowerCase())) {
+        return { ok: false, reason: 'H14_CLASS_RESTRICTED' };
+      }
+
+      if (type === 'ring') return { ok: slot === 'ring1' || slot === 'ring2', reason: 'H14_RING_SLOT' };
+      if (type === 'earring') return { ok: slot === 'earring1' || slot === 'earring2', reason: 'H14_EARRING_SLOT' };
+
+      if (['shield', 'source', 'quiver', 'misc_offhand'].includes(type)) {
+        const ok = slot === 'offhand' && !!(profile && profile.offhand && profile.offhand.includes(type));
+        return { ok, reason: ok ? null : 'H14_OFFHAND_NOT_ALLOWED', handMode: 'offhand' };
+      }
+
+      if (['weapon', 'tool'].includes(type)) {
+        const wtype = String(def.wtype || type).toLowerCase();
+        if (slot === 'offhand') {
+          const ok = !!(profile && profile.offhand && profile.offhand.includes(wtype));
+          return { ok, reason: ok ? null : 'H14_OFFHAND_WEAPON_NOT_ALLOWED', handMode: 'offhand' };
+        }
+        if (slot !== 'mainhand') return { ok: false, reason: 'H14_WEAPON_REQUIRES_HAND' };
+        const doublehand = !!(profile && profile.doublehand && profile.doublehand.includes(wtype));
+        const mainhand = !!(profile && profile.mainhand && profile.mainhand.includes(wtype));
+        return {
+          ok: doublehand || mainhand,
+          reason: doublehand || mainhand ? null : 'H14_MAINHAND_WEAPON_NOT_ALLOWED',
+          handMode: doublehand ? 'doublehand' : 'mainhand'
+        };
+      }
+
+      return { ok: type === slot, reason: type === slot ? null : 'H14_SLOT_TYPE_MISMATCH' };
+    }
+
+    _handConflict(row, slot, equipment, ctype) {
+      const allowed = this._canEquip(row, slot, ctype);
+      if (!allowed.ok) return { blocked: true, reason: allowed.reason };
+      if (slot === 'mainhand' && allowed.handMode === 'doublehand' && equipment && equipment.slots && equipment.slots.offhand) {
+        return { blocked: true, reason: 'H14_TWO_HAND_WOULD_DISPLACE_OFFHAND' };
+      }
+      if (slot === 'offhand' && equipment && equipment.slots && equipment.slots.mainhand) {
+        const main = equipment.slots.mainhand;
+        const mainAllowed = this._canEquip(main, 'mainhand', ctype);
+        if (mainAllowed.ok && mainAllowed.handMode === 'doublehand') {
+          return { blocked: true, reason: 'H14_OFFHAND_BLOCKED_BY_TWO_HAND' };
+        }
+      }
+      return { blocked: false, reason: null };
+    }
+
+    _inventoryGear() {
+      const inventory = this._inventorySnapshot();
+      if (!inventory || inventory.available === false) return [];
+      return (inventory.items || [])
+        .map(row => this._normalizedItem(row))
+        .filter(Boolean);
+    }
+
+    _slotPlan(slot, ctype, equipment, inventoryRows, usedInventorySlots = null) {
+      const current = equipment && equipment.slots ? equipment.slots[slot] || null : null;
+      const currentScore = current ? this.score(current, ctype) : Number.NEGATIVE_INFINITY;
+      const candidates = [];
+      for (const row of inventoryRows) {
+        if (usedInventorySlots && usedInventorySlots.has(Number(row.slot))) continue;
+        const allowed = this._canEquip(row, slot, ctype);
+        if (!allowed.ok) continue;
+        const score = this.score(row, ctype);
+        if (!Number.isFinite(score)) continue;
+        candidates.push({
+          inventorySlot: Number(row.slot),
+          item: clone(row),
+          score,
+          fingerprint: this._fingerprint(row),
+          handMode: allowed.handMode || null
+        });
+      }
+      candidates.sort((a, b) => b.score - a.score || a.inventorySlot - b.inventorySlot);
+      const best = candidates[0] || null;
+      const delta = best
+        ? (current == null ? best.score : best.score - currentScore)
+        : null;
+      const conflict = best ? this._handConflict(best.item, slot, equipment, ctype) : { blocked: false, reason: null };
+      return {
+        slot,
+        current: current ? clone(current) : null,
+        currentScore: Number.isFinite(currentScore) ? currentScore : null,
+        bestInventory: best ? clone(best) : null,
+        improvement: !!(best && (current == null || delta > this.config.improvementEpsilon)),
+        delta: best && Number.isFinite(delta) ? Number(delta.toFixed(4)) : null,
+        safeSwitch: !!(best && !conflict.blocked),
+        blockReason: conflict.blocked ? conflict.reason : null,
+        candidates: candidates.map(row => ({
+          inventorySlot: row.inventorySlot,
+          item: clone(row.item),
+          score: row.score,
+          fingerprint: row.fingerprint,
+          handMode: row.handMode
+        }))
+      };
+    }
+
+    _localPlan(inventoryRows) {
+      const snap = this._snapshot();
+      const local = snap && snap.character;
+      const equipment = local && local.name ? this._equipmentSnapshot(local.name) : null;
+      if (!local || !equipment || equipment.available === false) {
+        return {
+          state: 'BLOCKED',
+          reason: 'H14_LOCAL_EQUIPMENT_UNAVAILABLE',
+          character: local ? clone(local) : null,
+          equipment: equipment ? clone(equipment) : null,
+          slots: [],
+          improvements: [],
+          replacements: [],
+          upgradeCandidates: []
+        };
+      }
+      const ctype = local.ctype;
+      const slots = GEAR_SLOTS.map(slot => this._slotPlan(slot, ctype, equipment, inventoryRows));
+      const improvements = slots
+        .filter(row => row.improvement && row.safeSwitch)
+        .sort((a, b) => (b.delta || 0) - (a.delta || 0));
+      const replacements = slots.map(row => ({
+        slot: row.slot,
+        current: clone(row.current),
+        currentScore: row.currentScore,
+        bestInventory: clone(row.bestInventory),
+        bestInventoryScore: row.bestInventory ? row.bestInventory.score : null,
+        delta: row.delta,
+        improvement: row.improvement,
+        safeSwitch: row.safeSwitch,
+        blockReason: row.blockReason
+      }));
+      const upgradeCandidates = [];
+      const pushUpgrade = (row, source, slot) => {
+        const item = this._normalizedItem(row);
+        if (!item || !item.definition) return;
+        if (!item.definition.upgradeable && !item.definition.compoundable) return;
+        upgradeCandidates.push({
+          source,
+          slot: slot == null ? null : slot,
+          inventorySlot: source === 'inventory' ? Number(item.slot) : null,
+          item: clone(item),
+          score: this.score(item, ctype),
+          level: Math.max(0, Number(item.level) || 0),
+          upgradeable: !!item.definition.upgradeable,
+          compoundable: !!item.definition.compoundable
+        });
+      };
+      for (const row of inventoryRows) pushUpgrade(row, 'inventory', null);
+      for (const [slot, row] of Object.entries(equipment.slots || {})) pushUpgrade(row, 'equipped', slot);
+      upgradeCandidates.sort((a, b) => b.score - a.score || b.level - a.level);
+      return {
+        state: 'READY',
+        reason: 'H14_LOCAL_GEAR_READY',
+        character: clone(local),
+        equipment: clone(equipment),
+        slots,
+        improvements,
+        replacements,
+        upgradeCandidates
+      };
+    }
+
+    _priorityTargets(roster) {
+      if (!roster) return [];
+      const rows = [];
+      for (const farmer of roster.farmers || []) {
+        rows.push({ name: farmer.name, ctype: farmer.ctype, role: 'FARMER', priority: 100 });
+      }
+      if (roster.merchant) {
+        rows.push({ name: roster.merchant.name, ctype: roster.merchant.ctype, role: 'MERCHANT', priority: 10 });
+      }
+      rows.sort((a, b) => b.priority - a.priority || String(a.name).localeCompare(String(b.name)));
+      return rows;
+    }
+
+    _groupPlan(inventoryRows, roster, localName, localCtype) {
+      const targets = this._priorityTargets(roster);
+      const usedInventorySlots = new Set();
+      const proposals = [];
+      const targetRows = [];
+      for (const target of targets) {
+        const equipment = this._equipmentSnapshot(target.name);
+        const visible = !!(equipment && equipment.available !== false);
+        targetRows.push({ ...target, visible, equipment: visible ? clone(equipment) : null });
+        if (!visible || target.name === localName || String(localCtype || '').toLowerCase() !== 'merchant') continue;
+
+        const transferRows = inventoryRows.filter(row =>
+          !row.locked && !row.giveaway && !row.gift && !row.expiresAt);
+        const candidateRows = [];
+        for (const slot of GEAR_SLOTS) {
+          const slotPlan = this._slotPlan(slot, target.ctype, equipment, transferRows, usedInventorySlots);
+          if (!slotPlan.improvement || !slotPlan.bestInventory) continue;
+          candidateRows.push({
+            targetName: target.name,
+            targetCtype: target.ctype,
+            role: target.role,
+            priority: target.priority,
+            slot,
+            inventorySlot: slotPlan.bestInventory.inventorySlot,
+            item: clone(slotPlan.bestInventory.item),
+            fingerprint: slotPlan.bestInventory.fingerprint,
+            score: slotPlan.bestInventory.score,
+            currentScore: slotPlan.currentScore,
+            delta: slotPlan.delta
+          });
+        }
+        candidateRows.sort((a, b) => (b.delta || 0) - (a.delta || 0));
+        for (const proposal of candidateRows) {
+          if (usedInventorySlots.has(proposal.inventorySlot)) continue;
+          usedInventorySlots.add(proposal.inventorySlot);
+          proposals.push(proposal);
+        }
+      }
+      proposals.sort((a, b) => b.priority - a.priority || (b.delta || 0) - (a.delta || 0));
+      return { targets: targetRows, proposals };
+    }
+
+    _goalPlan(roster, inventoryRows) {
+      const results = [];
+      const local = this._snapshot();
+      const localName = local && local.character && local.character.name;
+      for (const goal of this.goals) {
+        this.metrics.goalEvaluations += 1;
+        const target = (this._priorityTargets(roster)).find(row => row.name === goal.targetName) || null;
+        const equipment = this._equipmentSnapshot(goal.targetName);
+        const equipped = equipment && equipment.available !== false ? equipment.slots[goal.slot] || null : null;
+        const achieved = !!(equipped
+          && (!goal.itemName || String(equipped.name) === String(goal.itemName))
+          && Math.max(0, Number(equipped.level) || 0) >= goal.minLevel);
+        let inventoryMatch = null;
+        if (!achieved) {
+          const targetCtype = target && target.ctype || equipment && equipment.character && equipment.character.ctype;
+          inventoryMatch = inventoryRows.find(row =>
+            (!goal.itemName || String(row.name) === String(goal.itemName))
+            && Math.max(0, Number(row.level) || 0) >= goal.minLevel
+            && this._canEquip(row, goal.slot, targetCtype).ok) || null;
+        }
+        const localCtype = local && local.character && local.character.ctype;
+        const readyToEquip = !!(inventoryMatch && goal.targetName === localName);
+        const readyToDeliver = !!(inventoryMatch
+          && goal.targetName !== localName
+          && String(localCtype || '').toLowerCase() === 'merchant'
+          && target && target.role === 'FARMER'
+          && equipment && equipment.available !== false
+          && !inventoryMatch.locked && !inventoryMatch.giveaway && !inventoryMatch.gift && !inventoryMatch.expiresAt);
+        results.push({
+          ...clone(goal),
+          role: target && target.role || null,
+          targetPriority: target && target.priority || 0,
+          visible: !!(equipment && equipment.available !== false),
+          equipped: equipped ? clone(equipped) : null,
+          achieved,
+          localInventoryMatch: inventoryMatch ? clone(inventoryMatch) : null,
+          state: achieved ? 'ACHIEVED' : readyToEquip ? 'READY_TO_EQUIP' : readyToDeliver ? 'READY_TO_DELIVER' : 'NEEDS_ACQUISITION'
+        });
+      }
+      results.sort((a, b) => b.targetPriority - a.targetPriority || b.priority - a.priority || String(a.id).localeCompare(String(b.id)));
+      return results;
+    }
+
+    plan() {
+      this.metrics.plans += 1;
+      const snap = this._snapshot();
+      const inventory = this._inventorySnapshot();
+      const roster = this._roster();
+      if (!snap || !snap.available || !snap.character) {
+        const blocked = { state: 'BLOCKED', reason: 'CHARACTER_UNAVAILABLE' };
+        this.lastPlan = blocked;
+        return clone(blocked);
+      }
+      if (!inventory || inventory.available === false) {
+        const blocked = { state: 'BLOCKED', reason: 'H14_INVENTORY_UNAVAILABLE' };
+        this.lastPlan = blocked;
+        return clone(blocked);
+      }
+      const inventoryRows = this._inventoryGear();
+      const local = this._localPlan(inventoryRows);
+      const group = this._groupPlan(inventoryRows, roster, snap.character.name, snap.character.ctype);
+      const goals = this._goalPlan(roster, inventoryRows);
+      this.metrics.localImprovements = local.improvements ? local.improvements.length : 0;
+      this.metrics.groupProposals = group.proposals.length;
+      const plan = {
+        state: local.state === 'READY' ? 'READY' : local.state,
+        reason: local.state === 'READY' ? 'H14_GEAR_READY' : local.reason,
+        local,
+        group,
+        goals,
+        farmerPriority: 100,
+        merchantPriority: 10
+      };
+      this.lastPlan = clone(plan);
+      return clone(plan);
+    }
+
+    _localWriteAllowed() {
+      if (this._combatActive()) {
+        this.metrics.combatBlocks += 1;
+        return { ok: false, reason: 'H14_COMBAT_ACTIVE' };
+      }
+      const snap = this._snapshot();
+      if (!snap || !snap.available || !snap.character || snap.character.rip) {
+        return { ok: false, reason: 'H14_CHARACTER_UNAVAILABLE_OR_DEAD' };
+      }
+      return { ok: true };
+    }
+
+    queueEquip(inventorySlot, targetSlot) {
+      if (this.suspendedReason) return { accepted: false, reason: this.suspendedReason };
+      if (this.request || this.pending) return { accepted: false, reason: 'H14_BUSY' };
+      const gate = this._localWriteAllowed();
+      if (!gate.ok) return { accepted: false, reason: gate.reason };
+      const slot = Number(inventorySlot);
+      const target = cleanText(targetSlot || '', 40);
+      if (!Number.isInteger(slot) || slot < 0 || !GEAR_SLOTS.includes(target)) {
+        return { accepted: false, reason: 'H14_EQUIP_ARGUMENT_INVALID' };
+      }
+      const snap = this._snapshot();
+      const inventory = this._inventorySnapshot();
+      const equipment = this._equipmentSnapshot(snap.character.name);
+      const row = inventory && (inventory.items || []).find(item => Number(item.slot) === slot);
+      if (!row) return { accepted: false, reason: 'H14_EQUIP_ITEM_NOT_FOUND' };
+      const normalized = this._normalizedItem(row);
+      const allowed = this._canEquip(normalized, target, snap.character.ctype);
+      if (!allowed.ok) {
+        this.metrics.safetyBlocks += 1;
+        return { accepted: false, reason: allowed.reason };
+      }
+      const conflict = this._handConflict(normalized, target, equipment, snap.character.ctype);
+      if (conflict.blocked) {
+        if (String(conflict.reason).includes('TWO_HAND')) this.metrics.twoHandBlocks += 1;
+        this.metrics.safetyBlocks += 1;
+        return { accepted: false, reason: conflict.reason };
+      }
+      const current = equipment && equipment.slots ? equipment.slots[target] || null : null;
+      const candidateFingerprint = this._fingerprint(normalized);
+      if (current && this._fingerprint(current) === candidateFingerprint) {
+        return { accepted: false, reason: 'H14_ALREADY_EQUIPPED' };
+      }
+      this.request = {
+        id: 'gear-request-' + (++this.sequence),
+        kind: 'EQUIP',
+        inventorySlot: slot,
+        targetSlot: target,
+        candidateFingerprint,
+        candidate: clone(normalized),
+        currentFingerprint: this._fingerprint(current),
+        current: current ? clone(current) : null,
+        createdAt: nowIso()
+      };
+      return { accepted: true, request: clone(this.request) };
+    }
+
+    queueBestLocal(slot = null) {
+      const plan = this.plan();
+      if (plan.state !== 'READY') return { accepted: false, reason: plan.reason };
+      const wanted = slot == null ? null : cleanText(slot, 40);
+      const proposal = (plan.local.improvements || []).find(row => !wanted || row.slot === wanted);
+      if (!proposal || !proposal.bestInventory) return { accepted: false, reason: 'H14_NO_SAFE_LOCAL_IMPROVEMENT' };
+      return this.queueEquip(proposal.bestInventory.inventorySlot, proposal.slot);
+    }
+
+    queueUnequip(targetSlot) {
+      if (this.suspendedReason) return { accepted: false, reason: this.suspendedReason };
+      if (this.request || this.pending) return { accepted: false, reason: 'H14_BUSY' };
+      const gate = this._localWriteAllowed();
+      if (!gate.ok) return { accepted: false, reason: gate.reason };
+      const target = cleanText(targetSlot || '', 40);
+      if (!GEAR_SLOTS.includes(target)) return { accepted: false, reason: 'H14_UNEQUIP_ARGUMENT_INVALID' };
+      const snap = this._snapshot();
+      const equipment = this._equipmentSnapshot(snap.character.name);
+      const inventory = this._inventorySnapshot();
+      const current = equipment && equipment.slots ? equipment.slots[target] || null : null;
+      if (!current) return { accepted: false, reason: 'H14_SLOT_ALREADY_EMPTY' };
+      if (!inventory || inventory.available === false || Number(inventory.freeSlots) <= 0) {
+        return { accepted: false, reason: 'H14_UNEQUIP_NEEDS_FREE_SLOT' };
+      }
+      this.request = {
+        id: 'gear-request-' + (++this.sequence),
+        kind: 'UNEQUIP',
+        targetSlot: target,
+        currentFingerprint: this._fingerprint(current),
+        current: clone(current),
+        createdAt: nowIso()
+      };
+      return { accepted: true, request: clone(this.request) };
+    }
+
+    queueDelivery(targetName, inventorySlot) {
+      if (this.suspendedReason) return { accepted: false, reason: this.suspendedReason };
+      if (this.request || this.pending) return { accepted: false, reason: 'H14_BUSY' };
+      const snap = this._snapshot();
+      if (!snap || !snap.character || String(snap.character.ctype || '').toLowerCase() !== 'merchant') {
+        return { accepted: false, reason: 'H14_DELIVERY_REQUIRES_MERCHANT' };
+      }
+      const target = cleanText(targetName || '', 120);
+      const slot = Number(inventorySlot);
+      if (!target || !Number.isInteger(slot) || slot < 0) return { accepted: false, reason: 'H14_DELIVERY_ARGUMENT_INVALID' };
+      const roster = this._roster();
+      const farmer = roster && (roster.farmers || []).find(row => String(row.name) === target);
+      if (!farmer) {
+        this.metrics.safetyBlocks += 1;
+        return { accepted: false, reason: 'H14_DELIVERY_TARGET_NOT_OWN_FARMER' };
+      }
+      const targetEquipment = this._equipmentSnapshot(target);
+      if (!targetEquipment || targetEquipment.available === false) return { accepted: false, reason: 'H14_DELIVERY_TARGET_NOT_VISIBLE' };
+      const inventory = this._inventorySnapshot();
+      const row = inventory && (inventory.items || []).find(item => Number(item.slot) === slot);
+      if (!row) return { accepted: false, reason: 'H14_DELIVERY_ITEM_NOT_FOUND' };
+      if (row.locked || row.giveaway || row.gift || row.expiresAt) {
+        this.metrics.safetyBlocks += 1;
+        return { accepted: false, reason: 'H14_DELIVERY_ITEM_NOT_TRANSFER_SAFE' };
+      }
+      const normalized = this._normalizedItem(row);
+      if (!normalized) return { accepted: false, reason: 'H14_DELIVERY_ITEM_NOT_GEAR' };
+
+      let best = null;
+      for (const gearSlot of GEAR_SLOTS) {
+        const allowed = this._canEquip(normalized, gearSlot, farmer.ctype);
+        if (!allowed.ok) continue;
+        const current = targetEquipment.slots && targetEquipment.slots[gearSlot] || null;
+        const currentScore = current ? this.score(current, farmer.ctype) : Number.NEGATIVE_INFINITY;
+        const score = this.score(normalized, farmer.ctype);
+        const delta = score - currentScore;
+        if (!(current == null || delta > this.config.improvementEpsilon)) continue;
+        if (!best || delta > best.delta) best = { slot: gearSlot, current, currentScore, score, delta };
+      }
+      if (!best) return { accepted: false, reason: 'H14_DELIVERY_NOT_AN_IMPROVEMENT' };
+      this.request = {
+        id: 'gear-request-' + (++this.sequence),
+        kind: 'DELIVERY',
+        targetName: target,
+        targetCtype: farmer.ctype,
+        inventorySlot: slot,
+        candidateFingerprint: this._fingerprint(normalized),
+        candidate: clone(normalized),
+        targetSlot: best.slot,
+        scoreDelta: Number(best.delta.toFixed(4)),
+        createdAt: nowIso()
+      };
+      return { accepted: true, request: clone(this.request) };
+    }
+
+    _metric(kind, suffix) {
+      const prefix = { EQUIP: 'equips', UNEQUIP: 'unequips', DELIVERY: 'deliveries' }[kind];
+      const key = prefix ? prefix + suffix : null;
+      if (key && Object.prototype.hasOwnProperty.call(this.metrics, key)) this.metrics[key] += 1;
+    }
+
+    _suspend(kind, reason) {
+      this._metric(kind, 'Unknown');
+      this.pending = null;
+      this.request = null;
+      this.suspendedReason = cleanText(reason || 'H14_UNKNOWN', 240) || 'H14_UNKNOWN';
+      this.lastAction = { at: nowIso(), type: kind + '_UNKNOWN', reason: this.suspendedReason };
+      return { state: 'SUSPENDED', reason: this.suspendedReason };
+    }
+
+    _watch(value, pending) {
+      if (!value || typeof value.then !== 'function') {
+        pending.settlement = 'RETURNED';
+        pending.response = value == null ? null : clone(value);
+        return;
+      }
+      Promise.resolve(value).then(response => {
+        if (!this.pending || this.pending.id !== pending.id) return;
+        this.pending.settlement = 'RESOLVED';
+        this.pending.response = response == null ? null : clone(response);
+      }, error => {
+        if (!this.pending || this.pending.id !== pending.id) return;
+        this.pending.settlement = 'REJECTED';
+        this.pending.error = cleanText(error && (error.reason || error.message) || error || 'H14_ACTION_REJECTED', 500);
+      }).catch(() => {});
+    }
+
+    _dispatch(action, args, pendingBase) {
+      if (!this.actions || typeof this.actions.dispatch !== 'function') {
+        return { accepted: false, reason: 'H14_ACTION_BOUNDARY_UNAVAILABLE' };
+      }
+      let result;
+      try { result = this.actions.dispatch(action, args); }
+      catch (error) { return { accepted: false, reason: cleanText(error && error.message || error, 300) }; }
+      if (!result || result.state !== 'DISPATCHED') {
+        if (result && result.state === 'UNKNOWN') return this._suspend(pendingBase.kind, result.error && result.error.message || 'H14_DISPATCH_UNKNOWN');
+        this._metric(pendingBase.kind, 'Rejected');
+        this.request = null;
+        return { accepted: false, reason: result && result.state || 'H14_ACTION_REJECTED' };
+      }
+      const now = Date.now();
+      const pending = {
+        id: 'gear-pending-' + (++this.sequence),
+        ...pendingBase,
+        dispatchedAt: nowIso(),
+        dispatchedAtMs: now,
+        deadlineAtMs: now + this.config.outcomeTimeoutMs,
+        settlement: 'PENDING',
+        response: null,
+        error: null
+      };
+      this.pending = pending;
+      this._metric(pending.kind, 'Dispatched');
+      this.lastAction = { at: pending.dispatchedAt, type: pending.kind + '_DISPATCHED' };
+      this._watch(result.value, pending);
+      return { accepted: true, state: 'DISPATCHED', pending: clone(pending) };
+    }
+
+    _observed(pending) {
+      const inventory = this._inventorySnapshot();
+      if (!inventory || inventory.available === false) return false;
+      const snap = this._snapshot();
+      const localName = snap && snap.character && snap.character.name;
+      const equipment = localName ? this._equipmentSnapshot(localName) : null;
+
+      if (pending.kind === 'EQUIP') {
+        if (!equipment || equipment.available === false) return false;
+        const equipped = equipment.slots && equipment.slots[pending.targetSlot] || null;
+        if (!equipped || this._fingerprint(equipped) !== pending.candidateFingerprint) return false;
+        const candidateAfter = this._quantity(inventory, pending.candidateFingerprint);
+        if (candidateAfter == null || candidateAfter > pending.beforeCandidateQuantity - 1) return false;
+        if (pending.currentFingerprint) {
+          const oldAfter = this._quantity(inventory, pending.currentFingerprint);
+          if (oldAfter == null || oldAfter < pending.beforeCurrentQuantity + 1) return false;
+        }
+        return true;
+      }
+
+      if (pending.kind === 'UNEQUIP') {
+        if (!equipment || equipment.available === false) return false;
+        const equipped = equipment.slots && equipment.slots[pending.targetSlot] || null;
+        if (equipped) return false;
+        const after = this._quantity(inventory, pending.currentFingerprint);
+        return after != null && after >= pending.beforeCurrentQuantity + 1;
+      }
+
+      if (pending.kind === 'DELIVERY') {
+        const after = this._quantity(inventory, pending.candidateFingerprint);
+        return after != null && after <= pending.beforeCandidateQuantity - 1;
+      }
+      return false;
+    }
+
+    _observePending() {
+      const pending = this.pending;
+      if (!pending) return false;
+      if (pending.settlement === 'REJECTED') return this._suspend(pending.kind, pending.error || 'H14_ACTION_REJECTED');
+      if (pending.response && pending.response.failed === true) {
+        this.pending = null;
+        this.request = null;
+        this._metric(pending.kind, 'Rejected');
+        this.lastAction = {
+          at: nowIso(),
+          type: pending.kind + '_REJECTED',
+          reason: cleanText(pending.response.reason || 'H14_ACTION_REJECTED', 240)
+        };
+        return true;
+      }
+      if (this._observed(pending)) {
+        this.pending = null;
+        this.request = null;
+        this._metric(pending.kind, 'Confirmed');
+        this.lastAction = {
+          at: nowIso(),
+          type: pending.kind + '_CONFIRMED',
+          targetSlot: pending.targetSlot || null,
+          targetName: pending.targetName || null,
+          fingerprint: pending.candidateFingerprint || pending.currentFingerprint || null
+        };
+        return true;
+      }
+      if (Date.now() >= pending.deadlineAtMs) return this._suspend(pending.kind, 'H14_' + pending.kind + '_UNVERIFIED_TIMEOUT');
+      return false;
+    }
+
+    _revalidateDelivery(request, inventory) {
+      const snap = this._snapshot();
+      if (!snap || !snap.character || String(snap.character.ctype || '').toLowerCase() !== 'merchant') {
+        return { ok: false, reason: 'H14_DELIVERY_REQUIRES_MERCHANT' };
+      }
+      const roster = this._roster();
+      const farmer = roster && (roster.farmers || []).find(row => String(row.name) === String(request.targetName));
+      if (!farmer) return { ok: false, reason: 'H14_DELIVERY_TARGET_NOT_OWN_FARMER' };
+      const row = (inventory.items || []).find(item => Number(item.slot) === Number(request.inventorySlot));
+      if (!row || this._fingerprint(row) !== request.candidateFingerprint) return { ok: false, reason: 'H14_DELIVERY_SOURCE_CHANGED' };
+      if (row.locked || row.giveaway || row.gift || row.expiresAt) return { ok: false, reason: 'H14_DELIVERY_ITEM_NOT_TRANSFER_SAFE' };
+      const targetEquipment = this._equipmentSnapshot(request.targetName);
+      if (!targetEquipment || targetEquipment.available === false) return { ok: false, reason: 'H14_DELIVERY_TARGET_NOT_VISIBLE' };
+      const current = targetEquipment.slots && targetEquipment.slots[request.targetSlot] || null;
+      const currentScore = current ? this.score(current, farmer.ctype) : Number.NEGATIVE_INFINITY;
+      const candidateScore = this.score(row, farmer.ctype);
+      if (!(current == null || candidateScore - currentScore > this.config.improvementEpsilon)) {
+        return { ok: false, reason: 'H14_DELIVERY_NO_LONGER_IMPROVEMENT' };
+      }
+      return { ok: true, row, farmer };
+    }
+
+    tick() {
+      this.metrics.ticks += 1;
+      if (!this.moduleActive) return { state: 'STOPPED', reason: 'H14_MODULE_NOT_ACTIVE' };
+      if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason };
+
+      if (this.pending) {
+        this._observePending();
+        if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason };
+        return this.pending ? { state: 'PENDING', pending: clone(this.pending) } : { state: 'READY' };
+      }
+
+      const request = this.request;
+      if (!request) return this.plan();
+
+      const inventory = this._inventorySnapshot();
+      if (!inventory || inventory.available === false) return { state: 'BLOCKED', reason: 'H14_INVENTORY_UNAVAILABLE' };
+
+      if (request.kind === 'EQUIP') {
+        const gate = this._localWriteAllowed();
+        if (!gate.ok) {
+          this.request = null;
+          return { state: 'BLOCKED', reason: gate.reason };
+        }
+        const snap = this._snapshot();
+        const equipment = this._equipmentSnapshot(snap.character.name);
+        const row = (inventory.items || []).find(item => Number(item.slot) === Number(request.inventorySlot));
+        if (!row || this._fingerprint(row) !== request.candidateFingerprint) {
+          this.request = null;
+          return { state: 'BLOCKED', reason: 'H14_EQUIP_SOURCE_CHANGED' };
+        }
+        const allowed = this._canEquip(row, request.targetSlot, snap.character.ctype);
+        const conflict = this._handConflict(row, request.targetSlot, equipment, snap.character.ctype);
+        if (!allowed.ok || conflict.blocked) {
+          this.request = null;
+          this.metrics.safetyBlocks += 1;
+          if (conflict.blocked && String(conflict.reason).includes('TWO_HAND')) this.metrics.twoHandBlocks += 1;
+          return { state: 'BLOCKED', reason: conflict.blocked ? conflict.reason : allowed.reason };
+        }
+        const current = equipment.slots && equipment.slots[request.targetSlot] || null;
+        if (this._fingerprint(current) !== request.currentFingerprint) {
+          this.request = null;
+          this.metrics.safetyBlocks += 1;
+          return { state: 'BLOCKED', reason: 'H14_EQUIP_TARGET_CHANGED' };
+        }
+        const beforeCandidateQuantity = this._quantity(inventory, request.candidateFingerprint);
+        const beforeCurrentQuantity = request.currentFingerprint ? this._quantity(inventory, request.currentFingerprint) : 0;
+        return this._dispatch('equip', [request.inventorySlot, request.targetSlot], {
+          kind: request.kind,
+          targetSlot: request.targetSlot,
+          candidateFingerprint: request.candidateFingerprint,
+          currentFingerprint: this._fingerprint(current),
+          beforeCandidateQuantity,
+          beforeCurrentQuantity: beforeCurrentQuantity == null ? 0 : beforeCurrentQuantity
+        });
+      }
+
+      if (request.kind === 'UNEQUIP') {
+        const gate = this._localWriteAllowed();
+        if (!gate.ok) {
+          this.request = null;
+          return { state: 'BLOCKED', reason: gate.reason };
+        }
+        const snap = this._snapshot();
+        const equipment = this._equipmentSnapshot(snap.character.name);
+        const current = equipment.slots && equipment.slots[request.targetSlot] || null;
+        if (!current || this._fingerprint(current) !== request.currentFingerprint) {
+          this.request = null;
+          return { state: 'BLOCKED', reason: 'H14_UNEQUIP_SOURCE_CHANGED' };
+        }
+        if (Number(inventory.freeSlots) <= 0) {
+          this.request = null;
+          return { state: 'BLOCKED', reason: 'H14_UNEQUIP_NEEDS_FREE_SLOT' };
+        }
+        const beforeCurrentQuantity = this._quantity(inventory, request.currentFingerprint);
+        return this._dispatch('unequip', [request.targetSlot], {
+          kind: request.kind,
+          targetSlot: request.targetSlot,
+          currentFingerprint: request.currentFingerprint,
+          beforeCurrentQuantity: beforeCurrentQuantity == null ? 0 : beforeCurrentQuantity
+        });
+      }
+
+      if (request.kind === 'DELIVERY') {
+        const valid = this._revalidateDelivery(request, inventory);
+        if (!valid.ok) {
+          this.request = null;
+          this.metrics.safetyBlocks += 1;
+          return { state: 'BLOCKED', reason: valid.reason };
+        }
+        const beforeCandidateQuantity = this._quantity(inventory, request.candidateFingerprint);
+        return this._dispatch('send_item', [request.targetName, request.inventorySlot, 1], {
+          kind: request.kind,
+          targetName: request.targetName,
+          targetSlot: request.targetSlot,
+          candidateFingerprint: request.candidateFingerprint,
+          beforeCandidateQuantity
+        });
+      }
+
+      this.request = null;
+      return { state: 'BLOCKED', reason: 'H14_REQUEST_UNKNOWN' };
+    }
+
+    status() {
+      return {
+        schemaVersion: 1,
+        moduleActive: this.moduleActive,
+        suspended: !!this.suspendedReason,
+        suspendedReason: this.suspendedReason,
+        pending: clone(this.pending),
+        request: clone(this.request),
+        goals: clone(this.goals),
+        lastPlan: clone(this.lastPlan),
+        lastAction: clone(this.lastAction),
+        config: clone(this.config),
+        metrics: clone(this.metrics)
+      };
+    }
+  }
+
+  ns.GearController = GearController;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+
+(function (root) {
+  'use strict';
+
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns) throw new Error('ALBOT_INTERNALS_MISSING');
+
+  const clone = ns.helpers.clone;
+  const cleanText = ns.helpers.cleanText;
+
   function errorDetails(error) {
     return {
       name: cleanText(error && error.name || 'Error', 80),
@@ -9964,7 +11065,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.13.0-h13';
+      this.version = options.version || '0.14.0-h14';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -10069,6 +11170,15 @@
         movement: this.movement,
         inventory: this.inventory
       });
+      this.gear = new ns.GearController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        inventory: this.inventory,
+        roster: this.roster,
+        combat: this.combat
+      });
       this.liveTests = new ns.LiveTestRunner({
         runtime: this,
         logger: this.logger,
@@ -10082,6 +11192,7 @@
       this._registerH11LiveTest();
       this._registerH12LiveTest();
       this._registerH13LiveTest();
+      this._registerH14LiveTest();
       this._installErrorCapture();
       this.logger.info('AL Bot Runtime erstellt', {
         version: this.version,
@@ -10202,6 +11313,15 @@
         start: context => this.trade.start(context),
         stop: reason => this.trade.stop(reason),
         status: () => this.trade.status()
+      });
+
+      this.modules.register({
+        id: 'gear',
+        title: 'Gear',
+        version: '0.14.0',
+        start: context => this.gear.start(context),
+        stop: reason => this.gear.stop(reason),
+        status: () => this.gear.status()
       });
     }
 
@@ -12212,6 +13332,298 @@
       });
     }
 
+    _registerH14LiveTest() {
+      let baseline = null;
+      let testPlan = null;
+      let previousGoals = [];
+
+      const fingerprint = (runtime, row) => runtime.gear._fingerprint(row);
+
+      const tryRestore = async runtime => {
+        if (!testPlan || !testPlan.originalFingerprint || !testPlan.targetSlot) return;
+        const status = runtime.gear.status();
+        if (status.pending || status.suspended) return;
+        const equipment = runtime.game.equipmentSnapshot();
+        const current = equipment && equipment.slots && equipment.slots[testPlan.targetSlot] || null;
+        if (fingerprint(runtime, current) === testPlan.originalFingerprint) return;
+        const inventory = runtime.game.inventorySnapshot();
+        const original = inventory && (inventory.items || []).find(row =>
+          fingerprint(runtime, row) === testPlan.originalFingerprint);
+        if (!original) return;
+        const queued = runtime.gear.queueEquip(original.slot, testPlan.targetSlot);
+        if (!queued || queued.accepted !== true) return;
+        for (let i = 0; i < 40; i += 1) {
+          runtime.gear.tick();
+          const now = runtime.game.equipmentSnapshot();
+          const equipped = now && now.slots && now.slots[testPlan.targetSlot] || null;
+          if (fingerprint(runtime, equipped) === testPlan.originalFingerprint) return;
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+      };
+
+      this.liveTests.register({
+        id: 'h14-gear',
+        title: 'H14 – Gear',
+        description: 'Ein-Klick-Live-Test für Gear-Ranking, Gear Goals, Farmer-Priorität und einen reversiblen echten Equipment-Swap.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.gear.resetSafety('H14_LIVE_TEST_RESET'); } catch (_) {}
+          try { runtime.gear.cancelRequest('H14_LIVE_TEST_RESET'); } catch (_) {}
+          previousGoals = runtime.gear.goalSnapshot();
+          runtime.gear.setGoals([]);
+          const metrics = runtime.gear.status().metrics;
+          baseline = {
+            equipsConfirmed: metrics.equipsConfirmed,
+            equipsUnknown: metrics.equipsUnknown,
+            unequipsUnknown: metrics.unequipsUnknown,
+            deliveriesUnknown: metrics.deliveriesUnknown
+          };
+          testPlan = null;
+        },
+        cleanup: async ({ runtime }) => {
+          try { await tryRestore(runtime); } catch (_) {}
+          try { runtime.gear.cancelRequest('H14_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try { runtime.gear.setGoals(previousGoals); } catch (_) {}
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Live-Equipment, Gear-Ranking und reversiblen Swap-Kandidaten prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(game.character.rip !== true, 'CHARACTER_DEAD');
+              const module = runtime.modules.describe('gear');
+              assert(module && module.state === 'ACTIVE', 'H14_MODULE_NOT_ACTIVE');
+              assert(runtime.actions.available('equip'), 'EQUIP_API_UNAVAILABLE');
+              assert(runtime.actions.available('unequip'), 'UNEQUIP_API_UNAVAILABLE');
+
+              const equipment = runtime.game.equipmentSnapshot(game.character.name);
+              assert(equipment && equipment.available !== false, 'H14_EQUIPMENT_SNAPSHOT_UNAVAILABLE');
+              const plan = runtime.gear.plan();
+              assert(plan && plan.state === 'READY', plan && plan.reason || 'H14_PLAN_UNAVAILABLE');
+              assert(plan.farmerPriority > plan.merchantPriority, 'H14_FARMER_PRIORITY_NOT_ABOVE_MERCHANT');
+
+              const occupiedSafeImprovement = (plan.local.improvements || []).find(row =>
+                row.current && row.bestInventory && row.safeSwitch);
+              const fallback = (plan.local.slots || []).find(row =>
+                row.current && row.bestInventory && row.safeSwitch
+                && fingerprint(runtime, row.current) !== row.bestInventory.fingerprint);
+              const selected = occupiedSafeImprovement || fallback;
+              assert(selected && selected.current && selected.bestInventory,
+                'H14_NEEDS_REVERSIBLE_COMPATIBLE_INVENTORY_GEAR');
+
+              const originalFingerprint = fingerprint(runtime, selected.current);
+              const candidateFingerprint = selected.bestInventory.fingerprint;
+              assert(originalFingerprint && candidateFingerprint && originalFingerprint !== candidateFingerprint,
+                'H14_SWAP_FINGERPRINT_INVALID');
+
+              testPlan = {
+                targetSlot: selected.slot,
+                candidateInventorySlot: selected.bestInventory.inventorySlot,
+                candidateFingerprint,
+                candidateName: selected.bestInventory.item.name,
+                candidateLevel: Number(selected.bestInventory.item.level) || 0,
+                candidateScore: selected.bestInventory.score,
+                originalFingerprint,
+                originalName: selected.current.name,
+                originalLevel: Number(selected.current.level) || 0,
+                originalScore: selected.currentScore,
+                delta: selected.delta,
+                mode: occupiedSafeImprovement ? 'IMPROVEMENT' : 'REVERSIBLE_COMPARISON'
+              };
+
+              runtime.gear.setGoals([{
+                id: 'h14-live-goal',
+                targetName: game.character.name,
+                slot: testPlan.targetSlot,
+                itemName: testPlan.candidateName,
+                minLevel: testPlan.candidateLevel,
+                priority: 1000
+              }]);
+
+              return {
+                character: game.character.name,
+                ctype: game.character.ctype,
+                slot: testPlan.targetSlot,
+                mode: testPlan.mode,
+                original: {
+                  name: testPlan.originalName,
+                  level: testPlan.originalLevel,
+                  score: testPlan.originalScore
+                },
+                candidate: {
+                  inventorySlot: testPlan.candidateInventorySlot,
+                  name: testPlan.candidateName,
+                  level: testPlan.candidateLevel,
+                  score: testPlan.candidateScore
+                },
+                delta: testPlan.delta,
+                farmerPriority: plan.farmerPriority,
+                merchantPriority: plan.merchantPriority,
+                groupTargets: (plan.group && plan.group.targets || []).map(row => ({
+                  name: row.name,
+                  ctype: row.ctype,
+                  role: row.role,
+                  priority: row.priority,
+                  visible: row.visible
+                }))
+              };
+            }
+          },
+          {
+            id: 'planning',
+            title: 'Gear Goal, Klassenkompatibilität und Farmer-vor-Merchant-Planung prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              assert(testPlan, 'H14_LIVE_TEST_PLAN_MISSING');
+              const plan = runtime.gear.plan();
+              assert(plan && plan.state === 'READY', plan && plan.reason || 'H14_PLAN_UNAVAILABLE');
+              const goal = (plan.goals || []).find(row => row.id === 'h14-live-goal');
+              assert(goal, 'H14_LIVE_GOAL_MISSING');
+              assert(['READY_TO_EQUIP', 'ACHIEVED'].includes(goal.state), 'H14_LIVE_GOAL_NOT_ACTIONABLE');
+              const slot = (plan.local.slots || []).find(row => row.slot === testPlan.targetSlot);
+              assert(slot && slot.bestInventory, 'H14_TARGET_SLOT_PLAN_MISSING');
+              if (testPlan.mode === 'IMPROVEMENT') {
+                assert(slot.improvement === true && Number(slot.delta) > 0, 'H14_BETTER_GEAR_NOT_DETECTED');
+              }
+              const targetOrder = (plan.group && plan.group.targets || []).map(row => row.role);
+              const firstMerchant = targetOrder.indexOf('MERCHANT');
+              const lastFarmer = targetOrder.lastIndexOf('FARMER');
+              if (firstMerchant >= 0 && lastFarmer >= 0) {
+                assert(lastFarmer < firstMerchant, 'H14_GROUP_PRIORITY_ORDER_INVALID');
+              }
+              return {
+                goalState: goal.state,
+                slot: testPlan.targetSlot,
+                improvement: slot.improvement,
+                delta: slot.delta,
+                groupTargetOrder: targetOrder,
+                groupProposals: plan.group && plan.group.proposals ? plan.group.proposals.length : 0,
+                upgradeCandidates: plan.local.upgradeCandidates.length
+              };
+            }
+          },
+          {
+            id: 'equip-swap',
+            title: 'Gear-Kandidaten echt ausrüsten und Live-Deltas bestätigen',
+            timeoutMs: 12000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(testPlan, 'H14_LIVE_TEST_PLAN_MISSING');
+              const queued = runtime.gear.queueEquip(testPlan.candidateInventorySlot, testPlan.targetSlot);
+              assert(queued && queued.accepted === true, queued && queued.reason || 'H14_EQUIP_QUEUE_FAILED');
+              const confirmed = await waitFor(() => {
+                const status = runtime.gear.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H14_SUSPENDED');
+                if (status.metrics.equipsUnknown > baseline.equipsUnknown) throw new Error('H14_EQUIP_UNKNOWN');
+                return status.metrics.equipsConfirmed > baseline.equipsConfirmed ? status : null;
+              }, { timeoutMs: 10000, pollMs: 100, label: 'h14-equip-confirmed' });
+
+              const equipment = runtime.game.equipmentSnapshot();
+              const current = equipment && equipment.slots && equipment.slots[testPlan.targetSlot] || null;
+              assert(fingerprint(runtime, current) === testPlan.candidateFingerprint,
+                'H14_EQUIP_TARGET_NOT_OBSERVED');
+
+              const inventory = runtime.game.inventorySnapshot();
+              const original = inventory && (inventory.items || []).find(row =>
+                fingerprint(runtime, row) === testPlan.originalFingerprint);
+              assert(original, 'H14_ORIGINAL_GEAR_NOT_RETURNED_TO_INVENTORY');
+              testPlan.restoreInventorySlot = Number(original.slot);
+
+              return {
+                slot: testPlan.targetSlot,
+                equipped: { name: current.name, level: current.level },
+                originalInventorySlot: testPlan.restoreInventorySlot,
+                equipsConfirmed: confirmed.metrics.equipsConfirmed - baseline.equipsConfirmed
+              };
+            }
+          },
+          {
+            id: 'restore',
+            title: 'Ursprüngliches Gear exakt zurückrüsten und Zustand wiederherstellen',
+            timeoutMs: 12000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(testPlan && Number.isInteger(testPlan.restoreInventorySlot), 'H14_RESTORE_SLOT_MISSING');
+              const queued = runtime.gear.queueEquip(testPlan.restoreInventorySlot, testPlan.targetSlot);
+              assert(queued && queued.accepted === true, queued && queued.reason || 'H14_RESTORE_QUEUE_FAILED');
+              const restored = await waitFor(() => {
+                const status = runtime.gear.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H14_SUSPENDED');
+                if (status.metrics.equipsUnknown > baseline.equipsUnknown) throw new Error('H14_EQUIP_UNKNOWN');
+                return status.metrics.equipsConfirmed >= baseline.equipsConfirmed + 2 ? status : null;
+              }, { timeoutMs: 10000, pollMs: 100, label: 'h14-restore-confirmed' });
+
+              const equipment = runtime.game.equipmentSnapshot();
+              const current = equipment && equipment.slots && equipment.slots[testPlan.targetSlot] || null;
+              assert(fingerprint(runtime, current) === testPlan.originalFingerprint,
+                'H14_ORIGINAL_GEAR_NOT_RESTORED');
+
+              const inventory = runtime.game.inventorySnapshot();
+              const candidate = inventory && (inventory.items || []).find(row =>
+                fingerprint(runtime, row) === testPlan.candidateFingerprint);
+              assert(candidate, 'H14_CANDIDATE_NOT_RETURNED_TO_INVENTORY');
+
+              return {
+                slot: testPlan.targetSlot,
+                restored: { name: current.name, level: current.level },
+                candidateInventorySlot: candidate.slot,
+                equipsConfirmed: restored.metrics.equipsConfirmed - baseline.equipsConfirmed
+              };
+            }
+          },
+          {
+            id: 'stability',
+            title: 'Fünf Sekunden ohne Gear-UNKNOWN oder unerwarteten Zustand beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              await sleep(5000);
+              const status = runtime.gear.status();
+              assert(status.suspended === false, status.suspendedReason || 'H14_SUSPENDED');
+              assert(status.metrics.equipsUnknown === baseline.equipsUnknown, 'H14_EQUIP_UNKNOWN_DURING_STABILITY');
+              assert(status.metrics.unequipsUnknown === baseline.unequipsUnknown, 'H14_UNEQUIP_UNKNOWN_DURING_STABILITY');
+              assert(status.metrics.deliveriesUnknown === baseline.deliveriesUnknown, 'H14_DELIVERY_UNKNOWN_DURING_STABILITY');
+              const equipment = runtime.game.equipmentSnapshot();
+              const current = equipment && equipment.slots && equipment.slots[testPlan.targetSlot] || null;
+              assert(fingerprint(runtime, current) === testPlan.originalFingerprint,
+                'H14_RESTORED_GEAR_DRIFTED');
+              return {
+                equipUnknown: status.metrics.equipsUnknown - baseline.equipsUnknown,
+                unequipUnknown: status.metrics.unequipsUnknown - baseline.unequipsUnknown,
+                deliveryUnknown: status.metrics.deliveriesUnknown - baseline.deliveriesUnknown,
+                originalRestored: true
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'H14 Pending/Request/Goal vollständig freigeben',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.gear.cancelRequest('H14_LIVE_TEST_COMPLETE');
+              runtime.gear.setGoals(previousGoals);
+              const gear = runtime.gear.status();
+              assert(gear.pending == null, 'H14_PENDING_REMAINS');
+              assert(gear.request == null, 'H14_REQUEST_REMAINS');
+              const equipment = runtime.game.equipmentSnapshot();
+              const current = equipment && equipment.slots && equipment.slots[testPlan.targetSlot] || null;
+              assert(fingerprint(runtime, current) === testPlan.originalFingerprint,
+                'H14_CLEANUP_ORIGINAL_GEAR_NOT_RESTORED');
+              return {
+                pending: !!gear.pending,
+                request: !!gear.request,
+                originalRestored: true,
+                goalsRestored: gear.goals.length === previousGoals.length
+              };
+            }
+          }
+        ]
+      });
+    }
+
     _installErrorCapture() {
       if (!this.root || typeof this.root.addEventListener !== 'function') return;
       this._errorHandler = event => {
@@ -12362,6 +13774,7 @@
         merchant: this.merchant.status(),
         bank: this.bank.status(),
         trade: this.trade.status(),
+        gear: this.gear.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
         roster,
@@ -12390,6 +13803,7 @@
         merchant: this.merchant.status(),
         bank: this.bank.status(),
         trade: this.trade.status(),
+        gear: this.gear.status(),
         liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
         logs: this.logger.list(160),
@@ -12417,6 +13831,7 @@
       push('merchant-controller', !!this.merchant.status() && typeof this.merchant.plan === 'function', this.merchant.status());
       push('bank-controller', !!this.bank.status() && typeof this.bank.plan === 'function' && typeof this.bank.reconcile === 'function', this.bank.status());
       push('trade-controller', !!this.trade.status() && typeof this.trade.marketAnalysis === 'function' && typeof this.trade.queueAcquire === 'function', this.trade.status());
+      push('gear-controller', !!this.gear.status() && typeof this.gear.plan === 'function' && typeof this.gear.queueBestLocal === 'function', this.gear.status());
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
       push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);
@@ -12547,6 +13962,7 @@
       this.merchantResult = null;
       this.bankResult = null;
       this.tradeResult = null;
+      this.gearResult = null;
       this.liveTestClipboard = null;
       this._offLog = null;
       this._dragCleanup = null;
@@ -12603,7 +14019,7 @@
 </style>
 <div class="albot-head" id="albot-drag-handle"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-minimize" class="albot-window-btn" title="Fenster minimieren" aria-label="Fenster minimieren">—</button><button id="albot-emergency" class="albot-stop">STOP</button></div>
 <div class="albot-tabs">
-<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="merchant">Merchant</button><button class="albot-tab" data-tab="bank">Bank</button><button class="albot-tab" data-tab="trade">Handel</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
+<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="merchant">Merchant</button><button class="albot-tab" data-tab="bank">Bank</button><button class="albot-tab" data-tab="trade">Handel</button><button class="albot-tab" data-tab="gear">Gear</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
 </div>
 <div class="albot-body">
 <section id="albot-panel-overview" class="albot-panel active"></section>
@@ -12617,6 +14033,7 @@
 <section id="albot-panel-merchant" class="albot-panel"></section>
 <section id="albot-panel-bank" class="albot-panel"></section>
 <section id="albot-panel-trade" class="albot-panel"></section>
+<section id="albot-panel-gear" class="albot-panel"></section>
 <section id="albot-panel-live-test" class="albot-panel"></section>
 <section id="albot-panel-knowledge" class="albot-panel"></section>
 <section id="albot-panel-logs" class="albot-panel"></section>
@@ -12759,6 +14176,7 @@
       if (this.activeTab === 'merchant') this.renderMerchant(status);
       if (this.activeTab === 'bank') this.renderBank(status);
       if (this.activeTab === 'trade') this.renderTrade(status);
+      if (this.activeTab === 'gear') this.renderGear(status);
       if (this.activeTab === 'live-test') this.renderLiveTest(status);
       if (this.activeTab === 'knowledge') this.renderKnowledge(status);
       if (this.activeTab === 'logs') this.renderLogs();
@@ -12781,6 +14199,7 @@
       this.renderMerchant(status);
       this.renderBank(status);
       this.renderTrade(status);
+      this.renderGear(status);
       this.renderLiveTest(status);
       this.renderKnowledge(status);
       this.renderLogs();
@@ -13510,6 +14929,120 @@ ${items.length ? items.slice(0, 24).map(row => '<div class="albot-small">#'+esc(
       };
     }
 
+    renderGear(status) {
+      const panel = this.host.querySelector('#albot-panel-gear');
+      if (!panel) return;
+      const gear = status.gear || {};
+      const metrics = gear.metrics || {};
+      let plan = gear.lastPlan || null;
+      try { if (!plan || plan.state !== 'READY') plan = this.runtime.gear.plan(); } catch (_) {}
+      const local = plan && plan.local || {};
+      const improvements = Array.isArray(local.improvements) ? local.improvements : [];
+      const proposals = plan && plan.group && Array.isArray(plan.group.proposals) ? plan.group.proposals : [];
+      const goals = Array.isArray(gear.goals) ? gear.goals : [];
+      const upgradeCandidates = Array.isArray(local.upgradeCandidates) ? local.upgradeCandidates : [];
+      const resultText = this.gearResult ? JSON.stringify(this.gearResult, null, 2) : 'Noch keine manuelle H14-Aktion.';
+
+      const improvementOptions = improvements.length
+        ? improvements.map(row => '<option value="'+esc(row.bestInventory.inventorySlot)+'|'+esc(row.slot)+'">'+esc(row.slot)+' · '+esc(row.bestInventory.item.name)+' +'+esc(row.bestInventory.item.level || 0)+' · Δ '+esc(row.delta)+'</option>').join('')
+        : '<option value="">keine sichere lokale Verbesserung</option>';
+      const slotOptions = (local.slots || []).filter(row => row.current)
+        .map(row => '<option value="'+esc(row.slot)+'">'+esc(row.slot)+' · '+esc(row.current.name)+' +'+esc(row.current.level || 0)+'</option>').join('') || '<option value="">kein belegter Gear-Slot</option>';
+      const proposalOptions = proposals.length
+        ? proposals.map(row => '<option value="'+esc(row.targetName)+'|'+esc(row.inventorySlot)+'">'+esc(row.targetName)+' · '+esc(row.slot)+' · '+esc(row.item.name)+' +'+esc(row.item.level || 0)+' · Δ '+esc(row.delta)+'</option>').join('')
+        : '<option value="">kein sichtbarer Farmer-Upgrade-Vorschlag</option>';
+
+      panel.innerHTML = `<div class="albot-card"><b>H14 Gear</b>
+<div class="albot-small">Klassenkompatibles Gear-Ranking, Farmer-vor-Merchant-Allokation, Gear Goals und bestätigte lokale Swaps. Upgrade/Compound bleibt hier reine Planung für H15.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${gear.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Plan</span><div class="albot-v">${esc(plan && plan.state || '-')} · ${esc(plan && plan.reason || '-')}</div></div>
+<div><span class="albot-k">Lokale Verbesserungen</span><div class="albot-v">${esc(improvements.length)}</div></div>
+<div><span class="albot-k">Farmer-Proposals</span><div class="albot-v">${esc(proposals.length)}</div></div>
+<div><span class="albot-k">Upgrade-Kandidaten</span><div class="albot-v">${esc(upgradeCandidates.length)}</div></div>
+<div><span class="albot-k">Gear Goals</span><div class="albot-v">${esc(goals.length)}</div></div>
+<div><span class="albot-k">Equip bestätigt</span><div class="albot-v">${esc(metrics.equipsConfirmed || 0)}</div></div>
+<div><span class="albot-k">Delivery bestätigt</span><div class="albot-v">${esc(metrics.deliveriesConfirmed || 0)}</div></div>
+<div><span class="albot-k">Safety Blocks</span><div class="albot-v">${esc(metrics.safetyBlocks || 0)}</div></div>
+<div><span class="albot-k">Suspendiert</span><div class="albot-v">${gear.suspended ? 'JA · '+esc(gear.suspendedReason || '-') : 'NEIN'}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Lokaler Swap</b>
+<div class="albot-row"><select id="albot-h14-improvement">${improvementOptions}</select><button id="albot-h14-equip" class="albot-btn">Verbesserung ausrüsten</button></div>
+<div class="albot-row"><select id="albot-h14-equipped">${slotOptions}</select><button id="albot-h14-unequip" class="albot-btn warn">Slot ausziehen</button></div>
+<div class="albot-small">Zwei-Hand-Konflikte und laufender Combat werden fail-closed blockiert. Erfolg zählt erst nach Live-Equipment- und Inventar-Delta.</div>
+</div>
+
+<div class="albot-card"><b>Farmer-Priorität / Gear Delivery</b>
+<div class="albot-small">Farmer-Priorität ${esc(plan && plan.farmerPriority || 100)} · Merchant-Priorität ${esc(plan && plan.merchantPriority || 10)}. Delivery ist immer explizit; H14 verschickt kein Gear automatisch.</div>
+<div class="albot-row"><select id="albot-h14-proposal">${proposalOptions}</select><button id="albot-h14-deliver" class="albot-btn">Vorschlag senden</button></div>
+</div>
+
+<div class="albot-card"><b>Gear Goals</b>
+<div class="albot-row"><input id="albot-h14-goal-target" placeholder="Character"><select id="albot-h14-goal-slot"><option>helmet</option><option>coat</option><option>pants</option><option>gloves</option><option>shoes</option><option>cape</option><option>belt</option><option>amulet</option><option>orb</option><option>ring1</option><option>ring2</option><option>earring1</option><option>earring2</option><option>mainhand</option><option>offhand</option></select></div>
+<div class="albot-row"><input id="albot-h14-goal-item" placeholder="Item-ID"><input id="albot-h14-goal-level" type="number" min="0" step="1" value="0" style="max-width:90px"><button id="albot-h14-goal-add" class="albot-btn">Goal hinzufügen</button><button id="albot-h14-goal-clear" class="albot-btn warn">Goals leeren</button></div>
+<div class="albot-small">${goals.length ? goals.map(row => esc(row.targetName)+' · '+esc(row.slot)+' · '+esc(row.itemName || '*')+' +'+esc(row.minLevel || 0)).join('<br>') : 'keine Gear Goals'}</div>
+</div>
+
+<div class="albot-card"><b>Steuerung</b>
+<div class="albot-row"><button id="albot-h14-plan" class="albot-btn">Plan</button><button id="albot-h14-tick" class="albot-btn">Tick</button><button id="albot-h14-reset" class="albot-btn warn" ${gear.suspended ? '' : 'disabled'}>Safety zurücksetzen</button></div>
+<div class="albot-small">Pending: ${gear.pending ? esc(gear.pending.kind) : 'nein'} · Request: ${gear.request ? esc(gear.request.kind) : 'keiner'}</div>
+</div>
+
+<div class="albot-card"><b>Letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.gearResult = fn(); }
+        catch (error) { this.gearResult = { ok: false, reason: String(error && error.message || error) }; }
+        this.renderGear(this.runtime.status());
+      };
+      const planButton = panel.querySelector('#albot-h14-plan');
+      if (planButton) planButton.onclick = () => run(() => this.runtime.gear.plan());
+      const tickButton = panel.querySelector('#albot-h14-tick');
+      if (tickButton) tickButton.onclick = () => run(() => this.runtime.gear.tick());
+      const resetButton = panel.querySelector('#albot-h14-reset');
+      if (resetButton) resetButton.onclick = () => run(() => this.runtime.gear.resetSafety('GUI_H14_RESET'));
+
+      const equipButton = panel.querySelector('#albot-h14-equip');
+      if (equipButton) equipButton.onclick = () => {
+        const raw = panel.querySelector('#albot-h14-improvement').value || '';
+        const split = raw.lastIndexOf('|');
+        const inventorySlot = split >= 0 ? Number(raw.slice(0, split)) : NaN;
+        const targetSlot = split >= 0 ? raw.slice(split + 1) : '';
+        run(() => Number.isInteger(inventorySlot) && targetSlot
+          ? this.runtime.gear.queueEquip(inventorySlot, targetSlot)
+          : { accepted: false, reason: 'H14_GUI_NO_IMPROVEMENT' });
+      };
+      const unequipButton = panel.querySelector('#albot-h14-unequip');
+      if (unequipButton) unequipButton.onclick = () => {
+        const targetSlot = panel.querySelector('#albot-h14-equipped').value || '';
+        run(() => targetSlot
+          ? this.runtime.gear.queueUnequip(targetSlot)
+          : { accepted: false, reason: 'H14_GUI_NO_EQUIPPED_SLOT' });
+      };
+      const deliverButton = panel.querySelector('#albot-h14-deliver');
+      if (deliverButton) deliverButton.onclick = () => {
+        const raw = panel.querySelector('#albot-h14-proposal').value || '';
+        const split = raw.lastIndexOf('|');
+        const targetName = split >= 0 ? raw.slice(0, split) : '';
+        const inventorySlot = split >= 0 ? Number(raw.slice(split + 1)) : NaN;
+        run(() => targetName && Number.isInteger(inventorySlot)
+          ? this.runtime.gear.queueDelivery(targetName, inventorySlot)
+          : { accepted: false, reason: 'H14_GUI_NO_DELIVERY_PROPOSAL' });
+      };
+      const addGoal = panel.querySelector('#albot-h14-goal-add');
+      if (addGoal) addGoal.onclick = () => {
+        const targetName = panel.querySelector('#albot-h14-goal-target').value || '';
+        const slot = panel.querySelector('#albot-h14-goal-slot').value || '';
+        const itemName = panel.querySelector('#albot-h14-goal-item').value || '';
+        const minLevel = Number(panel.querySelector('#albot-h14-goal-level').value) || 0;
+        const next = this.runtime.gear.goalSnapshot().concat([{ targetName, slot, itemName, minLevel, priority: 0 }]);
+        run(() => this.runtime.gear.setGoals(next));
+      };
+      const clearGoal = panel.querySelector('#albot-h14-goal-clear');
+      if (clearGoal) clearGoal.onclick = () => run(() => this.runtime.gear.setGoals([]));
+    }
+
     async runRecommendedLiveTest() {
       const state = this.runtime.status();
       if (state.emergencyStop && state.emergencyStop.latched) {
@@ -13740,7 +15273,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.13.0-h13',
+    version: '0.14.0-h14',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -13797,6 +15330,9 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
       visiblePlayers: options => runtime.game.visiblePlayers(options || {}),
       monsterDefinition: mtype => runtime.game.monsterDefinition(mtype),
       itemDefinition: name => runtime.game.itemDefinition(name),
+      equipmentDefinition: name => runtime.game.equipmentDefinition(name),
+      equipment: name => runtime.game.equipmentSnapshot(name),
+      classEquipmentProfile: ctype => runtime.game.classEquipmentProfile(ctype),
       farmSpots: options => runtime.game.farmSpotCatalog(options || {}),
       inventory: () => runtime.game.inventorySnapshot(),
       bank: () => runtime.game.bankSnapshot(),
@@ -13901,6 +15437,20 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
       sellMarket: (playerName, tradeSlot, quantity, options) => runtime.trade.queueMarketSell(playerName, tradeSlot, quantity, options || {})
     },
 
+    gear: {
+      status: () => runtime.gear.status(),
+      plan: () => runtime.gear.plan(),
+      tick: () => runtime.gear.tick(),
+      reset: reason => runtime.gear.resetSafety(reason || 'API_H14_RESET'),
+      cancel: reason => runtime.gear.cancelRequest(reason || 'API_H14_REQUEST_CANCEL'),
+      goals: value => value == null ? runtime.gear.goalSnapshot() : runtime.gear.setGoals(value),
+      score: (item, ctype) => runtime.gear.score(item, ctype),
+      equipBest: slot => runtime.gear.queueBestLocal(slot),
+      equip: (inventorySlot, targetSlot) => runtime.gear.queueEquip(inventorySlot, targetSlot),
+      unequip: targetSlot => runtime.gear.queueUnequip(targetSlot),
+      deliver: (targetName, inventorySlot) => runtime.gear.queueDelivery(targetName, inventorySlot)
+    },
+
     liveTests: {
       status: () => runtime.liveTests.status(),
       list: () => runtime.liveTests.list(),
@@ -13954,6 +15504,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
   Object.freeze(api.merchant);
   Object.freeze(api.bank);
   Object.freeze(api.trade);
+  Object.freeze(api.gear);
   Object.freeze(api.liveTests);
   Object.freeze(api.knowledge);
   Object.freeze(api.roster);
@@ -13971,7 +15522,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
     };
   } catch (_) {}
 
-  runtime.logger.info('AL Bot H13 geladen', {
+  runtime.logger.info('AL Bot H14 geladen', {
     version: api.version,
     bootCount,
     hotReload: !!previous,
