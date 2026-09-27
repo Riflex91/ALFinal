@@ -470,6 +470,124 @@
       };
     }
 
+    equipmentDefinition(name) {
+      const id = cleanText(name || '', 160);
+      if (!id) return null;
+      const G = this._gameData();
+      const raw = G && G.items && G.items[id];
+      if (!raw || typeof raw !== 'object') return null;
+      const statNames = ['attack', 'armor', 'resistance', 'hp', 'mp', 'speed', 'range', 'str', 'dex', 'int', 'vit', 'stat'];
+      const stats = {};
+      const upgradeGrowth = {};
+      for (const key of statNames) {
+        const value = finite(raw[key]);
+        if (value != null) stats[key] = value;
+        const growth = raw.upgrade && typeof raw.upgrade === 'object' ? finite(raw.upgrade[key]) : null;
+        if (growth != null) upgradeGrowth[key] = growth;
+      }
+      const classes = Array.isArray(raw.class)
+        ? raw.class.map(value => cleanText(value, 60).toLowerCase()).filter(Boolean)
+        : [];
+      return {
+        id,
+        name: raw.name == null ? id : cleanText(raw.name, 200),
+        type: raw.type == null ? null : cleanText(raw.type, 80).toLowerCase(),
+        wtype: raw.wtype == null ? null : cleanText(raw.wtype, 80).toLowerCase(),
+        classes,
+        stats,
+        upgradeGrowth,
+        upgradeable: raw.upgrade === true || !!(raw.upgrade && typeof raw.upgrade === 'object'),
+        compoundable: raw.compound === true || !!(raw.compound && typeof raw.compound === 'object'),
+        grades: Array.isArray(raw.grades) ? clone(raw.grades) : null,
+        g: finite(raw.g),
+        cash: safeBoolean(raw.cash),
+        quest: safeBoolean(raw.quest) || String(raw.type || '').toLowerCase() === 'quest'
+      };
+    }
+
+    classEquipmentProfile(ctype) {
+      const id = cleanText(ctype || '', 60).toLowerCase();
+      if (!id) return null;
+      const G = this._gameData();
+      const raw = G && G.classes && G.classes[id];
+      if (!raw || typeof raw !== 'object') return null;
+      const allowed = value => {
+        if (!value || typeof value !== 'object') return [];
+        return Object.entries(value)
+          .filter(([, enabled]) => enabled !== false && enabled != null)
+          .map(([name]) => cleanText(name, 80).toLowerCase())
+          .filter(Boolean)
+          .sort();
+      };
+      return {
+        ctype: id,
+        mainhand: allowed(raw.mainhand),
+        offhand: allowed(raw.offhand),
+        doublehand: allowed(raw.doublehand)
+      };
+    }
+
+    equipmentSnapshot(name = null) {
+      const character = this._character();
+      if (!character || !character.name) {
+        return {
+          schemaVersion: 1,
+          available: false,
+          reason: 'CHARACTER_UNAVAILABLE',
+          character: null,
+          slots: {}
+        };
+      }
+      const wanted = cleanText(name || character.name, 120);
+      let entity = null;
+      if (!wanted || wanted === String(character.name || '') || wanted === String(character.id || '')) entity = character;
+      else entity = this.playerReference(wanted, { allowDead: true });
+      if (!entity) {
+        return {
+          schemaVersion: 1,
+          available: false,
+          reason: 'PLAYER_NOT_VISIBLE',
+          character: { name: wanted || null, ctype: null },
+          slots: {}
+        };
+      }
+
+      const ctype = cleanText(entity.ctype || entity.type || '', 60).toLowerCase() || null;
+      const rawSlots = entity.slots && typeof entity.slots === 'object' ? entity.slots : {};
+      const slots = {};
+      for (const [slot, raw] of Object.entries(rawSlots)) {
+        if (String(slot).startsWith('trade') || String(slot) === 'elixir') continue;
+        if (!raw || !raw.name) continue;
+        const itemName = cleanText(raw.name, 160);
+        slots[String(slot)] = {
+          slot: String(slot),
+          name: itemName,
+          quantity: Math.max(1, finite(raw.q) || 1),
+          level: Math.max(0, finite(raw.level) || 0),
+          statType: raw.stat_type == null ? null : cleanText(raw.stat_type, 80),
+          locked: !!raw.l,
+          giveaway: !!raw.giveaway,
+          gift: !!raw.gift,
+          property: raw.p == null ? null : clone(raw.p),
+          expiresAt: raw.expires == null ? null : raw.expires,
+          definition: this.equipmentDefinition(itemName)
+        };
+      }
+      return {
+        schemaVersion: 1,
+        available: true,
+        reason: null,
+        character: {
+          name: cleanText(entity.name || wanted || '', 120) || null,
+          ctype,
+          map: entity.map == null ? (character.map || null) : entity.map,
+          rip: !!(entity.rip || entity.dead)
+        },
+        profile: this.classEquipmentProfile(ctype),
+        slots
+      };
+    }
+
     itemDefinition(name) {
       const id = cleanText(name || '', 160);
       if (!id) return null;
