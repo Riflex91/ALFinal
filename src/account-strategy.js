@@ -27,7 +27,7 @@
   });
 
   const TASK_DEFAULTS = Object.freeze({
-    FARM: { minMembers: 1, maxMembers: 2, required: ['DPS'], combatOnly: true, progressionWeight: 0.20 },
+    FARM: { minMembers: 3, maxMembers: 3, required: ['TANK', 'HEALER', 'DPS'], combatOnly: true, progressionWeight: 0.20 },
     QUEST: { minMembers: 1, maxMembers: 2, required: ['DPS'], combatOnly: true, progressionWeight: 0.16 },
     BOSS: { minMembers: 3, maxMembers: 4, required: ['TANK', 'HEALER', 'DPS'], combatOnly: true, progressionWeight: 0 },
     EVENT: { minMembers: 3, maxMembers: 4, required: ['TANK', 'HEALER', 'DPS'], combatOnly: true, progressionWeight: 0 },
@@ -257,7 +257,7 @@
 
     _scoredProfiles() {
       const rows = this.profiles();
-      const usable = rows.filter(row => row.online && row.rip !== true && row.emergencyStopLatched !== true);
+      const usable = rows.filter(row => row.online && row.running === true && row.rip !== true && row.emergencyStopLatched !== true);
       const maxLevel = Math.max(1, ...usable.map(row => finite(row.level) || 1));
       const maxGear = Math.max(1, ...usable.map(row => finite(row.gearScore) || 0));
       const combatRaw = row => {
@@ -291,6 +291,7 @@
     progressionPlan() {
       const combat = this._scoredProfiles().filter(row =>
         row.online
+        && row.running === true
         && row.rip !== true
         && row.ctype !== 'merchant'
         && row.capabilities.includes('DPS')
@@ -323,7 +324,7 @@
         : defaults.required.slice();
       const progression = this.progressionPlan();
       const scored = this._scoredProfiles()
-        .filter(row => row.online && row.rip !== true && row.emergencyStopLatched !== true)
+        .filter(row => row.online && row.running === true && row.rip !== true && row.emergencyStopLatched !== true)
         .filter(row => !defaults.combatOnly || row.ctype !== 'merchant')
         .slice(0, this.config.maxCandidates);
 
@@ -368,7 +369,7 @@
         leaderName = tank && tank.name || healer && healer.name || strongest && strongest.name || null;
       }
       const supportMemberNames = this._scoredProfiles()
-        .filter(row => row.online && row.rip !== true && row.ctype === 'merchant')
+        .filter(row => row.online && row.running === true && row.rip !== true && row.ctype === 'merchant')
         .map(row => row.name)
         .sort();
       const result = {
