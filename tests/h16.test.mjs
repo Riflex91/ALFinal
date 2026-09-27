@@ -127,6 +127,7 @@ function fixture(options = {}) {
     dispatch: (name, args) => {
       state.dispatches.push({ name, args: clone(args) });
       if (options.syncUnknown) return { state: 'UNKNOWN', error: { message: 'NETWORK_UNCERTAIN' } };
+      if (options.rejectPromise) return { state: 'DISPATCHED', value: Promise.reject(new Error('PROMISE_REJECTED_AFTER_DISPATCH')) };
       if (name === 'exchange' && options.noMutation !== true) {
         const slot = Number(args[0]);
         const item = state.rows.find(r => Number(r.slot) === slot);
@@ -350,6 +351,22 @@ test('H16 refuses to dispatch after owned movement is cancelled instead of verif
   assert.equal(tick.state, 'SUSPENDED');
   assert.equal(tick.reason, 'H16_MOVEMENT_CANCELLED');
   assert.equal(state.dispatches.length, 0);
+});
+
+test('H16 treats rejected dispatched promises as unknown without blind retry', async () => {
+  const { controller, state, arrive } = fixture({ rejectPromise: true });
+  assert.equal(controller.queueExchange(0).accepted, true);
+  controller.tick();
+  arrive();
+  assert.equal(controller.tick().accepted, true);
+  await Promise.resolve();
+  await Promise.resolve();
+  const tick = controller.tick();
+  assert.equal(tick.state, 'SUSPENDED');
+  assert.match(tick.reason, /PROMISE_REJECTED_AFTER_DISPATCH/);
+  assert.equal(controller.status().metrics.exchangesUnknown, 1);
+  assert.equal(state.dispatches.length, 1);
+  assert.equal(controller.tick().state, 'SUSPENDED');
 });
 
 test('H16 suspends on synchronous unknown and does not blind retry', () => {
