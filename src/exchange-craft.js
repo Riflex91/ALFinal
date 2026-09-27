@@ -382,7 +382,12 @@
         for (const pack of bank.packs || []) {
           for (const row of pack.items || []) {
             if (String(row.name) === String(name) && Math.max(0, Number(row.level) || 0) === Math.max(0, Number(level) || 0)) {
-              bankRows.push({ pack: pack.name, slot: row.slot, quantity: Math.max(1, Number(row.quantity) || 1) });
+              bankRows.push({
+                pack: pack.name,
+                map: pack.map || null,
+                slot: row.slot,
+                quantity: Math.max(1, Number(row.quantity) || 1)
+              });
             }
           }
         }
