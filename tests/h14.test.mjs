@@ -494,5 +494,5 @@ test('H14 runtime, API, UI, build, adapter and ActionBoundary are wired', () => 
   assert.match(boundary, /unequip: Object\.freeze\(\{ publicName: 'unequip'/);
   assert.match(adapter, /equipmentSnapshot\(name = null\)/);
   assert.match(adapter, /classEquipmentProfile\(ctype\)/);
-  assert.equal(pkg.version, '0.18.0');
+  assert.equal(pkg.version, '0.19.0');
 });
