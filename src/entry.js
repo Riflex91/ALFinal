@@ -50,7 +50,7 @@
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.18.0-h18',
+    version: '0.19.0-h19',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -164,6 +164,21 @@
       start: options => runtime.partyLogistics.startAutonomy(options || {}),
       stop: reason => runtime.partyLogistics.stopAutonomy(reason || 'API_H18_AUTONOMY_STOP'),
       reset: reason => runtime.partyLogistics.resetSafety(reason || 'API_H18_RESET')
+    },
+
+    lifecycle: {
+      status: () => runtime.lifecycle.status(),
+      plan: () => runtime.lifecycle.plan(),
+      tick: () => runtime.lifecycle.tick(),
+      policy: value => runtime.lifecycle.setPolicy(value || {}),
+      captureActive: () => runtime.lifecycle.captureDesiredActive(),
+      startCharacter: name => runtime.lifecycle.queueStart(name),
+      stopCharacter: name => runtime.lifecycle.queueStop(name),
+      respawn: () => runtime.lifecycle.queueRespawn(),
+      cancel: requestId => runtime.lifecycle.cancelQueued(requestId),
+      start: options => runtime.lifecycle.startAutonomy(options || {}),
+      stop: reason => runtime.lifecycle.stopAutonomy(reason || 'API_H19_AUTONOMY_STOP'),
+      reset: reason => runtime.lifecycle.resetSafety(reason || 'API_H19_RESET')
     },
 
     farming: {
@@ -331,6 +346,7 @@
   Object.freeze(api.classSkills);
   Object.freeze(api.party);
   Object.freeze(api.partyLogistics);
+  Object.freeze(api.lifecycle);
   Object.freeze(api.farming);
   Object.freeze(api.farmIntelligence);
   Object.freeze(api.inventory);
@@ -358,7 +374,7 @@
     };
   } catch (_) {}
 
-  runtime.logger.info('AL Bot H18 geladen', {
+  runtime.logger.info('AL Bot H19 geladen', {
     version: api.version,
     bootCount,
     hotReload: !!previous,
