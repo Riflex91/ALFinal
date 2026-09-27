@@ -4399,6 +4399,27 @@
         });
       };
 
+      const cleanupSleep = (runtime, ms) => new Promise(resolve => {
+        const delay = Math.max(0, Number(ms) || 0);
+        const timerRoot = runtime && runtime.root || this.root || root;
+        const set = timerRoot && typeof timerRoot.setTimeout === 'function'
+          ? timerRoot.setTimeout.bind(timerRoot)
+          : setTimeout;
+        set(resolve, delay);
+      });
+
+      const waitForCleanup = async (runtime, predicate, options = {}) => {
+        const timeoutMs = Math.max(100, Math.min(60000, Number(options.timeoutMs) || 25000));
+        const pollMs = Math.max(50, Math.min(2000, Number(options.pollMs) || 250));
+        const startedAt = Date.now();
+        while (Date.now() - startedAt <= timeoutMs) {
+          const value = await predicate();
+          if (value) return value;
+          await cleanupSleep(runtime, pollMs);
+        }
+        throw new Error(options.timeoutReason || 'H19_REMOTE_CLEANUP_RESTORE_TIMEOUT');
+      };
+
       this.liveTests.register({
         id: 'h19-remote-recovery',
         title: 'H19 – Remote Start/Stop & Restart Recovery',
@@ -4409,6 +4430,8 @@
         restoreRuntimeState: true,
         prepare: async ({ runtime }) => {
           targetName = null;
+          baseline = null;
+          originalPolicy = null;
           try { runtime.lifecycle.stopAutonomy('H19_REMOTE_LIVE_TEST_RESET'); } catch (_) {}
           const status = runtime.lifecycle.status();
           if (status.currentAction) throw new Error('H19_REMOTE_ACTIVE_ACTION_BEFORE_LIVE_TEST');
@@ -4431,54 +4454,98 @@
             stopsConfirmed: Number(clean.metrics.stopsConfirmed || 0)
           };
         },
-        cleanup: async ({ runtime, waitFor }) => {
+        cleanup: async ({ runtime }) => {
           try { runtime.lifecycle.stopAutonomy('H19_REMOTE_LIVE_TEST_CLEANUP'); } catch (_) {}
 
+          let cleanupFailure = null;
           try {
             let status = runtime.lifecycle.status();
             if (!status.currentAction) runtime.lifecycle.cancelQueued();
 
             if (targetName && baseline) {
-              const roster = runtime.roster.refresh();
-              const targetActive = roster && roster.activeStateAvailable === true
-                ? activeSet(roster).has(String(targetName))
-                : null;
-              const dispatchedDelta = Number(status.metrics.actionsDispatched || 0) - baseline.actionsDispatched;
-              const rejectedDelta = Number(status.metrics.actionsRejected || 0) - baseline.actionsRejected;
-              const unknownDelta = Number(status.metrics.actionsUnknown || 0) - baseline.actionsUnknown;
+              let roster = runtime.roster.refresh();
+              if (!roster || roster.activeStateAvailable !== true) {
+                throw new Error('H19_REMOTE_CLEANUP_ROSTER_UNAVAILABLE');
+              }
 
-              const safeFirstStartRecovery = targetActive === false
-                && !status.currentAction
-                && status.suspended === false
-                && dispatchedDelta === 1
-                && rejectedDelta === 0
-                && unknownDelta === 0;
+              let targetActive = activeSet(roster).has(String(targetName));
+              if (!targetActive) {
+                const dispatchedDelta = Number(status.metrics.actionsDispatched || 0) - baseline.actionsDispatched;
+                const rejectedDelta = Number(status.metrics.actionsRejected || 0) - baseline.actionsRejected;
+                const unknownDelta = Number(status.metrics.actionsUnknown || 0) - baseline.actionsUnknown;
 
-              if (safeFirstStartRecovery) {
-                const queued = runtime.lifecycle.queueStart(targetName);
-                if (queued && queued.accepted === true) {
-                  await waitFor(() => {
-                    const current = runtime.lifecycle.status();
-                    if (current.suspended) return false;
-                    const liveRoster = runtime.roster.refresh();
-                    return Number(current.metrics.startsConfirmed || 0) > baseline.startsConfirmed
-                      && current.currentAction == null
-                      && liveRoster
-                      && liveRoster.activeStateAvailable === true
-                      && activeSet(liveRoster).has(String(targetName))
-                      ? true
-                      : false;
-                  }, { timeoutMs: 25000, pollMs: 250, label: 'h19-remote-cleanup-restore' });
+                const safeFirstStartRecovery = !status.currentAction
+                  && status.suspended === false
+                  && dispatchedDelta === 1
+                  && rejectedDelta === 0
+                  && unknownDelta === 0;
+
+                if (!safeFirstStartRecovery) {
+                  throw new Error('H19_REMOTE_CLEANUP_RESTORE_UNSAFE_RETRY_BLOCKED');
                 }
+
+                const queued = runtime.lifecycle.queueStart(targetName);
+                if (!queued || queued.accepted !== true) {
+                  throw new Error(queued && queued.reason || 'H19_REMOTE_CLEANUP_START_QUEUE_FAILED');
+                }
+
+                await waitForCleanup(runtime, () => {
+                  const current = runtime.lifecycle.status();
+                  const liveRoster = runtime.roster.refresh();
+                  const rejectedNow = Number(current.metrics.actionsRejected || 0) - baseline.actionsRejected;
+                  const unknownNow = Number(current.metrics.actionsUnknown || 0) - baseline.actionsUnknown;
+
+                  if (current.suspended || unknownNow > 0) {
+                    throw new Error(current.suspendedReason || 'H19_REMOTE_CLEANUP_START_UNKNOWN');
+                  }
+                  if (rejectedNow > 0) {
+                    throw new Error('H19_REMOTE_CLEANUP_START_REJECTED');
+                  }
+
+                  return Number(current.metrics.startsConfirmed || 0) > baseline.startsConfirmed
+                    && current.currentAction == null
+                    && liveRoster
+                    && liveRoster.activeStateAvailable === true
+                    && activeSet(liveRoster).has(String(targetName))
+                    ? true
+                    : false;
+                }, {
+                  timeoutMs: 25000,
+                  pollMs: 250,
+                  timeoutReason: 'H19_REMOTE_CLEANUP_RESTORE_TIMEOUT'
+                });
+
+                status = runtime.lifecycle.status();
+                roster = runtime.roster.refresh();
+                targetActive = roster
+                  && roster.activeStateAvailable === true
+                  && activeSet(roster).has(String(targetName));
+                if (!targetActive) throw new Error('H19_REMOTE_CLEANUP_TARGET_STILL_OFFLINE');
               }
             }
-          } catch (_) {}
+          } catch (error) {
+            cleanupFailure = error;
+          }
 
-          try { restorePolicy(runtime); } catch (_) {}
+          try {
+            const restored = restorePolicy(runtime);
+            if (restored && restored.accepted !== true && !cleanupFailure) {
+              cleanupFailure = new Error(restored.reason || 'H19_REMOTE_CLEANUP_POLICY_RESTORE_FAILED');
+            }
+          } catch (error) {
+            if (!cleanupFailure) cleanupFailure = error;
+          }
+
           try {
             const status = runtime.lifecycle.status();
-            if (!status.suspended && !status.currentAction) runtime.lifecycle.resetSafety('H19_REMOTE_LIVE_TEST_CLEANUP');
-          } catch (_) {}
+            if (!status.suspended && !status.currentAction) {
+              runtime.lifecycle.resetSafety('H19_REMOTE_LIVE_TEST_CLEANUP');
+            }
+          } catch (error) {
+            if (!cleanupFailure) cleanupFailure = error;
+          }
+
+          if (cleanupFailure) throw cleanupFailure;
         },
         steps: [
           {
