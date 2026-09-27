@@ -795,13 +795,26 @@ H16 Live-Test:
 - Cleanup + Runtime Auto-Restore;
 - fehlt ein sicherer Craft-/Exchange-Kandidat: `H16_NEEDS_LOW_RISK_CRAFT_AND_EXCHANGE_CANDIDATES` ohne Mutation.
 
+Pre-Live-Hardening:
+- rejected dispatched Promise -> UNKNOWN-Suspension ohne Blind-Retry;
+- H16 dispatcht erst nach verifiziertem Movement-`COMPLETED / ARRIVAL_VERIFIED`;
+- CANCELLED/STUCK/UNKNOWN/FAILED_SAFE Movement führt nicht zum Write;
+- Exchange-Evidence bewahrt den tatsächlichen Item-Level;
+- Quest-/Event-Kandidaten sind im UI sichtbar, aber nur nach explizitem Opt-in ausführbar;
+- Cross-Realm- und Combat-Regressionsannahmen korrigiert;
+- vollständiger H16-Wiring-Test ergänzt;
+- `dist/al-bot.js` exakt source-synchron, Banner `0.16.0-h16`;
+- CI Run #342 auf Head `a8384e031efbbf0441234928f8e7ddc704ff3031`: **209/209 PASS, 0 FAIL, 0 SKIP, completed/success**;
+- alle bisherigen Review-Threads resolved;
+- kein `CHANGES_REQUESTED`;
+- `behind_by=0`, `mergeable=true`.
+
 Noch offen:
-- PR #17 CI/Review-Hardening;
-- Bundle/Tests nach Review-Fixes erneut synchronisieren;
-- finalen Pre-Live Exact-Head-CI grün bestätigen;
-- danach Nutzer nur den echten Adventure-Land-Ein-Klick-Test ausführen lassen;
-- bei PASS finale Evidence, neuer Exact-Head-CI und Merge-Gate;
-- PR #17 erst danach mergen.
+- nach diesen finalen Pre-Live-Evidence-Dokucommits neuen Exact-Head-CI abwarten;
+- vollständiges Pre-Live-Gate frisch prüfen;
+- danach Nutzer genau einmal `Test starten` für `h16-exchange-craft` drücken lassen;
+- Diagnose vollständig auswerten;
+- bei PASS finale Evidence anhängen und erst danach PR #17 mergen.
 
 ## H2 Architekturregel für spätere Module
 
@@ -896,4 +909,4 @@ Bei Fehler:
 
 ## Nächster Schritt
 
-H16 auf PR #17 technisch bis zum Pre-Live-Gate fertigstellen: CI und Reviews auswerten, echte Safety-Funde gezielt beheben, Regressionen ergänzen, Bundle synchron halten und finalen Exact-Head-CI grün bestätigen. Erst danach den Nutzer genau einmal die Suite `h16-exchange-craft` in Adventure Land starten lassen. H16 erst nach bestandenem Live-Test und finalem Merge-Gate mergen.
+H16 steht unmittelbar vor dem Live-Test. Nach dem neuen Exact-Head-CI der finalen Pre-Live-Evidence-Dokucommits den vollständigen Gate frisch prüfen. Nur bei komplett grünem Gate den Build `chatgpt/h16-exchange-craft/dist/al-bot.js` für genau einen echten `h16-exchange-craft`-Ein-Klick-Test freigeben. H16 erst nach bestandenem Live-Test, finaler Evidence und erneut grünem Merge-Gate mergen.
