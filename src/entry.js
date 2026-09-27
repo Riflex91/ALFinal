@@ -401,4 +401,29 @@
     hotReload: !!previous,
     sharedHost: sharedHost !== root
   });
+
+  const autoStartLive = (() => {
+    if (root && root.__ALBOT_DISABLE_AUTOSTART__ === true) return false;
+    if (root && root.__ALBOT_FORCE_AUTOSTART__ === true) return true;
+    const hosts = [];
+    try { hosts.push(String(root && root.location && root.location.hostname || '').toLowerCase()); } catch (_) {}
+    try { hosts.push(String(root && root.parent && root.parent.location && root.parent.location.hostname || '').toLowerCase()); } catch (_) {}
+    return hosts.some(host => host === 'adventure.land' || host.endsWith('.adventure.land'));
+  })();
+
+  if (autoStartLive) {
+    Promise.resolve().then(async () => {
+      if (!runtime.running) await runtime.start();
+      const started = runtime.fullAutonomy.startAutonomy({ taskType: 'FARM', waitForRoster: true });
+      runtime.logger.info('Full Autonomy Autostart verarbeitet', {
+        accepted: !!(started && started.accepted === true),
+        reason: started && started.reason || null,
+        state: started && started.tick && started.tick.state || null
+      });
+    }).catch(error => {
+      runtime.logger.error('Full Autonomy Autostart fehlgeschlagen', {
+        reason: cleanText(error && error.message || error, 300)
+      });
+    });
+  }
 })(typeof globalThis !== 'undefined' ? globalThis : this);
