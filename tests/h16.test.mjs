@@ -475,6 +475,30 @@ test('H16 bank reservations make reserved stacks non-withdrawable and preserve t
   assert.equal(state.tradeCalls.length, 1);
 });
 
+test('H16 material acquisition skips a deficit-sized bank stack when craft needs one larger stack', () => {
+  const bank = {
+    available: true,
+    map: 'bank',
+    packs: [{
+      name: 'items0',
+      map: 'bank',
+      items: [{ pack: 'items0', slot: 2, name: 'spidersilk', level: 0, quantity: 500 }]
+    }]
+  };
+  const { controller, state } = fixture({
+    bank,
+    bestAsk: { playerName: 'Seller', slot: 'trade1', name: 'spidersilk', level: 0, quantity: 1000, price: 7 }
+  });
+  const result = controller.queueMaterialAcquire('spidersilk', 500, {
+    maxUnitPrice: 7,
+    minBankStackQuantity: 1000
+  });
+  assert.equal(result.accepted, true);
+  assert.equal(result.delegatedTo, 'trade');
+  assert.equal(state.bankCalls.length, 0);
+  assert.equal(state.tradeCalls.length, 1);
+});
+
 test('H16 production plan exposes NPC and market acquisition sources for missing leaves', () => {
   const { controller } = fixture({
     rows: [],
@@ -599,7 +623,13 @@ test('H16 runtime, API, UI, build, adapter and ActionBoundary are wired', () => 
   assert.match(h16Suite, /id: 'bank-discovery'/);
   assert.match(h16Suite, /runtime\.bank\.queueMount\(\)/);
   assert.match(h16Suite, /H16_BANK_DISCOVERY_WRITE_DETECTED/);
-  assert.ok(h16Suite.indexOf("id: 'bank-discovery'") < h16Suite.indexOf("id: 'preflight'"));
+  assert.match(h16Suite, /H16_BANK_DISCOVERY_NOT_REQUIRED_FOR_NON_MERCHANT/);
+  assert.doesNotMatch(h16Suite, /H16_BANK_DISCOVERY_REQUIRES_MERCHANT/);
+  const bankDiscoveryStart = h16Suite.indexOf("id: 'bank-discovery'");
+  const h16PreflightStart = h16Suite.indexOf("id: 'preflight'");
+  const bankDiscovery = h16Suite.slice(bankDiscoveryStart, h16PreflightStart);
+  assert.ok(bankDiscovery.indexOf("H16_BANK_DISCOVERY_NOT_REQUIRED_FOR_NON_MERCHANT") < bankDiscovery.indexOf("runtime.bank.queueMount()"));
+  assert.ok(bankDiscoveryStart < h16PreflightStart);
   const h5Start = runtime.indexOf("id: 'h5-combat'");
   const h6Start = runtime.indexOf("id: 'h6-class-logic'");
   assert.ok(h5Start > -1 && h6Start > h5Start);
@@ -636,7 +666,10 @@ test('H16 runtime, API, UI, build, adapter and ActionBoundary are wired', () => 
   assert.match(source, /_bankMaterialRows\(name, level = 0\)/);
   assert.match(source, /safe: this\._safeItem\(row\)/);
   assert.match(source, /remainingAfterWholeStack >= reservedQuantity/);
-  assert.match(source, /row\.withdrawable === true && row\.quantity >= q/);
+  assert.match(source, /minBankStackQuantity/);
+  assert.match(source, /row\.withdrawable === true && row\.quantity >= minBankStackQuantity/);
+  assert.match(runtime, /recipeIngredientQuantity/);
+  assert.match(runtime, /minBankStackQuantity: material\.minBankStackQuantity/);
   assert.match(runtime, /queued\.delegatedTo === \(bankExpected \? 'bank' : 'trade'\)/);
   assert.match(runtime, /MATERIAL_ACQUISITION_OVER_CAP/);
   assert.match(runtime, /GOLD_RESERVE_AFTER_ACQUISITION_AND_CRAFT/);
