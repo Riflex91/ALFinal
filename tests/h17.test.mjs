@@ -231,6 +231,25 @@ test('H17 deterministically prioritizes pressure bank work over lower economy ac
   assert.ok(plan.proposals.some(row => row.kind === 'EXCHANGE'));
 });
 
+test('H17 common planner exposes safe proposals across the economy modules', () => {
+  const f = fixture({
+    gearImprovements: [{
+      slot: 'gloves', delta: 5,
+      bestInventory: { inventorySlot: 2, item: { name: 'gloves2', definition: { g: 1000 } } }
+    }],
+    exchanges: [{ safe: true, itemName: 'gem0', inventorySlot: 4, requiredQuantity: 1, valueAtRisk: 100 }],
+    crafts: [{ safe: true, itemName: 'cake', cost: 5, inputValueAtRisk: 50 }],
+    upgrades: [{ itemSlot: 5, itemName: 'sword', fromLevel: 0, budget: { itemValueAtRisk: 500 } }],
+    compounds: [{ itemSlots: [6, 7, 8], itemName: 'ring', fromLevel: 0, budget: { itemValueAtRisk: 600 } }],
+    sellRows: [{ slot: 9, name: 'junk', quantity: 2, level: 0 }],
+    bestBid: { playerName: 'Buyer', slot: 'trade1', rid: 'rid-1', name: 'junk', level: 0, quantity: 10, price: 150 }
+  });
+  const kinds = new Set(f.economy.plan().proposals.map(row => row.kind));
+  for (const kind of ['GEAR_EQUIP', 'MARKET_SELL', 'EXCHANGE', 'CRAFT', 'UPGRADE', 'COMPOUND']) {
+    assert.equal(kinds.has(kind), true, 'missing proposal ' + kind);
+  }
+});
+
 test('H17 immediately confirms a bank mount race that reports already mounted', () => {
   const f = fixture({
     pressure: 'CRITICAL',
@@ -305,6 +324,8 @@ test('H17 known queue rejection enters cooldown instead of retrying every tick',
   const second = f.economy.tick();
   assert.equal(second.state, 'COOLDOWN');
   assert.equal(f.calls.length, 1);
+  assert.equal(f.economy.status().metrics.rejectionBackoffs, 1);
+  assert.equal(f.economy.status().rejectionBackoff.length, 1);
 });
 
 test('H17 chooses market sell only when a live bid beats the configured NPC floor', () => {
@@ -345,4 +366,31 @@ test('H17 session action budget stops bounded autonomy', () => {
   assert.equal(after.reason, 'H17_SESSION_ACTION_BUDGET_REACHED');
   assert.equal(f.economy.status().autonomyEnabled, false);
   assert.equal(f.calls.length, 1);
+});
+
+
+test('H17 runtime, API, UI, build and generated bundle are wired without direct action dispatch', () => {
+  const runtime = fs.readFileSync(path.resolve(here, '../src/runtime.js'), 'utf8');
+  const entry = fs.readFileSync(path.resolve(here, '../src/entry.js'), 'utf8');
+  const ui = fs.readFileSync(path.resolve(here, '../src/ui.js'), 'utf8');
+  const build = fs.readFileSync(path.resolve(here, '../scripts/build.mjs'), 'utf8');
+  const dist = fs.readFileSync(path.resolve(here, '../dist/al-bot.js'), 'utf8');
+  const pkg = JSON.parse(fs.readFileSync(path.resolve(here, '../package.json'), 'utf8'));
+
+  assert.match(runtime, /new ns\.EconomyController/);
+  assert.match(runtime, /id: 'economy'/);
+  assert.match(runtime, /id: 'h17-economy-autonomy'/);
+  assert.match(runtime, /version: '0\.17\.0-h17'/);
+  assert.match(runtime, /trade\.movementUnknown/);
+  assert.match(entry, /0\.17\.0-h17/);
+  assert.match(entry, /runtime\.economy\.startAutonomy/);
+  assert.match(entry, /Object\.freeze\(api\.economy\)/);
+  assert.match(ui, /data-tab="economy"/);
+  assert.match(ui, /H17 Economy Autonomy/);
+  assert.match(build, /src\/economy\.js/);
+  assert.match(build, /AL Bot 0\.17\.0-h17/);
+  assert.match(dist, /AL Bot 0\.17\.0-h17/);
+  assert.match(dist, /class EconomyController/);
+  assert.doesNotMatch(source, /actions\.dispatch/);
+  assert.equal(pkg.version, '0.17.0');
 });
