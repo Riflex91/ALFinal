@@ -125,7 +125,7 @@ test('resource topoff suspends on UNKNOWN and never blindly retries', () => {
 
 function h9FollowerFixture({ leaderX = 300, farmActive = false, combatActive = false } = {}) {
   const { Controller } = loadController('src/farm-intelligence.js', 'FarmIntelligenceController');
-  const state = { moves: [], farmStarts: [], activeOrder: null, farmActive, combatActive };
+  const state = { moves: [], farmStarts: [], activeOrder: null, farmActive, combatActive, leaderVisible: true };
   const character = { name: 'My_Ranger1', ctype: 'ranger', map: 'main', x: 0, y: 0, hp: 2500, maxHp: 2500, mp: 700, maxMp: 900, rip: false };
   const game = {
     snapshot: () => ({ available: true, character: clone(character) }),
@@ -139,7 +139,7 @@ function h9FollowerFixture({ leaderX = 300, farmActive = false, combatActive = f
         ownedMemberNames: ['My_Ranger1', 'My_Priest', 'My_Warrior'],
         ownedMembers: [
           { name: 'My_Ranger1', local: true, map: 'main', x: 0, y: 0 },
-          { name: 'My_Warrior', local: false, map: 'main', x: leaderX, y: 0 },
+          ...(state.leaderVisible ? [{ name: 'My_Warrior', local: false, map: 'main', x: leaderX, y: 0 }] : []),
           { name: 'My_Priest', local: false, map: 'main', x: Math.min(leaderX, 40), y: 20 }
         ]
       }
@@ -195,6 +195,23 @@ test('group follower never chooses its own farm direction and smart-regroups to 
   assert.equal(f.state.moves[0].owner, 'farm-intelligence-h9-group-regroup');
   assert.equal(f.state.moves[0].destination.x, 300);
   assert.equal(f.state.farmStarts.length, 0);
+});
+
+test('active regroup is cancelled when the leader position disappears', () => {
+  const f = h9FollowerFixture({ leaderX: 300 });
+  const started = f.controller.startAutonomy({
+    owner: 'full-autonomy',
+    groupLeaderName: 'My_Warrior',
+    groupMemberNames: ['My_Priest', 'My_Ranger1', 'My_Warrior']
+  });
+  assert.equal(started.tick.state, 'TRAVELLING');
+  assert.ok(f.state.activeOrder);
+  f.state.leaderVisible = false;
+  const next = f.controller.tick();
+  assert.equal(next.state, 'WAITING');
+  assert.equal(next.reason, 'H9_GROUP_LEADER_POSITION_UNAVAILABLE');
+  assert.equal(f.state.activeOrder, null);
+  assert.equal(f.controller.groupMove, null);
 });
 
 test('group follower starts mirror-only farming when already inside formation', () => {
@@ -332,6 +349,19 @@ test('group hard tether fails closed when a configured teammate position is miss
   assert.equal(allowed, false);
 });
 
+test('group hard tether fails closed when a configured teammate map is unknown', () => {
+  const teammateRows = [
+    { name: 'My_Warrior', local: false, x: 20, y: 0 },
+    { name: 'My_Priest', local: false, map: 'main', x: 30, y: 0 }
+  ];
+  const f = combatFixture({ ctype: 'ranger', partyRows: teammateRows });
+  const allowed = f.controller._groupTetherAllows(
+    clone(f.character),
+    { x: 120, y: 20 }
+  );
+  assert.equal(allowed, false);
+});
+
 test('group hard tether blocks a kite that would split the combat trio', () => {
   const teammateRows = [
     { name: 'My_Warrior', local: false, map: 'main', x: 0, y: 0 },
@@ -383,6 +413,51 @@ test('group follower rejects stale party focus after group-owned aggro disappear
   assert.equal(selected, null);
   assert.equal(state.changeTargets, 0);
   assert.equal(controller.status().session.state, 'WAITING_GROUP_TARGET');
+});
+
+test('group follower keeps an active group-aggro target when preferred focus is stale', () => {
+  const { Controller } = loadController('src/combat.js', 'CombatController');
+  const state = { changeTargets: 0, attacks: 0 };
+  const character = { name: 'My_Ranger1', ctype: 'ranger', map: 'main', x: 0, y: 0, hp: 2500, maxHp: 2500, mp: 800, maxMp: 1000, range: 200, rip: false };
+  const active = { id: 'active', mtype: 'goo', map: 'main', x: 80, y: 0, distance: 80, attack: 10, targetId: 'My_Warrior', dead: false, visible: true, hp: 100 };
+  const stale = { id: 'stale', mtype: 'goo', map: 'main', x: 90, y: 0, distance: 90, attack: 10, targetId: null, dead: false, visible: true, hp: 100 };
+  const game = {
+    snapshot: () => ({ available: true, character: clone(character), target: clone(active) }),
+    visibleMonsters: () => [clone(active), clone(stale)],
+    entityReference: id => ({ id }),
+    monsterDefinition: () => ({ evasion: 0, avoidance: 0 }),
+    combatReadiness: () => ({ targetAvailable: true, inRange: true, canAttack: false, cooldown: true })
+  };
+  const actions = {
+    available: () => true,
+    dispatch: action => {
+      if (action === 'change_target') state.changeTargets += 1;
+      if (action === 'attack') state.attacks += 1;
+      return { id: 'a1', state: 'DISPATCHED', value: Promise.resolve({ success: true }) };
+    }
+  };
+  const movement = { status: () => ({ activeOrder: null }), captureSafePoint: () => ({}), cancel: () => ({}) };
+  const party = {
+    preferredTargetId: () => 'stale',
+    isOwnedPartyMember: name => ['My_Warrior', 'My_Priest', 'My_Ranger1'].includes(String(name)),
+    status: () => ({ party: { ownedMembers: [] } })
+  };
+  const controller = new Controller({ game, actions, movement, party, now: () => 10000 });
+  controller.start({ scope: { interval: () => 'combat-loop' } });
+  const started = controller.startSession({
+    owner: 'farming-h8',
+    partyAssist: true,
+    leaderOwnedPulls: true,
+    groupLeaderName: 'My_Warrior',
+    groupMemberNames: ['My_Priest', 'My_Ranger1', 'My_Warrior']
+  });
+  assert.equal(started.accepted, true);
+  controller.session.targetId = 'active';
+  controller.session.targetType = 'goo';
+  controller._tick();
+  assert.equal(controller.status().session.targetId, 'active');
+  assert.equal(state.changeTargets, 0);
+  assert.equal(state.attacks, 0);
 });
 
 test('combat UNKNOWN propagates into Farm Intelligence suspension', () => {
