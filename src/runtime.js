@@ -342,62 +342,6 @@
         },
         steps: [
           {
-            id: 'bank-discovery',
-            title: 'Bankbestand read-only sichtbar machen',
-            timeoutMs: 120000,
-            run: async ({ runtime, assert, waitFor }) => {
-              const game = runtime.game.snapshot();
-              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
-              assert(game.character.rip !== true, 'CHARACTER_DEAD');
-              assert(String(game.character.ctype || '').toLowerCase() === 'merchant',
-                'H16_BANK_DISCOVERY_REQUIRES_MERCHANT');
-
-              const beforeStatus = runtime.bank.status();
-              assert(beforeStatus && beforeStatus.suspended !== true,
-                beforeStatus && beforeStatus.suspendedReason || 'H12_SUSPENDED_BEFORE_H16_BANK_DISCOVERY');
-              const beforeWrites = bankWriteTotal(beforeStatus);
-              const beforeUnknown = bankUnknownTotal(beforeStatus);
-              const existing = runtime.game.bankSnapshot();
-              if (existing && existing.available !== false) {
-                assert(bankWriteTotal(runtime.bank.status()) === beforeWrites, 'H16_BANK_DISCOVERY_WRITE_DETECTED');
-                return {
-                  alreadyMounted: true,
-                  map: existing.map || null,
-                  packCount: (existing.packs || []).length,
-                  usedSlots: Number(existing.usedSlots || 0),
-                  movementRequests: 0
-                };
-              }
-
-              const movementBefore = Number(beforeStatus.metrics && beforeStatus.metrics.movementRequests || 0);
-              const queued = runtime.bank.queueMount();
-              assert(queued && queued.accepted === true,
-                queued && queued.reason || 'H16_BANK_DISCOVERY_QUEUE_FAILED');
-
-              const bank = await waitFor(() => {
-                const tick = runtime.bank.tick();
-                const current = runtime.bank.status();
-                if (current.suspended) throw new Error(current.suspendedReason || 'H12_SUSPENDED_DURING_H16_BANK_DISCOVERY');
-                if (bankUnknownTotal(current) > beforeUnknown) throw new Error('H16_BANK_DISCOVERY_UNKNOWN');
-                if (bankWriteTotal(current) !== beforeWrites) throw new Error('H16_BANK_DISCOVERY_WRITE_DETECTED');
-                const snapshot = runtime.game.bankSnapshot();
-                return snapshot && snapshot.available !== false && !current.pending && !current.request
-                  ? snapshot
-                  : null;
-              }, { timeoutMs: 110000, pollMs: 150, label: 'h16-bank-discovery' });
-
-              const afterStatus = runtime.bank.status();
-              assert(bankWriteTotal(afterStatus) === beforeWrites, 'H16_BANK_DISCOVERY_WRITE_DETECTED');
-              return {
-                alreadyMounted: false,
-                map: bank.map || null,
-                packCount: (bank.packs || []).length,
-                usedSlots: Number(bank.usedSlots || 0),
-                movementRequests: Number(afterStatus.metrics && afterStatus.metrics.movementRequests || 0) - movementBefore
-              };
-            }
-          },
-          {
             id: 'preflight',
             title: 'Combat-Sicherheit und sichtbares Ziel prüfen',
             timeoutMs: 5000,
@@ -2981,6 +2925,62 @@
           }
         },
         steps: [
+          {
+            id: 'bank-discovery',
+            title: 'Bankbestand read-only sichtbar machen',
+            timeoutMs: 120000,
+            run: async ({ runtime, assert, waitFor }) => {
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(game.character.rip !== true, 'CHARACTER_DEAD');
+              assert(String(game.character.ctype || '').toLowerCase() === 'merchant',
+                'H16_BANK_DISCOVERY_REQUIRES_MERCHANT');
+
+              const beforeStatus = runtime.bank.status();
+              assert(beforeStatus && beforeStatus.suspended !== true,
+                beforeStatus && beforeStatus.suspendedReason || 'H12_SUSPENDED_BEFORE_H16_BANK_DISCOVERY');
+              const beforeWrites = bankWriteTotal(beforeStatus);
+              const beforeUnknown = bankUnknownTotal(beforeStatus);
+              const existing = runtime.game.bankSnapshot();
+              if (existing && existing.available !== false) {
+                assert(bankWriteTotal(runtime.bank.status()) === beforeWrites, 'H16_BANK_DISCOVERY_WRITE_DETECTED');
+                return {
+                  alreadyMounted: true,
+                  map: existing.map || null,
+                  packCount: (existing.packs || []).length,
+                  usedSlots: Number(existing.usedSlots || 0),
+                  movementRequests: 0
+                };
+              }
+
+              const movementBefore = Number(beforeStatus.metrics && beforeStatus.metrics.movementRequests || 0);
+              const queued = runtime.bank.queueMount();
+              assert(queued && queued.accepted === true,
+                queued && queued.reason || 'H16_BANK_DISCOVERY_QUEUE_FAILED');
+
+              const bank = await waitFor(() => {
+                const tick = runtime.bank.tick();
+                const current = runtime.bank.status();
+                if (current.suspended) throw new Error(current.suspendedReason || 'H12_SUSPENDED_DURING_H16_BANK_DISCOVERY');
+                if (bankUnknownTotal(current) > beforeUnknown) throw new Error('H16_BANK_DISCOVERY_UNKNOWN');
+                if (bankWriteTotal(current) !== beforeWrites) throw new Error('H16_BANK_DISCOVERY_WRITE_DETECTED');
+                const snapshot = runtime.game.bankSnapshot();
+                return snapshot && snapshot.available !== false && !current.pending && !current.request
+                  ? snapshot
+                  : null;
+              }, { timeoutMs: 110000, pollMs: 150, label: 'h16-bank-discovery' });
+
+              const afterStatus = runtime.bank.status();
+              assert(bankWriteTotal(afterStatus) === beforeWrites, 'H16_BANK_DISCOVERY_WRITE_DETECTED');
+              return {
+                alreadyMounted: false,
+                map: bank.map || null,
+                packCount: (bank.packs || []).length,
+                usedSlots: Number(bank.usedSlots || 0),
+                movementRequests: Number(afterStatus.metrics && afterStatus.metrics.movementRequests || 0) - movementBefore
+              };
+            }
+          },
           {
             id: 'preflight',
             title: 'Sicheren Craft-/Exchange-Pfad inklusive beschaffbarer Materialien prüfen',
