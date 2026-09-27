@@ -355,14 +355,14 @@ test('H11 runtime, API, UI, build and ActionBoundary are wired', () => {
   assert.match(runtime, /id: 'merchant'/);
   assert.match(runtime, /id: 'h11-merchant'/);
   assert.match(runtime, /H11_LIVE_TEST_REQUIRES_MERCHANT/);
-  assert.match(entry, /0\.19\.0-h19/);
+  assert.match(entry, /0\.20\.0-h20/);
   assert.match(entry, /merchant:/);
   assert.match(entry, /runtime\.merchant\.queueDelivery/);
   assert.match(ui, /data-tab="merchant"/);
   assert.match(ui, /H11 Merchant-Grundbetrieb/);
   assert.match(build, /src\/merchant\.js/);
-  assert.match(build, /AL Bot 0\.19\.0-h19/);
+  assert.match(build, /AL Bot 0\.20\.0-h20/);
   assert.match(boundary, /send_item: Object\.freeze\(\{ publicName: 'send_item'/);
   assert.match(adapter, /playerCondition\(name, conditionId\)/);
-  assert.equal(pkg.version, '0.19.0');
+  assert.equal(pkg.version, '0.20.0');
 });

@@ -309,6 +309,27 @@
         emergencyStopLatched: row.emergencyStopLatched === true,
         lifecycleAutonomyEnabled: typeof row.lifecycleAutonomyEnabled === 'boolean' ? row.lifecycleAutonomyEnabled : null,
         version: cleanText(row.version || '', 80) || null,
+        profile: row.profile && typeof row.profile === 'object' ? {
+          schemaVersion: 1,
+          name: cleanText(row.profile.name || target, 120) || target,
+          ctype: cleanText(row.profile.ctype || '', 40).toLowerCase() || null,
+          level: Number.isFinite(Number(row.profile.level)) ? Number(row.profile.level) : null,
+          hp: Number.isFinite(Number(row.profile.hp)) ? Number(row.profile.hp) : null,
+          maxHp: Number.isFinite(Number(row.profile.maxHp)) ? Number(row.profile.maxHp) : null,
+          mp: Number.isFinite(Number(row.profile.mp)) ? Number(row.profile.mp) : null,
+          maxMp: Number.isFinite(Number(row.profile.maxMp)) ? Number(row.profile.maxMp) : null,
+          attack: Number.isFinite(Number(row.profile.attack)) ? Number(row.profile.attack) : null,
+          armor: Number.isFinite(Number(row.profile.armor)) ? Number(row.profile.armor) : null,
+          resistance: Number.isFinite(Number(row.profile.resistance)) ? Number(row.profile.resistance) : null,
+          frequency: Number.isFinite(Number(row.profile.frequency)) ? Number(row.profile.frequency) : null,
+          speed: Number.isFinite(Number(row.profile.speed)) ? Number(row.profile.speed) : null,
+          range: Number.isFinite(Number(row.profile.range)) ? Number(row.profile.range) : null,
+          rip: row.profile.rip === true,
+          map: cleanText(row.profile.map || '', 120) || null,
+          gearScore: Number.isFinite(Number(row.profile.gearScore)) ? Math.max(0, Number(row.profile.gearScore)) : 0,
+          trainingMs: Number.isFinite(Number(row.profile.trainingMs)) ? Math.max(0, Number(row.profile.trainingMs)) : 0,
+          observedAtMs: Number.isFinite(Number(row.profile.observedAtMs)) ? Number(row.profile.observedAtMs) : Number(observedAtMs) || this.now()
+        } : null,
         observedAtMs: Number(observedAtMs) || this.now(),
         aliveUntilMs: (Number(observedAtMs) || this.now()) + this.config.staleMs
       };
@@ -325,7 +346,8 @@
         runEpoch: Number.isFinite(Number(state.runEpoch)) ? Number(state.runEpoch) : 0,
         emergencyStopLatched: state.emergencyStopLatched === true,
         lifecycleAutonomyEnabled: typeof state.lifecycleAutonomyEnabled === 'boolean' ? state.lifecycleAutonomyEnabled : null,
-        version: cleanText(state.version || '', 80) || null
+        version: cleanText(state.version || '', 80) || null,
+        profile: state.profile && typeof state.profile === 'object' ? clone(state.profile) : null
       };
     }
 

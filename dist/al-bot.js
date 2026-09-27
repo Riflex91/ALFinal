@@ -1,4 +1,4 @@
-/* AL Bot 0.19.0-h19 | generated file | do not edit dist directly */
+/* AL Bot 0.20.0-h20 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -328,7 +328,7 @@
     _local() {
       const c = this.root && (this.root.character || this.root.parent && this.root.parent.character);
       if (!c || !c.name) return null;
-      return { name: cleanText(c.name, 80), ctype: cleanText(c.ctype || c.type || '', 40).toLowerCase(), online: true, state: 'self' };
+      return { name: cleanText(c.name, 80), ctype: cleanText(c.ctype || c.type || '', 40).toLowerCase(), level: Number.isFinite(Number(c.level)) ? Number(c.level) : null, online: true, state: 'self' };
     }
     _accountRows() {
       const fn = readFn(this.root, 'get_characters');
@@ -339,6 +339,7 @@
         return { available: raw != null, rows: rows.map(row => ({
           name: cleanText(row && row.name || '', 80),
           ctype: cleanText(row && (row.ctype || row.type) || '', 40).toLowerCase(),
+          level: Number.isFinite(Number(row && row.level)) ? Number(row.level) : null,
           online: onlineFlag(row && row.online)
         })).filter(row => row.name) };
       } catch (_) { return { available: false, rows: [] }; }
@@ -2189,6 +2190,8 @@
           gold: finite(character.gold),
           xp: finite(character.xp),
           attack: finite(character.attack),
+          armor: finite(character.armor),
+          resistance: finite(character.resistance),
           range: finite(character.range),
           speed: finite(character.speed),
           frequency: finite(character.frequency),
@@ -5975,6 +5978,27 @@
         emergencyStopLatched: row.emergencyStopLatched === true,
         lifecycleAutonomyEnabled: typeof row.lifecycleAutonomyEnabled === 'boolean' ? row.lifecycleAutonomyEnabled : null,
         version: cleanText(row.version || '', 80) || null,
+        profile: row.profile && typeof row.profile === 'object' ? {
+          schemaVersion: 1,
+          name: cleanText(row.profile.name || target, 120) || target,
+          ctype: cleanText(row.profile.ctype || '', 40).toLowerCase() || null,
+          level: Number.isFinite(Number(row.profile.level)) ? Number(row.profile.level) : null,
+          hp: Number.isFinite(Number(row.profile.hp)) ? Number(row.profile.hp) : null,
+          maxHp: Number.isFinite(Number(row.profile.maxHp)) ? Number(row.profile.maxHp) : null,
+          mp: Number.isFinite(Number(row.profile.mp)) ? Number(row.profile.mp) : null,
+          maxMp: Number.isFinite(Number(row.profile.maxMp)) ? Number(row.profile.maxMp) : null,
+          attack: Number.isFinite(Number(row.profile.attack)) ? Number(row.profile.attack) : null,
+          armor: Number.isFinite(Number(row.profile.armor)) ? Number(row.profile.armor) : null,
+          resistance: Number.isFinite(Number(row.profile.resistance)) ? Number(row.profile.resistance) : null,
+          frequency: Number.isFinite(Number(row.profile.frequency)) ? Number(row.profile.frequency) : null,
+          speed: Number.isFinite(Number(row.profile.speed)) ? Number(row.profile.speed) : null,
+          range: Number.isFinite(Number(row.profile.range)) ? Number(row.profile.range) : null,
+          rip: row.profile.rip === true,
+          map: cleanText(row.profile.map || '', 120) || null,
+          gearScore: Number.isFinite(Number(row.profile.gearScore)) ? Math.max(0, Number(row.profile.gearScore)) : 0,
+          trainingMs: Number.isFinite(Number(row.profile.trainingMs)) ? Math.max(0, Number(row.profile.trainingMs)) : 0,
+          observedAtMs: Number.isFinite(Number(row.profile.observedAtMs)) ? Number(row.profile.observedAtMs) : Number(observedAtMs) || this.now()
+        } : null,
         observedAtMs: Number(observedAtMs) || this.now(),
         aliveUntilMs: (Number(observedAtMs) || this.now()) + this.config.staleMs
       };
@@ -5991,7 +6015,8 @@
         runEpoch: Number.isFinite(Number(state.runEpoch)) ? Number(state.runEpoch) : 0,
         emergencyStopLatched: state.emergencyStopLatched === true,
         lifecycleAutonomyEnabled: typeof state.lifecycleAutonomyEnabled === 'boolean' ? state.lifecycleAutonomyEnabled : null,
-        version: cleanText(state.version || '', 80) || null
+        version: cleanText(state.version || '', 80) || null,
+        profile: state.profile && typeof state.profile === 'object' ? clone(state.profile) : null
       };
     }
 
@@ -7736,6 +7761,897 @@
   }
 
   ns.CharacterLifecycleController = CharacterLifecycleController;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+
+(function (root) {
+  'use strict';
+
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns) throw new Error('ALBOT_INTERNALS_MISSING');
+
+  const clone = ns.helpers.clone;
+  const cleanText = ns.helpers.cleanText;
+
+  function finite(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function clamp(value, min = 0, max = 1) {
+    return Math.max(min, Math.min(max, Number(value) || 0));
+  }
+
+  const ROLE_CAPABILITIES = Object.freeze({
+    warrior: ['TANK', 'DPS', 'MELEE'],
+    priest: ['HEALER', 'HEAL', 'REVIVE', 'SUPPORT', 'DPS', 'RANGED'],
+    ranger: ['DPS', 'RANGED'],
+    mage: ['DPS', 'AOE', 'RANGED', 'SUPPORT'],
+    rogue: ['DPS', 'MELEE'],
+    paladin: ['TANK', 'HEAL', 'SUPPORT', 'DPS', 'MELEE'],
+    merchant: ['ECONOMY', 'LOGISTICS']
+  });
+
+  const TASK_DEFAULTS = Object.freeze({
+    FARM: { minMembers: 1, maxMembers: 2, required: ['DPS'], combatOnly: true, progressionWeight: 0.20 },
+    QUEST: { minMembers: 1, maxMembers: 2, required: ['DPS'], combatOnly: true, progressionWeight: 0.16 },
+    BOSS: { minMembers: 3, maxMembers: 4, required: ['TANK', 'HEALER', 'DPS'], combatOnly: true, progressionWeight: 0 },
+    EVENT: { minMembers: 3, maxMembers: 4, required: ['TANK', 'HEALER', 'DPS'], combatOnly: true, progressionWeight: 0 },
+    SPECIAL: { minMembers: 2, maxMembers: 4, required: ['HEALER', 'DPS'], combatOnly: true, progressionWeight: 0.04 },
+    ECONOMY: { minMembers: 1, maxMembers: 1, required: ['ECONOMY'], combatOnly: false, progressionWeight: 0 }
+  });
+
+  function combinations(rows, minSize, maxSize) {
+    const out = [];
+    const limit = Math.min(rows.length, Math.max(minSize, maxSize));
+    const visit = (start, picked) => {
+      if (picked.length >= minSize && picked.length <= limit) out.push(picked.slice());
+      if (picked.length >= limit) return;
+      for (let index = start; index < rows.length; index += 1) {
+        picked.push(rows[index]);
+        visit(index + 1, picked);
+        picked.pop();
+      }
+    };
+    visit(0, []);
+    return out;
+  }
+
+  class AccountStrategyController {
+    constructor(options = {}) {
+      this.root = options.root || root;
+      this.logger = options.logger || null;
+      this.game = options.game || null;
+      this.roster = options.roster || null;
+      this.party = options.party || null;
+      this.crossWindow = options.crossWindow || null;
+      this.gear = options.gear || null;
+      this.now = typeof options.now === 'function' ? options.now : () => Date.now();
+      this.moduleActive = false;
+      this.scope = null;
+      this.heartbeat = null;
+      this.trainingMs = 0;
+      this.lastTrainingTickMs = null;
+      this.lastProfiles = [];
+      this.lastProgression = null;
+      this.lastTaskPlan = null;
+      this.config = {
+        targetCorridor: clamp(options.targetCorridor == null ? 0.08 : options.targetCorridor, 0, 0.5),
+        maxProfileAgeMs: Math.max(1500, Math.min(30000, Number(options.maxProfileAgeMs) || 9000)),
+        maxCandidates: Math.max(4, Math.min(12, Math.floor(Number(options.maxCandidates) || 8)))
+      };
+    }
+
+    start(context = {}) {
+      this.moduleActive = true;
+      this.scope = context.scope || null;
+      this.heartbeat = typeof context.heartbeat === 'function' ? context.heartbeat : null;
+      return this.status();
+    }
+
+    stop() {
+      this.moduleActive = false;
+      this.scope = null;
+      this.heartbeat = null;
+      this.lastTrainingTickMs = null;
+      return this.status();
+    }
+
+    setCrossWindow(value) {
+      this.crossWindow = value || null;
+      return this.status();
+    }
+
+    recordTraining(active) {
+      const now = this.now();
+      if (this.lastTrainingTickMs == null) {
+        this.lastTrainingTickMs = now;
+        return this.trainingMs;
+      }
+      const delta = Math.max(0, Math.min(10000, now - this.lastTrainingTickMs));
+      this.lastTrainingTickMs = now;
+      if (active === true) this.trainingMs += delta;
+      return this.trainingMs;
+    }
+
+    _localGearScore(character) {
+      if (!character || !character.name || !this.game || !this.gear) return 0;
+      let equipment = null;
+      try { equipment = this.game.equipmentSnapshot(character.name); } catch (_) {}
+      if (!equipment || equipment.available === false || !equipment.slots) return 0;
+      let total = 0;
+      for (const item of Object.values(equipment.slots)) {
+        if (!item) continue;
+        try {
+          const value = Number(this.gear.score(item, character.ctype));
+          if (Number.isFinite(value) && value > 0) total += value;
+        } catch (_) {}
+      }
+      return Number(total.toFixed(4));
+    }
+
+    localProfile() {
+      let snapshot = null;
+      try { snapshot = this.game && this.game.snapshot ? this.game.snapshot() : null; } catch (_) {}
+      const character = snapshot && snapshot.character;
+      if (!character || !character.name) return null;
+      const ctype = cleanText(character.ctype || '', 40).toLowerCase();
+      return {
+        schemaVersion: 1,
+        name: cleanText(character.name, 120),
+        ctype,
+        level: finite(character.level),
+        hp: finite(character.hp),
+        maxHp: finite(character.maxHp),
+        mp: finite(character.mp),
+        maxMp: finite(character.maxMp),
+        attack: finite(character.attack),
+        armor: finite(character.armor),
+        resistance: finite(character.resistance),
+        frequency: finite(character.frequency),
+        speed: finite(character.speed),
+        range: finite(character.range),
+        rip: character.rip === true,
+        map: cleanText(character.map || '', 120) || null,
+        gearScore: this._localGearScore(character),
+        trainingMs: Math.max(0, Math.floor(this.trainingMs)),
+        capabilities: clone(ROLE_CAPABILITIES[ctype] || []),
+        observedAtMs: this.now()
+      };
+    }
+
+    _fallbackProfile(row) {
+      if (!row || !row.name) return null;
+      const ctype = cleanText(row.ctype || row.type || '', 40).toLowerCase();
+      return {
+        schemaVersion: 1,
+        name: cleanText(row.name, 120),
+        ctype,
+        level: finite(row.level),
+        hp: null,
+        maxHp: null,
+        mp: null,
+        maxMp: null,
+        attack: null,
+        armor: null,
+        resistance: null,
+        frequency: null,
+        speed: null,
+        range: null,
+        rip: false,
+        map: null,
+        gearScore: 0,
+        trainingMs: 0,
+        capabilities: clone(ROLE_CAPABILITIES[ctype] || []),
+        observedAtMs: null,
+        fallback: true,
+        online: row.online === true
+      };
+    }
+
+    profiles() {
+      let roster = null;
+      try { roster = this.roster && this.roster.refresh ? this.roster.refresh() : this.roster && this.roster.status ? this.roster.status() : null; } catch (_) {}
+      const account = roster && Array.isArray(roster.accountCharacters) ? roster.accountCharacters : [];
+      const online = new Set(roster && Array.isArray(roster.onlineCharacterNames) ? roster.onlineCharacterNames.map(String) : []);
+      const byName = new Map();
+
+      for (const row of account) {
+        const fallback = this._fallbackProfile(row);
+        if (fallback) byName.set(fallback.name, fallback);
+      }
+
+      let peers = [];
+      try { peers = this.crossWindow && this.crossWindow.freshPeers ? this.crossWindow.freshPeers() : []; } catch (_) {}
+      for (const peer of peers) {
+        const raw = peer && peer.profile;
+        if (!raw || !peer.name) continue;
+        const profile = this._normalizeProfile({ ...raw, name: peer.name });
+        if (!profile) continue;
+        profile.running = peer.running === true;
+        profile.emergencyStopLatched = peer.emergencyStopLatched === true;
+        profile.sessionId = peer.sessionId || null;
+        profile.peerFresh = true;
+        profile.observedAtMs = finite(peer.observedAtMs) || profile.observedAtMs;
+        byName.set(profile.name, profile);
+      }
+
+      const local = this.localProfile();
+      if (local) {
+        local.running = true;
+        local.emergencyStopLatched = false;
+        local.peerFresh = true;
+        local.local = true;
+        byName.set(local.name, local);
+        online.add(local.name);
+      }
+
+      const rows = [...byName.values()].map(row => ({
+        ...row,
+        online: online.has(String(row.name)) || row.online === true
+      })).sort((a, b) => a.name.localeCompare(b.name));
+      this.lastProfiles = clone(rows);
+      return clone(rows);
+    }
+
+    _normalizeProfile(raw) {
+      if (!raw || !raw.name) return null;
+      const ctype = cleanText(raw.ctype || '', 40).toLowerCase();
+      return {
+        schemaVersion: 1,
+        name: cleanText(raw.name, 120),
+        ctype,
+        level: finite(raw.level),
+        hp: finite(raw.hp),
+        maxHp: finite(raw.maxHp),
+        mp: finite(raw.mp),
+        maxMp: finite(raw.maxMp),
+        attack: finite(raw.attack),
+        armor: finite(raw.armor),
+        resistance: finite(raw.resistance),
+        frequency: finite(raw.frequency),
+        speed: finite(raw.speed),
+        range: finite(raw.range),
+        rip: raw.rip === true,
+        map: cleanText(raw.map || '', 120) || null,
+        gearScore: Math.max(0, finite(raw.gearScore) || 0),
+        trainingMs: Math.max(0, finite(raw.trainingMs) || 0),
+        capabilities: clone(ROLE_CAPABILITIES[ctype] || []),
+        observedAtMs: finite(raw.observedAtMs)
+      };
+    }
+
+    _scoredProfiles() {
+      const rows = this.profiles();
+      const usable = rows.filter(row => row.online && row.rip !== true && row.emergencyStopLatched !== true);
+      const maxLevel = Math.max(1, ...usable.map(row => finite(row.level) || 1));
+      const maxGear = Math.max(1, ...usable.map(row => finite(row.gearScore) || 0));
+      const combatRaw = row => {
+        const dps = Math.max(0, finite(row.attack) || 0) * Math.max(0.1, finite(row.frequency) || 1);
+        const toughness = Math.max(0, finite(row.maxHp) || 0) * 0.01
+          + (Math.max(0, finite(row.armor) || 0) + Math.max(0, finite(row.resistance) || 0)) * 0.12;
+        return dps + toughness + Math.max(0, finite(row.range) || 0) * 0.02 + Math.max(0, finite(row.speed) || 0) * 0.03;
+      };
+      const maxCombat = Math.max(1, ...usable.map(combatRaw));
+      const totalTraining = usable.reduce((sum, row) => sum + Math.max(0, finite(row.trainingMs) || 0), 0);
+
+      return rows.map(row => {
+        const levelProgress = clamp((finite(row.level) || 1) / maxLevel);
+        const gearProgress = clamp((finite(row.gearScore) || 0) / maxGear);
+        const combatProgress = clamp(combatRaw(row) / maxCombat);
+        const survival = row.maxHp && row.hp != null ? clamp(Number(row.hp) / Number(row.maxHp)) : 0.75;
+        const strength = clamp(levelProgress * 0.42 + gearProgress * 0.23 + combatProgress * 0.27 + survival * 0.08);
+        const trainingShare = totalTraining > 0 ? Math.max(0, finite(row.trainingMs) || 0) / totalTraining : 0;
+        return {
+          ...row,
+          strength: Number(strength.toFixed(6)),
+          levelProgress: Number(levelProgress.toFixed(6)),
+          gearProgress: Number(gearProgress.toFixed(6)),
+          combatProgress: Number(combatProgress.toFixed(6)),
+          survival: Number(survival.toFixed(6)),
+          trainingShare: Number(trainingShare.toFixed(6))
+        };
+      });
+    }
+
+    progressionPlan() {
+      const combat = this._scoredProfiles().filter(row =>
+        row.online
+        && row.rip !== true
+        && row.ctype !== 'merchant'
+        && row.capabilities.includes('DPS')
+      );
+      const strongest = combat.length ? Math.max(...combat.map(row => row.strength)) : 0;
+      const ranking = combat.map(row => {
+        const gap = Math.max(0, strongest - row.strength - this.config.targetCorridor);
+        const trainingDeficit = Math.max(0, 1 - row.trainingShare);
+        const catchUp = clamp(gap * 0.72 + trainingDeficit * 0.28);
+        return { name: row.name, strength: row.strength, gap, trainingShare: row.trainingShare, catchUp, ctype: row.ctype };
+      }).sort((a, b) => b.catchUp - a.catchUp || a.strength - b.strength || a.name.localeCompare(b.name));
+      const result = {
+        schemaVersion: 1,
+        targetCorridor: this.config.targetCorridor,
+        strongest,
+        selectedCharacterName: ranking[0] && ranking[0].catchUp > 0 ? ranking[0].name : null,
+        ranking
+      };
+      this.lastProgression = clone(result);
+      return result;
+    }
+
+    optimizeTask(input = {}) {
+      const taskType = cleanText(input.type || input.taskType || 'FARM', 40).toUpperCase();
+      const defaults = TASK_DEFAULTS[taskType] || TASK_DEFAULTS.FARM;
+      const minMembers = Math.max(1, Math.min(4, Math.floor(Number(input.minMembers) || defaults.minMembers)));
+      const maxMembers = Math.max(minMembers, Math.min(4, Math.floor(Number(input.maxMembers) || defaults.maxMembers)));
+      const required = Array.isArray(input.requiredCapabilities) && input.requiredCapabilities.length
+        ? [...new Set(input.requiredCapabilities.map(value => cleanText(value, 40).toUpperCase()).filter(Boolean))]
+        : defaults.required.slice();
+      const progression = this.progressionPlan();
+      const scored = this._scoredProfiles()
+        .filter(row => row.online && row.rip !== true && row.emergencyStopLatched !== true)
+        .filter(row => !defaults.combatOnly || row.ctype !== 'merchant')
+        .slice(0, this.config.maxCandidates);
+
+      const groups = combinations(scored, minMembers, maxMembers);
+      const ranking = [];
+      for (const members of groups) {
+        const capabilities = new Set(members.flatMap(member => member.capabilities || []));
+        if (!required.every(capability => capabilities.has(capability))) continue;
+        const memberNameSet = new Set(members.map(member => String(member.name)));
+        const progressionRequired = (taskType === 'FARM' || taskType === 'QUEST')
+          && progression.selectedCharacterName
+          && scored.some(row => String(row.name) === String(progression.selectedCharacterName));
+        if (progressionRequired && !memberNameSet.has(String(progression.selectedCharacterName))) continue;
+        const memberNames = members.map(member => member.name).sort();
+        const baseStrength = members.reduce((sum, member) => sum + member.strength, 0);
+        const roleDiversity = capabilities.size / 10;
+        const containsProgression = progression.selectedCharacterName
+          ? memberNames.includes(progression.selectedCharacterName)
+          : false;
+        const progressionBonus = containsProgression ? defaults.progressionWeight : 0;
+        const score = baseStrength + roleDiversity + progressionBonus;
+        ranking.push({
+          taskType,
+          memberNames,
+          score: Number(score.toFixed(6)),
+          baseStrength: Number(baseStrength.toFixed(6)),
+          progressionBonus,
+          capabilities: [...capabilities].sort(),
+          members: clone(members)
+        });
+      }
+
+      ranking.sort((a, b) => b.score - a.score
+        || b.baseStrength - a.baseStrength
+        || a.memberNames.join(',').localeCompare(b.memberNames.join(',')));
+      const selected = ranking[0] || null;
+      let leaderName = null;
+      if (selected) {
+        const tank = selected.members.filter(row => row.capabilities.includes('TANK')).sort((a,b) => b.strength - a.strength)[0];
+        const healer = selected.members.filter(row => row.capabilities.includes('HEALER')).sort((a,b) => b.strength - a.strength)[0];
+        const strongest = selected.members.slice().sort((a,b) => b.strength - a.strength)[0];
+        leaderName = tank && tank.name || healer && healer.name || strongest && strongest.name || null;
+      }
+      const supportMemberNames = this._scoredProfiles()
+        .filter(row => row.online && row.rip !== true && row.ctype === 'merchant')
+        .map(row => row.name)
+        .sort();
+      const result = {
+        schemaVersion: 1,
+        taskType,
+        requiredCapabilities: required,
+        status: selected ? 'SELECTION_READY' : 'NO_ALLOWED_COMBINATION',
+        selected: selected ? {
+          memberNames: selected.memberNames,
+          score: selected.score,
+          baseStrength: selected.baseStrength,
+          progressionBonus: selected.progressionBonus,
+          capabilities: selected.capabilities
+        } : null,
+        leaderName,
+        supportMemberNames,
+        progression,
+        ranking: ranking.slice(0, 16).map(row => ({
+          memberNames: row.memberNames,
+          score: row.score,
+          baseStrength: row.baseStrength,
+          progressionBonus: row.progressionBonus,
+          capabilities: row.capabilities
+        }))
+      };
+      this.lastTaskPlan = clone(result);
+      return result;
+    }
+
+    status() {
+      return {
+        schemaVersion: 1,
+        moduleActive: this.moduleActive,
+        localTrainingMs: Math.max(0, Math.floor(this.trainingMs)),
+        profiles: clone(this.lastProfiles),
+        progression: clone(this.lastProgression),
+        taskPlan: clone(this.lastTaskPlan),
+        config: clone(this.config)
+      };
+    }
+  }
+
+  ns.AccountStrategyController = AccountStrategyController;
+  ns.ACCOUNT_ROLE_CAPABILITIES = ROLE_CAPABILITIES;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+
+(function (root) {
+  'use strict';
+
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns) throw new Error('ALBOT_INTERNALS_MISSING');
+
+  const clone = ns.helpers.clone;
+  const cleanText = ns.helpers.cleanText;
+
+  class FullAutonomyController {
+    constructor(options = {}) {
+      this.root = options.root || root;
+      this.logger = options.logger || null;
+      this.runtime = options.runtime || null;
+      this.strategy = options.strategy || null;
+      this.moduleActive = false;
+      this.scope = null;
+      this.heartbeat = null;
+      this.enabled = false;
+      this.startedAt = null;
+      this.lastPlan = null;
+      this.lastDecision = null;
+      this.lastError = null;
+      this.started = {
+        lifecycle: false,
+        farming: false,
+        economy: false,
+        partyLogistics: false
+      };
+      this.config = {
+        taskType: 'FARM',
+        keepSupportInParty: true,
+        requireAllOnlineProfiles: true,
+        logisticsProbeMs: 30000,
+        lifecycleMaxActions: 20,
+        economyMaxActions: 100,
+        logisticsMaxActions: 10,
+        expectedOnlineCount: 4
+      };
+      this.lastLogisticsProbeAtMs = 0;
+      this.desiredCharacterNames = [];
+      this.tickResourceId = null;
+      this.lifecycleArmed = false;
+    }
+
+    start(context = {}) {
+      this.moduleActive = true;
+      this.scope = context.scope || null;
+      this.heartbeat = typeof context.heartbeat === 'function' ? context.heartbeat : null;
+      this.tickResourceId = null;
+      return this.status();
+    }
+
+    stop(reason = 'FULL_AUTONOMY_MODULE_STOP') {
+      this.stopAutonomy(reason);
+      this.moduleActive = false;
+      this.scope = null;
+      this.heartbeat = null;
+      return this.status();
+    }
+
+    configure(options = {}) {
+      if (options.taskType != null) this.config.taskType = cleanText(options.taskType, 40).toUpperCase() || 'FARM';
+      if (options.keepSupportInParty != null) this.config.keepSupportInParty = options.keepSupportInParty === true;
+      if (options.requireAllOnlineProfiles != null) this.config.requireAllOnlineProfiles = options.requireAllOnlineProfiles === true;
+      if (options.logisticsProbeMs != null) {
+        this.config.logisticsProbeMs = Math.max(5000, Math.min(300000, Math.floor(Number(options.logisticsProbeMs) || 30000)));
+      }
+      if (options.expectedOnlineCount != null) {
+        this.config.expectedOnlineCount = Math.max(1, Math.min(4, Math.floor(Number(options.expectedOnlineCount) || 4)));
+      }
+      return clone(this.config);
+    }
+
+    startAutonomy(options = {}) {
+      if (!this.moduleActive) return { accepted: false, reason: 'FULL_AUTONOMY_MODULE_NOT_ACTIVE', status: this.status() };
+      if (!this.runtime || !this.runtime.running) return { accepted: false, reason: 'FULL_AUTONOMY_RUNTIME_NOT_RUNNING', status: this.status() };
+      if (this.runtime.stopLatch && this.runtime.stopLatch.status().latched) {
+        return { accepted: false, reason: 'FULL_AUTONOMY_EMERGENCY_STOP_LATCHED', status: this.status() };
+      }
+      this.configure(options);
+      const initialOnline = this._onlineNames();
+      if (initialOnline.length !== this.config.expectedOnlineCount) {
+        return {
+          accepted: false,
+          reason: 'FULL_AUTONOMY_EXPECTED_ONLINE_COUNT_MISMATCH',
+          expectedOnlineCount: this.config.expectedOnlineCount,
+          onlineCharacterNames: initialOnline,
+          status: this.status()
+        };
+      }
+      this.desiredCharacterNames = initialOnline.slice().sort();
+      this.lifecycleArmed = false;
+      this.enabled = true;
+      this.startedAt = new Date().toISOString();
+      this.lastError = null;
+      if (this.scope && typeof this.scope.interval === 'function' && !this.tickResourceId) {
+        this.tickResourceId = this.scope.interval('full-autonomy-loop', () => this.tick(), 1000, { immediate: false });
+      }
+      this.lastDecision = { at: this.startedAt, type: 'START', taskType: this.config.taskType };
+      const tick = this.tick();
+      return { accepted: true, tick, status: this.status() };
+    }
+
+    stopAutonomy(reason = 'FULL_AUTONOMY_STOP') {
+      const runtime = this.runtime;
+      if (runtime) {
+        if (this.started.farming) {
+          try { runtime.farmIntelligence.stopAutonomy(reason); } catch (_) {}
+        }
+        if (this.started.economy) {
+          try { runtime.economy.stopAutonomy(reason); } catch (_) {}
+        }
+        if (this.started.partyLogistics) {
+          try { runtime.partyLogistics.stopAutonomy(reason); } catch (_) {}
+        }
+        if (this.started.lifecycle) {
+          try { runtime.lifecycle.stopAutonomy(reason); } catch (_) {}
+        }
+      }
+      if (this.tickResourceId && this.scope && typeof this.scope.cancel === 'function') {
+        try { this.scope.cancel(this.tickResourceId, reason); } catch (_) {}
+      }
+      this.tickResourceId = null;
+      this.enabled = false;
+      this.desiredCharacterNames = [];
+      this.lifecycleArmed = false;
+      this.started = { lifecycle: false, farming: false, economy: false, partyLogistics: false };
+      this.lastDecision = { at: new Date().toISOString(), type: 'STOP', reason: cleanText(reason, 200) };
+      return this.status();
+    }
+
+    _local() {
+      try {
+        const snap = this.runtime && this.runtime.game && this.runtime.game.snapshot ? this.runtime.game.snapshot() : null;
+        return snap && snap.character || null;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    _onlineNames() {
+      try {
+        const roster = this.runtime && this.runtime.roster && this.runtime.roster.refresh ? this.runtime.roster.refresh() : null;
+        return roster && Array.isArray(roster.onlineCharacterNames) ? roster.onlineCharacterNames.map(String).sort() : [];
+      } catch (_) {
+        return [];
+      }
+    }
+
+    _profileReadiness() {
+      const profiles = this.strategy ? this.strategy.profiles() : [];
+      const local = this._local();
+      const online = this._onlineNames();
+      const ready = new Set(profiles.filter(row => row && row.online && (row.local || row.peerFresh)).map(row => String(row.name)));
+      if (local && local.name) ready.add(String(local.name));
+      const missing = this.config.requireAllOnlineProfiles ? online.filter(name => !ready.has(name)) : [];
+      return {
+        profiles,
+        online,
+        missing,
+        readyNames: [...ready].sort(),
+        onlineLimitExceeded: online.length > 4
+      };
+    }
+
+    _ensureLifecycle(plan, readiness) {
+      const lifecycle = this.runtime.lifecycle;
+      const status = lifecycle.status();
+      if (status.suspended || status.currentAction && status.currentAction.unknownRecorded === true) {
+        return { ok: false, reason: status.suspendedReason || 'H19_SUSPENDED' };
+      }
+
+      const local = this._local();
+      if (!local || !local.name) return { ok: false, reason: 'CHARACTER_UNAVAILABLE' };
+      const localName = String(local.name);
+      const selected = plan && plan.selected ? plan.selected.memberNames.slice() : [];
+      const support = this.config.keepSupportInParty ? (plan.supportMemberNames || []) : [];
+      const stableDesired = this.desiredCharacterNames.length
+        ? this.desiredCharacterNames.slice()
+        : readiness.online.slice();
+      const desiredPartyAll = (this.config.keepSupportInParty
+        ? stableDesired.slice()
+        : [...new Set([...selected, ...support])])
+        .filter(name => stableDesired.includes(String(name)))
+        .slice(0, 4)
+        .sort();
+      const leader = plan.leaderName && desiredPartyAll.includes(plan.leaderName)
+        ? plan.leaderName
+        : (desiredPartyAll[0] || null);
+      if (!leader) return { ok: false, reason: 'FULL_AUTONOMY_PARTY_LEADER_UNAVAILABLE' };
+
+      const coordinator = localName === String(leader);
+      const onlineSet = new Set(readiness.online.map(String));
+      const desiredActiveNames = coordinator
+        ? stableDesired.slice().sort()
+        : stableDesired.filter(name => onlineSet.has(String(name))).sort();
+      const desiredPartyMembers = desiredPartyAll
+        .filter(name => coordinator || onlineSet.has(String(name)))
+        .sort();
+
+      const desiredRuntimeRunningNames = coordinator
+        ? readiness.profiles
+          .filter(row => row && row.peerFresh && !row.local && stableDesired.includes(String(row.name)))
+          .map(row => row.name)
+          .sort()
+        : [];
+
+      const effectiveLeader = desiredPartyMembers.includes(leader)
+        ? leader
+        : (desiredPartyMembers[0] || null);
+      const policy = lifecycle.setPolicy({
+        desiredActiveNames,
+        desiredRuntimeRunningNames,
+        desiredPartyMemberNames: desiredPartyMembers,
+        desiredPartyLeader: effectiveLeader,
+        maxActionsPerSession: this.config.lifecycleMaxActions
+      });
+      if (!policy || policy.accepted !== true) {
+        return { ok: false, reason: policy && policy.reason || 'FULL_AUTONOMY_LIFECYCLE_POLICY_REJECTED' };
+      }
+
+      let party = null;
+      try { party = this.runtime.party && this.runtime.party.snapshot ? this.runtime.party.snapshot() : null; } catch (_) {}
+      const memberNames = new Set(party && Array.isArray(party.memberNames) ? party.memberNames.map(String) : []);
+      const localPartyHealthy = memberNames.has(localName)
+        && effectiveLeader
+        && String(party && party.leader || '') === String(effectiveLeader);
+      const shouldRunLifecycle = coordinator || !localPartyHealthy;
+
+      const current = lifecycle.status();
+      if (shouldRunLifecycle && this.lifecycleArmed && current.autonomyEnabled !== true) {
+        return {
+          ok: false,
+          reason: 'FULL_AUTONOMY_LIFECYCLE_STOP_REQUIRES_EXPLICIT_RESTART',
+          lifecycleLastAction: clone(current.lastAction),
+          actionsThisSession: Number(current.actionsThisSession || 0)
+        };
+      }
+      if (shouldRunLifecycle && current.autonomyEnabled === true) {
+        this.lifecycleArmed = true;
+      } else if (shouldRunLifecycle) {
+        const started = lifecycle.startAutonomy({ maxActions: this.config.lifecycleMaxActions });
+        if (!started || started.accepted !== true) {
+          return { ok: false, reason: started && started.reason || 'FULL_AUTONOMY_LIFECYCLE_START_REJECTED' };
+        }
+        this.started.lifecycle = true;
+        this.lifecycleArmed = true;
+      } else if (this.started.lifecycle && current.autonomyEnabled === true) {
+        try { lifecycle.stopAutonomy('FULL_AUTONOMY_PARTY_HEALTHY_NON_COORDINATOR'); } catch (_) {}
+        this.started.lifecycle = false;
+        this.lifecycleArmed = false;
+      } else if (!shouldRunLifecycle) {
+        this.lifecycleArmed = false;
+      }
+
+      return {
+        ok: true,
+        coordinator,
+        coordinatorName: leader,
+        desiredActiveNames,
+        desiredRuntimeRunningNames,
+        partyNames: desiredPartyMembers,
+        leader: effectiveLeader
+      };
+    }
+
+    _ensureCombatRole(plan) {
+      const local = this._local();
+      if (!local || !local.name) return { ok: false, reason: 'CHARACTER_UNAVAILABLE' };
+      const localName = String(local.name);
+      const ctype = String(local.ctype || '').toLowerCase();
+      const selected = new Set(plan && plan.selected ? plan.selected.memberNames : []);
+      const shouldFarm = ctype !== 'merchant' && selected.has(localName);
+      const status = this.runtime.farmIntelligence.status();
+
+      if (shouldFarm) {
+        if (!status.active) {
+          const started = this.runtime.farmIntelligence.startAutonomy({
+            owner: 'full-autonomy',
+            allowTravel: true
+          });
+          if (started && started.accepted === true) this.started.farming = true;
+          else if (!started || !String(started.reason || '').includes('ALREADY')) {
+            return { ok: false, reason: started && started.reason || 'FULL_AUTONOMY_FARM_START_REJECTED' };
+          }
+        }
+      } else if (this.started.farming && status.active) {
+        try { this.runtime.farmIntelligence.stopAutonomy('FULL_AUTONOMY_NOT_SELECTED'); } catch (_) {}
+        this.started.farming = false;
+      }
+      return { ok: true, shouldFarm, selected: [...selected].sort() };
+    }
+
+    _merchantArbitration() {
+      const local = this._local();
+      if (!local || String(local.ctype || '').toLowerCase() !== 'merchant') return { ok: true, merchant: false };
+      const economy = this.runtime.economy;
+      const logistics = this.runtime.partyLogistics;
+      const economyStatus = economy.status();
+      const logisticsStatus = logistics.status();
+      if (economyStatus.suspendedReason || logisticsStatus.suspendedReason) {
+        return {
+          ok: false,
+          reason: economyStatus.suspendedReason || logisticsStatus.suspendedReason || 'FULL_AUTONOMY_MERCHANT_SUSPENDED'
+        };
+      }
+
+      const now = Date.now();
+      const logisticsActive = logisticsStatus.autonomyEnabled === true;
+      if (logisticsActive) {
+        const plan = logistics.plan();
+        if (!logisticsStatus.currentAction && (!plan || plan.state !== 'READY')) {
+          if (this.started.partyLogistics) {
+            try { logistics.stopAutonomy('FULL_AUTONOMY_LOGISTICS_IDLE'); } catch (_) {}
+            this.started.partyLogistics = false;
+          }
+        } else {
+          return { ok: true, merchant: true, owner: 'party-logistics', plan: clone(plan) };
+        }
+      }
+
+      const economyNow = economy.status();
+      if (now - this.lastLogisticsProbeAtMs >= this.config.logisticsProbeMs && !economyNow.currentAction) {
+        this.lastLogisticsProbeAtMs = now;
+        const wasEconomyOwned = this.started.economy && economyNow.autonomyEnabled === true;
+        if (wasEconomyOwned) {
+          try { economy.stopAutonomy('FULL_AUTONOMY_LOGISTICS_PROBE'); } catch (_) {}
+          this.started.economy = false;
+        }
+        let logisticsPlan = null;
+        try { logisticsPlan = logistics.plan(); } catch (_) {}
+        if (logisticsPlan && logisticsPlan.state === 'READY') {
+          const started = logistics.startAutonomy({ maxActions: this.config.logisticsMaxActions });
+          if (started && started.accepted === true) {
+            this.started.partyLogistics = true;
+            return { ok: true, merchant: true, owner: 'party-logistics', plan: clone(logisticsPlan) };
+          }
+        }
+      }
+
+      const currentEconomy = economy.status();
+      const currentLogistics = logistics.status();
+      if (!currentLogistics.autonomyEnabled && !currentLogistics.currentAction && !currentEconomy.autonomyEnabled) {
+        const started = economy.startAutonomy({ maxActions: this.config.economyMaxActions });
+        if (started && started.accepted === true) this.started.economy = true;
+        else if (!started || !String(started.reason || '').includes('ALREADY')) {
+          return { ok: false, reason: started && started.reason || 'FULL_AUTONOMY_ECONOMY_START_REJECTED' };
+        }
+      }
+      return { ok: true, merchant: true, owner: this.runtime.economy.status().autonomyEnabled ? 'economy' : 'idle' };
+    }
+
+    tick() {
+      if (this.heartbeat) {
+        try { this.heartbeat({ phase: 'full-autonomy', enabled: this.enabled, taskType: this.config.taskType }); } catch (_) {}
+      }
+      if (!this.moduleActive || !this.enabled) return { state: 'IDLE', reason: 'FULL_AUTONOMY_DISABLED' };
+      if (!this.runtime || !this.runtime.actionAllowed('full-autonomy')) {
+        return { state: 'BLOCKED', reason: 'FULL_AUTONOMY_RUNTIME_ACTION_BLOCKED' };
+      }
+
+      try {
+        const readiness = this._profileReadiness();
+        const local = this._local();
+        if (!local) return { state: 'BLOCKED', reason: 'CHARACTER_UNAVAILABLE' };
+        if (readiness.onlineLimitExceeded) {
+          this.strategy.recordTraining(false);
+          return this.lastDecision = {
+            at: new Date().toISOString(),
+            state: 'BLOCKED',
+            reason: 'FULL_AUTONOMY_ONLINE_CHARACTER_LIMIT_EXCEEDED',
+            onlineCharacterNames: readiness.online
+          };
+        }
+        if (readiness.missing.length) {
+          this.strategy.recordTraining(false);
+          return this.lastDecision = {
+            at: new Date().toISOString(),
+            state: 'WARMING',
+            reason: 'FULL_AUTONOMY_WAITING_FOR_FRESH_PEERS',
+            missingProfiles: readiness.missing
+          };
+        }
+
+        const plan = this.strategy.optimizeTask({ type: this.config.taskType });
+        this.lastPlan = clone(plan);
+        if (!plan || plan.status !== 'SELECTION_READY') {
+          this.strategy.recordTraining(false);
+          return this.lastDecision = {
+            at: new Date().toISOString(),
+            state: 'BLOCKED',
+            reason: 'FULL_AUTONOMY_NO_ALLOWED_TASK_PARTY',
+            plan: clone(plan)
+          };
+        }
+
+        const lifecycle = this._ensureLifecycle(plan, readiness);
+        if (!lifecycle.ok) {
+          this.strategy.recordTraining(false);
+          return this.lastDecision = { at: new Date().toISOString(), state: 'BLOCKED', reason: lifecycle.reason };
+        }
+
+        const combat = this._ensureCombatRole(plan);
+        if (!combat.ok) {
+          this.strategy.recordTraining(false);
+          return this.lastDecision = { at: new Date().toISOString(), state: 'BLOCKED', reason: combat.reason };
+        }
+
+        const merchant = this._merchantArbitration();
+        if (!merchant.ok) {
+          this.strategy.recordTraining(false);
+          return this.lastDecision = { at: new Date().toISOString(), state: 'BLOCKED', reason: merchant.reason };
+        }
+
+        const localSelected = plan.selected.memberNames.includes(String(local.name));
+        this.strategy.recordTraining(localSelected || String(local.ctype || '').toLowerCase() === 'merchant');
+        try {
+          if (this.runtime.lifecycleTransport && typeof this.runtime.lifecycleTransport.broadcastHeartbeat === 'function') {
+            this.runtime.lifecycleTransport.broadcastHeartbeat();
+          }
+        } catch (_) {}
+
+        return this.lastDecision = {
+          at: new Date().toISOString(),
+          state: 'RUNNING',
+          reason: 'FULL_AUTONOMY_ROLE_PLAN_ACTIVE',
+          local: local.name,
+          localRole: String(local.ctype || '').toLowerCase() === 'merchant'
+            ? merchant.owner
+            : (combat.shouldFarm ? 'combat-farm' : 'standby'),
+          taskType: plan.taskType,
+          executionMembers: plan.selected.memberNames,
+          supportMembers: plan.supportMemberNames,
+          desiredParty: lifecycle.partyNames,
+          leader: lifecycle.leader,
+          lifecycleCoordinator: lifecycle.coordinatorName,
+          localLifecycleCoordinator: lifecycle.coordinator === true,
+          missingDesiredCharacters: this.desiredCharacterNames.filter(name => !readiness.online.includes(name)),
+          progressionTarget: plan.progression && plan.progression.selectedCharacterName || null
+        };
+      } catch (error) {
+        this.lastError = {
+          at: new Date().toISOString(),
+          reason: cleanText(error && error.message || error, 300)
+        };
+        if (this.logger) this.logger.error('Full Autonomy tick fehlgeschlagen', this.lastError);
+        return this.lastDecision = { at: this.lastError.at, state: 'ERROR', reason: this.lastError.reason };
+      }
+    }
+
+    status() {
+      return {
+        schemaVersion: 1,
+        moduleActive: this.moduleActive,
+        enabled: this.enabled,
+        startedAt: this.startedAt,
+        config: clone(this.config),
+        startedControllers: clone(this.started),
+        desiredCharacterNames: clone(this.desiredCharacterNames),
+        tickScheduled: !!this.tickResourceId,
+        lifecycleArmed: this.lifecycleArmed,
+        lastPlan: clone(this.lastPlan),
+        lastDecision: clone(this.lastDecision),
+        lastError: clone(this.lastError)
+      };
+    }
+  }
+
+  ns.FullAutonomyController = FullAutonomyController;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
 
 
@@ -16580,7 +17496,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.19.0-h19';
+      this.version = options.version || '0.20.0-h20';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -16774,7 +17690,8 @@
             runEpoch: this.runEpoch,
             emergencyStopLatched: this.stopLatch.status().latched,
             lifecycleAutonomyEnabled: this.lifecycle ? this.lifecycle.status().autonomyEnabled === true : null,
-            version: this.version
+            version: this.version,
+            profile: this.accountStrategy ? this.accountStrategy.localProfile() : null
           };
         },
         getPartyState: () => this.party.snapshot(),
@@ -16793,6 +17710,21 @@
         storage: this.storage,
         crossWindow: this.lifecycleTransport,
         canAct: action => this.actionAllowed(action)
+      });
+      this.accountStrategy = new ns.AccountStrategyController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        roster: this.roster,
+        party: this.party,
+        crossWindow: this.lifecycleTransport,
+        gear: this.gear
+      });
+      this.fullAutonomy = new ns.FullAutonomyController({
+        root: this.root,
+        logger: this.logger,
+        runtime: this,
+        strategy: this.accountStrategy
       });
       this.inventory.partyLogistics = this.partyLogistics;
       this.merchant.partyLogistics = this.partyLogistics;
@@ -16993,6 +17925,24 @@
         start: context => this.lifecycle.start(context),
         stop: reason => this.lifecycle.stop(reason),
         status: () => this.lifecycle.status()
+      });
+
+      this.modules.register({
+        id: 'account-strategy',
+        title: 'Account Progression & Party Optimizer',
+        version: '0.20.0',
+        start: context => this.accountStrategy.start(context),
+        stop: reason => this.accountStrategy.stop(reason),
+        status: () => this.accountStrategy.status()
+      });
+
+      this.modules.register({
+        id: 'full-autonomy',
+        title: 'Full Live Autonomy',
+        version: '0.20.0',
+        start: context => this.fullAutonomy.start(context),
+        stop: reason => this.fullAutonomy.stop(reason),
+        status: () => this.fullAutonomy.status()
       });
     }
 
@@ -21992,6 +22942,8 @@
         partyLogistics: this.partyLogistics.status(),
         lifecycleTransport: this.lifecycleTransport.status(),
         lifecycle: this.lifecycle.status(),
+        accountStrategy: this.accountStrategy.status(),
+        fullAutonomy: this.fullAutonomy.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
         roster,
@@ -22027,6 +22979,8 @@
         partyLogistics: this.partyLogistics.status(),
         lifecycleTransport: this.lifecycleTransport.status(),
         lifecycle: this.lifecycle.status(),
+        accountStrategy: this.accountStrategy.status(),
+        fullAutonomy: this.fullAutonomy.status(),
         liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
         logs: this.logger.list(160),
@@ -22064,6 +23018,8 @@
         && typeof this.lifecycleTransport.freshPeer === 'function'
         && typeof this.lifecycleTransport.requestRuntimeState === 'function', this.lifecycleTransport.status());
       push('character-lifecycle-controller', !!this.lifecycle.status() && typeof this.lifecycle.plan === 'function' && typeof this.lifecycle.queueStart === 'function' && typeof this.lifecycle.queueRespawn === 'function', this.lifecycle.status());
+      push('account-strategy-controller', !!this.accountStrategy.status() && typeof this.accountStrategy.optimizeTask === 'function' && typeof this.accountStrategy.progressionPlan === 'function', this.accountStrategy.status());
+      push('full-autonomy-controller', !!this.fullAutonomy.status() && typeof this.fullAutonomy.startAutonomy === 'function' && typeof this.fullAutonomy.stopAutonomy === 'function', this.fullAutonomy.status());
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
       push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);
@@ -22199,6 +23155,7 @@
       this.upgradeResult = null;
       this.exchangeCraftResult = null;
       this.lifecycleResult = null;
+      this.fullAutonomyResult = null;
       this.liveTestClipboard = null;
       this._offLog = null;
       this._dragCleanup = null;
@@ -22255,7 +23212,7 @@
 </style>
 <div class="albot-head" id="albot-drag-handle"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-minimize" class="albot-window-btn" title="Fenster minimieren" aria-label="Fenster minimieren">—</button><button id="albot-emergency" class="albot-stop">STOP</button></div>
 <div class="albot-tabs">
-<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="merchant">Merchant</button><button class="albot-tab" data-tab="bank">Bank</button><button class="albot-tab" data-tab="trade">Handel</button><button class="albot-tab" data-tab="gear">Gear</button><button class="albot-tab" data-tab="upgrade">Upgrade & Compound</button><button class="albot-tab" data-tab="exchange-craft">Exchange & Craft</button><button class="albot-tab" data-tab="economy">Economy</button><button class="albot-tab" data-tab="lifecycle">Lifecycle</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
+<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="merchant">Merchant</button><button class="albot-tab" data-tab="bank">Bank</button><button class="albot-tab" data-tab="trade">Handel</button><button class="albot-tab" data-tab="gear">Gear</button><button class="albot-tab" data-tab="upgrade">Upgrade & Compound</button><button class="albot-tab" data-tab="exchange-craft">Exchange & Craft</button><button class="albot-tab" data-tab="economy">Economy</button><button class="albot-tab" data-tab="lifecycle">Lifecycle</button><button class="albot-tab" data-tab="full-autonomy">Full Live</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
 </div>
 <div class="albot-body">
 <section id="albot-panel-overview" class="albot-panel active"></section>
@@ -22274,6 +23231,7 @@
 <section id="albot-panel-exchange-craft" class="albot-panel"></section>
 <section id="albot-panel-economy" class="albot-panel"></section>
 <section id="albot-panel-lifecycle" class="albot-panel"></section>
+<section id="albot-panel-full-autonomy" class="albot-panel"></section>
 <section id="albot-panel-live-test" class="albot-panel"></section>
 <section id="albot-panel-knowledge" class="albot-panel"></section>
 <section id="albot-panel-logs" class="albot-panel"></section>
@@ -22421,6 +23379,7 @@
       if (this.activeTab === 'exchange-craft') this.renderExchangeCraft(status);
       if (this.activeTab === 'economy') this.renderEconomy(status);
       if (this.activeTab === 'lifecycle') this.renderLifecycle(status);
+      if (this.activeTab === 'full-autonomy') this.renderFullAutonomy(status);
       if (this.activeTab === 'live-test') this.renderLiveTest(status);
       if (this.activeTab === 'knowledge') this.renderKnowledge(status);
       if (this.activeTab === 'logs') this.renderLogs();
@@ -22448,6 +23407,7 @@
       this.renderExchangeCraft(status);
       this.renderEconomy(status);
       this.renderLifecycle(status);
+      this.renderFullAutonomy(status);
       this.renderLiveTest(status);
       this.renderKnowledge(status);
       this.renderLogs();
@@ -23752,6 +24712,70 @@ ${items.length ? items.slice(0, 24).map(row => '<div class="albot-small">#'+esc(
     }
 
 
+    renderFullAutonomy(status) {
+      const panel = this.host.querySelector('#albot-panel-full-autonomy');
+      if (!panel) return;
+      const full = status.fullAutonomy || {};
+      const strategy = status.accountStrategy || {};
+      let profiles = Array.isArray(strategy.profiles) ? strategy.profiles : [];
+      let progression = strategy.progression || null;
+      try {
+        if (!profiles.length && this.runtime.accountStrategy && typeof this.runtime.accountStrategy.profiles === 'function') {
+          profiles = this.runtime.accountStrategy.profiles();
+        }
+        if (!progression && this.runtime.accountStrategy && typeof this.runtime.accountStrategy.progressionPlan === 'function') {
+          progression = this.runtime.accountStrategy.progressionPlan();
+        }
+      } catch (_) {}
+      const plan = full.lastPlan || strategy.taskPlan || null;
+      const decision = full.lastDecision || null;
+      const selected = plan && plan.selected && Array.isArray(plan.selected.memberNames) ? plan.selected.memberNames : [];
+      const support = plan && Array.isArray(plan.supportMemberNames) ? plan.supportMemberNames : [];
+      const resultText = this.fullAutonomyResult
+        ? JSON.stringify(this.fullAutonomyResult, null, 2)
+        : 'Noch keine manuelle Full-Live-Aktion.';
+
+      panel.innerHTML = '<div class="albot-card"><b>V6 Full Live · Account & Party Optimizer</b>'
+        + '<div class="albot-small">Startet die vorhandenen Bot-Module gemeinsam und verteilt Rollen accountweit. Combat-Characters farmen/kaempfen nach Task-Plan, der Merchant uebernimmt Economy und bei Bedarf Party-Logistik. Sicherheits-Suspensions und UNKNOWN werden niemals automatisch zurueckgesetzt.</div>'
+        + '<div class="albot-grid" style="margin-top:8px">'
+        + '<div><span class="albot-k">Full Live</span><div class="albot-v">'+(full.enabled ? 'AKTIV' : 'AUS')+'</div></div>'
+        + '<div><span class="albot-k">Task</span><div class="albot-v">'+esc(full.config && full.config.taskType || '-')+'</div></div>'
+        + '<div><span class="albot-k">Status</span><div class="albot-v">'+esc(decision && decision.state || '-')+' · '+esc(decision && decision.reason || '-')+'</div></div>'
+        + '<div><span class="albot-k">Leader</span><div class="albot-v">'+esc(plan && plan.leaderName || decision && decision.leader || '-')+'</div></div>'
+        + '<div><span class="albot-k">Execution Group</span><div class="albot-v">'+(selected.length ? selected.map(esc).join(', ') : '-')+'</div></div>'
+        + '<div><span class="albot-k">Support</span><div class="albot-v">'+(support.length ? support.map(esc).join(', ') : '-')+'</div></div>'
+        + '<div><span class="albot-k">Catch-up Ziel</span><div class="albot-v">'+esc(progression && progression.selectedCharacterName || plan && plan.progression && plan.progression.selectedCharacterName || '-')+'</div></div>'
+        + '<div><span class="albot-k">Lokale Rolle</span><div class="albot-v">'+esc(decision && decision.localRole || '-')+'</div></div>'
+        + '</div></div>'
+        + '<div class="albot-card"><b>Account-Profile</b>'
+        + (profiles.length ? profiles.map(row => '<div class="albot-small"><b>'+esc(row.name)+'</b> · '+esc(row.ctype || '?')+' · Lv '+esc(row.level == null ? '?' : row.level)+' · Gear '+esc(row.gearScore == null ? '?' : Math.round(Number(row.gearScore)))+' · Training '+esc(Math.round(Number(row.trainingMs || 0)/1000))+'s · '+(row.local ? 'LOCAL' : row.peerFresh ? 'FRESH PEER' : row.online ? 'ROSTER ONLY' : 'OFFLINE')+'</div>').join('') : '<div class="albot-small">Noch keine Character-Profile.</div>')
+        + '</div>'
+        + '<div class="albot-card"><b>Steuerung</b>'
+        + '<div class="albot-row"><select id="albot-full-task">'
+        + ['FARM','QUEST','BOSS','EVENT','SPECIAL'].map(value => '<option value="'+value+'" '+((full.config && full.config.taskType || 'FARM') === value ? 'selected' : '')+'>'+value+'</option>').join('')
+        + '</select><button id="albot-full-start" class="albot-btn" '+(full.enabled || status.emergencyStop && status.emergencyStop.latched ? 'disabled' : '')+'>Full Live starten</button><button id="albot-full-stop" class="albot-btn warn" '+(full.enabled ? '' : 'disabled')+'>Full Live stoppen</button></div>'
+        + '<div class="albot-small">Auf allen vier Fenstern denselben aktuellen Build laden. Der Modus bleibt WARMING, bis fuer jeden online gemeldeten Character ein frisches Cross-Window-Profil vorliegt.</div>'
+        + '<div class="albot-log" style="margin-top:8px">'+esc(resultText)+'</div></div>';
+
+      const start = panel.querySelector('#albot-full-start');
+      if (start) start.onclick = async () => {
+        try {
+          if (!this.runtime.running) await this.runtime.start();
+          const taskType = panel.querySelector('#albot-full-task').value;
+          this.fullAutonomyResult = this.runtime.fullAutonomy.startAutonomy({ taskType });
+        } catch (error) {
+          this.fullAutonomyResult = { accepted: false, reason: String(error && error.message || error) };
+        }
+        this.render();
+      };
+      const stop = panel.querySelector('#albot-full-stop');
+      if (stop) stop.onclick = () => {
+        try { this.fullAutonomyResult = this.runtime.fullAutonomy.stopAutonomy('GUI_FULL_AUTONOMY_STOP'); }
+        catch (error) { this.fullAutonomyResult = { stopped: false, reason: String(error && error.message || error) }; }
+        this.render();
+      };
+    }
+
     async runRecommendedLiveTest() {
       const state = this.runtime.status();
       if (state.emergencyStop && state.emergencyStop.latched) {
@@ -23982,7 +25006,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.19.0-h19',
+    version: '0.20.0-h20',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -24112,6 +25136,24 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
       start: options => runtime.lifecycle.startAutonomy(options || {}),
       stop: reason => runtime.lifecycle.stopAutonomy(reason || 'API_H19_AUTONOMY_STOP'),
       reset: reason => runtime.lifecycle.resetSafety(reason || 'API_H19_RESET')
+    },
+
+    accountStrategy: {
+      status: () => runtime.accountStrategy.status(),
+      profiles: () => runtime.accountStrategy.profiles(),
+      progression: () => runtime.accountStrategy.progressionPlan(),
+      optimize: task => runtime.accountStrategy.optimizeTask(task || {})
+    },
+
+    fullAutonomy: {
+      status: () => runtime.fullAutonomy.status(),
+      configure: options => runtime.fullAutonomy.configure(options || {}),
+      start: async options => {
+        if (!runtime.running) await runtime.start();
+        return runtime.fullAutonomy.startAutonomy(options || {});
+      },
+      stop: reason => runtime.fullAutonomy.stopAutonomy(reason || 'API_FULL_AUTONOMY_STOP'),
+      tick: () => runtime.fullAutonomy.tick()
     },
 
     farming: {
@@ -24280,6 +25322,8 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
   Object.freeze(api.party);
   Object.freeze(api.partyLogistics);
   Object.freeze(api.lifecycle);
+  Object.freeze(api.accountStrategy);
+  Object.freeze(api.fullAutonomy);
   Object.freeze(api.farming);
   Object.freeze(api.farmIntelligence);
   Object.freeze(api.inventory);
@@ -24307,7 +25351,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
     };
   } catch (_) {}
 
-  runtime.logger.info('AL Bot H19 geladen', {
+  runtime.logger.info('AL Bot H20 geladen', {
     version: api.version,
     bootCount,
     hotReload: !!previous,

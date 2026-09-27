@@ -4,8 +4,8 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
-const source = ['src/core.js', 'src/scheduler.js', 'src/game-adapter.js', 'src/knowledge.js', 'src/action-boundary.js', 'src/movement.js', 'src/class-skills.js', 'src/party.js', 'src/party-logistics.js', 'src/cross-window-lifecycle.js', 'src/lifecycle-recovery.js', 'src/farming.js', 'src/combat.js', 'src/farm-intelligence.js', 'src/inventory.js', 'src/merchant.js', 'src/bank.js', 'src/trade.js', 'src/gear.js', 'src/upgrade.js', 'src/exchange-craft.js', 'src/economy.js', 'src/live-test.js', 'src/runtime.js', 'src/ui.js', 'src/entry.js'];
-const banner = `/* AL Bot 0.19.0-h19 | generated file | do not edit dist directly */\n`;
+const source = ['src/core.js', 'src/scheduler.js', 'src/game-adapter.js', 'src/knowledge.js', 'src/action-boundary.js', 'src/movement.js', 'src/class-skills.js', 'src/party.js', 'src/party-logistics.js', 'src/cross-window-lifecycle.js', 'src/lifecycle-recovery.js', 'src/account-strategy.js', 'src/full-autonomy.js', 'src/farming.js', 'src/combat.js', 'src/farm-intelligence.js', 'src/inventory.js', 'src/merchant.js', 'src/bank.js', 'src/trade.js', 'src/gear.js', 'src/upgrade.js', 'src/exchange-craft.js', 'src/economy.js', 'src/live-test.js', 'src/runtime.js', 'src/ui.js', 'src/entry.js'];
+const banner = `/* AL Bot 0.20.0-h20 | generated file | do not edit dist directly */\n`;
 const body = source.map(file => fs.readFileSync(path.join(root, file), 'utf8')).join('\n\n');
 fs.mkdirSync(path.join(root, 'dist'), { recursive: true });
 fs.writeFileSync(path.join(root, 'dist/al-bot.js'), banner + body + '\n', 'utf8');

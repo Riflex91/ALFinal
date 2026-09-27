@@ -1661,3 +1661,40 @@ Party-Recovery:
 Damit sind die dedizierten H19-Live-Gates fuer getrennte Browserfenster und Party-Recovery vollstaendig PASSED.
 
 Release-Status: H20 bleibt bis zum Merge dieser append-only H19-Evidence blockiert. Nach diesem Merge kann H19 als abgeschlossen behandelt und H20 freigegeben werden.
+
+
+## V6 – Account-/Party-Optimizer und Vier-Character Full Live
+
+Stand: 2026-09-27
+
+Nach Abschluss von H19 wurde vor H20 die accountweite Progressions- und Task-/Party-Auswahl aus den bewaehrten V5-Konzepten neu und ALFinal-nativ aufgebaut.
+
+Neue Source-Module:
+
+- `src/account-strategy.js` – Account-Profile, Strength/Progression, Catch-up und Task × Party Optimizer;
+- `src/full-autonomy.js` – koordinierte rollenbezogene Vollautonomie fuer den echten Mehrfenster-Livebetrieb.
+
+Wichtige Semantik:
+
+- `My_Warrior`, `My_Priest` und `My_Ranger1` sind Combat-Kandidaten; `My_Merchant` bleibt Economy/Logistics-Support;
+- FARM/QUEST enthalten bei vorhandenem Catch-up-Ziel den zurueckliegenden Character und verwenden maximal zwei aktive Combat-Mitglieder;
+- BOSS/EVENT verlangen Tank + Healer + DPS und priorisieren Einsatzstaerke statt Catch-up;
+- der Merchant bleibt bei Combat-Aufgaben Support und wird nicht in die DPS-Gruppe gerankt;
+- Character-Staerke wird aus Live-Level, Gear und Kampf-/Survivalwerten gebildet;
+- Trainingszeit wird pro Fenster bounded gemessen und per bestehendem H19-CM-Heartbeat read-only geteilt;
+- Full Live erwartet standardmaessig exakt vier online Characters und wartet danach auf frische Profile aller vier Fenster;
+- nur der aktuell gewaehlte Leader ist Lifecycle-Coordinator fuer Remote-Recovery;
+- gesunde Nicht-Leader fuehren keine konkurrierende H19-Recovery aus; bei eigener Party-Abweichung duerfen sie bounded ihren lokalen Rejoin-Pfad nutzen;
+- H17 Economy und H18 Party Logistics werden auf dem Merchant abwechselnd arbitriert, weil beide absichtlich dieselbe Economy-/Movement-Ownership schuetzen;
+- kein Safety-Reset, kein UNKNOWN-Acknowledge und kein Blind-Retry wird vom Full-Live-Modus automatisch ausgefuehrt.
+
+Geplanter Livebetrieb nach Merge:
+
+1. auf allen vier Adventure-Land-Fenstern denselben aktuellen `dist/al-bot.js` laden;
+2. einige Sekunden fuer Cross-Window-Heartbeats warten;
+3. im neuen Control-Center-Tab **Full Live** auf jedem Fenster `FARM` starten oder je Fenster `await ALBot.fullAutonomy.start({ taskType: 'FARM' })` ausfuehren;
+4. Full Live muss erst `WARMING` und danach `RUNNING / FULL_AUTONOMY_ROLE_PLAN_ACTIVE` melden;
+5. mehrere Minuten bis Stunden normal spielen lassen und Verhalten von Farming, Party, Merchant/Economy, Logistics und Recovery beobachten;
+6. bei UNKNOWN/Suspension/Fehler nicht blind neu starten, sondern `ALBot.diagnostics()` sichern und auswerten.
+
+Die eigentliche H20-Boss-/Event-/Quest-Autonomie folgt erst nach diesem V6-Integrationsbeobachtungslauf.

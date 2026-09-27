@@ -1225,6 +1225,8 @@
           gold: finite(character.gold),
           xp: finite(character.xp),
           attack: finite(character.attack),
+          armor: finite(character.armor),
+          resistance: finite(character.resistance),
           range: finite(character.range),
           speed: finite(character.speed),
           frequency: finite(character.frequency),
