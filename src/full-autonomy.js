@@ -39,15 +39,14 @@
       };
       this.lastLogisticsProbeAtMs = 0;
       this.desiredCharacterNames = [];
+      this.tickResourceId = null;
     }
 
     start(context = {}) {
       this.moduleActive = true;
       this.scope = context.scope || null;
       this.heartbeat = typeof context.heartbeat === 'function' ? context.heartbeat : null;
-      if (this.scope && typeof this.scope.interval === 'function') {
-        this.scope.interval('full-autonomy-loop', () => this.tick(), 1000, { immediate: true });
-      }
+      this.tickResourceId = null;
       return this.status();
     }
 
@@ -93,6 +92,9 @@
       this.enabled = true;
       this.startedAt = new Date().toISOString();
       this.lastError = null;
+      if (this.scope && typeof this.scope.interval === 'function' && !this.tickResourceId) {
+        this.tickResourceId = this.scope.interval('full-autonomy-loop', () => this.tick(), 1000, { immediate: false });
+      }
       this.lastDecision = { at: this.startedAt, type: 'START', taskType: this.config.taskType };
       const tick = this.tick();
       return { accepted: true, tick, status: this.status() };
@@ -114,6 +116,10 @@
           try { runtime.lifecycle.stopAutonomy(reason); } catch (_) {}
         }
       }
+      if (this.tickResourceId && this.scope && typeof this.scope.cancel === 'function') {
+        try { this.scope.cancel(this.tickResourceId, reason); } catch (_) {}
+      }
+      this.tickResourceId = null;
       this.enabled = false;
       this.desiredCharacterNames = [];
       this.started = { lifecycle: false, farming: false, economy: false, partyLogistics: false };
@@ -437,6 +443,7 @@
         config: clone(this.config),
         startedControllers: clone(this.started),
         desiredCharacterNames: clone(this.desiredCharacterNames),
+        tickScheduled: !!this.tickResourceId,
         lastPlan: clone(this.lastPlan),
         lastDecision: clone(this.lastDecision),
         lastError: clone(this.lastError)
