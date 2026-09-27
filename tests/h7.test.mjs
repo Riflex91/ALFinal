@@ -210,7 +210,7 @@ test('H7 exposes normalized owned party roles and coordinator API', async t => {
   assert.equal(ctx.ALBot.version, '0.15.0-h15');
   assert.equal(typeof ctx.ALBot.party.status, 'function');
   assert.equal(typeof ctx.ALBot.party.snapshot, 'function');
-  assert.equal(ctx.ALBot.liveTests.status().recommendedId, 'h14-gear');
+  assert.equal(ctx.ALBot.liveTests.status().recommendedId, 'h15-upgrade-compound');
 
   const snapshot = ctx.ALBot.party.snapshot();
   assert.equal(snapshot.size, 2);
