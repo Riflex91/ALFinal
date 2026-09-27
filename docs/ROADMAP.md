@@ -1057,3 +1057,24 @@ Nächster Schritt:
 - danach genau einen echten `h18-party-logistics`-Live-Test durchführen.
 
 **H18 bleibt bis zum echten Adventure-Land-Live-PASS offen.**
+
+
+### H18 Post-Merge-Korrektur – Bundle-Finalisierung über PR #26
+
+Stand 2026-09-27:
+
+- PR #25 `H18: Add bounded party logistics` wurde bereits nach `main` gemergt;
+- Merge-Commit: `c6bfb7b0248d3c005a4dbceac643d90db6d2924a`;
+- gemergter Head: `8ecf822bfa476485c9e29c49bc27cccfc3219a26`;
+- Exact-Head-CI #496: **256/256 PASS, 0 FAIL, 0 CANCELLED, 0 SKIP**;
+- fünf konkrete Review-Funde behoben und Threads resolved;
+- der Merge erfolgte durch parallele Repo-Arbeit noch vor dem finalen tracked-`dist`-Sync und vor dem Entfernen der temporären CI-Bundle-Export-Schritte.
+
+Post-Merge-PR #26 `H18: Finalize bundle and pre-live evidence`:
+
+- synchronisiert `dist/al-bot.js` exakt aus dem erfolgreichen #496-Build;
+- stellt den normalen Test-Workflow ohne temporären Artifact-/Base64-Export wieder her;
+- korrigiert die Evidence append-only;
+- verändert keine Gameplay- oder Safety-Grenzen.
+
+**H18 ist technisch implementiert, aber bis PR #26 gemergt und `h18-party-logistics` live bestanden ist weiterhin offen.**
