@@ -522,7 +522,7 @@ H14 ist live bestanden. Vor Merge bleiben nur neuer Exact-Head-CI und der vollst
 
 ## H15 – Upgrade & Compound
 
-**🟦 IMPLEMENTIERT · CI/REVIEW IN ARBEIT · LIVE-TEST OFFEN**
+**🟦 IMPLEMENTIERT · PRE-LIVE CI/REVIEW GRÜN · FINALER DOKU-CI OFFEN · LIVE-TEST OFFEN**
 
 **BAU**
 - eigener `UpgradeCompoundController`
@@ -543,6 +543,11 @@ H14 ist live bestanden. Vor Merge bleiben nur neuer Exact-Head-CI und der vollst
 - H15-Ein-Klick-Suite `h15-upgrade-compound`
 - `docs/H15-LIVE-TEST.md`
 - H15-Regressionen für Safety, Budget, Offering, Source-Drift und Outcome-Prüfung
+- Review-Hardening: Offering-Level 0, Quest/Cash-Schutz und Compound-Gesamtrisiko
+- CI Run #323: 194/194 PASS, 0 FAIL, 0 SKIP, completed/success
+- alle bisherigen Review-Threads resolved
+- Bundle exakt source-synchron auf `0.15.0-h15`
+- nach den finalen Evidence-Dokucommits erneut Exact-Head-CI erforderlich
 
 **🟧 LIVE-TEST NOCH AUSSTEHEND**
 - genau eine echte niedrig riskante Upgrade- oder Compound-Aktion
