@@ -313,6 +313,7 @@
       const inventory = this._inventorySnapshot();
       if (!inventory || inventory.available === false) return [];
       return (inventory.items || [])
+        .filter(row => row && row.locked !== true && row.giveaway !== true && row.gift !== true && !row.expiresAt)
         .map(row => this._normalizedItem(row))
         .filter(Boolean);
     }
@@ -582,6 +583,10 @@
       const equipment = this._equipmentSnapshot(snap.character.name);
       const row = inventory && (inventory.items || []).find(item => Number(item.slot) === slot);
       if (!row) return { accepted: false, reason: 'H14_EQUIP_ITEM_NOT_FOUND' };
+      if (row.locked === true || row.giveaway === true || row.gift === true || row.expiresAt) {
+        this.metrics.safetyBlocks += 1;
+        return { accepted: false, reason: 'H14_EQUIP_ITEM_NOT_AUTOMATION_SAFE' };
+      }
       const normalized = this._normalizedItem(row);
       const allowed = this._canEquip(normalized, target, snap.character.ctype);
       if (!allowed.ok) {
@@ -884,6 +889,11 @@
         if (!row || this._fingerprint(row) !== request.candidateFingerprint) {
           this.request = null;
           return { state: 'BLOCKED', reason: 'H14_EQUIP_SOURCE_CHANGED' };
+        }
+        if (row.locked === true || row.giveaway === true || row.gift === true || row.expiresAt) {
+          this.request = null;
+          this.metrics.safetyBlocks += 1;
+          return { state: 'BLOCKED', reason: 'H14_EQUIP_ITEM_NOT_AUTOMATION_SAFE' };
         }
         const allowed = this._canEquip(row, request.targetSlot, snap.character.ctype);
         const conflict = this._handConflict(row, request.targetSlot, equipment, snap.character.ctype);
