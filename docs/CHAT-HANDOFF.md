@@ -1442,3 +1442,37 @@ Der erste Live-Gate mutiert bewusst **nicht** Remote Start/Stop oder Party-Topol
 6. `main` verifizieren;
 7. anschließend Nutzer genau den bounded H19-v1-Live-Test auf einem bereits toten lokalen Character starten lassen;
 8. bei FAIL kein Blind-Rerun, sondern Diagnosebericht auswerten.
+
+
+## H19 Death-Recovery Live-Evidence – PASS
+
+Stand: 2026-09-27
+
+Der dritte echte `h19-character-lifecycle`-Lauf auf `My_Warrior` hat den Death→Respawn-Pfad vollständig bestanden:
+
+- Suite: `h19-character-lifecycle` v1;
+- Ergebnis: **PASSED / ALL_STEPS_PASSED**;
+- Preflight: PASS auf `rip=true`;
+- Respawn-Grace: zunächst 11898 ms Rest-Wartezeit;
+- Death-Recovery: 1 Dispatch / 1 Confirm / 0 UNKNOWN;
+- Stability: weiterhin genau 1 Dispatch / 1 Confirm / 0 UNKNOWN;
+- Cleanup: Autonomie AUS, keine aktive Aktion, Queue leer, keine Suspension;
+- finaler Character-Zustand: `rip=false`;
+- Lifecycle-Metriken: `actionsRejected=0`, `respawnCooldownBlocks=15`, `respawnCooldownRejects=0`.
+
+Die beiden vorherigen fehlgeschlagenen Live-Versuche und ihre Fixes bleiben append-only in `docs/H19-LIVE-TEST.md` dokumentiert:
+
+1. Adventure-Land-Respawn-Cooldown / `cant_respawn`;
+2. restaurierte UNKNOWN-Ownership aus dem ersten Versuch.
+
+Aktueller H19-Status:
+
+- **Death Recovery live bestätigt**;
+- Remote Start/Stop, Disconnect-/Restart-Recovery und Party-Recovery weiterhin technisch implementiert/regressionsgetestet, aber noch ohne gezielte echte Mutation-Evidence;
+- H19 daher **noch nicht vollständig abgeschlossen**.
+
+Nächster Entwicklungs-/Gate-Schritt:
+
+- bounded H19-v2-Live-Suite für Remote Character Start/Stop + Desired-Active Disconnect/Restart-Recovery entwickeln;
+- danach separaten bounded Party-Recovery-Gate vorbereiten;
+- erst nach erfolgreicher Evidence aller erforderlichen H19-Pfade H19 abschließen und zu H20 wechseln.
