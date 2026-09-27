@@ -9020,7 +9020,11 @@
         bids: clone(bids),
         bestAsk: asks[0] ? clone(asks[0]) : null,
         bestBid: bids[0] ? clone(bids[0]) : null,
-        spread: asks[0] && bids[0] ? Number(asks[0].price) - Number(bids[0].price) : null
+        spread: asks[0] && bids[0]
+          && String(asks[0].name) === String(bids[0].name)
+          && Number(asks[0].level || 0) === Number(bids[0].level || 0)
+          ? Number(asks[0].price) - Number(bids[0].price)
+          : null
       };
     }
 
