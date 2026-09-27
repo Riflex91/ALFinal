@@ -17015,7 +17015,7 @@
         title: 'H5 – Einfacher Kampf',
         description: 'Ein-Klick-Live-Test für Targeting, Range, Cooldown, bestätigte Angriffe, Cleanup und Fail-Safe.',
         version: '1',
-        recommended: false,
+        recommended: true,
         autoStartRuntime: true,
         restoreRuntimeState: true,
         prepare: async ({ runtime }) => {
@@ -21621,7 +21621,7 @@
         title: 'H19 – Party Recovery',
         description: 'Bounded Cross-Window-Live-Test: ein eigener Nicht-Leader verlaesst kontrolliert die Party, fordert ueber denselben sessiongebundenen H19-CM-Kanal genau einmal den Wiedereintritt an und der geschuetzte Leader stellt die zuvor erfasste Party-Struktur mit terminaler Live-Evidence wieder her.',
         version: '1',
-        recommended: true,
+        recommended: false,
         autoStartRuntime: true,
         restoreRuntimeState: true,
         prepare: async ({ runtime }) => {
