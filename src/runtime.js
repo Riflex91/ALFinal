@@ -3724,6 +3724,7 @@
           + Number(trade.npcSellsUnknown || 0)
           + Number(trade.marketBuysUnknown || 0)
           + Number(trade.marketSellsUnknown || 0)
+          + Number(trade.movementUnknown || 0)
           + Number(gear.equipsUnknown || 0)
           + Number(gear.unequipsUnknown || 0)
           + Number(gear.deliveriesUnknown || 0)
