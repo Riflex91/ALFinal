@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.17.0-h17';
+      this.version = options.version || '0.18.0-h18';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -152,6 +152,16 @@
         exchangeCraft: this.exchangeCraft,
         canAct: action => this.actionAllowed(action)
       });
+      this.partyLogistics = new ns.PartyLogisticsController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        party: this.party,
+        movement: this.movement,
+        combat: this.combat,
+        canAct: action => this.actionAllowed(action)
+      });
       this.liveTests = new ns.LiveTestRunner({
         runtime: this,
         logger: this.logger,
@@ -169,6 +179,7 @@
       this._registerH15LiveTest();
       this._registerH16LiveTest();
       this._registerH17LiveTest();
+      this._registerH18LiveTest();
       this._installErrorCapture();
       this.logger.info('AL Bot Runtime erstellt', {
         version: this.version,
@@ -325,6 +336,15 @@
         start: context => this.economy.start(context),
         stop: reason => this.economy.stop(reason),
         status: () => this.economy.status()
+      });
+
+      this.modules.register({
+        id: 'party-logistics',
+        title: 'Party Logistics',
+        version: '0.18.0',
+        start: context => this.partyLogistics.start(context),
+        stop: reason => this.partyLogistics.stop(reason),
+        status: () => this.partyLogistics.status()
       });
     }
 
@@ -3922,6 +3942,233 @@
       });
     }
 
+
+    _registerH18LiveTest() {
+      let baseline = null;
+      let previousPolicy = null;
+      let liveTarget = null;
+      let liveSupply = null;
+
+      const distance = (a, b) => {
+        if (!a || !b || !a.map || !b.map || String(a.map) !== String(b.map)) return null;
+        const ax = Number(a.x), ay = Number(a.y), bx = Number(b.x), by = Number(b.y);
+        if (![ax, ay, bx, by].every(Number.isFinite)) return null;
+        return Math.hypot(ax - bx, ay - by);
+      };
+
+      this.liveTests.register({
+        id: 'h18-party-logistics',
+        title: 'H18 – Party Logistics',
+        description: 'Begrenzter Live-Test für eigene Party, optionales Regrouping und einen bestätigten sicheren Supply-Transfer ohne UNKNOWN.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.partyLogistics.stopAutonomy('H18_LIVE_TEST_RESET'); } catch (_) {}
+          const current = runtime.partyLogistics.status();
+          if (current.currentAction) throw new Error('H18_ACTIVE_ACTION_BEFORE_LIVE_TEST');
+          try { runtime.partyLogistics.cancelQueue('H18_LIVE_TEST_RESET'); } catch (_) {}
+          try {
+            if (!current.suspended) runtime.partyLogistics.resetSafety('H18_LIVE_TEST_RESET');
+          } catch (_) {}
+          previousPolicy = runtime.partyLogistics.policy();
+          runtime.partyLogistics.policy({
+            maxActionsPerSession: 2,
+            transferRange: 320,
+            regroupDistance: 100,
+            regroupArrivalRadius: 80,
+            outcomeTimeoutMs: 10000,
+            movementTimeoutMs: 60000,
+            allowRegroup: true
+          });
+          const status = runtime.partyLogistics.status();
+          baseline = {
+            suppliesDispatched: Number(status.metrics.suppliesDispatched || 0),
+            suppliesConfirmed: Number(status.metrics.suppliesConfirmed || 0),
+            suppliesRejected: Number(status.metrics.suppliesRejected || 0),
+            suppliesUnknown: Number(status.metrics.suppliesUnknown || 0),
+            regroupsConfirmed: Number(status.metrics.regroupsConfirmed || 0),
+            regroupsUnknown: Number(status.metrics.regroupsUnknown || 0)
+          };
+          liveTarget = null;
+          liveSupply = null;
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.partyLogistics.stopAutonomy('H18_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try {
+            const current = runtime.partyLogistics.status();
+            if (!current.currentAction) runtime.partyLogistics.cancelQueue('H18_LIVE_TEST_CLEANUP');
+            if (!current.suspended && !current.currentAction) runtime.partyLogistics.resetSafety('H18_LIVE_TEST_CLEANUP');
+          } catch (_) {}
+          if (previousPolicy) {
+            try { runtime.partyLogistics.policy(previousPolicy); } catch (_) {}
+          }
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Eigene Party und sicheren Supply-Pfad prüfen',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, note }) => {
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(game.character.rip !== true, 'CHARACTER_DEAD');
+              const module = runtime.modules.describe('party-logistics');
+              assert(module && module.state === 'ACTIVE', 'H18_MODULE_NOT_ACTIVE');
+
+              const party = runtime.party.snapshot();
+              assert(party && party.coordinationEnabled === true, 'H18_NEEDS_OWNED_PARTY_WITHOUT_FOREIGN_MEMBERS');
+              const candidates = (party.ownedMembers || [])
+                .filter(member => !member.local && !member.rip && member.visible)
+                .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+              assert(candidates.length > 0, 'H18_NEEDS_VISIBLE_OWNED_PARTY_MEMBER');
+              liveTarget = candidates[0];
+
+              const catalog = runtime.partyLogistics.supplyCatalog();
+              liveSupply = catalog.find(row => row.utility === true && Number(row.quantity || 0) >= 1)
+                || catalog.find(row => Number(row.quantity || 0) >= 1)
+                || null;
+              assert(liveSupply, 'H18_NEEDS_SAFE_SUPPLY_ITEM');
+              assert(runtime.actions.available('send_item'), 'H18_SEND_ITEM_UNAVAILABLE');
+
+              const status = runtime.partyLogistics.status();
+              assert(status.suspended === false, status.suspendedReason || 'H18_SUSPENDED');
+              assert(status.currentAction == null, 'H18_ACTION_ACTIVE_BEFORE_PREFLIGHT');
+              note({
+                target: liveTarget,
+                supply: liveSupply,
+                partySize: party.size,
+                local: game.character.name
+              });
+              return {
+                target: liveTarget.name,
+                supply: liveSupply,
+                partySize: party.size,
+                distance: distance(game.character, liveTarget)
+              };
+            }
+          },
+          {
+            id: 'regroup',
+            title: 'Party bei Bedarf kontrolliert regroupen',
+            timeoutMs: 65000,
+            run: async ({ runtime, assert, waitFor }) => {
+              const game = runtime.game.snapshot();
+              const party = runtime.party.snapshot();
+              const target = (party.ownedMembers || []).find(member => liveTarget && member.name === liveTarget.name) || liveTarget;
+              const beforeDistance = distance(game.character, target);
+              if (beforeDistance != null && beforeDistance <= 100) {
+                return { alreadyGrouped: true, beforeDistance, regroupsConfirmed: 0 };
+              }
+
+              const started = runtime.partyLogistics.startAutonomy({ maxActions: 1 });
+              assert(started && started.accepted === true, started && started.reason || 'H18_REGROUP_START_FAILED');
+              await waitFor(() => {
+                const status = runtime.partyLogistics.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H18_SUSPENDED_DURING_REGROUP');
+                if (Number(status.metrics.regroupsUnknown || 0) > baseline.regroupsUnknown) throw new Error('H18_REGROUP_UNKNOWN');
+                return Number(status.metrics.regroupsConfirmed || 0) > baseline.regroupsConfirmed && status.currentAction == null
+                  ? status
+                  : null;
+              }, { timeoutMs: 60000, pollMs: 200, label: 'h18-regroup' });
+              runtime.partyLogistics.stopAutonomy('H18_REGROUP_COMPLETE');
+              const after = runtime.partyLogistics.status();
+              return {
+                alreadyGrouped: false,
+                beforeDistance,
+                regroupsConfirmed: Number(after.metrics.regroupsConfirmed || 0) - baseline.regroupsConfirmed,
+                regroupsUnknown: Number(after.metrics.regroupsUnknown || 0) - baseline.regroupsUnknown
+              };
+            }
+          },
+          {
+            id: 'supply',
+            title: 'Einen sicheren Supply-Transfer bestätigen',
+            timeoutMs: 75000,
+            run: async ({ runtime, assert, waitFor }) => {
+              const queued = runtime.partyLogistics.queueSupply(liveTarget.name, liveSupply.name, 1);
+              assert(queued && queued.accepted === true, queued && queued.reason || 'H18_SUPPLY_QUEUE_FAILED');
+              const started = runtime.partyLogistics.startAutonomy({ maxActions: 1 });
+              assert(started && started.accepted === true, started && started.reason || 'H18_SUPPLY_START_FAILED');
+
+              await waitFor(() => {
+                const status = runtime.partyLogistics.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H18_SUSPENDED_DURING_SUPPLY');
+                if (Number(status.metrics.suppliesUnknown || 0) > baseline.suppliesUnknown) throw new Error('H18_SUPPLY_UNKNOWN');
+                return Number(status.metrics.suppliesConfirmed || 0) > baseline.suppliesConfirmed
+                  && status.currentAction == null
+                  && status.queue.length === 0
+                  ? status
+                  : null;
+              }, { timeoutMs: 70000, pollMs: 200, label: 'h18-supply' });
+
+              runtime.partyLogistics.stopAutonomy('H18_SUPPLY_COMPLETE');
+              const status = runtime.partyLogistics.status();
+              const dispatched = Number(status.metrics.suppliesDispatched || 0) - baseline.suppliesDispatched;
+              const confirmed = Number(status.metrics.suppliesConfirmed || 0) - baseline.suppliesConfirmed;
+              const rejected = Number(status.metrics.suppliesRejected || 0) - baseline.suppliesRejected;
+              const unknown = Number(status.metrics.suppliesUnknown || 0) - baseline.suppliesUnknown;
+              assert(dispatched === 1, 'H18_SUPPLY_DISPATCH_COUNT_INVALID');
+              assert(confirmed === 1, 'H18_SUPPLY_CONFIRM_COUNT_INVALID');
+              assert(rejected === 0, 'H18_SUPPLY_REJECTED');
+              assert(unknown === 0, 'H18_SUPPLY_UNKNOWN');
+              return {
+                target: liveTarget.name,
+                itemName: liveSupply.name,
+                dispatched,
+                confirmed,
+                rejected,
+                unknown
+              };
+            }
+          },
+          {
+            id: 'stability',
+            title: 'Fünf Sekunden ohne Retry oder UNKNOWN beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              const before = runtime.partyLogistics.status();
+              const beforeDispatch = Number(before.metrics.suppliesDispatched || 0);
+              await sleep(5000);
+              const after = runtime.partyLogistics.status();
+              assert(after.autonomyEnabled === false, 'H18_AUTONOMY_RESTARTED');
+              assert(after.currentAction == null, 'H18_ACTION_REMAINS');
+              assert(after.suspended === false, after.suspendedReason || 'H18_SUSPENDED_DURING_STABILITY');
+              assert(Number(after.metrics.suppliesDispatched || 0) === beforeDispatch, 'H18_SUPPLY_RETRY_AFTER_STOP');
+              assert(Number(after.metrics.suppliesUnknown || 0) === baseline.suppliesUnknown, 'H18_SUPPLY_UNKNOWN_DURING_STABILITY');
+              assert(Number(after.metrics.regroupsUnknown || 0) === baseline.regroupsUnknown, 'H18_REGROUP_UNKNOWN_DURING_STABILITY');
+              return {
+                suppliesConfirmed: Number(after.metrics.suppliesConfirmed || 0) - baseline.suppliesConfirmed,
+                suppliesUnknown: Number(after.metrics.suppliesUnknown || 0) - baseline.suppliesUnknown,
+                regroupsConfirmed: Number(after.metrics.regroupsConfirmed || 0) - baseline.regroupsConfirmed,
+                regroupsUnknown: Number(after.metrics.regroupsUnknown || 0) - baseline.regroupsUnknown
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'Party-Logistik stoppen und Ownership freigeben',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.partyLogistics.stopAutonomy('H18_LIVE_TEST_COMPLETE');
+              const status = runtime.partyLogistics.status();
+              assert(status.autonomyEnabled === false, 'H18_AUTONOMY_STILL_ENABLED');
+              assert(status.currentAction == null, 'H18_CURRENT_ACTION_REMAINS');
+              assert(status.queue.length === 0, 'H18_QUEUE_REMAINS');
+              assert(status.suspended === false, status.suspendedReason || 'H18_SUSPENDED_AT_CLEANUP');
+              return {
+                autonomyEnabled: status.autonomyEnabled,
+                currentAction: status.currentAction,
+                queueLength: status.queue.length,
+                suspended: status.suspended
+              };
+            }
+          }
+        ]
+      });
+    }
+
     _installErrorCapture() {
       if (!this.root || typeof this.root.addEventListener !== 'function') return;
       this._errorHandler = event => {
@@ -4076,6 +4323,7 @@
         upgrade: this.upgrade.status(),
         exchangeCraft: this.exchangeCraft.status(),
         economy: this.economy.status(),
+        partyLogistics: this.partyLogistics.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
         roster,
@@ -4108,6 +4356,7 @@
         upgrade: this.upgrade.status(),
         exchangeCraft: this.exchangeCraft.status(),
         economy: this.economy.status(),
+        partyLogistics: this.partyLogistics.status(),
         liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
         logs: this.logger.list(160),
@@ -4139,6 +4388,7 @@
       push('upgrade-compound-controller', !!this.upgrade.status() && typeof this.upgrade.plan === 'function' && typeof this.upgrade.queueBest === 'function', this.upgrade.status());
       push('exchange-craft-controller', !!this.exchangeCraft.status() && typeof this.exchangeCraft.plan === 'function' && typeof this.exchangeCraft.productionPlan === 'function', this.exchangeCraft.status());
       push('economy-controller', !!this.economy.status() && typeof this.economy.plan === 'function' && typeof this.economy.startAutonomy === 'function', this.economy.status());
+      push('party-logistics-controller', !!this.partyLogistics.status() && typeof this.partyLogistics.plan === 'function' && typeof this.partyLogistics.queueSupply === 'function', this.partyLogistics.status());
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
       push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);
