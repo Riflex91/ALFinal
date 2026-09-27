@@ -10876,14 +10876,10 @@
               assert(runtime.actions.available('bank_retrieve'), 'BANK_RETRIEVE_API_UNAVAILABLE');
               assert(runtime.actions.available('smart_move'), 'SMART_MOVE_API_UNAVAILABLE');
 
-              const inventory = runtime.inventory.plan();
-              const candidates = (inventory.items || []).filter(row =>
-                row && String(row.disposition || '').toUpperCase() === 'BANK'
-                && row.locked !== true
-                && row.giveaway !== true
-                && row.gift !== true
-                && !row.expiresAt
-                && Math.max(0, Number(row.level) || 0) === 0);
+              const bankPlan = runtime.bank.plan();
+              const candidates = bankPlan && Array.isArray(bankPlan.safeDepositRows)
+                ? bankPlan.safeDepositRows
+                : [];
               assert(candidates.length > 0, 'H12_NEEDS_SAFE_BANK_ITEM');
               const row = candidates.slice().sort((a, b) => Number(a.slot) - Number(b.slot))[0];
               testPlan = {
