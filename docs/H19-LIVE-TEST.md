@@ -194,3 +194,54 @@ Der v1-Live-Test bestätigt zunächst Death/Respawn und die grundlegende Restart
 Remote Start/Stop sowie Party-Recovery sind implementiert und automatisiert regressionsgetestet, werden aber **nicht blind im ersten Live-Gate mutiert**. Diese Pfade erhalten erst dann echte Live-Evidence, wenn ein gezielter bounded Test ohne unbeabsichtigte Runner-/Party-Nebenwirkungen vorbereitet ist.
 
 H19 ist bis zur erforderlichen echten Live-Evidence **nicht abgeschlossen**.
+
+
+## Safety-Hardening nach dem ersten Pre-Live-Gate
+
+Stand: 2026-09-27
+
+Nach dem ersten technischen H19-Gate wurden zwei zusätzliche Safety-Kanten geschlossen, ohne die grundlegende Lifecycle-Architektur zu lockern.
+
+### Desired Active und Desired Party sind getrennt
+
+H19 speichert Party-Intent jetzt separat:
+
+- `desiredActiveNames` = eigene Characters, die aktiv bleiben bzw. nach Disconnect/Restart wieder gestartet werden dürfen;
+- `desiredPartyMemberNames` = eigene Characters, die beim Capture tatsächlich Mitglied der beobachteten Party waren;
+- `desiredPartyLeader` = eigener Leader dieser erfassten Party.
+
+Damit gilt ausdrücklich:
+
+- ein eigener Character wird **nicht** allein deshalb in die Party gezogen, weil er aktiv ist;
+- Party Invite/Request/Accept darf nur die separat erfasste Desired-Party-Topologie rekonstruieren;
+- der Desired-Leader muss selbst im Desired-Party-Set liegen;
+- fremde oder abweichende Party-Topologien bleiben fail-closed blockiert.
+
+Das Control Center zeigt Desired Active, Desired Party Members und Desired Party Leader separat an.
+
+### UNKNOWN bleibt einmalige Ownership
+
+Für synchrones `UNKNOWN` mit bereits möglichem Dispatch gilt jetzt zusätzlich:
+
+- der zugehörige Queue-Eintrag wird entfernt, sobald H19 die in-flight Ownership hält;
+- die persistierte `currentAction` bleibt autoritativ;
+- ein späteres Safety-Reset kann dadurch denselben Queue-Auftrag nicht blind erneut senden;
+- derselbe unklare Auftrag erhöht `actionsUnknown` höchstens einmal, auch wenn Timeout-/Scheduler-Beobachtung später erneut denselben Zustand sieht;
+- spätere eindeutige Live-Evidence darf den erhaltenen Pending-Auftrag weiterhin reconciliieren; die Suspension bleibt bis zum expliziten Safety-Reset bestehen.
+
+### Regressionen
+
+Zusätzlich abgedeckt:
+
+- aktive eigene Characters außerhalb der erfassten Party werden nicht automatisch eingeladen;
+- Leader-Recovery verwendet nur zuvor erfasste Desired-Party-Mitglieder;
+- synchrones UNKNOWN entfernt den doppelten Queue-Pfad;
+- wiederholte Beobachtung desselben UNKNOWN erhöht den UNKNOWN-Zähler nicht erneut.
+
+Technischer grüner Zwischenstand vor der finalen UI-/Doku-/Workflow-Bereinigung:
+
+- Head `de1d3bdecbd7de1013c1dda2546d81e3c794edf0`;
+- Exact-Head-CI #527: **273 tests / 273 pass / 0 fail / 0 cancelled / 0 skipped / 0 todo**;
+- `dist/al-bot.js` enthielt auf diesem Head bereits `desiredPartyMemberNames` und die idempotente `unknownRecorded`-Safety.
+
+Der endgültige Merge-Gate wird erst nach Wiederherstellung des read-only Test-Workflows auf dem dann aktuellen Head gewertet.
