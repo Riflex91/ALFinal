@@ -381,3 +381,35 @@ test('H16 suspends on synchronous unknown and does not blind retry', () => {
   assert.equal(state.dispatches.length, 1);
   assert.equal(controller.status().metrics.exchangesUnknown, 1);
 });
+
+
+test('H16 runtime, API, UI, build, adapter and ActionBoundary are wired', () => {
+  const runtime = fs.readFileSync(path.resolve(here, '../src/runtime.js'), 'utf8');
+  const entry = fs.readFileSync(path.resolve(here, '../src/entry.js'), 'utf8');
+  const ui = fs.readFileSync(path.resolve(here, '../src/ui.js'), 'utf8');
+  const build = fs.readFileSync(path.resolve(here, '../scripts/build.mjs'), 'utf8');
+  const boundary = fs.readFileSync(path.resolve(here, '../src/action-boundary.js'), 'utf8');
+  const adapter = fs.readFileSync(path.resolve(here, '../src/game-adapter.js'), 'utf8');
+  const dist = fs.readFileSync(path.resolve(here, '../dist/al-bot.js'), 'utf8');
+  const pkg = JSON.parse(fs.readFileSync(path.resolve(here, '../package.json'), 'utf8'));
+
+  assert.match(runtime, /new ns\.ExchangeCraftController/);
+  assert.match(runtime, /id: 'exchange-craft'/);
+  assert.match(runtime, /id: 'h16-exchange-craft'/);
+  assert.match(runtime, /H16_NEEDS_LOW_RISK_CRAFT_AND_EXCHANGE_CANDIDATES/);
+  assert.match(entry, /0\.16\.0-h16/);
+  assert.match(entry, /exchangeCraft:/);
+  assert.match(entry, /runtime\.exchangeCraft\.productionPlan/);
+  assert.match(entry, /craftDefinition: name => runtime\.game\.craftDefinition/);
+  assert.match(ui, /data-tab="exchange-craft"/);
+  assert.match(ui, /H16 Exchange & Craft/);
+  assert.match(build, /src\/exchange-craft\.js/);
+  assert.match(build, /AL Bot 0\.16\.0-h16/);
+  assert.match(boundary, /exchange: Object\.freeze\(\{ publicName: 'exchange'/);
+  assert.match(boundary, /auto_craft: Object\.freeze\(\{ publicName: 'auto_craft'/);
+  assert.match(adapter, /craftDefinition\(name\)/);
+  assert.match(adapter, /craftCatalog\(\)/);
+  assert.match(dist, /AL Bot 0\.16\.0-h16/);
+  assert.match(dist, /class ExchangeCraftController/);
+  assert.equal(pkg.version, '0.16.0');
+});
