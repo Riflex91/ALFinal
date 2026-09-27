@@ -32,6 +32,7 @@
       this.movement = options.movement || null;
       this.inventory = options.inventory || null;
       this.partyLogistics = options.partyLogistics || null;
+      this.economy = options.economy || null;
       this.moduleActive = false;
       this.scope = null;
       this.suspendedReason = null;
@@ -677,6 +678,13 @@
           || Array.isArray(logistics.queue) && logistics.queue.length)) {
         this.metrics.ownershipBlocks += 1;
         return { state: 'WAITING', reason: 'H11_PARTY_LOGISTICS_OWNERSHIP', plan };
+      }
+      let economy = null;
+      try { economy = this.economy && typeof this.economy.status === 'function' ? this.economy.status() : null; } catch (_) {}
+      if (economy && (economy.autonomyEnabled === true || economy.currentAction
+          || Array.isArray(economy.queue) && economy.queue.length)) {
+        this.metrics.ownershipBlocks += 1;
+        return { state: 'WAITING', reason: 'H11_ECONOMY_OWNERSHIP', plan };
       }
 
       if (plan.pressure.state === 'CRITICAL') this.metrics.pressureCritical += 1;
