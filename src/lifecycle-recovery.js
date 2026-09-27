@@ -476,6 +476,16 @@
         return { accepted: false, reason: errorReason(error) };
       }
 
+      if (dispatched && dispatched.state === 'UNKNOWN' && dispatched.dispatched === true) {
+        action.settlement = 'UNKNOWN';
+        action.actionBoundaryId = dispatched.id || null;
+        action.error = errorReason(dispatched.error, 'H19_DISPATCH_SYNC_UNKNOWN');
+        this.currentAction = action;
+        this.metrics.actionsDispatched += 1;
+        this._persistCurrent();
+        return this._suspend('H19_DISPATCH_SYNC_UNKNOWN', { error: action.error });
+      }
+
       if (!dispatched || dispatched.state !== 'DISPATCHED') {
         const reason = dispatched && dispatched.error && dispatched.error.message || 'H19_ACTION_NOT_DISPATCHED';
         this.currentAction = null;
@@ -569,14 +579,14 @@
       const observed = this._observeCurrent();
       if (observed.state !== 'IDLE') return observed;
 
-      const plan = this.plan();
-      if (plan.state !== 'READY' || !plan.request) return plan;
-
       if (this.autonomyEnabled && this.actionsThisSession >= this.config.maxActionsPerSession) {
         this.autonomyEnabled = false;
         this.metrics.sessionBudgetBlocks += 1;
         return { state: 'COMPLETE', reason: 'H19_SESSION_BUDGET_REACHED', actionsThisSession: this.actionsThisSession };
       }
+
+      const plan = this.plan();
+      if (plan.state !== 'READY' || !plan.request) return plan;
 
       const fromQueue = this.queue.length && String(this.queue[0].id) === String(plan.request.id);
       const result = this._dispatch(plan.request);
