@@ -6,7 +6,7 @@ on:
     branches: [main]
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -17,30 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - run: npm test
-      - name: Sync generated H19 bundle on PR head
-        if: github.event_name == 'pull_request' && github.head_ref == 'chatgpt/h19-lifecycle-recovery'
-        shell: bash
-        run: |
-          set -euo pipefail
-          git fetch origin main:refs/remotes/origin/main
-          behind="$(git rev-list --count HEAD..origin/main)"
-          if [ "$behind" != "0" ]; then
-            echo "Refusing dist write: branch is behind main by $behind commit(s)." >&2
-            exit 1
-          fi
-          if git diff --quiet -- dist/al-bot.js; then
-            echo "dist/al-bot.js already synchronized."
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add dist/al-bot.js
-          git commit -m "build(h19): sync final generated bundle"
-          git push origin HEAD:"$GITHUB_HEAD_REF"
