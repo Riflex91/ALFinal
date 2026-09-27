@@ -152,6 +152,7 @@ function fixture(options = {}) {
   const bank = {
     queueWithdraw: (pack, slot) => {
       state.bankCalls.push({ pack, slot });
+      if (typeof options.bankWithdraw === 'function') return options.bankWithdraw(pack, slot);
       return { accepted: true, request: { kind: 'WITHDRAW' } };
     }
   };
@@ -304,6 +305,46 @@ test('H16 production graph consumes mounted bank stock before declaring missing 
   assert.equal(plan.stages[0].itemName, 'cocoon');
 });
 
+test('H16 material acquisition skips a recoverably unusable bank stack and uses a later valid stack', () => {
+  const bank = {
+    available: true,
+    packs: [
+      { name: 'items0', items: [{ pack: 'items0', slot: 1, name: 'spidersilk', level: 0, quantity: 1000 }] },
+      { name: 'items1', items: [{ pack: 'items1', slot: 2, name: 'spidersilk', level: 0, quantity: 1000 }] }
+    ]
+  };
+  const { controller, state } = fixture({
+    bank,
+    bankWithdraw: (pack, slot) => pack === 'items0'
+      ? { accepted: false, reason: 'H12_BANK_RESERVATION_BLOCKED' }
+      : { accepted: true, request: { kind: 'WITHDRAW', pack, slot } }
+  });
+  const result = controller.queueMaterialAcquire('spidersilk', 100);
+  assert.equal(result.accepted, true);
+  assert.equal(result.delegatedTo, 'bank');
+  assert.equal(result.source.pack, 'items1');
+  assert.equal(result.source.slot, 2);
+  assert.equal(state.bankCalls.length, 2);
+  assert.equal(state.tradeCalls.length, 0);
+});
+
+test('H16 material acquisition stops on a non-recoverable bank rejection instead of racing trade', () => {
+  const bank = {
+    available: true,
+    packs: [{ name: 'items0', items: [{ pack: 'items0', slot: 1, name: 'spidersilk', level: 0, quantity: 1000 }] }]
+  };
+  const { controller, state } = fixture({
+    bank,
+    bankWithdraw: () => ({ accepted: false, reason: 'H12_BUSY' })
+  });
+  const result = controller.queueMaterialAcquire('spidersilk', 100, { maxUnitPrice: 50 });
+  assert.equal(result.accepted, false);
+  assert.equal(result.reason, 'H12_BUSY');
+  assert.equal(result.delegatedTo, 'bank');
+  assert.equal(state.bankCalls.length, 1);
+  assert.equal(state.tradeCalls.length, 0);
+});
+
 test('H16 material acquisition prefers mounted bank before trade', () => {
   const bank = {
     available: true,
@@ -430,6 +471,8 @@ test('H16 runtime, API, UI, build, adapter and ActionBoundary are wired', () => 
   assert.match(runtime, /allowBank: false/);
   assert.match(runtime, /outputRisk == null \|\| outputRisk > 20000/);
   assert.match(runtime, /if \(!current\.suspended\) runtime\.exchangeCraft\.resetSafety/);
+  assert.match(runtime, /currentGold - totalEstimatedGold < 10000/);
+  assert.match(runtime, /requiredGoldWithReserve/);
   assert.match(entry, /0\.16\.0-h16/);
   assert.match(entry, /exchangeCraft:/);
   assert.match(entry, /runtime\.exchangeCraft\.productionPlan/);
