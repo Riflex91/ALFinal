@@ -50,7 +50,7 @@
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.13.0-h13',
+    version: '0.14.0-h14',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -107,6 +107,9 @@
       visiblePlayers: options => runtime.game.visiblePlayers(options || {}),
       monsterDefinition: mtype => runtime.game.monsterDefinition(mtype),
       itemDefinition: name => runtime.game.itemDefinition(name),
+      equipmentDefinition: name => runtime.game.equipmentDefinition(name),
+      equipment: name => runtime.game.equipmentSnapshot(name),
+      classEquipmentProfile: ctype => runtime.game.classEquipmentProfile(ctype),
       farmSpots: options => runtime.game.farmSpotCatalog(options || {}),
       inventory: () => runtime.game.inventorySnapshot(),
       bank: () => runtime.game.bankSnapshot(),
@@ -211,6 +214,20 @@
       sellMarket: (playerName, tradeSlot, quantity, options) => runtime.trade.queueMarketSell(playerName, tradeSlot, quantity, options || {})
     },
 
+    gear: {
+      status: () => runtime.gear.status(),
+      plan: () => runtime.gear.plan(),
+      tick: () => runtime.gear.tick(),
+      reset: reason => runtime.gear.resetSafety(reason || 'API_H14_RESET'),
+      cancel: reason => runtime.gear.cancelRequest(reason || 'API_H14_REQUEST_CANCEL'),
+      goals: value => value == null ? runtime.gear.goalSnapshot() : runtime.gear.setGoals(value),
+      score: (item, ctype) => runtime.gear.score(item, ctype),
+      equipBest: slot => runtime.gear.queueBestLocal(slot),
+      equip: (inventorySlot, targetSlot) => runtime.gear.queueEquip(inventorySlot, targetSlot),
+      unequip: targetSlot => runtime.gear.queueUnequip(targetSlot),
+      deliver: (targetName, inventorySlot) => runtime.gear.queueDelivery(targetName, inventorySlot)
+    },
+
     liveTests: {
       status: () => runtime.liveTests.status(),
       list: () => runtime.liveTests.list(),
@@ -264,6 +281,7 @@
   Object.freeze(api.merchant);
   Object.freeze(api.bank);
   Object.freeze(api.trade);
+  Object.freeze(api.gear);
   Object.freeze(api.liveTests);
   Object.freeze(api.knowledge);
   Object.freeze(api.roster);
@@ -281,7 +299,7 @@
     };
   } catch (_) {}
 
-  runtime.logger.info('AL Bot H13 geladen', {
+  runtime.logger.info('AL Bot H14 geladen', {
     version: api.version,
     bootCount,
     hotReload: !!previous,
