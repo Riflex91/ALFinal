@@ -1,4 +1,4 @@
-/* AL Bot 0.14.0-h14 | generated file | do not edit dist directly */
+/* AL Bot 0.15.0-h15 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -2738,7 +2738,9 @@
     trade_buy: Object.freeze({ publicName: 'trade_buy', family: 'player-trade' }),
     trade_sell: Object.freeze({ publicName: 'trade_sell', family: 'player-trade' }),
     equip: Object.freeze({ publicName: 'equip', family: 'gear' }),
-    unequip: Object.freeze({ publicName: 'unequip', family: 'gear' })
+    unequip: Object.freeze({ publicName: 'unequip', family: 'gear' }),
+    upgrade: Object.freeze({ publicName: 'upgrade', family: 'upgrade-compound' }),
+    compound: Object.freeze({ publicName: 'compound', family: 'upgrade-compound' })
   });
 
   function errorDetails(error) {
@@ -10764,6 +10766,702 @@
   const clone = ns.helpers.clone;
   const cleanText = ns.helpers.cleanText;
 
+  function finite(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function nowIso() {
+    return new Date().toISOString();
+  }
+
+  function stableProperty(value) {
+    if (value == null) return '';
+    try {
+      if (typeof value !== 'object') return String(value);
+      const ordered = {};
+      for (const key of Object.keys(value).sort()) ordered[key] = value[key];
+      return JSON.stringify(ordered);
+    } catch (_) {
+      return String(value);
+    }
+  }
+
+  class UpgradeCompoundController {
+    constructor(options = {}) {
+      this.root = options.root || root;
+      this.logger = options.logger || null;
+      this.game = options.game || null;
+      this.actions = options.actions || null;
+      this.combat = options.combat || null;
+      this.moduleActive = false;
+      this.scope = null;
+      this.pending = null;
+      this.request = null;
+      this.suspendedReason = null;
+      this.lastPlan = null;
+      this.lastAction = null;
+      this.sequence = 0;
+      this.attemptsThisSession = 0;
+      this.config = {
+        tickMs: Math.max(250, Math.min(5000, Number(options.tickMs) || 750)),
+        outcomeTimeoutMs: Math.max(1000, Math.min(60000, Number(options.outcomeTimeoutMs) || 8000)),
+        settleGraceMs: Math.max(100, Math.min(3000, Number(options.settleGraceMs) || 500)),
+        maxAttemptsPerSession: Math.max(1, Math.min(100, Number(options.maxAttemptsPerSession) || 12)),
+        maxUpgradeLevel: Math.max(0, Math.min(20, Number(options.maxUpgradeLevel) || 8)),
+        maxCompoundLevel: Math.max(0, Math.min(20, Number(options.maxCompoundLevel) || 4)),
+        maxItemValueAtRisk: Math.max(0, Number(options.maxItemValueAtRisk) || 250000),
+        maxConsumableCost: Math.max(0, Number(options.maxConsumableCost) || 250000),
+        offeringMode: ['DISABLED', 'OPTIONAL', 'REQUIRED'].includes(String(options.offeringMode || '').toUpperCase())
+          ? String(options.offeringMode).toUpperCase() : 'DISABLED',
+        offeringFromLevel: Math.max(0, Math.min(20, Number(options.offeringFromLevel) || 7)),
+        offeringNames: Array.isArray(options.offeringNames) && options.offeringNames.length
+          ? options.offeringNames.map(value => cleanText(value, 80)).filter(Boolean)
+          : ['offeringp', 'offering']
+      };
+      this.metrics = {
+        ticks: 0,
+        plans: 0,
+        upgradeCandidates: 0,
+        compoundCandidates: 0,
+        upgradesDispatched: 0,
+        upgradesSucceeded: 0,
+        upgradesFailed: 0,
+        upgradesRejected: 0,
+        upgradesUnknown: 0,
+        compoundsDispatched: 0,
+        compoundsSucceeded: 0,
+        compoundsFailed: 0,
+        compoundsRejected: 0,
+        compoundsUnknown: 0,
+        budgetBlocks: 0,
+        safetyBlocks: 0
+      };
+    }
+
+    start(context = {}) {
+      if (this.moduleActive) return { started: false, reason: 'H15_ALREADY_ACTIVE' };
+      this.moduleActive = true;
+      this.scope = context.scope || null;
+      this.suspendedReason = null;
+      this.attemptsThisSession = 0;
+      if (this.scope && typeof this.scope.interval === 'function') {
+        this.scope.interval('upgrade-compound-tick', () => this.tick(), this.config.tickMs, { immediate: true });
+      }
+      return { started: true };
+    }
+
+    stop(reason = 'H15_MODULE_STOP') {
+      this.moduleActive = false;
+      this.scope = null;
+      this.pending = null;
+      this.request = null;
+      this.lastAction = { at: nowIso(), type: 'STOP', reason: cleanText(reason, 240) };
+      return { stopped: true };
+    }
+
+    resetSafety(reason = 'H15_EXPLICIT_RESET') {
+      this.pending = null;
+      this.request = null;
+      this.suspendedReason = null;
+      this.attemptsThisSession = 0;
+      this.lastAction = { at: nowIso(), type: 'RESET', reason: cleanText(reason, 240) };
+      return this.status();
+    }
+
+    cancelRequest(reason = 'H15_REQUEST_CANCELLED') {
+      this.pending = null;
+      this.request = null;
+      this.lastAction = { at: nowIso(), type: 'REQUEST_CANCELLED', reason: cleanText(reason, 240) };
+      return this.status();
+    }
+
+    policy(value = null) {
+      if (value == null) return clone(this.config);
+      if (!value || typeof value !== 'object') throw new Error('H15_POLICY_MUST_BE_OBJECT');
+      if (value.maxAttemptsPerSession != null) this.config.maxAttemptsPerSession = Math.max(1, Math.min(100, Math.floor(Number(value.maxAttemptsPerSession) || 1)));
+      if (value.maxUpgradeLevel != null) this.config.maxUpgradeLevel = Math.max(0, Math.min(20, Math.floor(Number(value.maxUpgradeLevel) || 0)));
+      if (value.maxCompoundLevel != null) this.config.maxCompoundLevel = Math.max(0, Math.min(20, Math.floor(Number(value.maxCompoundLevel) || 0)));
+      if (value.maxItemValueAtRisk != null) this.config.maxItemValueAtRisk = Math.max(0, Number(value.maxItemValueAtRisk) || 0);
+      if (value.maxConsumableCost != null) this.config.maxConsumableCost = Math.max(0, Number(value.maxConsumableCost) || 0);
+      if (value.offeringFromLevel != null) this.config.offeringFromLevel = Math.max(0, Math.min(20, Math.floor(Number(value.offeringFromLevel) || 0)));
+      if (value.offeringMode != null) {
+        const mode = String(value.offeringMode).toUpperCase();
+        if (!['DISABLED', 'OPTIONAL', 'REQUIRED'].includes(mode)) throw new Error('H15_OFFERING_MODE_INVALID');
+        this.config.offeringMode = mode;
+      }
+      if (Array.isArray(value.offeringNames)) {
+        const names = value.offeringNames.map(row => cleanText(row, 80)).filter(Boolean);
+        if (!names.length) throw new Error('H15_OFFERING_NAMES_EMPTY');
+        this.config.offeringNames = names;
+      }
+      return clone(this.config);
+    }
+
+    _snapshot() {
+      try { return this.game && this.game.snapshot ? this.game.snapshot() : null; }
+      catch (_) { return null; }
+    }
+
+    _inventory() {
+      try { return this.game && this.game.inventorySnapshot ? this.game.inventorySnapshot() : null; }
+      catch (_) { return null; }
+    }
+
+    _definition(name) {
+      try {
+        if (this.game && this.game.equipmentDefinition) {
+          const equipment = this.game.equipmentDefinition(name);
+          if (equipment) return equipment;
+        }
+        return this.game && this.game.itemDefinition ? this.game.itemDefinition(name) : null;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    _combatActive() {
+      try {
+        const status = this.combat && typeof this.combat.status === 'function' ? this.combat.status() : null;
+        return !!(status && (status.active || status.state && !['IDLE', 'STOPPED'].includes(String(status.state))));
+      } catch (_) {
+        return false;
+      }
+    }
+
+    _safeItem(row) {
+      return !!(row && row.name && row.locked !== true && row.giveaway !== true && row.gift !== true && !row.expiresAt);
+    }
+
+    _propertyKey(row) {
+      return [
+        cleanText(row && row.name || '', 160),
+        cleanText(row && (row.statType != null ? row.statType : row.stat_type) || '', 80),
+        stableProperty(row && (row.property != null ? row.property : row.p))
+      ].join('|');
+    }
+
+    _fingerprint(row) {
+      if (!row || !row.name) return null;
+      return this._propertyKey(row) + '|' + Math.max(0, Number(row.level) || 0);
+    }
+
+    _quantityByName(inventory, name) {
+      if (!inventory || inventory.available === false) return null;
+      return (inventory.items || []).reduce((sum, row) =>
+        String(row.name) === String(name) ? sum + Math.max(1, Number(row.quantity) || 1) : sum, 0);
+    }
+
+    _countIdentityAtLevel(inventory, identityKey, level) {
+      if (!inventory || inventory.available === false) return null;
+      return (inventory.items || []).reduce((sum, row) => {
+        if (this._propertyKey(row) !== identityKey) return sum;
+        if (Math.max(0, Number(row.level) || 0) !== Math.max(0, Number(level) || 0)) return sum;
+        return sum + Math.max(1, Number(row.quantity) || 1);
+      }, 0);
+    }
+
+    _rowAt(inventory, slot) {
+      return inventory && (inventory.items || []).find(row => Number(row.slot) === Number(slot)) || null;
+    }
+
+    _grade(definition, level) {
+      const grades = definition && Array.isArray(definition.grades) ? definition.grades : null;
+      if (!grades || !grades.length) return 0;
+      const current = Math.max(0, Number(level) || 0);
+      if (grades.length >= 2) {
+        if (current < Number(grades[0])) return 0;
+        if (current < Number(grades[1])) return 1;
+        return 2;
+      }
+      return current < Number(grades[0]) ? 0 : 1;
+    }
+
+    _scrollName(kind, grade) {
+      const safeGrade = Math.max(0, Math.min(2, Number(grade) || 0));
+      return (kind === 'COMPOUND' ? 'cscroll' : 'scroll') + safeGrade;
+    }
+
+    _findConsumable(inventory, name, excluded = new Set()) {
+      return (inventory.items || []).find(row =>
+        !excluded.has(Number(row.slot))
+        && String(row.name) === String(name)
+        && this._safeItem(row)
+        && Math.max(1, Number(row.quantity) || 1) >= 1) || null;
+    }
+
+    _offeringFor(inventory, level, excluded = new Set(), force = null) {
+      const shouldUse = force === true
+        || (force == null && this.config.offeringMode !== 'DISABLED' && Number(level) >= this.config.offeringFromLevel);
+      if (!shouldUse) return { required: false, row: null };
+      for (const name of this.config.offeringNames) {
+        const row = this._findConsumable(inventory, name, excluded);
+        if (row) return { required: this.config.offeringMode === 'REQUIRED' || force === true, row };
+      }
+      return { required: this.config.offeringMode === 'REQUIRED' || force === true, row: null };
+    }
+
+    _estimatedItemValue(row, definition) {
+      const base = Math.max(0, finite(definition && definition.g) || 0);
+      const level = Math.max(0, Number(row && row.level) || 0);
+      return Math.round(base * Math.pow(1.75, level));
+    }
+
+    _budget(row, definition, scroll, offering, targetLevel) {
+      const itemValueAtRisk = this._estimatedItemValue(row, definition);
+      const scrollDef = scroll ? this._definition(scroll.name) : null;
+      const offeringDef = offering ? this._definition(offering.name) : null;
+      const consumableCost = Math.max(0, finite(scrollDef && scrollDef.g) || 0)
+        + Math.max(0, finite(offeringDef && offeringDef.g) || 0);
+      const maxLevel = definition && definition.compoundable ? this.config.maxCompoundLevel : this.config.maxUpgradeLevel;
+      if (Number(targetLevel) > maxLevel) return { ok: false, reason: 'H15_TARGET_LEVEL_OVER_BUDGET', itemValueAtRisk, consumableCost };
+      if (itemValueAtRisk > this.config.maxItemValueAtRisk) return { ok: false, reason: 'H15_ITEM_VALUE_OVER_BUDGET', itemValueAtRisk, consumableCost };
+      if (consumableCost > this.config.maxConsumableCost) return { ok: false, reason: 'H15_CONSUMABLE_COST_OVER_BUDGET', itemValueAtRisk, consumableCost };
+      return { ok: true, itemValueAtRisk, consumableCost };
+    }
+
+    _upgradeCandidate(row, inventory, options = {}) {
+      if (!this._safeItem(row)) return { ok: false, reason: 'H15_ITEM_NOT_AUTOMATION_SAFE' };
+      const definition = this._definition(row.name);
+      if (!definition || definition.upgradeable !== true) return { ok: false, reason: 'H15_ITEM_NOT_UPGRADEABLE' };
+      const level = Math.max(0, Number(row.level) || 0);
+      const targetLevel = level + 1;
+      const grade = this._grade(definition, level);
+      const excluded = new Set([Number(row.slot)]);
+      const scrollName = this._scrollName('UPGRADE', grade);
+      const scroll = this._findConsumable(inventory, scrollName, excluded);
+      if (!scroll) return { ok: false, reason: 'H15_UPGRADE_SCROLL_MISSING', scrollName, grade };
+      excluded.add(Number(scroll.slot));
+      const offering = this._offeringFor(inventory, level, excluded, options.useOffering == null ? null : options.useOffering === true);
+      if (offering.required && !offering.row) return { ok: false, reason: 'H15_REQUIRED_OFFERING_MISSING', scrollName, grade };
+      const budget = this._budget(row, definition, scroll, offering.row, targetLevel);
+      if (!budget.ok) return { ok: false, reason: budget.reason, budget, scrollName, grade };
+      return {
+        ok: true,
+        kind: 'UPGRADE',
+        item: clone(row),
+        itemSlot: Number(row.slot),
+        fingerprint: this._fingerprint(row),
+        identityKey: this._propertyKey(row),
+        definition: clone(definition),
+        fromLevel: level,
+        targetLevel,
+        grade,
+        scroll: clone(scroll),
+        scrollName,
+        offering: offering.row ? clone(offering.row) : null,
+        budget
+      };
+    }
+
+    _compoundCandidate(rows, inventory, options = {}) {
+      if (!Array.isArray(rows) || rows.length !== 3) return { ok: false, reason: 'H15_COMPOUND_NEEDS_THREE_ITEMS' };
+      if (rows.some(row => !this._safeItem(row))) return { ok: false, reason: 'H15_ITEM_NOT_AUTOMATION_SAFE' };
+      const fingerprints = rows.map(row => this._fingerprint(row));
+      if (!fingerprints[0] || !fingerprints.every(value => value === fingerprints[0])) {
+        return { ok: false, reason: 'H15_COMPOUND_ITEMS_NOT_IDENTICAL' };
+      }
+      const definition = this._definition(rows[0].name);
+      if (!definition || definition.compoundable !== true) return { ok: false, reason: 'H15_ITEM_NOT_COMPOUNDABLE' };
+      const level = Math.max(0, Number(rows[0].level) || 0);
+      const targetLevel = level + 1;
+      const grade = this._grade(definition, level);
+      const sourceSlots = rows.map(row => Number(row.slot)).sort((a, b) => a - b);
+      const excluded = new Set(sourceSlots);
+      const scrollName = this._scrollName('COMPOUND', grade);
+      const scroll = this._findConsumable(inventory, scrollName, excluded);
+      if (!scroll) return { ok: false, reason: 'H15_COMPOUND_SCROLL_MISSING', scrollName, grade };
+      excluded.add(Number(scroll.slot));
+      const offering = this._offeringFor(inventory, level, excluded, options.useOffering == null ? null : options.useOffering === true);
+      if (offering.required && !offering.row) return { ok: false, reason: 'H15_REQUIRED_OFFERING_MISSING', scrollName, grade };
+      const budget = this._budget(rows[0], definition, scroll, offering.row, targetLevel);
+      if (!budget.ok) return { ok: false, reason: budget.reason, budget, scrollName, grade };
+      return {
+        ok: true,
+        kind: 'COMPOUND',
+        items: clone(rows),
+        itemSlots: sourceSlots,
+        fingerprint: fingerprints[0],
+        identityKey: this._propertyKey(rows[0]),
+        definition: clone(definition),
+        fromLevel: level,
+        targetLevel,
+        grade,
+        scroll: clone(scroll),
+        scrollName,
+        offering: offering.row ? clone(offering.row) : null,
+        budget
+      };
+    }
+
+    plan() {
+      this.metrics.plans += 1;
+      const inventory = this._inventory();
+      if (!inventory || inventory.available === false) {
+        this.lastPlan = { state: 'BLOCKED', reason: 'H15_INVENTORY_UNAVAILABLE' };
+        return clone(this.lastPlan);
+      }
+      const rows = inventory.items || [];
+      const upgradeCandidates = [];
+      for (const row of rows) {
+        const candidate = this._upgradeCandidate(row, inventory);
+        if (candidate.ok) upgradeCandidates.push(candidate);
+      }
+
+      const groups = new Map();
+      for (const row of rows) {
+        if (!this._safeItem(row)) continue;
+        const definition = this._definition(row.name);
+        if (!definition || definition.compoundable !== true) continue;
+        const key = this._fingerprint(row);
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(row);
+      }
+      const compoundCandidates = [];
+      for (const rowsForKey of groups.values()) {
+        const sorted = rowsForKey.slice().sort((a, b) => Number(a.slot) - Number(b.slot));
+        for (let offset = 0; offset + 2 < sorted.length; offset += 3) {
+          const candidate = this._compoundCandidate(sorted.slice(offset, offset + 3), inventory);
+          if (candidate.ok) compoundCandidates.push(candidate);
+        }
+      }
+
+      upgradeCandidates.sort((a, b) => a.budget.itemValueAtRisk - b.budget.itemValueAtRisk || a.fromLevel - b.fromLevel || a.itemSlot - b.itemSlot);
+      compoundCandidates.sort((a, b) => a.budget.itemValueAtRisk - b.budget.itemValueAtRisk || a.fromLevel - b.fromLevel || a.itemSlots[0] - b.itemSlots[0]);
+
+      this.metrics.upgradeCandidates = upgradeCandidates.length;
+      this.metrics.compoundCandidates = compoundCandidates.length;
+      const reserved = new Set();
+      if (this.request) {
+        for (const slot of this.request.itemSlots || [this.request.itemSlot]) if (slot != null) reserved.add(Number(slot));
+        if (this.request.scrollSlot != null) reserved.add(Number(this.request.scrollSlot));
+        if (this.request.offeringSlot != null) reserved.add(Number(this.request.offeringSlot));
+      }
+      if (this.pending) {
+        for (const slot of this.pending.itemSlots || [this.pending.itemSlot]) if (slot != null) reserved.add(Number(slot));
+        if (this.pending.scrollSlot != null) reserved.add(Number(this.pending.scrollSlot));
+        if (this.pending.offeringSlot != null) reserved.add(Number(this.pending.offeringSlot));
+      }
+
+      this.lastPlan = {
+        state: 'READY',
+        reason: 'H15_PLAN_READY',
+        inventory: {
+          capacity: inventory.capacity,
+          usedSlots: inventory.usedSlots,
+          freeSlots: inventory.freeSlots
+        },
+        workspace: {
+          reservedSlots: Array.from(reserved).sort((a, b) => a - b),
+          requestActive: !!this.request,
+          pendingActive: !!this.pending
+        },
+        policy: clone(this.config),
+        upgradeCandidates: clone(upgradeCandidates),
+        compoundCandidates: clone(compoundCandidates)
+      };
+      return clone(this.lastPlan);
+    }
+
+    _queue(candidate, options = {}) {
+      if (!candidate || candidate.ok !== true) return { accepted: false, reason: candidate && candidate.reason || 'H15_CANDIDATE_INVALID' };
+      if (this.suspendedReason) return { accepted: false, reason: this.suspendedReason };
+      if (this.pending || this.request) return { accepted: false, reason: 'H15_BUSY' };
+      if (this.attemptsThisSession >= this.config.maxAttemptsPerSession) {
+        this.metrics.budgetBlocks += 1;
+        return { accepted: false, reason: 'H15_SESSION_ATTEMPT_BUDGET_EXHAUSTED' };
+      }
+      this.request = {
+        id: 'h15-request-' + (++this.sequence),
+        kind: candidate.kind,
+        itemSlot: candidate.itemSlot == null ? null : Number(candidate.itemSlot),
+        itemSlots: candidate.itemSlots ? candidate.itemSlots.map(Number) : null,
+        fingerprint: candidate.fingerprint,
+        identityKey: candidate.identityKey,
+        fromLevel: candidate.fromLevel,
+        targetLevel: candidate.targetLevel,
+        scrollSlot: Number(candidate.scroll.slot),
+        scrollName: candidate.scrollName,
+        offeringSlot: candidate.offering ? Number(candidate.offering.slot) : null,
+        offeringName: candidate.offering ? candidate.offering.name : null,
+        budget: clone(candidate.budget),
+        queuedAt: nowIso(),
+        useOffering: options.useOffering === true
+      };
+      this.lastAction = { at: nowIso(), type: candidate.kind + '_QUEUED', requestId: this.request.id };
+      return { accepted: true, request: clone(this.request) };
+    }
+
+    queueUpgrade(itemSlot, options = {}) {
+      const inventory = this._inventory();
+      if (!inventory || inventory.available === false) return { accepted: false, reason: 'H15_INVENTORY_UNAVAILABLE' };
+      const row = this._rowAt(inventory, itemSlot);
+      if (!row) return { accepted: false, reason: 'H15_UPGRADE_SOURCE_MISSING' };
+      const candidate = this._upgradeCandidate(row, inventory, options);
+      if (!candidate.ok && String(candidate.reason || '').includes('BUDGET')) this.metrics.budgetBlocks += 1;
+      if (!candidate.ok && !String(candidate.reason || '').includes('SCROLL') && !String(candidate.reason || '').includes('OFFERING')) this.metrics.safetyBlocks += 1;
+      return this._queue(candidate, options);
+    }
+
+    queueCompound(itemSlots, options = {}) {
+      if (!Array.isArray(itemSlots) || itemSlots.length !== 3) return { accepted: false, reason: 'H15_COMPOUND_NEEDS_THREE_ITEMS' };
+      const slots = itemSlots.map(Number);
+      if (new Set(slots).size !== 3) return { accepted: false, reason: 'H15_COMPOUND_SLOTS_MUST_BE_UNIQUE' };
+      const inventory = this._inventory();
+      if (!inventory || inventory.available === false) return { accepted: false, reason: 'H15_INVENTORY_UNAVAILABLE' };
+      const rows = slots.map(slot => this._rowAt(inventory, slot));
+      if (rows.some(row => !row)) return { accepted: false, reason: 'H15_COMPOUND_SOURCE_MISSING' };
+      const candidate = this._compoundCandidate(rows, inventory, options);
+      if (!candidate.ok && String(candidate.reason || '').includes('BUDGET')) this.metrics.budgetBlocks += 1;
+      if (!candidate.ok && !String(candidate.reason || '').includes('SCROLL') && !String(candidate.reason || '').includes('OFFERING')) this.metrics.safetyBlocks += 1;
+      return this._queue(candidate, options);
+    }
+
+    queueBest(kind = null) {
+      const plan = this.plan();
+      if (!plan || plan.state !== 'READY') return { accepted: false, reason: plan && plan.reason || 'H15_PLAN_UNAVAILABLE' };
+      const wanted = kind == null ? null : String(kind).toUpperCase();
+      if (wanted === 'COMPOUND') {
+        const candidate = plan.compoundCandidates[0];
+        return candidate ? this.queueCompound(candidate.itemSlots) : { accepted: false, reason: 'H15_NO_COMPOUND_CANDIDATE' };
+      }
+      if (wanted === 'UPGRADE') {
+        const candidate = plan.upgradeCandidates[0];
+        return candidate ? this.queueUpgrade(candidate.itemSlot) : { accepted: false, reason: 'H15_NO_UPGRADE_CANDIDATE' };
+      }
+      const choices = [];
+      if (plan.upgradeCandidates[0]) choices.push(plan.upgradeCandidates[0]);
+      if (plan.compoundCandidates[0]) choices.push(plan.compoundCandidates[0]);
+      choices.sort((a, b) => a.budget.itemValueAtRisk - b.budget.itemValueAtRisk);
+      const candidate = choices[0];
+      if (!candidate) return { accepted: false, reason: 'H15_NO_SAFE_CANDIDATE' };
+      return candidate.kind === 'UPGRADE' ? this.queueUpgrade(candidate.itemSlot) : this.queueCompound(candidate.itemSlots);
+    }
+
+    _writeAllowed() {
+      const snap = this._snapshot();
+      if (!snap || !snap.available || !snap.character) return { ok: false, reason: 'H15_CHARACTER_UNAVAILABLE' };
+      if (snap.character.rip === true) return { ok: false, reason: 'H15_CHARACTER_DEAD' };
+      if (this._combatActive()) {
+        this.metrics.safetyBlocks += 1;
+        return { ok: false, reason: 'H15_COMBAT_ACTIVE' };
+      }
+      return { ok: true, snapshot: snap };
+    }
+
+    _metric(kind, suffix) {
+      const prefix = kind === 'COMPOUND' ? 'compounds' : 'upgrades';
+      const key = prefix + suffix;
+      if (Object.prototype.hasOwnProperty.call(this.metrics, key)) this.metrics[key] += 1;
+    }
+
+    _suspend(kind, reason) {
+      this._metric(kind, 'Unknown');
+      this.suspendedReason = cleanText(reason || ('H15_' + kind + '_UNKNOWN'), 300);
+      this.pending = null;
+      this.request = null;
+      this.lastAction = { at: nowIso(), type: kind + '_UNKNOWN', reason: this.suspendedReason };
+      return { state: 'SUSPENDED', reason: this.suspendedReason };
+    }
+
+    _watch(value, pending) {
+      if (!value || typeof value.then !== 'function') {
+        pending.settlement = 'RETURNED';
+        pending.response = value == null ? null : clone(value);
+        return;
+      }
+      Promise.resolve(value).then(response => {
+        if (!this.pending || this.pending.id !== pending.id) return;
+        this.pending.settlement = 'RESOLVED';
+        this.pending.response = response == null ? null : clone(response);
+      }, error => {
+        if (!this.pending || this.pending.id !== pending.id) return;
+        this.pending.settlement = 'REJECTED';
+        this.pending.error = cleanText(error && (error.reason || error.message) || error || 'H15_ACTION_REJECTED', 500);
+      }).catch(() => {});
+    }
+
+    _dispatch(request, inventory) {
+      if (!this.actions || typeof this.actions.dispatch !== 'function') return { accepted: false, reason: 'H15_ACTION_BOUNDARY_UNAVAILABLE' };
+      const beforeScrollQuantity = this._quantityByName(inventory, request.scrollName);
+      const beforeOfferingQuantity = request.offeringName ? this._quantityByName(inventory, request.offeringName) : null;
+      const beforeSameLevel = this._countIdentityAtLevel(inventory, request.identityKey, request.fromLevel);
+      const beforeNextLevel = this._countIdentityAtLevel(inventory, request.identityKey, request.targetLevel);
+      const args = request.kind === 'COMPOUND'
+        ? request.itemSlots.concat([request.scrollSlot, request.offeringSlot])
+        : [request.itemSlot, request.scrollSlot, request.offeringSlot];
+      let result;
+      try { result = this.actions.dispatch(request.kind === 'COMPOUND' ? 'compound' : 'upgrade', args); }
+      catch (error) { return { accepted: false, reason: cleanText(error && error.message || error, 300) }; }
+      if (!result || result.state !== 'DISPATCHED') {
+        if (result && result.state === 'UNKNOWN') return this._suspend(request.kind, result.error && result.error.message || 'H15_DISPATCH_UNKNOWN');
+        this._metric(request.kind, 'Rejected');
+        this.request = null;
+        return { accepted: false, reason: result && result.state || 'H15_ACTION_REJECTED' };
+      }
+      const now = Date.now();
+      const pending = {
+        id: 'h15-pending-' + (++this.sequence),
+        ...request,
+        dispatchedAt: nowIso(),
+        dispatchedAtMs: now,
+        deadlineAtMs: now + this.config.outcomeTimeoutMs,
+        evidenceAtMs: null,
+        settlement: 'PENDING',
+        response: null,
+        error: null,
+        beforeScrollQuantity,
+        beforeOfferingQuantity,
+        beforeSameLevel,
+        beforeNextLevel
+      };
+      this.pending = pending;
+      this.attemptsThisSession += 1;
+      this._metric(request.kind, 'Dispatched');
+      this.lastAction = { at: pending.dispatchedAt, type: request.kind + '_DISPATCHED', requestId: request.id };
+      this._watch(result.value, pending);
+      return { accepted: true, state: 'DISPATCHED', pending: clone(pending) };
+    }
+
+    _complete(pending, outcome, details = {}) {
+      this.pending = null;
+      this.request = null;
+      this._metric(pending.kind, outcome === 'SUCCEEDED' ? 'Succeeded' : 'Failed');
+      this.lastAction = {
+        at: nowIso(),
+        type: pending.kind + '_' + outcome,
+        fromLevel: pending.fromLevel,
+        targetLevel: pending.targetLevel,
+        ...clone(details)
+      };
+      return true;
+    }
+
+    _observePending() {
+      const pending = this.pending;
+      if (!pending) return false;
+      const inventory = this._inventory();
+      if (!inventory || inventory.available === false) {
+        if (Date.now() >= pending.deadlineAtMs) return this._suspend(pending.kind, 'H15_INVENTORY_UNAVAILABLE_DURING_OUTCOME');
+        return false;
+      }
+      const afterScroll = this._quantityByName(inventory, pending.scrollName);
+      const scrollConsumed = afterScroll != null && pending.beforeScrollQuantity != null && afterScroll <= pending.beforeScrollQuantity - 1;
+      const afterOffering = pending.offeringName ? this._quantityByName(inventory, pending.offeringName) : null;
+      const offeringConsumed = !pending.offeringName
+        || (afterOffering != null && pending.beforeOfferingQuantity != null && afterOffering <= pending.beforeOfferingQuantity - 1);
+      const afterNextLevel = this._countIdentityAtLevel(inventory, pending.identityKey, pending.targetLevel);
+      const successObserved = afterNextLevel != null && pending.beforeNextLevel != null && afterNextLevel >= pending.beforeNextLevel + 1;
+
+      if (successObserved && scrollConsumed && offeringConsumed) {
+        return this._complete(pending, 'SUCCEEDED', { evidence: 'INVENTORY_LEVEL_DELTA' });
+      }
+
+      if (scrollConsumed && offeringConsumed) {
+        if (pending.evidenceAtMs == null) pending.evidenceAtMs = Date.now();
+        if (Date.now() - pending.evidenceAtMs >= this.config.settleGraceMs) {
+          return this._complete(pending, 'FAILED', {
+            evidence: 'CONSUMABLE_DELTA_WITHOUT_LEVEL_GAIN',
+            afterSameLevel: this._countIdentityAtLevel(inventory, pending.identityKey, pending.fromLevel)
+          });
+        }
+      }
+
+      if (pending.settlement === 'REJECTED') {
+        return this._suspend(pending.kind, pending.error || 'H15_ACTION_REJECTED_WITHOUT_LIVE_OUTCOME');
+      }
+      if (Date.now() >= pending.deadlineAtMs) {
+        return this._suspend(pending.kind, 'H15_' + pending.kind + '_UNVERIFIED_TIMEOUT');
+      }
+      return false;
+    }
+
+    _revalidate(request, inventory) {
+      const gate = this._writeAllowed();
+      if (!gate.ok) return gate;
+      if (this.attemptsThisSession >= this.config.maxAttemptsPerSession) return { ok: false, reason: 'H15_SESSION_ATTEMPT_BUDGET_EXHAUSTED' };
+
+      const itemSlots = request.kind === 'COMPOUND' ? request.itemSlots : [request.itemSlot];
+      const rows = itemSlots.map(slot => this._rowAt(inventory, slot));
+      if (rows.some(row => !row)) return { ok: false, reason: 'H15_SOURCE_CHANGED' };
+      if (rows.some(row => this._fingerprint(row) !== request.fingerprint)) return { ok: false, reason: 'H15_SOURCE_CHANGED' };
+      if (rows.some(row => !this._safeItem(row))) return { ok: false, reason: 'H15_ITEM_NOT_AUTOMATION_SAFE' };
+
+      const scroll = this._rowAt(inventory, request.scrollSlot);
+      if (!scroll || String(scroll.name) !== String(request.scrollName) || !this._safeItem(scroll)) {
+        return { ok: false, reason: 'H15_SCROLL_SOURCE_CHANGED' };
+      }
+      if (request.offeringSlot != null) {
+        const offering = this._rowAt(inventory, request.offeringSlot);
+        if (!offering || String(offering.name) !== String(request.offeringName) || !this._safeItem(offering)) {
+          return { ok: false, reason: 'H15_OFFERING_SOURCE_CHANGED' };
+        }
+      }
+
+      const definition = this._definition(rows[0].name);
+      const budget = this._budget(rows[0], definition, scroll,
+        request.offeringSlot == null ? null : this._rowAt(inventory, request.offeringSlot),
+        request.targetLevel);
+      if (!budget.ok) return { ok: false, reason: budget.reason };
+      return { ok: true };
+    }
+
+    tick() {
+      this.metrics.ticks += 1;
+      if (!this.moduleActive) return { state: 'STOPPED', reason: 'H15_MODULE_NOT_ACTIVE' };
+      if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason };
+
+      if (this.pending) {
+        this._observePending();
+        if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason };
+        return this.pending ? { state: 'PENDING', pending: clone(this.pending) } : { state: 'READY' };
+      }
+
+      const request = this.request;
+      if (!request) return this.plan();
+      const inventory = this._inventory();
+      if (!inventory || inventory.available === false) return { state: 'BLOCKED', reason: 'H15_INVENTORY_UNAVAILABLE' };
+      const valid = this._revalidate(request, inventory);
+      if (!valid.ok) {
+        this.request = null;
+        if (String(valid.reason || '').includes('BUDGET')) this.metrics.budgetBlocks += 1;
+        else this.metrics.safetyBlocks += 1;
+        this.lastAction = { at: nowIso(), type: request.kind + '_BLOCKED', reason: valid.reason };
+        return { state: 'BLOCKED', reason: valid.reason };
+      }
+      return this._dispatch(request, inventory);
+    }
+
+    status() {
+      return {
+        schemaVersion: 1,
+        moduleActive: this.moduleActive,
+        suspended: !!this.suspendedReason,
+        suspendedReason: this.suspendedReason,
+        attemptsThisSession: this.attemptsThisSession,
+        pending: clone(this.pending),
+        request: clone(this.request),
+        lastPlan: clone(this.lastPlan),
+        lastAction: clone(this.lastAction),
+        config: clone(this.config),
+        metrics: clone(this.metrics)
+      };
+    }
+  }
+
+  ns.UpgradeCompoundController = UpgradeCompoundController;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+
+(function (root) {
+  'use strict';
+
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns) throw new Error('ALBOT_INTERNALS_MISSING');
+
+  const clone = ns.helpers.clone;
+  const cleanText = ns.helpers.cleanText;
+
   function errorDetails(error) {
     return {
       name: cleanText(error && error.name || 'Error', 80),
@@ -11095,7 +11793,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.14.0-h14';
+      this.version = options.version || '0.15.0-h15';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -11209,6 +11907,13 @@
         roster: this.roster,
         combat: this.combat
       });
+      this.upgrade = new ns.UpgradeCompoundController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        combat: this.combat
+      });
       this.liveTests = new ns.LiveTestRunner({
         runtime: this,
         logger: this.logger,
@@ -11223,6 +11928,7 @@
       this._registerH12LiveTest();
       this._registerH13LiveTest();
       this._registerH14LiveTest();
+      this._registerH15LiveTest();
       this._installErrorCapture();
       this.logger.info('AL Bot Runtime erstellt', {
         version: this.version,
@@ -11352,6 +12058,15 @@
         start: context => this.gear.start(context),
         stop: reason => this.gear.stop(reason),
         status: () => this.gear.status()
+      });
+
+      this.modules.register({
+        id: 'upgrade-compound',
+        title: 'Upgrade & Compound',
+        version: '0.15.0',
+        start: context => this.upgrade.start(context),
+        stop: reason => this.upgrade.stop(reason),
+        status: () => this.upgrade.status()
       });
     }
 
@@ -13654,6 +14369,225 @@
       });
     }
 
+    _registerH15LiveTest() {
+      let baseline = null;
+      let testPlan = null;
+      let previousPolicy = null;
+
+      this.liveTests.register({
+        id: 'h15-upgrade-compound',
+        title: 'H15 – Upgrade & Compound',
+        description: 'Ein-Klick-Live-Test für Scrollwahl, Risiko-/Kostenbudget und genau eine niedrig riskante echte Upgrade- oder Compound-Aktion mit Live-Outcome-Evidence.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.upgrade.resetSafety('H15_LIVE_TEST_RESET'); } catch (_) {}
+          try { runtime.upgrade.cancelRequest('H15_LIVE_TEST_RESET'); } catch (_) {}
+          previousPolicy = runtime.upgrade.policy();
+          runtime.upgrade.policy({
+            maxAttemptsPerSession: 1,
+            maxUpgradeLevel: 3,
+            maxCompoundLevel: 1,
+            maxItemValueAtRisk: 25000,
+            maxConsumableCost: 10000,
+            offeringMode: 'DISABLED',
+            offeringFromLevel: 99
+          });
+          const metrics = runtime.upgrade.status().metrics;
+          baseline = {
+            upgradesDispatched: metrics.upgradesDispatched,
+            upgradesSucceeded: metrics.upgradesSucceeded,
+            upgradesFailed: metrics.upgradesFailed,
+            upgradesUnknown: metrics.upgradesUnknown,
+            compoundsDispatched: metrics.compoundsDispatched,
+            compoundsSucceeded: metrics.compoundsSucceeded,
+            compoundsFailed: metrics.compoundsFailed,
+            compoundsUnknown: metrics.compoundsUnknown
+          };
+          testPlan = null;
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.upgrade.cancelRequest('H15_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try { runtime.upgrade.resetSafety('H15_LIVE_TEST_CLEANUP'); } catch (_) {}
+          if (previousPolicy) {
+            try { runtime.upgrade.policy(previousPolicy); } catch (_) {}
+          }
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Niedrig riskanten Upgrade-/Compound-Kandidaten und Live-APIs prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(game.character.rip !== true, 'CHARACTER_DEAD');
+              const module = runtime.modules.describe('upgrade-compound');
+              assert(module && module.state === 'ACTIVE', 'H15_MODULE_NOT_ACTIVE');
+
+              const plan = runtime.upgrade.plan();
+              assert(plan && plan.state === 'READY', plan && plan.reason || 'H15_PLAN_UNAVAILABLE');
+              const choices = [];
+              for (const row of plan.upgradeCandidates || []) {
+                if (Number(row.fromLevel) <= 2 && Number(row.budget && row.budget.itemValueAtRisk) <= 25000
+                    && Number(row.budget && row.budget.consumableCost) <= 10000) choices.push(row);
+              }
+              for (const row of plan.compoundCandidates || []) {
+                if (Number(row.fromLevel) <= 0 && Number(row.budget && row.budget.itemValueAtRisk) <= 25000
+                    && Number(row.budget && row.budget.consumableCost) <= 10000) choices.push(row);
+              }
+              choices.sort((a, b) => Number(a.budget.itemValueAtRisk) - Number(b.budget.itemValueAtRisk)
+                || Number(a.budget.consumableCost) - Number(b.budget.consumableCost)
+                || (a.kind === 'UPGRADE' ? -1 : 1));
+              const selected = choices[0];
+              assert(selected, 'H15_NEEDS_LOW_RISK_UPGRADE_OR_COMPOUND_CANDIDATE');
+              assert(runtime.actions.available(selected.kind === 'COMPOUND' ? 'compound' : 'upgrade'),
+                selected.kind === 'COMPOUND' ? 'COMPOUND_API_UNAVAILABLE' : 'UPGRADE_API_UNAVAILABLE');
+
+              testPlan = {
+                kind: selected.kind,
+                itemName: selected.kind === 'COMPOUND' ? selected.items[0].name : selected.item.name,
+                itemSlot: selected.itemSlot == null ? null : Number(selected.itemSlot),
+                itemSlots: selected.itemSlots ? selected.itemSlots.map(Number) : null,
+                fromLevel: Number(selected.fromLevel) || 0,
+                targetLevel: Number(selected.targetLevel) || 0,
+                scrollName: selected.scrollName,
+                scrollSlot: Number(selected.scroll.slot),
+                offeringName: selected.offering ? selected.offering.name : null,
+                offeringSlot: selected.offering ? Number(selected.offering.slot) : null,
+                itemValueAtRisk: Number(selected.budget.itemValueAtRisk) || 0,
+                consumableCost: Number(selected.budget.consumableCost) || 0
+              };
+
+              return {
+                character: game.character.name,
+                ctype: game.character.ctype,
+                kind: testPlan.kind,
+                item: testPlan.itemName,
+                fromLevel: testPlan.fromLevel,
+                targetLevel: testPlan.targetLevel,
+                itemSlot: testPlan.itemSlot,
+                itemSlots: testPlan.itemSlots,
+                scroll: testPlan.scrollName,
+                scrollSlot: testPlan.scrollSlot,
+                offering: testPlan.offeringName,
+                itemValueAtRisk: testPlan.itemValueAtRisk,
+                consumableCost: testPlan.consumableCost,
+                availableUpgradeCandidates: (plan.upgradeCandidates || []).length,
+                availableCompoundCandidates: (plan.compoundCandidates || []).length
+              };
+            }
+          },
+          {
+            id: 'planning',
+            title: 'Scroll-Grade, Workspace und H15-Budgets vor Mutation bestätigen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              assert(testPlan, 'H15_LIVE_TEST_PLAN_MISSING');
+              const plan = runtime.upgrade.plan();
+              assert(plan && plan.state === 'READY', plan && plan.reason || 'H15_PLAN_UNAVAILABLE');
+              assert(testPlan.itemValueAtRisk <= 25000, 'H15_LIVE_ITEM_RISK_TOO_HIGH');
+              assert(testPlan.consumableCost <= 10000, 'H15_LIVE_CONSUMABLE_COST_TOO_HIGH');
+              const policy = runtime.upgrade.policy();
+              assert(policy.maxAttemptsPerSession === 1, 'H15_LIVE_ATTEMPT_BUDGET_NOT_ONE');
+              assert(policy.offeringMode === 'DISABLED', 'H15_LIVE_OFFERING_MUST_BE_DISABLED');
+              return {
+                kind: testPlan.kind,
+                policy,
+                workspace: plan.workspace,
+                itemValueAtRisk: testPlan.itemValueAtRisk,
+                consumableCost: testPlan.consumableCost
+              };
+            }
+          },
+          {
+            id: 'real-action',
+            title: 'Genau eine echte niedrig riskante H15-Aktion ausführen und Outcome beobachten',
+            timeoutMs: 15000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(testPlan, 'H15_LIVE_TEST_PLAN_MISSING');
+              const queued = testPlan.kind === 'COMPOUND'
+                ? runtime.upgrade.queueCompound(testPlan.itemSlots)
+                : runtime.upgrade.queueUpgrade(testPlan.itemSlot);
+              assert(queued && queued.accepted === true, queued && queued.reason || 'H15_QUEUE_FAILED');
+              const dispatched = runtime.upgrade.tick();
+              assert(dispatched && dispatched.accepted === true, dispatched && dispatched.reason || 'H15_DISPATCH_FAILED');
+
+              const outcome = await waitFor(() => {
+                const status = runtime.upgrade.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H15_SUSPENDED');
+                if (status.metrics.upgradesUnknown > baseline.upgradesUnknown) throw new Error('H15_UPGRADE_UNKNOWN');
+                if (status.metrics.compoundsUnknown > baseline.compoundsUnknown) throw new Error('H15_COMPOUND_UNKNOWN');
+                const succeeded = testPlan.kind === 'COMPOUND'
+                  ? status.metrics.compoundsSucceeded > baseline.compoundsSucceeded
+                  : status.metrics.upgradesSucceeded > baseline.upgradesSucceeded;
+                const failed = testPlan.kind === 'COMPOUND'
+                  ? status.metrics.compoundsFailed > baseline.compoundsFailed
+                  : status.metrics.upgradesFailed > baseline.upgradesFailed;
+                return succeeded || failed ? status : null;
+              }, { timeoutMs: 12000, pollMs: 100, label: 'h15-live-outcome' });
+
+              const lastAction = outcome.lastAction || {};
+              assert([testPlan.kind + '_SUCCEEDED', testPlan.kind + '_FAILED'].includes(lastAction.type),
+                'H15_OUTCOME_NOT_CLASSIFIED');
+              return {
+                kind: testPlan.kind,
+                outcome: lastAction.type,
+                evidence: lastAction.evidence || null,
+                fromLevel: testPlan.fromLevel,
+                targetLevel: testPlan.targetLevel,
+                upgradesDispatched: outcome.metrics.upgradesDispatched - baseline.upgradesDispatched,
+                upgradesSucceeded: outcome.metrics.upgradesSucceeded - baseline.upgradesSucceeded,
+                upgradesFailed: outcome.metrics.upgradesFailed - baseline.upgradesFailed,
+                compoundsDispatched: outcome.metrics.compoundsDispatched - baseline.compoundsDispatched,
+                compoundsSucceeded: outcome.metrics.compoundsSucceeded - baseline.compoundsSucceeded,
+                compoundsFailed: outcome.metrics.compoundsFailed - baseline.compoundsFailed
+              };
+            }
+          },
+          {
+            id: 'stability',
+            title: 'Fünf Sekunden ohne H15 UNKNOWN, Retry oder Suspension beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              await sleep(5000);
+              const status = runtime.upgrade.status();
+              assert(status.suspended === false, status.suspendedReason || 'H15_SUSPENDED');
+              assert(status.metrics.upgradesUnknown === baseline.upgradesUnknown, 'H15_UPGRADE_UNKNOWN_DURING_STABILITY');
+              assert(status.metrics.compoundsUnknown === baseline.compoundsUnknown, 'H15_COMPOUND_UNKNOWN_DURING_STABILITY');
+              assert(status.attemptsThisSession === 1, 'H15_LIVE_ATTEMPT_COUNT_NOT_ONE');
+              assert(status.pending == null, 'H15_PENDING_REMAINS_DURING_STABILITY');
+              assert(status.request == null, 'H15_REQUEST_REMAINS_DURING_STABILITY');
+              return {
+                attempts: status.attemptsThisSession,
+                upgradeUnknown: status.metrics.upgradesUnknown - baseline.upgradesUnknown,
+                compoundUnknown: status.metrics.compoundsUnknown - baseline.compoundsUnknown,
+                suspended: status.suspended
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'H15 Request/Pending freigeben und Test-Policy zurücksetzen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.upgrade.cancelRequest('H15_LIVE_TEST_COMPLETE');
+              const status = runtime.upgrade.status();
+              assert(status.pending == null, 'H15_PENDING_REMAINS');
+              assert(status.request == null, 'H15_REQUEST_REMAINS');
+              return {
+                pending: !!status.pending,
+                request: !!status.request,
+                outcome: status.lastAction && status.lastAction.type || null
+              };
+            }
+          }
+        ]
+      });
+    }
+
     _installErrorCapture() {
       if (!this.root || typeof this.root.addEventListener !== 'function') return;
       this._errorHandler = event => {
@@ -13805,6 +14739,7 @@
         bank: this.bank.status(),
         trade: this.trade.status(),
         gear: this.gear.status(),
+        upgrade: this.upgrade.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
         roster,
@@ -13834,6 +14769,7 @@
         bank: this.bank.status(),
         trade: this.trade.status(),
         gear: this.gear.status(),
+        upgrade: this.upgrade.status(),
         liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
         logs: this.logger.list(160),
@@ -13862,6 +14798,7 @@
       push('bank-controller', !!this.bank.status() && typeof this.bank.plan === 'function' && typeof this.bank.reconcile === 'function', this.bank.status());
       push('trade-controller', !!this.trade.status() && typeof this.trade.marketAnalysis === 'function' && typeof this.trade.queueAcquire === 'function', this.trade.status());
       push('gear-controller', !!this.gear.status() && typeof this.gear.plan === 'function' && typeof this.gear.queueBestLocal === 'function', this.gear.status());
+      push('upgrade-compound-controller', !!this.upgrade.status() && typeof this.upgrade.plan === 'function' && typeof this.upgrade.queueBest === 'function', this.upgrade.status());
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
       push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);
@@ -13993,6 +14930,7 @@
       this.bankResult = null;
       this.tradeResult = null;
       this.gearResult = null;
+      this.upgradeResult = null;
       this.liveTestClipboard = null;
       this._offLog = null;
       this._dragCleanup = null;
@@ -14049,7 +14987,7 @@
 </style>
 <div class="albot-head" id="albot-drag-handle"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-minimize" class="albot-window-btn" title="Fenster minimieren" aria-label="Fenster minimieren">—</button><button id="albot-emergency" class="albot-stop">STOP</button></div>
 <div class="albot-tabs">
-<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="merchant">Merchant</button><button class="albot-tab" data-tab="bank">Bank</button><button class="albot-tab" data-tab="trade">Handel</button><button class="albot-tab" data-tab="gear">Gear</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
+<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="merchant">Merchant</button><button class="albot-tab" data-tab="bank">Bank</button><button class="albot-tab" data-tab="trade">Handel</button><button class="albot-tab" data-tab="gear">Gear</button><button class="albot-tab" data-tab="upgrade">Upgrade & Compound</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
 </div>
 <div class="albot-body">
 <section id="albot-panel-overview" class="albot-panel active"></section>
@@ -14064,6 +15002,7 @@
 <section id="albot-panel-bank" class="albot-panel"></section>
 <section id="albot-panel-trade" class="albot-panel"></section>
 <section id="albot-panel-gear" class="albot-panel"></section>
+<section id="albot-panel-upgrade" class="albot-panel"></section>
 <section id="albot-panel-live-test" class="albot-panel"></section>
 <section id="albot-panel-knowledge" class="albot-panel"></section>
 <section id="albot-panel-logs" class="albot-panel"></section>
@@ -14207,6 +15146,7 @@
       if (this.activeTab === 'bank') this.renderBank(status);
       if (this.activeTab === 'trade') this.renderTrade(status);
       if (this.activeTab === 'gear') this.renderGear(status);
+      if (this.activeTab === 'upgrade') this.renderUpgrade(status);
       if (this.activeTab === 'live-test') this.renderLiveTest(status);
       if (this.activeTab === 'knowledge') this.renderKnowledge(status);
       if (this.activeTab === 'logs') this.renderLogs();
@@ -14230,6 +15170,7 @@
       this.renderBank(status);
       this.renderTrade(status);
       this.renderGear(status);
+      this.renderUpgrade(status);
       this.renderLiveTest(status);
       this.renderKnowledge(status);
       this.renderLogs();
@@ -15073,6 +16014,97 @@ ${items.length ? items.slice(0, 24).map(row => '<div class="albot-small">#'+esc(
       if (clearGoal) clearGoal.onclick = () => run(() => this.runtime.gear.setGoals([]));
     }
 
+    renderUpgrade(status) {
+      const panel = this.host.querySelector('#albot-panel-upgrade');
+      if (!panel) return;
+      const upgrade = status.upgrade || {};
+      const metrics = upgrade.metrics || {};
+      let plan = upgrade.lastPlan || null;
+      try { if (!plan || plan.state !== 'READY') plan = this.runtime.upgrade.plan(); } catch (_) {}
+      const upgrades = plan && Array.isArray(plan.upgradeCandidates) ? plan.upgradeCandidates : [];
+      const compounds = plan && Array.isArray(plan.compoundCandidates) ? plan.compoundCandidates : [];
+      const policy = upgrade.config || {};
+      const workspace = plan && plan.workspace || {};
+      const resultText = this.upgradeResult ? JSON.stringify(this.upgradeResult, null, 2) : 'Noch keine manuelle H15-Aktion.';
+
+      const upgradeOptions = upgrades.length
+        ? upgrades.map(row => '<option value="'+esc(row.itemSlot)+'">'+esc(row.item.name)+' +'+esc(row.fromLevel)+' → +'+esc(row.targetLevel)+' · '+esc(row.scrollName)+' · Risiko '+esc(row.budget.itemValueAtRisk)+'</option>').join('')
+        : '<option value="">kein sicherer Upgrade-Kandidat</option>';
+      const compoundOptions = compounds.length
+        ? compounds.map(row => '<option value="'+esc(row.itemSlots.join(','))+'">'+esc(row.items[0].name)+' +'+esc(row.fromLevel)+' · Slots '+esc(row.itemSlots.join(', '))+' · '+esc(row.scrollName)+'</option>').join('')
+        : '<option value="">kein sicherer Compound-Kandidat</option>';
+
+      panel.innerHTML = `<div class="albot-card"><b>H15 Upgrade & Compound</b>
+<div class="albot-small">Scroll-/Offering-Auswahl, Risiko- und Kostenbudgets, Workspace-Slotreservierung sowie Live-Delta-Ergebnisprüfung. Promise-Erfolg allein bestätigt nichts.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${upgrade.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Plan</span><div class="albot-v">${esc(plan && plan.state || '-')} · ${esc(plan && plan.reason || '-')}</div></div>
+<div><span class="albot-k">Upgrade-Kandidaten</span><div class="albot-v">${esc(upgrades.length)}</div></div>
+<div><span class="albot-k">Compound-Kandidaten</span><div class="albot-v">${esc(compounds.length)}</div></div>
+<div><span class="albot-k">Versuche Session</span><div class="albot-v">${esc(upgrade.attemptsThisSession || 0)} / ${esc(policy.maxAttemptsPerSession || '-')}</div></div>
+<div><span class="albot-k">Reservierte Slots</span><div class="albot-v">${esc((workspace.reservedSlots || []).join(', ') || 'keine')}</div></div>
+<div><span class="albot-k">Upgrade Erfolg / Fail / Unknown</span><div class="albot-v">${esc(metrics.upgradesSucceeded || 0)} / ${esc(metrics.upgradesFailed || 0)} / ${esc(metrics.upgradesUnknown || 0)}</div></div>
+<div><span class="albot-k">Compound Erfolg / Fail / Unknown</span><div class="albot-v">${esc(metrics.compoundsSucceeded || 0)} / ${esc(metrics.compoundsFailed || 0)} / ${esc(metrics.compoundsUnknown || 0)}</div></div>
+<div><span class="albot-k">Budget Blocks</span><div class="albot-v">${esc(metrics.budgetBlocks || 0)}</div></div>
+<div><span class="albot-k">Suspendiert</span><div class="albot-v">${upgrade.suspended ? 'JA · '+esc(upgrade.suspendedReason || '-') : 'NEIN'}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Einzelaktion</b>
+<div class="albot-row"><select id="albot-h15-upgrade">${upgradeOptions}</select><button id="albot-h15-upgrade-run" class="albot-btn">Upgrade vormerken</button></div>
+<div class="albot-row"><select id="albot-h15-compound">${compoundOptions}</select><button id="albot-h15-compound-run" class="albot-btn">Compound vormerken</button></div>
+<div class="albot-small">Jeder Quell-, Scroll- und Offering-Slot wird unmittelbar vor Dispatch erneut validiert. Während Combat wird fail-closed blockiert.</div>
+</div>
+
+<div class="albot-card"><b>Budget / Offering Policy</b>
+<div class="albot-row"><label>Upgrade max +<input id="albot-h15-max-up" type="number" min="0" max="20" value="${esc(policy.maxUpgradeLevel == null ? 8 : policy.maxUpgradeLevel)}"></label><label>Compound max +<input id="albot-h15-max-comp" type="number" min="0" max="20" value="${esc(policy.maxCompoundLevel == null ? 4 : policy.maxCompoundLevel)}"></label></div>
+<div class="albot-row"><label>Item-Risiko max <input id="albot-h15-max-risk" type="number" min="0" value="${esc(policy.maxItemValueAtRisk == null ? 250000 : policy.maxItemValueAtRisk)}"></label><label>Consumables max <input id="albot-h15-max-cost" type="number" min="0" value="${esc(policy.maxConsumableCost == null ? 250000 : policy.maxConsumableCost)}"></label></div>
+<div class="albot-row"><select id="albot-h15-offering-mode"><option ${policy.offeringMode==='DISABLED'?'selected':''}>DISABLED</option><option ${policy.offeringMode==='OPTIONAL'?'selected':''}>OPTIONAL</option><option ${policy.offeringMode==='REQUIRED'?'selected':''}>REQUIRED</option></select><input id="albot-h15-offering-level" type="number" min="0" max="20" value="${esc(policy.offeringFromLevel == null ? 7 : policy.offeringFromLevel)}"><button id="albot-h15-policy-save" class="albot-btn">Policy speichern</button></div>
+</div>
+
+<div class="albot-card"><b>Steuerung</b>
+<div class="albot-row"><button id="albot-h15-plan" class="albot-btn">Plan</button><button id="albot-h15-tick" class="albot-btn">Tick</button><button id="albot-h15-best" class="albot-btn">Sichersten Kandidaten vormerken</button><button id="albot-h15-reset" class="albot-btn warn" ${upgrade.suspended ? '' : 'disabled'}>Safety zurücksetzen</button></div>
+<div class="albot-small">Pending: ${upgrade.pending ? esc(upgrade.pending.kind) : 'nein'} · Request: ${upgrade.request ? esc(upgrade.request.kind) : 'keiner'}</div>
+</div>
+
+<div class="albot-card"><b>Letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.upgradeResult = fn(); }
+        catch (error) { this.upgradeResult = { ok: false, reason: String(error && error.message || error) }; }
+        this.renderUpgrade(this.runtime.status());
+      };
+      const planButton = panel.querySelector('#albot-h15-plan');
+      if (planButton) planButton.onclick = () => run(() => this.runtime.upgrade.plan());
+      const tickButton = panel.querySelector('#albot-h15-tick');
+      if (tickButton) tickButton.onclick = () => run(() => this.runtime.upgrade.tick());
+      const bestButton = panel.querySelector('#albot-h15-best');
+      if (bestButton) bestButton.onclick = () => run(() => this.runtime.upgrade.queueBest());
+      const resetButton = panel.querySelector('#albot-h15-reset');
+      if (resetButton) resetButton.onclick = () => run(() => this.runtime.upgrade.resetSafety('GUI_H15_RESET'));
+      const upgradeButton = panel.querySelector('#albot-h15-upgrade-run');
+      if (upgradeButton) upgradeButton.onclick = () => {
+        const slot = Number(panel.querySelector('#albot-h15-upgrade').value);
+        run(() => Number.isInteger(slot) ? this.runtime.upgrade.queueUpgrade(slot) : { accepted: false, reason: 'H15_GUI_NO_UPGRADE_CANDIDATE' });
+      };
+      const compoundButton = panel.querySelector('#albot-h15-compound-run');
+      if (compoundButton) compoundButton.onclick = () => {
+        const raw = panel.querySelector('#albot-h15-compound').value || '';
+        const slots = raw ? raw.split(',').map(Number) : [];
+        run(() => slots.length === 3 && slots.every(Number.isInteger)
+          ? this.runtime.upgrade.queueCompound(slots)
+          : { accepted: false, reason: 'H15_GUI_NO_COMPOUND_CANDIDATE' });
+      };
+      const policyButton = panel.querySelector('#albot-h15-policy-save');
+      if (policyButton) policyButton.onclick = () => run(() => this.runtime.upgrade.policy({
+        maxUpgradeLevel: Number(panel.querySelector('#albot-h15-max-up').value),
+        maxCompoundLevel: Number(panel.querySelector('#albot-h15-max-comp').value),
+        maxItemValueAtRisk: Number(panel.querySelector('#albot-h15-max-risk').value),
+        maxConsumableCost: Number(panel.querySelector('#albot-h15-max-cost').value),
+        offeringMode: panel.querySelector('#albot-h15-offering-mode').value,
+        offeringFromLevel: Number(panel.querySelector('#albot-h15-offering-level').value)
+      }));
+    }
+
     async runRecommendedLiveTest() {
       const state = this.runtime.status();
       if (state.emergencyStop && state.emergencyStop.latched) {
@@ -15303,7 +16335,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.14.0-h14',
+    version: '0.15.0-h15',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -15481,6 +16513,18 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
       deliver: (targetName, inventorySlot) => runtime.gear.queueDelivery(targetName, inventorySlot)
     },
 
+    upgrade: {
+      status: () => runtime.upgrade.status(),
+      plan: () => runtime.upgrade.plan(),
+      tick: () => runtime.upgrade.tick(),
+      reset: reason => runtime.upgrade.resetSafety(reason || 'API_H15_RESET'),
+      cancel: reason => runtime.upgrade.cancelRequest(reason || 'API_H15_REQUEST_CANCEL'),
+      policy: value => runtime.upgrade.policy(value),
+      best: kind => runtime.upgrade.queueBest(kind),
+      item: (inventorySlot, options) => runtime.upgrade.queueUpgrade(inventorySlot, options || {}),
+      compound: (inventorySlots, options) => runtime.upgrade.queueCompound(inventorySlots, options || {})
+    },
+
     liveTests: {
       status: () => runtime.liveTests.status(),
       list: () => runtime.liveTests.list(),
@@ -15535,6 +16579,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
   Object.freeze(api.bank);
   Object.freeze(api.trade);
   Object.freeze(api.gear);
+  Object.freeze(api.upgrade);
   Object.freeze(api.liveTests);
   Object.freeze(api.knowledge);
   Object.freeze(api.roster);
@@ -15552,7 +16597,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
     };
   } catch (_) {}
 
-  runtime.logger.info('AL Bot H14 geladen', {
+  runtime.logger.info('AL Bot H15 geladen', {
     version: api.version,
     bootCount,
     hotReload: !!previous,
