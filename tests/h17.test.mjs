@@ -403,6 +403,8 @@ test('H17 session action budget stops bounded autonomy', () => {
   f.economy.startAutonomy({ maxActions: 1 });
   assert.equal(f.economy.tick().state, 'QUEUED');
   f.settle('exchangeCraft', 'EXCHANGE_CONFIRMED');
+  const confirmed = f.economy.tick();
+  assert.equal(confirmed.state, 'CONFIRMED');
   const after = f.economy.tick();
   assert.equal(after.state, 'COMPLETE');
   assert.equal(after.reason, 'H17_SESSION_ACTION_BUDGET_REACHED');
