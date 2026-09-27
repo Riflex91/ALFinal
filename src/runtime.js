@@ -3245,14 +3245,9 @@
                     }
 
                     const offers = [];
-                    const liveBank = runtime.game.bankSnapshot();
                     const bankRow = (row.bankRows || []).find(source =>
                       source
-                      && source.map
-                      && liveBank
-                      && liveBank.available !== false
-                      && liveBank.map
-                      && String(source.map) === String(liveBank.map)
+                      && source.withdrawable === true
                       && Math.max(1, Math.floor(Number(source.quantity) || 1)) >= quantity);
                     if (bankRow) {
                       offers.push({
@@ -3293,8 +3288,11 @@
                           map: source.map || null,
                           slot: source.slot,
                           quantity: source.quantity,
-                          usableOnMountedMap: !!(source && source.map && liveBank && liveBank.map
-                            && String(source.map) === String(liveBank.map))
+                          safe: source.safe === true,
+                          mountedMapMatch: source.mountedMapMatch === true,
+                          reservedQuantity: Number(source.reservedQuantity || 0),
+                          remainingAfterWholeStack: Number(source.remainingAfterWholeStack || 0),
+                          withdrawable: source.withdrawable === true
                         })),
                         npcPrice: Number.isFinite(npcPrice) ? npcPrice : null,
                         npcSources: (row.npcSources || []).slice(0, 4).map(source => ({
