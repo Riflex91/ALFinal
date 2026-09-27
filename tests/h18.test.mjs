@@ -27,7 +27,8 @@ function fixture(options = {}) {
     target: {
       name: 'My_Priest', local: false, owned: true, visible: options.targetVisible !== false,
       ctype: 'priest', role: 'HEALER', rip: false, map: options.targetMap || 'main',
-      x: options.targetX == null ? 100 : options.targetX, y: options.targetY == null ? 0 : options.targetY
+      x: Object.prototype.hasOwnProperty.call(options, 'targetX') ? options.targetX : 100,
+      y: Object.prototype.hasOwnProperty.call(options, 'targetY') ? options.targetY : 0
     },
     movement: { active: false, activeOrder: null, lastOrder: null },
     dispatches: [],
@@ -181,6 +182,35 @@ test('H18 queues supply only for an owned party member', () => {
   assert.equal(foreign.reason, 'H18_TARGET_NOT_OWNED_PARTY_MEMBER');
 });
 
+test('H18 rejects unknown item definitions and invalid explicit quantities', () => {
+  const unknown = fixture({
+    inventory: [
+      { slot: 0, name: 'mystery', quantity: 10, level: 0, locked: false, giveaway: false, gift: false, expiresAt: null, definition: null }
+    ]
+  });
+  assert.equal(unknown.controller.supplyCatalog().length, 0);
+  assert.equal(unknown.controller.queueSupply('My_Priest', 'mystery', 1).reason, 'H18_SUPPLY_ITEM_NOT_SAFE_OR_AVAILABLE');
+
+  const { controller } = fixture();
+  for (const quantity of [0, -5, 'abc', 1.5]) {
+    const result = controller.queueSupply('My_Priest', 'hpot0', quantity);
+    assert.equal(result.accepted, false);
+    assert.equal(result.reason, 'H18_SUPPLY_QUANTITY_INVALID');
+  }
+  assert.equal(controller.queueSupply('My_Priest', 'hpot0').accepted, true);
+});
+
+test('H18 treats missing target coordinates as unavailable instead of zero', () => {
+  const { controller, state } = fixture({ targetX: null, targetY: null });
+  controller.queueSupply('My_Priest', 'hpot0', 1);
+  controller.startAutonomy({ maxActions: 1 });
+  const tick = controller.tick();
+  assert.equal(tick.state, 'WAITING');
+  assert.equal(tick.reason, 'H18_TARGET_NOT_VISIBLE');
+  assert.equal(state.dispatches.length, 0);
+  assert.equal(state.movement.activeOrder, null);
+});
+
 test('H18 confirms supply from settled sender inventory evidence', async () => {
   const { controller, state } = fixture();
   assert.equal(controller.queueSupply('My_Priest', 'hpot0', 5).accepted, true);
@@ -195,6 +225,25 @@ test('H18 confirms supply from settled sender inventory evidence', async () => {
   assert.equal(status.metrics.suppliesConfirmed, 1);
   assert.equal(status.metrics.suppliesUnknown, 0);
   assert.equal(status.queue.length, 0);
+});
+
+test('H18 preserves an in-flight irreversible transfer across module stop and reconciles it after restart', async () => {
+  const { controller, state } = fixture();
+  controller.queueSupply('My_Priest', 'hpot0', 5);
+  controller.startAutonomy({ maxActions: 2 });
+  assert.equal(controller.tick().state, 'QUEUED');
+  const stopped = controller.stop('TEST_STOP_DURING_TRANSFER');
+  assert.equal(stopped.inFlightPreserved, true);
+  assert.ok(controller.status().currentAction);
+  assert.equal(controller.status().queue.length, 1);
+  await Promise.resolve();
+  const restarted = controller.start({ scope: { interval: () => 'h18-resumed' } });
+  assert.equal(restarted.resumedInFlight, true);
+  assert.equal(controller.tick().state, 'CONFIRMED');
+  assert.equal(controller.status().currentAction, null);
+  assert.equal(controller.status().queue.length, 0);
+  assert.equal(controller.status().metrics.suppliesConfirmed, 1);
+  assert.equal(state.dispatches.length, 1);
 });
 
 test('H18 retains supply ownership while the dispatch promise is still pending', () => {
@@ -252,6 +301,15 @@ test('H18 blocks while another inventory or economy owner is active', () => {
   assert.equal(economyTick.state, 'WAITING');
   assert.equal(economyTick.reason, 'H18_EXTERNAL_OWNERSHIP_BUSY');
   assert.equal(economy.state.dispatches.length, 0);
+});
+
+test('H18 rejects invalid explicit gold amounts', () => {
+  const { controller } = fixture();
+  for (const amount of [0, -1, 'abc', 1.5]) {
+    const result = controller.queueGold('My_Priest', amount);
+    assert.equal(result.accepted, false);
+    assert.equal(result.reason, 'H18_GOLD_AMOUNT_INVALID');
+  }
 });
 
 test('H18 sends gold only above the configured reserve and confirms sender gold delta', async () => {
