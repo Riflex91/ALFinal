@@ -592,3 +592,33 @@ Bei Readiness-FAIL erfolgt **keine** Remote-Lifecycle-Mutation. Relevante Fehler
 - `H19_READINESS_CROSS_WINDOW_TARGET_UNAVAILABLE`
 
 Bei einem solchen Fail wird zuerst der Diagnoseexport ausgewertet; kein Blind-Rerun des mutierenden Remote-Recovery-Tests.
+
+
+## Live-Versuch 6 – Cross-Window Remote-Recovery PASS
+
+Stand: 2026-09-27
+
+Der erste echte Cross-Window-Lauf nach Merge von PR #35 wurde auf `My_Priest` gegen das separat geoeffnete Ziel `My_Merchant` ausgefuehrt und endete vollstaendig erfolgreich.
+
+Live-Evidence:
+
+- Suite: `h19-remote-recovery` v2;
+- Ergebnis: `PASSED / ALL_STEPS_PASSED`;
+- Control Mode: `cross-window-runtime`;
+- Preflight sah accountweit `My_Merchant`, `My_Priest`, `My_Ranger1`, `My_Warrior` online;
+- die Runner-Active-Sicht enthielt nur `My_Priest`;
+- frische Cross-Window-Peers: `My_Merchant`, `My_Ranger1`, `My_Warrior`;
+- alle Peers meldeten Runtime-Version `0.19.0-h19`, `running=true` und keinen Emergency-Stop-Latch;
+- Remote STOP: 1 Dispatch / 1 Confirm / 1 Stop-Confirm;
+- Recovery START: kumulativ 2 Dispatch / 2 Confirm / 1 Stop / 1 Start;
+- 0 Rejects / 0 UNKNOWNs;
+- Cross-Window-Transport: 2 Commands gesendet, 2 ACKs empfangen, 2 Settlements empfangen, 2 Settlements erfolgreich, 0 Transportfehler;
+- Stability: 5 Sekunden ohne Retry, Reject oder UNKNOWN;
+- Cleanup: PASS, Ziel wieder aktiv, Autonomie AUS, keine aktive Aktion, Queue leer, keine Suspension;
+- Policy nach Cleanup wieder leer: keine Desired-Active-, Runtime-Running- oder Party-Ziele.
+
+Damit sind Remote STOP und Restart-Recovery fuer separat geoeffnete Adventure-Land-Fenster live bestaetigt.
+
+Die spaeter hinzugefuegte Readiness-Suite wurde in diesem Export nicht separat ausgefuehrt. Ein Blind-Rerun ist dennoch nicht erforderlich: derselbe Lauf liefert bereits die Readiness-Evidence selbst – alle drei nichtlokalen separat geoeffneten eigenen Characters waren als frische Cross-Window-Peers sichtbar, versionsgleich und ohne Emergency-Stop-Latch, und der mutierende Gate ist danach vollstaendig PASSED.
+
+H19 bleibt nur noch fuer den separaten Party-Recovery-Live-Gate offen.
