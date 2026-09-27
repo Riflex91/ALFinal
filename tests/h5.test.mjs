@@ -162,7 +162,7 @@ test('H5 combat API, module and explicit H5 live suite remain available under H6
   const module = ctx.ALBot.modules.list().find(row => row.id === 'combat');
   assert.equal(module.state, 'ACTIVE');
   assert.equal(module.resources, 1);
-  assert.equal(ctx.ALBot.scheduler.status().totalResources, 13);
+  assert.equal(ctx.ALBot.scheduler.status().totalResources, 14);
   await ctx.ALBot.stop('DONE');
 });
 
