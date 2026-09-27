@@ -279,3 +279,34 @@ Hotfix-Verhalten:
 - der Live-Test meldet einen erneuten `cant_respawn` direkt als `H19_RESPAWN_COOLDOWN_REJECTED` statt in einen Timeout/UNKNOWN zu laufen.
 
 Dieser Lauf ist **keine H19-PASS-Evidence**. Nach Merge des Hotfixes ist ein neuer echter Death→Respawn-Live-Test erforderlich.
+
+
+## Live-Versuch 2 – restaurierte UNKNOWN-Aktion blockiert Preflight
+
+Stand: 2026-09-27
+
+Der zweite echte H19-Live-Versuch verwendete bereits den Respawn-Cooldown-Hotfix, erreichte den eigentlichen Respawn-Test aber nicht. Der Live-Test brach noch im Prepare-Schritt mit `H19_ACTIVE_ACTION_BEFORE_LIVE_TEST` ab.
+
+Beobachtete Evidence:
+
+- Runtime: `0.19.0-h19`;
+- kein neuer Game-Write: 0 dispatched / 0 confirmed / 0 rejected / 0 unknown;
+- aus persistentem H19-Storage wurde die UNKNOWN-Respawn-Aktion des ersten Live-Versuchs restauriert;
+- restaurierte Aktion: `RESPAWN`, `restored=true`, `unknownRecorded=true`, lokale Figur weiterhin `rip=true`;
+- H19 suspendierte beim Reconcile mit `H19_RESPAWN_UNVERIFIED_TIMEOUT`;
+- alle eigentlichen Suite-Schritte wurden sicherheitshalber übersprungen;
+- Cleanup/Runtime-Restore war erfolgreich.
+
+Root Cause:
+
+Der erste Live-Versuch hatte die damals als UNKNOWN behandelte Respawn-Aktion absichtlich persistent gehalten. Nach dem Hotfix wurde dieser Ownership-Eintrag korrekt restauriert und blockierte den zweiten Live-Test. Das ist sicherheitsgerecht, verhindert aber einen ausdrücklich vom Operator gestarteten neuen H19-Retry.
+
+Hotfix-Verhalten:
+
+- ein neuer H19-Live-Test darf ausschließlich eine **restaurierte, bereits UNKNOWN-markierte RESPawn-Aktion derselben lokalen weiterhin toten Figur** explizit acknowledge'n;
+- der neue Test-Start gilt dabei als Operator-Acknowledge für genau diesen alten Live-Test-Retry;
+- alle anderen aktiven/in-flight Lifecycle-Aktionen blockieren weiterhin mit `H19_ACTIVE_ACTION_BEFORE_LIVE_TEST`;
+- nach dem Acknowledge wird Safety explizit zurückgesetzt; erst anschließend darf die neue Suite ihren eigenen bounded Respawn-Auftrag anlegen;
+- es gibt weiterhin keinen automatischen Blind-Retry außerhalb des explizit gestarteten H19-Live-Tests.
+
+Auch dieser Lauf ist **keine H19-PASS-Evidence**. Nach Merge dieses Fixes ist ein weiterer echter Death→Respawn-Live-Test erforderlich.

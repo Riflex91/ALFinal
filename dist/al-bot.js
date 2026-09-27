@@ -19775,8 +19775,25 @@
         restoreRuntimeState: true,
         prepare: async ({ runtime }) => {
           try { runtime.lifecycle.stopAutonomy('H19_LIVE_TEST_RESET'); } catch (_) {}
-          const current = runtime.lifecycle.status();
-          if (current.currentAction) throw new Error('H19_ACTIVE_ACTION_BEFORE_LIVE_TEST');
+          let current = runtime.lifecycle.status();
+          if (current.currentAction) {
+            const action = current.currentAction;
+            const game = runtime.game.snapshot();
+            const local = game && game.character || null;
+            const explicitRetryAckAllowed = current.suspended === true
+              && action.restored === true
+              && action.unknownRecorded === true
+              && action.kind === 'RESPAWN'
+              && local
+              && local.rip === true
+              && String(action.targetName || '') === String(local.name || '');
+            if (!explicitRetryAckAllowed) throw new Error('H19_ACTIVE_ACTION_BEFORE_LIVE_TEST');
+            const acknowledged = runtime.lifecycle.acknowledgeUnknown('H19_LIVE_TEST_EXPLICIT_RETRY_ACK');
+            if (!acknowledged || acknowledged.accepted !== true) {
+              throw new Error(acknowledged && acknowledged.reason || 'H19_LIVE_TEST_UNKNOWN_ACK_FAILED');
+            }
+            current = runtime.lifecycle.status();
+          }
           try { runtime.lifecycle.cancelQueued(); } catch (_) {}
           try {
             if (!current.currentAction) runtime.lifecycle.resetSafety('H19_LIVE_TEST_RESET');
