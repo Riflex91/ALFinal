@@ -2933,8 +2933,14 @@
               const game = runtime.game.snapshot();
               assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
               assert(game.character.rip !== true, 'CHARACTER_DEAD');
-              assert(String(game.character.ctype || '').toLowerCase() === 'merchant',
-                'H16_BANK_DISCOVERY_REQUIRES_MERCHANT');
+              if (String(game.character.ctype || '').toLowerCase() !== 'merchant') {
+                return {
+                  skipped: true,
+                  reason: 'H16_BANK_DISCOVERY_NOT_REQUIRED_FOR_NON_MERCHANT',
+                  ctype: game.character.ctype || null,
+                  movementRequests: 0
+                };
+              }
 
               const beforeStatus = runtime.bank.status();
               assert(beforeStatus && beforeStatus.suspended !== true,
@@ -3245,10 +3251,17 @@
                     }
 
                     const offers = [];
+                    const recipeIngredientQuantity = (recipe.items || [])
+                      .filter(ingredient =>
+                        String(ingredient.name) === String(row.itemName)
+                        && Math.max(0, Number(ingredient.level) || 0) === level)
+                      .reduce((max, ingredient) =>
+                        Math.max(max, Math.max(1, Math.floor(Number(ingredient.quantity) || 1))), quantity);
+                    const minBankStackQuantity = Math.max(quantity, recipeIngredientQuantity);
                     const bankRow = (row.bankRows || []).find(source =>
                       source
                       && source.withdrawable === true
-                      && Math.max(1, Math.floor(Number(source.quantity) || 1)) >= quantity);
+                      && Math.max(1, Math.floor(Number(source.quantity) || 1)) >= minBankStackQuantity);
                     if (bankRow) {
                       offers.push({
                         source: 'BANK',
@@ -3292,7 +3305,8 @@
                           mountedMapMatch: source.mountedMapMatch === true,
                           reservedQuantity: Number(source.reservedQuantity || 0),
                           remainingAfterWholeStack: Number(source.remainingAfterWholeStack || 0),
-                          withdrawable: source.withdrawable === true
+                          withdrawable: source.withdrawable === true,
+                          minBankStackQuantity
                         })),
                         npcPrice: Number.isFinite(npcPrice) ? npcPrice : null,
                         npcSources: (row.npcSources || []).slice(0, 4).map(source => ({
@@ -3313,6 +3327,7 @@
                       maxUnitPrice: chosen.source === 'BANK' ? null : chosen.unitPrice,
                       expectedSource: chosen.source,
                       bankSource: chosen.bankRow || null,
+                      minBankStackQuantity: chosen.source === 'BANK' ? minBankStackQuantity : null,
                       estimatedCost
                     });
                   }
@@ -3475,7 +3490,8 @@
                 const queued = runtime.exchangeCraft.queueMaterialAcquire(material.itemName, material.quantity, {
                   level: material.level,
                   maxUnitPrice: material.maxUnitPrice,
-                  allowBank: bankExpected
+                  allowBank: bankExpected,
+                  minBankStackQuantity: material.minBankStackQuantity
                 });
                 assert(queued && queued.accepted === true,
                   queued && queued.reason || 'H16_MATERIAL_ACQUIRE_QUEUE_FAILED');
@@ -3514,6 +3530,7 @@
                   expectedSource: material.expectedSource,
                   maxUnitPrice: material.maxUnitPrice,
                   bankSource: material.bankSource || null,
+                  minBankStackQuantity: material.minBankStackQuantity == null ? null : material.minBankStackQuantity,
                   estimatedCost: material.estimatedCost,
                   delegatedTo: queued.delegatedTo,
                   delegationLastAction: delegationStatus.lastAction || null
