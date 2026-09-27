@@ -198,3 +198,28 @@ Nach diesen finalen Dokucommits:
 8. `main` danach frisch verifizieren.
 
 Erst danach genau **einen** echten `h18-party-logistics`-Live-Test starten. Bei FAIL kein Blind-Rerun, sondern vollständigen Diagnosebericht auswerten.
+
+
+## Post-Merge-Korrektur – PR #26
+
+Stand: 2026-09-27
+
+Der tatsächliche Ablauf wich durch parallele Repo-Arbeit vom oben beschriebenen geplanten Gate ab:
+
+- PR #25 wurde bereits per Merge-Commit `c6bfb7b0248d3c005a4dbceac643d90db6d2924a` nach `main` gemergt;
+- gemergter PR-Head war `8ecf822bfa476485c9e29c49bc27cccfc3219a26`;
+- Exact-Head-CI #496 auf diesem Head war vollständig **SUCCESS**;
+- Testsummary: **256 tests / 256 pass / 0 fail / 0 cancelled / 0 skipped / 0 todo**;
+- die fünf bekannten Review-Threads waren vor dem Merge resolved;
+- H18-Source, API, Runtime, UI und Tests lagen damit technisch auf `main`;
+- der Merge enthielt jedoch noch die nur zur Bundle-Übernahme verwendeten temporären CI-Schritte;
+- außerdem war das getrackte `dist/al-bot.js` beim Merge noch nicht auf den aus genau diesem Head erzeugten H18-Build synchronisiert.
+
+PR #26 `H18: Finalize bundle and pre-live evidence` korrigiert ausschließlich diesen Post-Merge-Zustand:
+
+- `dist/al-bot.js` wird exakt aus dem erfolgreichen CI-Build von #496 übernommen;
+- der normale Test-Workflow wird wiederhergestellt; temporärer Artifact-/Base64-Export wird entfernt;
+- H18-Evidence wird append-only auf den tatsächlichen Merge-Ablauf korrigiert;
+- keine Gameplay- oder Safety-Regel wird gelockert.
+
+**H18 bleibt bis zum Merge von PR #26 und einem echten erfolgreichen `h18-party-logistics`-Adventure-Land-Lauf offen.**

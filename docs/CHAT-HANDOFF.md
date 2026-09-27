@@ -1267,3 +1267,49 @@ Jetzt finalen Exact-Head-CI der Doku-/Bundle-Commits abwarten und danach vollst�
 Dann PR #25 ausschließlich per `merge` mit exakt aktuellem `expected_head_sha` mergen und `main` verifizieren.
 
 Erst danach Nutzer genau einmal `h18-party-logistics` starten lassen und den vollständigen Bericht auswerten. Bei FAIL kein Blind-Rerun.
+
+
+## H18 Post-Merge-Finalisierung – PR #26
+
+Stand 2026-09-27.
+
+PR #25 `H18: Add bounded party logistics` wurde durch parallele Repo-Arbeit bereits nach `main` gemergt, bevor der getrackte Bundle-Sync und die temporäre CI-Hilfe final bereinigt waren.
+
+Tatsächlicher Merge-Stand:
+
+- PR #25 merged;
+- Merge-Commit `c6bfb7b0248d3c005a4dbceac643d90db6d2924a`;
+- gemergter Head `8ecf822bfa476485c9e29c49bc27cccfc3219a26`;
+- Exact-Head-CI #496: **256 tests / 256 pass / 0 fail / 0 cancelled / 0 skipped / 0 todo**;
+- alle fünf bekannten Review-Threads resolved;
+- H18 Source/API/Runtime/UI/Tests damit bereits auf `main`.
+
+Noch offen nach diesem Merge waren ausschließlich Packaging/Evidence:
+
+- getracktes `dist/al-bot.js` war noch nicht auf den aus exakt diesem Head erzeugten H18-Build synchronisiert;
+- `.github/workflows/test.yml` enthielt noch temporäre Artifact-/Base64-Schritte, die nur zur exakten Bundle-Übernahme dienten;
+- die vorhandene Pre-Live-Doku beschrieb PR #25 noch als ausstehenden Merge.
+
+Dafür wurde vom aktuellen `main` ein frischer Branch `chatgpt/h18-postmerge-bundle-docs` erstellt und PR #26 `H18: Finalize bundle and pre-live evidence` geöffnet.
+
+PR #26 enthält:
+
+- `dist/al-bot.js` exakt aus dem erfolgreichen #496-CI-Build;
+- Wiederherstellung des normalen Test-Workflows;
+- append-only Korrekturen in H18-Live-Doku, Roadmap und Handoff;
+- **keine** Lockerung oder Änderung der H18-Gameplay-/Safety-Logik.
+
+Nächste verpflichtende Schritte:
+
+1. aktuellen PR-#26-Head frisch ermitteln;
+2. `main` gegen Branch prüfen, nur `behind_by=0`;
+3. alle relevanten Exact-Head-CI-Runs completed und nur success/skipped/neutral;
+4. keine pending/failing Checks;
+5. keine offenen Review-Threads;
+6. kein `CHANGES_REQUESTED`;
+7. `mergeable=true`;
+8. PR #26 ausschließlich per Methode `merge` und exakt aktuellem `expected_head_sha` mergen;
+9. `main` danach frisch verifizieren;
+10. erst dann den Nutzer **genau einmal** den echten `h18-party-logistics`-Live-Test starten lassen und vollständigen Bericht auswerten.
+
+Bei Live-FAIL kein Blind-Rerun.
