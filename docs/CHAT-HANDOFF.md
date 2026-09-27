@@ -512,82 +512,76 @@ Wichtiger finaler CI-Fix:
 - Regressionstest wurde an diese Fail-Safe-Semantik angepasst;
 - keine Gameplay-Semantik wurde dafür aufgeweicht.
 
-## H10 – Loot & Inventar – live bestanden, finaler Merge-Gate läuft
+## H10 – Loot & Inventar – abgeschlossen und gemergt
 
-Offizieller Entwicklungsbranch:
+H10 ist vollständig live bestanden und gemergt.
+
+Finaler Branch:
 `chatgpt/h10-loot-inventory`
 
 PR:
 `#10 – H10: Loot & Inventory`
 
-Basis:
-`main` bei H9-Merge-Commit `49f5175a7d555415e4a5a1e333d0fbe3c5200f44`
+Finaler Evidence-Head:
+`b7b6d93cbd7e77f6c79be0ba12c0d68c9a990dfc`
 
-Implementiert:
-- AL Bot Version `0.10.0-h10`;
-- eigener `LootInventoryController`;
-- Live-Inventar- und Chest-Normalisierung im Game Adapter;
-- `loot` als zentrale ActionBoundary-Aktion;
-- konservative Dispositionen `PROTECT / RESERVE / KEEP / BANK / EXCHANGE / SELL`;
-- unbekannte Items -> `BANK`, nicht `SELL`;
-- locked/gelevelt/Quest/Gear/Goal-Items geschützt bzw. reserviert;
-- normalisiertes `definition.quest === true` wird als Questschutz berücksichtigt;
-- 2 Slots Standardreserve;
-- `nothing_to_loot` / `safety` als Known Skip;
-- synchrones/asynchrones Loot-UNKNOWN -> Suspension ohne Blind-Retry;
-- niemals settlender Loot-Promise besitzt eine bounded Outcome-Deadline und wird danach `H10_LOOT_OUTCOME_TIMEOUT`;
-- expliziter Safety-Reset;
-- Runtime-Modul `loot-inventory`;
-- Headless API `ALBot.inventory.*`;
-- Game APIs `inventory()`, `chests()`, `itemDefinition()`;
-- eigener GUI-Tab **Loot & Inventar**;
-- H10-Ein-Klick-Suite `h10-loot-inventory`;
-- `docs/H10-LIVE-TEST.md`;
-- Regressionen einschließlich Pending-Loot-Timeout und normalisiertem Quest-Flag.
-
-H10 führt bewusst **keine** echten Sell-/Bank-/Exchange-Aktionen aus. Diese bleiben späteren Economy-Stufen vorbehalten.
+Merge-Commit auf `main`:
+`de22a87236106add06750efd0e83c04dc995c804`
 
 Finale Live-Evidence:
 - Suite `h10-loot-inventory`: **PASSED / ALL_STEPS_PASSED**;
-- Runtime `AL Bot 0.10.0-h10`;
-- Preflight: 42 Slots, 4 benutzt, 38 frei, `protectedCount=4`;
-- Dispositionen: KEEP=2, BANK=1, EXCHANGE=1;
-- sichere H9-Goo-Probe autonom gestartet;
-- Confirmed Loot: `lootDispatched=1`, `lootConfirmed=1`, `knownSkips=0`, `attacksConfirmed=1`;
-- Protection Delta: **PASSED**, `checkedProtectedItems=4`;
-- Stability: `lootConfirmed=2`, `lootUnknown=0`, 38 freie Slots;
-- Cleanup: `pendingLoot=false`, H9/H8/H5/H4 inaktiv;
-- Cleanup `ok=true`;
-- Runtime danach wieder STOPPED;
-- Scheduler danach `totalResources=0`.
+- Protection Delta prüfte tatsächlich `checkedProtectedItems=4`;
+- bestätigter Loot;
+- `lootUnknown=0`;
+- Cleanup vollständig;
+- Runtime STOPPED;
+- Scheduler 0 Ressourcen.
 
-Post-Live Review-Härtung:
-- P2: hängender `loot()`-Promise kann H10 nicht mehr dauerhaft wedgen;
-- P2: normalisiertes Quest-Flag wird bei der Schutzklassifizierung berücksichtigt;
-- beide Fälle regressionsgetestet;
-- CI Run #210 auf Head `a86e83938ca92fa2da0f5b7330433e797510bbbf`: SUCCESS;
-- beide P2-Review-Threads resolved.
+Finale Review-Härtung:
+- niemals settlender Loot-Promise -> bounded Timeout -> UNKNOWN + Suspension;
+- normalisiertes `definition.quest === true` wird geschützt;
+- keine offenen Review-Threads;
+- finaler Exact-Head-CI vor Merge grün.
 
-Die Post-Live-Fixes verändern den live bestätigten normalen Loot-Happy-Path nicht: der Timeout greift nur bei ausbleibendem Outcome, der Quest-Fix erweitert nur die konservative Schutzklassifizierung.
+## H11 – Merchant-Grundbetrieb – live bestanden, finaler Merge-Gate offen
 
-Aktuell:
-- Live-Abnahme abgeschlossen;
-- H10 in ROADMAP auf BESTANDEN gesetzt;
-- Evidence-Dokumentation aktualisiert;
-- durch diese Dokumentationscommits ist ein neuer Head entstanden;
-- jetzt ausschließlich den **neuen exakten Head** für CI und Merge-Gate verwenden.
+Aktiver Branch:
+`chatgpt/h11-merchant-grundbetrieb`
 
-Nächste Aktion:
-1. aktuellen PR-Head frisch lesen;
-2. `main...chatgpt/h10-loot-inventory` prüfen, `behind_by=0`;
-3. alle Workflow-Runs des exakten Heads müssen completed und success/skipped/neutral sein;
-4. keine offenen Review-Threads;
-5. kein `CHANGES_REQUESTED`;
-6. Commit-Status ohne echte pending/failure-Kontexte;
-7. `mergeable=true`;
-8. dann PR #10 ausschließlich mit Methode `merge` und exaktem `expected_head_sha` mergen;
-9. Merge auf `main` verifizieren;
-10. H11 – Merchant-Grundbetrieb auf frischem Branch vom neuen `main` beginnen.
+PR:
+`#11 – H11: Merchant-Grundbetrieb`
+
+Version:
+`0.11.0-h11`
+
+Finale Live-Evidence:
+- Suite `h11-merchant`: **PASSED / ALL_STEPS_PASSED**;
+- Merchant `My_Merchant`, eigener Farmer `My_Priest`;
+- exakt 1 `hpot0` geliefert;
+- Sender-Inventardelta `6000 -> 5999`;
+- `transfersDispatched=1`, `transfersConfirmed=1`, `transfersUnknown=0`;
+- MLuck bereits gesund (`remainingMs=3576369`), deshalb korrekt kein neuer Cast;
+- `mluckUnknown=0`, `pingPongBlocks=0`;
+- keine Suspension;
+- Cleanup PASSED: kein Pending, keine Delivery, keine H11-Movement-Order;
+- Runtime wieder STOPPED;
+- Scheduler `totalResources=0`.
+
+Safety:
+- Itemwrites nur über ActionBoundary `send_item`;
+- Bestätigung nur durch beobachtetes Inventardelta;
+- unavailable Inventory ist kein Erfolg;
+- Transfer-/MLuck-UNKNOWN ohne Blind-Retry;
+- fremde Targets blockiert;
+- kein Goldtransfer, keine Bank-/Sell-/Exchange-/Markt-Aktionen.
+
+Nächster Schritt:
+1. Exact-Head-CI des Evidence-Heads grün bestätigen;
+2. `behind_by=0`, Checks, Reviews, Threads und Mergeability frisch prüfen;
+3. PR #11 mit Methode `merge` und exaktem `expected_head_sha` mergen;
+4. Merge auf `main` verifizieren;
+5. H12 Bank auf frischem Branch vom neuen `main` beginnen.
+
 
 ## H2 Architekturregel für spätere Module
 
@@ -682,4 +676,4 @@ Bei Fehler:
 
 ## Nächster Schritt
 
-H10 finalen Exact-Head-CI-/Merge-Gate abschließen und PR #10 bei vollständig grünem Gate automatisch mergen. Danach **H11 – Merchant-Grundbetrieb** auf einem frischen Branch vom neuen `main` starten.
+H11-Dokumentations-Head exakt prüfen und CI grün bestätigen. Danach den Nutzer nur für den echten Adventure-Land-H11-Live-Test auf dem eigenen Merchant benötigen: aktuellen `dist/al-bot.js` des Branches `chatgpt/h11-merchant-grundbetrieb` laden und einmal **Test starten**. Diagnose anschließend auswerten; bei PASS finale Evidence dokumentieren und erst danach Merge-Gate.

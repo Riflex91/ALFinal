@@ -1,4 +1,4 @@
-/* AL Bot 0.10.0-h10 | generated file | do not edit dist directly */
+/* AL Bot 0.11.0-h11 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -1539,6 +1539,32 @@
       return clone(rows);
     }
 
+    playerCondition(name, conditionId) {
+      const player = this.playerReference(name, { allowDead: true });
+      const id = cleanText(conditionId || '', 120);
+      if (!player || !id) {
+        return {
+          available: !!player,
+          playerName: cleanText(name || '', 120) || null,
+          conditionId: id || null,
+          active: false,
+          remainingMs: null,
+          source: null
+        };
+      }
+      let raw = null;
+      try { raw = player.s && player.s[id] || null; } catch (_) {}
+      return {
+        available: true,
+        playerName: cleanText(player.name || name || '', 120) || null,
+        conditionId: id,
+        active: !!raw,
+        remainingMs: raw ? finite(raw.ms != null ? raw.ms : raw.duration) : null,
+        source: raw && (raw.f != null ? cleanText(raw.f, 120) : raw.source != null ? cleanText(raw.source, 120) : null),
+        raw: raw ? clone(raw) : null
+      };
+    }
+
     skillDefinition(skillId) {
       const id = cleanText(skillId || '', 120);
       if (!id) return null;
@@ -2365,7 +2391,8 @@
     attack: Object.freeze({ publicName: 'attack', family: 'combat' }),
     heal: Object.freeze({ publicName: 'heal', family: 'party-heal' }),
     change_target: Object.freeze({ publicName: 'change_target', family: 'combat-target' }),
-    loot: Object.freeze({ publicName: 'loot', family: 'loot' })
+    loot: Object.freeze({ publicName: 'loot', family: 'loot' }),
+    send_item: Object.freeze({ publicName: 'send_item', family: 'merchant-logistics' })
   });
 
   function errorDetails(error) {
@@ -7001,6 +7028,744 @@
 
   const clone = ns.helpers.clone;
   const cleanText = ns.helpers.cleanText;
+  const COMBAT_CLASSES = ns.helpers.COMBAT_CLASSES;
+
+  function finite(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function nowIso() {
+    return new Date().toISOString();
+  }
+
+  const EQUIPMENT_TYPES = new Set([
+    'weapon', 'shield', 'helmet', 'coat', 'pants', 'gloves', 'shoes',
+    'cape', 'ring', 'earring', 'amulet', 'belt', 'orb', 'source', 'quiver'
+  ]);
+
+  class MerchantController {
+    constructor(options = {}) {
+      this.root = options.root || root;
+      this.logger = options.logger || null;
+      this.game = options.game || null;
+      this.actions = options.actions || null;
+      this.roster = options.roster || null;
+      this.movement = options.movement || null;
+      this.inventory = options.inventory || null;
+      this.moduleActive = false;
+      this.scope = null;
+      this.suspendedReason = null;
+      this.pending = null;
+      this.delivery = null;
+      this.lastPlan = null;
+      this.lastAction = null;
+      this.backoffUntilMs = null;
+      this.sequence = 0;
+      this.serviceTarget = null;
+      this.serviceHistory = [];
+      this.config = {
+        tickMs: Math.max(250, Math.min(5000, Number(options.tickMs) || 750)),
+        transferRange: Math.max(80, Math.min(1000, Number(options.transferRange) || 320)),
+        transferOutcomeTimeoutMs: Math.max(1000, Math.min(60000, Number(options.transferOutcomeTimeoutMs) || 5000)),
+        mluckOutcomeTimeoutMs: Math.max(1000, Math.min(60000, Number(options.mluckOutcomeTimeoutMs) || 5000)),
+        mluckRefreshMs: Math.max(5000, Math.min(10 * 60 * 1000, Number(options.mluckRefreshMs) || 30000)),
+        pressureMarginSlots: Math.max(1, Math.min(12, Number(options.pressureMarginSlots) || 2)),
+        merchantReserveSlots: Math.max(1, Math.min(12, Number(options.merchantReserveSlots) || 2)),
+        serviceHoldMs: Math.max(1000, Math.min(60000, Number(options.serviceHoldMs) || 8000)),
+        switchCooldownMs: Math.max(500, Math.min(60000, Number(options.switchCooldownMs) || 5000)),
+        pingPongWindowMs: Math.max(2000, Math.min(120000, Number(options.pingPongWindowMs) || 30000)),
+        rejectionBackoffMs: Math.max(500, Math.min(60000, Number(options.rejectionBackoffMs) || 4000))
+      };
+      this.metrics = {
+        ticks: 0,
+        plans: 0,
+        pressureHigh: 0,
+        pressureCritical: 0,
+        handoffsPlanned: 0,
+        transfersDispatched: 0,
+        transfersConfirmed: 0,
+        transfersRejected: 0,
+        transfersUnknown: 0,
+        mluckPlanned: 0,
+        mluckDispatched: 0,
+        mluckConfirmed: 0,
+        mluckRejected: 0,
+        mluckUnknown: 0,
+        movementRequests: 0,
+        movementBlocks: 0,
+        ownershipBlocks: 0,
+        foreignTargetBlocks: 0,
+        pingPongBlocks: 0,
+        switchCooldownBlocks: 0
+      };
+    }
+
+    start(context = {}) {
+      if (this.moduleActive) return { started: false, reason: 'H11_ALREADY_ACTIVE' };
+      this.moduleActive = true;
+      this.scope = context.scope || null;
+      this.suspendedReason = null;
+      if (this.scope && typeof this.scope.interval === 'function') {
+        this.scope.interval('merchant-tick', () => this.tick(), this.config.tickMs, { immediate: true });
+      }
+      return { started: true };
+    }
+
+    stop(reason = 'H11_MODULE_STOP') {
+      this.moduleActive = false;
+      this.scope = null;
+      this.pending = null;
+      this.delivery = null;
+      try {
+        const movement = this.movement && this.movement.status ? this.movement.status() : null;
+        if (movement && movement.activeOrder && String(movement.activeOrder.owner || '') === 'merchant-h11') {
+          this.movement.cancel(cleanText(reason, 180) || 'H11_MODULE_STOP');
+        }
+      } catch (_) {}
+      this.lastAction = { at: nowIso(), type: 'STOP', reason: cleanText(reason, 240) };
+      return { stopped: true };
+    }
+
+    resetSafety(reason = 'H11_EXPLICIT_RESET') {
+      this.pending = null;
+      this.suspendedReason = null;
+      this.backoffUntilMs = null;
+      this.lastAction = { at: nowIso(), type: 'RESET', reason: cleanText(reason, 240) };
+      return this.status();
+    }
+
+    _snapshot() {
+      return this.game && typeof this.game.snapshot === 'function' ? this.game.snapshot() : null;
+    }
+
+    _roster() {
+      try {
+        return this.roster && typeof this.roster.status === 'function' ? this.roster.status() : null;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    _role() {
+      const snap = this._snapshot();
+      const ctype = cleanText(snap && snap.character && snap.character.ctype || '', 60).toLowerCase();
+      if (ctype === 'merchant') return 'MERCHANT';
+      if (COMBAT_CLASSES && COMBAT_CLASSES.has(ctype)) return 'FARMER';
+      return ctype ? 'OBSERVER' : 'UNAVAILABLE';
+    }
+
+    _ownedNames() {
+      const roster = this._roster();
+      return new Set((roster && roster.characters || []).map(row => cleanText(row && row.name || '', 120)).filter(Boolean));
+    }
+
+    _owned(name) {
+      const wanted = cleanText(name || '', 120);
+      if (!wanted) return false;
+      return this._ownedNames().has(wanted);
+    }
+
+    _ownedFarmerNames() {
+      const roster = this._roster();
+      return new Set((roster && roster.farmers || []).map(row => cleanText(row && row.name || '', 120)).filter(Boolean));
+    }
+
+    _merchantName() {
+      const roster = this._roster();
+      return cleanText(roster && roster.merchant && roster.merchant.name || '', 120) || null;
+    }
+
+    _visibleOwnedPlayers() {
+      const owned = this._ownedNames();
+      const visible = this.game && typeof this.game.visiblePlayers === 'function'
+        ? this.game.visiblePlayers({})
+        : [];
+      return (visible || []).filter(row => row && row.name && owned.has(String(row.name)));
+    }
+
+    _visibleOwnedFarmers() {
+      const farmers = this._ownedFarmerNames();
+      return this._visibleOwnedPlayers().filter(row => farmers.has(String(row.name)));
+    }
+
+    _inventoryPlan() {
+      try {
+        if (this.inventory && typeof this.inventory.plan === 'function') return this.inventory.plan();
+      } catch (_) {}
+      const snapshot = this.game && typeof this.game.inventorySnapshot === 'function'
+        ? this.game.inventorySnapshot()
+        : null;
+      return snapshot ? {
+        state: snapshot.available === false ? 'BLOCKED' : 'READY',
+        reason: snapshot.reason || null,
+        inventory: snapshot,
+        items: snapshot.items || [],
+        reserveFreeSlots: 2
+      } : null;
+    }
+
+    _pressure(plan, role) {
+      const slots = plan && plan.inventory || {};
+      const free = finite(slots.freeSlots);
+      const reserve = role === 'MERCHANT'
+        ? this.config.merchantReserveSlots
+        : Math.max(1, finite(plan && plan.reserveFreeSlots) || 2);
+      if (free == null) return { state: 'UNKNOWN', freeSlots: null, reserveFreeSlots: reserve };
+      if (free <= reserve) return { state: 'CRITICAL', freeSlots: free, reserveFreeSlots: reserve };
+      if (free <= reserve + this.config.pressureMarginSlots) {
+        return { state: 'HIGH', freeSlots: free, reserveFreeSlots: reserve };
+      }
+      return { state: 'NORMAL', freeSlots: free, reserveFreeSlots: reserve };
+    }
+
+    _transferSafe(row, options = {}) {
+      if (!row || !row.name) return false;
+      if (row.locked || row.giveaway || row.gift || row.expiresAt) return false;
+      if ((finite(row.level) || 0) > 0) return false;
+      const definition = row.definition || {};
+      const type = cleanText(definition.type || '', 80).toLowerCase();
+      if (definition.quest === true || definition.upgrade === true || definition.compound === true) return false;
+      if (EQUIPMENT_TYPES.has(type)) return false;
+      const disposition = cleanText(row.disposition || '', 40).toUpperCase();
+      if (disposition === 'BANK' || disposition === 'EXCHANGE') return true;
+      if (options.allowUtility === true && disposition === 'KEEP'
+        && ['pot', 'elixir', 'food', 'scroll', 'booster'].includes(type)) return true;
+      return false;
+    }
+
+    _handoffCandidates(plan, options = {}) {
+      return (plan && plan.items || [])
+        .filter(row => this._transferSafe(row, options))
+        .sort((a, b) => {
+          const ad = String(a.disposition || '') === 'BANK' ? 0 : String(a.disposition || '') === 'EXCHANGE' ? 1 : 2;
+          const bd = String(b.disposition || '') === 'BANK' ? 0 : String(b.disposition || '') === 'EXCHANGE' ? 1 : 2;
+          if (ad !== bd) return ad - bd;
+          return Number(a.slot || 0) - Number(b.slot || 0);
+        });
+    }
+
+    _findVisible(name) {
+      const wanted = cleanText(name || '', 120);
+      return this._visibleOwnedPlayers().find(row => String(row.name) === wanted) || null;
+    }
+
+    _trimServiceHistory(now = Date.now()) {
+      const cutoff = now - this.config.pingPongWindowMs;
+      this.serviceHistory = this.serviceHistory.filter(row => row.atMs >= cutoff).slice(-12);
+    }
+
+    _claimTarget(name, purpose) {
+      const wanted = cleanText(name || '', 120);
+      if (!wanted) return { ok: false, reason: 'H11_TARGET_REQUIRED' };
+      const now = Date.now();
+      this._trimServiceHistory(now);
+      const current = this.serviceTarget;
+      if (current && current.name === wanted) {
+        return { ok: true, target: clone(current), changed: false };
+      }
+      if (current && now - current.switchedAtMs < this.config.switchCooldownMs) {
+        this.metrics.switchCooldownBlocks += 1;
+        return { ok: false, reason: 'H11_SERVICE_SWITCH_COOLDOWN', current: clone(current) };
+      }
+      const previous = this.serviceHistory[this.serviceHistory.length - 1] || null;
+      const olderSame = this.serviceHistory.slice(0, -1).reverse().find(row => row.name === wanted);
+      if (previous && previous.name !== wanted && olderSame && now - olderSame.atMs < this.config.pingPongWindowMs) {
+        this.metrics.pingPongBlocks += 1;
+        return { ok: false, reason: 'H11_SERVICE_PINGPONG_BLOCKED', previous: previous.name };
+      }
+      this.serviceTarget = {
+        name: wanted,
+        purpose: cleanText(purpose || 'SERVICE', 80),
+        sinceMs: now,
+        switchedAtMs: now
+      };
+      this.serviceHistory.push({ name: wanted, purpose: this.serviceTarget.purpose, atMs: now });
+      this._trimServiceHistory(now);
+      return { ok: true, target: clone(this.serviceTarget), changed: true };
+    }
+
+    _releaseTarget(reason = 'H11_SERVICE_RELEASE') {
+      if (!this.serviceTarget) return;
+      this.lastAction = {
+        at: nowIso(),
+        type: 'SERVICE_RELEASE',
+        target: this.serviceTarget.name,
+        reason: cleanText(reason, 180)
+      };
+      this.serviceTarget = null;
+    }
+
+    _approach(target) {
+      if (!target || target.distance == null || target.distance <= this.config.transferRange) {
+        return { ready: true, reason: 'H11_TARGET_IN_RANGE' };
+      }
+      if (!this.movement || typeof this.movement.status !== 'function') {
+        return { ready: false, reason: 'H11_MOVEMENT_UNAVAILABLE' };
+      }
+      const status = this.movement.status();
+      if (status.activeOrder) {
+        if (String(status.activeOrder.owner || '') === 'merchant-h11') {
+          return { ready: false, reason: 'H11_SERVICE_TRAVEL_ACTIVE', order: status.activeOrder };
+        }
+        this.metrics.movementBlocks += 1;
+        return { ready: false, reason: 'H11_MOVEMENT_BUSY' };
+      }
+      if (finite(target.x) == null || finite(target.y) == null) {
+        return { ready: false, reason: 'H11_TARGET_POSITION_UNAVAILABLE' };
+      }
+      let result = null;
+      try {
+        result = this.movement.moveLocal(target.x, target.y, {
+          owner: 'merchant-h11',
+          arrivalRadius: Math.min(90, Math.max(30, this.config.transferRange * 0.35))
+        });
+        if (!result || result.accepted !== true) {
+          result = this.movement.smartMove({ map: target.map, x: target.x, y: target.y }, {
+            owner: 'merchant-h11',
+            arrivalRadius: Math.min(90, Math.max(30, this.config.transferRange * 0.35))
+          });
+        }
+      } catch (error) {
+        result = { accepted: false, reason: cleanText(error && error.message || error, 240) };
+      }
+      if (result && result.accepted) this.metrics.movementRequests += 1;
+      else this.metrics.movementBlocks += 1;
+      return {
+        ready: false,
+        reason: result && result.accepted ? 'H11_SERVICE_TRAVEL_STARTED' : (result && result.reason || 'H11_SERVICE_TRAVEL_REJECTED'),
+        movement: clone(result)
+      };
+    }
+
+    _watch(value, pending) {
+      if (!value || typeof value.then !== 'function') {
+        pending.settlement = 'RETURNED';
+        pending.response = value == null ? null : clone(value);
+        return;
+      }
+      Promise.resolve(value).then(response => {
+        if (!this.pending || this.pending.id !== pending.id) return;
+        pending.settlement = 'RESOLVED';
+        pending.response = response == null ? null : clone(response);
+      }, error => {
+        if (!this.pending || this.pending.id !== pending.id) return;
+        pending.settlement = 'REJECTED';
+        pending.error = cleanText(error && error.message || error || 'H11_ACTION_REJECTED', 500);
+      }).catch(() => {});
+    }
+
+    _suspendUnknown(kind, reason) {
+      this.pending = null;
+      this.suspendedReason = cleanText(reason || 'H11_UNKNOWN', 500) || 'H11_UNKNOWN';
+      if (kind === 'MLUCK') this.metrics.mluckUnknown += 1;
+      else this.metrics.transfersUnknown += 1;
+      this.lastAction = { at: nowIso(), type: kind + '_UNKNOWN', reason: this.suspendedReason };
+      return true;
+    }
+
+    _transferObserved(pending) {
+      const snapshot = this.game && typeof this.game.inventorySnapshot === 'function'
+        ? this.game.inventorySnapshot()
+        : null;
+      if (!snapshot || snapshot.available === false) return false;
+      const items = snapshot.items || [];
+      const row = items.find(item => Number(item.slot) === Number(pending.slot));
+      if (!row || String(row.name || '') !== String(pending.itemName || '')) return true;
+      const after = finite(row.quantity) || 0;
+      return pending.beforeQuantity - after >= pending.quantity;
+    }
+
+    _mluckObserved(pending) {
+      if (!this.game || typeof this.game.playerCondition !== 'function') return false;
+      const condition = this.game.playerCondition(pending.targetName, 'mluck');
+      if (!condition || !condition.active) return false;
+
+      const before = pending.beforeCondition || null;
+      if (!before || before.active !== true) return true;
+
+      const beforeRemaining = finite(before.remainingMs);
+      const afterRemaining = finite(condition.remainingMs);
+      if (beforeRemaining != null && afterRemaining != null && afterRemaining > beforeRemaining + 1000) return true;
+
+      const beforeSource = cleanText(before.source || '', 120);
+      const afterSource = cleanText(condition.source || '', 120);
+      if (beforeSource && afterSource && beforeSource !== afterSource) return true;
+
+      return false;
+    }
+
+    _observePending() {
+      const pending = this.pending;
+      if (!pending) return false;
+      const now = Date.now();
+
+      if (pending.settlement === 'REJECTED') {
+        return this._suspendUnknown(pending.kind, pending.error || 'H11_ACTION_REJECTED');
+      }
+
+      if (pending.response && pending.response.failed === true) {
+        this.pending = null;
+        this.backoffUntilMs = now + this.config.rejectionBackoffMs;
+        if (pending.kind === 'MLUCK') this.metrics.mluckRejected += 1;
+        else this.metrics.transfersRejected += 1;
+        this.lastAction = {
+          at: nowIso(),
+          type: pending.kind + '_REJECTED',
+          reason: cleanText(pending.response.reason || 'H11_ACTION_REJECTED', 240)
+        };
+        return true;
+      }
+
+      const confirmed = pending.kind === 'MLUCK'
+        ? this._mluckObserved(pending)
+        : this._transferObserved(pending);
+      if (confirmed) {
+        this.pending = null;
+        if (pending.kind === 'MLUCK') this.metrics.mluckConfirmed += 1;
+        else this.metrics.transfersConfirmed += 1;
+        this.lastAction = {
+          at: nowIso(),
+          type: pending.kind + '_CONFIRMED',
+          target: pending.targetName,
+          itemName: pending.itemName || null,
+          quantity: pending.quantity || null
+        };
+        if (pending.kind === 'DELIVERY') this.delivery = null;
+        return true;
+      }
+
+      if (now >= pending.deadlineAtMs) {
+        const reason = pending.kind === 'MLUCK' ? 'H11_MLUCK_UNVERIFIED_TIMEOUT' : 'H11_TRANSFER_UNVERIFIED_TIMEOUT';
+        return this._suspendUnknown(pending.kind, reason);
+      }
+      return false;
+    }
+
+    _dispatchTransfer(kind, targetName, row, quantity) {
+      const target = cleanText(targetName || '', 120);
+      if (!this._owned(target)) {
+        this.metrics.foreignTargetBlocks += 1;
+        return { accepted: false, reason: 'H11_FOREIGN_TARGET_BLOCKED' };
+      }
+      if (!this.actions || typeof this.actions.dispatch !== 'function') {
+        return { accepted: false, reason: 'H11_ACTION_BOUNDARY_UNAVAILABLE' };
+      }
+      const sendQuantity = Math.max(1, Math.min(Math.floor(Number(quantity) || 1), Math.floor(Number(row.quantity) || 1)));
+      let result;
+      try {
+        result = this.actions.dispatch('send_item', [target, Number(row.slot), sendQuantity]);
+      } catch (error) {
+        return { accepted: false, reason: cleanText(error && error.message || error, 300) };
+      }
+      if (!result || result.state !== 'DISPATCHED') {
+        if (result && result.state === 'UNKNOWN') {
+          this._suspendUnknown(kind, result.error && result.error.message || 'H11_TRANSFER_DISPATCH_UNKNOWN');
+          return { accepted: false, reason: this.suspendedReason };
+        }
+        this.metrics.transfersRejected += 1;
+        return { accepted: false, reason: result && result.state || 'H11_TRANSFER_REJECTED' };
+      }
+      const now = Date.now();
+      const pending = {
+        id: 'merchant-' + (++this.sequence),
+        kind,
+        targetName: target,
+        slot: Number(row.slot),
+        itemName: String(row.name),
+        quantity: sendQuantity,
+        beforeQuantity: Math.floor(Number(row.quantity) || 1),
+        dispatchedAt: nowIso(),
+        dispatchedAtMs: now,
+        deadlineAtMs: now + this.config.transferOutcomeTimeoutMs,
+        settlement: 'PENDING',
+        response: null,
+        error: null
+      };
+      this.pending = pending;
+      this.metrics.transfersDispatched += 1;
+      this.lastAction = {
+        at: pending.dispatchedAt,
+        type: kind + '_DISPATCHED',
+        target,
+        itemName: pending.itemName,
+        quantity: sendQuantity
+      };
+      this._watch(result.value, pending);
+      return { accepted: true, pending: clone(pending) };
+    }
+
+    _dispatchMluck(target) {
+      if (!target || !target.name) return { accepted: false, reason: 'H11_MLUCK_TARGET_UNAVAILABLE' };
+      const claim = this._claimTarget(target.name, 'MLUCK');
+      if (!claim.ok) return { accepted: false, reason: claim.reason };
+      const condition = this.game && typeof this.game.playerCondition === 'function'
+        ? this.game.playerCondition(target.name, 'mluck')
+        : null;
+      if (condition && condition.active
+        && (condition.remainingMs == null || condition.remainingMs > this.config.mluckRefreshMs)) {
+        return { accepted: false, reason: 'H11_MLUCK_ALREADY_HEALTHY' };
+      }
+      const readiness = this.game && typeof this.game.skillReadiness === 'function'
+        ? this.game.skillReadiness('mluck', target.name)
+        : null;
+      if (!readiness || readiness.available === false) return { accepted: false, reason: 'H11_MLUCK_UNAVAILABLE' };
+      if (!readiness.allowed) return { accepted: false, reason: (readiness.reasons || []).join('|') || 'H11_MLUCK_NOT_READY' };
+      let result;
+      try {
+        result = this.actions.dispatch('use_skill', ['mluck', target.name]);
+      } catch (error) {
+        return { accepted: false, reason: cleanText(error && error.message || error, 300) };
+      }
+      if (!result || result.state !== 'DISPATCHED') {
+        if (result && result.state === 'UNKNOWN') {
+          this._suspendUnknown('MLUCK', result.error && result.error.message || 'H11_MLUCK_DISPATCH_UNKNOWN');
+          return { accepted: false, reason: this.suspendedReason };
+        }
+        this.metrics.mluckRejected += 1;
+        return { accepted: false, reason: result && result.state || 'H11_MLUCK_REJECTED' };
+      }
+      const now = Date.now();
+      const pending = {
+        id: 'merchant-' + (++this.sequence),
+        kind: 'MLUCK',
+        targetName: target.name,
+        beforeCondition: condition ? clone(condition) : null,
+        itemName: null,
+        quantity: null,
+        dispatchedAt: nowIso(),
+        dispatchedAtMs: now,
+        deadlineAtMs: now + this.config.mluckOutcomeTimeoutMs,
+        settlement: 'PENDING',
+        response: null,
+        error: null
+      };
+      this.pending = pending;
+      this.metrics.mluckDispatched += 1;
+      this.lastAction = { at: pending.dispatchedAt, type: 'MLUCK_DISPATCHED', target: target.name };
+      this._watch(result.value, pending);
+      return { accepted: true, pending: clone(pending) };
+    }
+
+    queueDelivery(targetName, itemName, quantity = 1) {
+      const role = this._role();
+      if (role !== 'MERCHANT') return { accepted: false, reason: 'H11_DELIVERY_REQUIRES_LOCAL_MERCHANT' };
+      const target = cleanText(targetName || '', 120);
+      if (!this._ownedFarmerNames().has(target)) {
+        this.metrics.foreignTargetBlocks += 1;
+        return { accepted: false, reason: 'H11_DELIVERY_TARGET_NOT_OWNED_FARMER' };
+      }
+      const name = cleanText(itemName || '', 160);
+      const wanted = Math.max(1, Math.floor(Number(quantity) || 1));
+      if (!name) return { accepted: false, reason: 'H11_DELIVERY_ITEM_REQUIRED' };
+      const itemPlan = this._inventoryPlan();
+      const row = (itemPlan && itemPlan.items || []).find(item =>
+        String(item.name || '') === name && this._transferSafe(item, { allowUtility: true }));
+      if (!row) return { accepted: false, reason: 'H11_DELIVERY_ITEM_NOT_SAFE_OR_AVAILABLE' };
+      if ((Math.floor(Number(row.quantity) || 0)) < wanted) {
+        return { accepted: false, reason: 'H11_DELIVERY_QUANTITY_UNAVAILABLE' };
+      }
+      this.delivery = {
+        id: 'delivery-' + (++this.sequence),
+        targetName: target,
+        itemName: name,
+        quantity: wanted,
+        createdAt: nowIso(),
+        createdAtMs: Date.now()
+      };
+      return { accepted: true, delivery: clone(this.delivery) };
+    }
+
+    cancelDelivery(reason = 'H11_DELIVERY_CANCELLED') {
+      if (!this.delivery) return { cancelled: false, reason: 'H11_NO_DELIVERY' };
+      const delivery = this.delivery;
+      this.delivery = null;
+      this.lastAction = {
+        at: nowIso(),
+        type: 'DELIVERY_CANCELLED',
+        target: delivery.targetName,
+        reason: cleanText(reason, 180)
+      };
+      return { cancelled: true, delivery: clone(delivery) };
+    }
+
+    plan() {
+      this.metrics.plans += 1;
+      const snap = this._snapshot();
+      const role = this._role();
+      const plan = this._inventoryPlan();
+      const pressure = this._pressure(plan, role);
+      const visibleOwned = this._visibleOwnedPlayers();
+      const visibleFarmers = this._visibleOwnedFarmers();
+      const merchantName = this._merchantName();
+      const localName = cleanText(snap && snap.character && snap.character.name || '', 120) || null;
+      const candidates = this._handoffCandidates(plan, { allowUtility: role === 'MERCHANT' });
+      let service = { type: 'IDLE', reason: 'H11_NO_SERVICE_NEEDED' };
+
+      if (!snap || !snap.available || !snap.character) {
+        service = { type: 'BLOCKED', reason: 'CHARACTER_UNAVAILABLE' };
+      } else if (role === 'FARMER') {
+        if (pressure.state === 'CRITICAL' || pressure.state === 'HIGH') {
+          const merchant = merchantName && visibleOwned.find(row => String(row.name) === merchantName);
+          if (!merchantName) service = { type: 'BLOCKED', reason: 'H11_OWN_MERCHANT_UNAVAILABLE' };
+          else if (!merchant) service = { type: 'WAIT', reason: 'H11_OWN_MERCHANT_NOT_VISIBLE', targetName: merchantName };
+          else if (!candidates.length) service = { type: 'BLOCKED', reason: 'H11_NO_SAFE_HANDOFF_ITEM', targetName: merchantName };
+          else service = {
+            type: 'HANDOFF',
+            reason: 'H11_INVENTORY_PRESSURE_HANDOFF',
+            targetName: merchantName,
+            target: merchant,
+            item: candidates[0]
+          };
+        }
+      } else if (role === 'MERCHANT') {
+        if (this.delivery) {
+          const target = visibleFarmers.find(row => String(row.name) === String(this.delivery.targetName));
+          service = {
+            type: 'DELIVERY',
+            reason: target ? 'H11_EXPLICIT_DELIVERY' : 'H11_DELIVERY_TARGET_NOT_VISIBLE',
+            targetName: this.delivery.targetName,
+            target: target || null,
+            delivery: clone(this.delivery)
+          };
+        } else {
+          const needsMluck = visibleFarmers.filter(row => {
+            const condition = this.game && typeof this.game.playerCondition === 'function'
+              ? this.game.playerCondition(row.name, 'mluck')
+              : null;
+            return !(condition && condition.active
+              && (condition.remainingMs == null || condition.remainingMs > this.config.mluckRefreshMs));
+          });
+          if (needsMluck.length) {
+            needsMluck.sort((a, b) => {
+              const ad = a.distance == null ? Number.POSITIVE_INFINITY : a.distance;
+              const bd = b.distance == null ? Number.POSITIVE_INFINITY : b.distance;
+              return ad - bd;
+            });
+            service = {
+              type: 'MLUCK',
+              reason: 'H11_MLUCK_REFRESH_NEEDED',
+              targetName: needsMluck[0].name,
+              target: needsMluck[0]
+            };
+          }
+        }
+      } else {
+        service = { type: 'OBSERVER', reason: 'H11_ROLE_NOT_SERVICE_CAPABLE' };
+      }
+
+      const output = {
+        state: this.suspendedReason ? 'SUSPENDED' : 'READY',
+        reason: this.suspendedReason || 'H11_PLAN_READY',
+        localName,
+        role,
+        pressure,
+        merchantName,
+        visibleOwnedPlayers: visibleOwned.map(row => ({
+          name: row.name, ctype: row.ctype, map: row.map, distance: row.distance
+        })),
+        visibleOwnedFarmers: visibleFarmers.map(row => ({
+          name: row.name, ctype: row.ctype, map: row.map, distance: row.distance
+        })),
+        handoffCandidates: candidates.map(row => ({
+          slot: row.slot,
+          name: row.name,
+          quantity: row.quantity,
+          disposition: row.disposition,
+          reason: row.reason
+        })),
+        delivery: clone(this.delivery),
+        service
+      };
+      this.lastPlan = clone(output);
+      return clone(output);
+    }
+
+    tick() {
+      this.metrics.ticks += 1;
+      this._observePending();
+      const plan = this.plan();
+
+      if (!this.moduleActive) return { state: 'IDLE', plan };
+      if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason, plan };
+      if (this.pending) return { state: 'PENDING', pending: clone(this.pending), plan };
+      if (this.backoffUntilMs && Date.now() < this.backoffUntilMs) {
+        return { state: 'BACKOFF', untilMs: this.backoffUntilMs, plan };
+      }
+
+      if (plan.pressure.state === 'CRITICAL') this.metrics.pressureCritical += 1;
+      else if (plan.pressure.state === 'HIGH') this.metrics.pressureHigh += 1;
+
+      const service = plan.service || {};
+      if (service.type === 'HANDOFF') {
+        this.metrics.handoffsPlanned += 1;
+        const claim = this._claimTarget(service.targetName, 'HANDOFF');
+        if (!claim.ok) return { state: 'WAITING', reason: claim.reason, plan };
+        const approach = this._approach(service.target);
+        if (!approach.ready) return { state: 'WAITING', reason: approach.reason, movement: approach.movement || null, plan };
+        return { state: 'DISPATCHED', result: this._dispatchTransfer('HANDOFF', service.targetName, service.item, service.item.quantity), plan };
+      }
+
+      if (service.type === 'DELIVERY') {
+        if (!service.target) return { state: 'WAITING', reason: service.reason, plan };
+        const claim = this._claimTarget(service.targetName, 'DELIVERY');
+        if (!claim.ok) return { state: 'WAITING', reason: claim.reason, plan };
+        const approach = this._approach(service.target);
+        if (!approach.ready) return { state: 'WAITING', reason: approach.reason, movement: approach.movement || null, plan };
+        const itemPlan = this._inventoryPlan();
+        const row = (itemPlan && itemPlan.items || []).find(item =>
+          String(item.name || '') === String(service.delivery.itemName || '')
+          && this._transferSafe(item, { allowUtility: true }));
+        if (!row) return { state: 'BLOCKED', reason: 'H11_DELIVERY_ITEM_NOT_SAFE_OR_AVAILABLE', plan };
+        const quantity = Math.min(service.delivery.quantity, Math.floor(Number(row.quantity) || 0));
+        if (quantity < 1) return { state: 'BLOCKED', reason: 'H11_DELIVERY_QUANTITY_UNAVAILABLE', plan };
+        return { state: 'DISPATCHED', result: this._dispatchTransfer('DELIVERY', service.targetName, row, quantity), plan };
+      }
+
+      if (service.type === 'MLUCK') {
+        this.metrics.mluckPlanned += 1;
+        const approach = this._approach(service.target);
+        if (!approach.ready) return { state: 'WAITING', reason: approach.reason, movement: approach.movement || null, plan };
+        const result = this._dispatchMluck(service.target);
+        return { state: result.accepted ? 'DISPATCHED' : 'WAITING', reason: result.reason || null, result, plan };
+      }
+
+      if (service.type === 'BLOCKED') return { state: 'BLOCKED', reason: service.reason, plan };
+      if (service.type === 'WAIT') return { state: 'WAITING', reason: service.reason, plan };
+      return { state: 'READY', reason: service.reason || 'H11_NO_SERVICE_NEEDED', plan };
+    }
+
+    status() {
+      return {
+        schemaVersion: 1,
+        moduleActive: this.moduleActive,
+        suspended: !!this.suspendedReason,
+        suspendedReason: this.suspendedReason,
+        pending: clone(this.pending),
+        delivery: clone(this.delivery),
+        serviceTarget: clone(this.serviceTarget),
+        serviceHistory: clone(this.serviceHistory.slice(-8)),
+        lastPlan: clone(this.lastPlan),
+        lastAction: clone(this.lastAction),
+        backoffUntilMs: this.backoffUntilMs,
+        config: clone(this.config),
+        metrics: clone(this.metrics)
+      };
+    }
+  }
+
+  ns.MerchantController = MerchantController;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+
+(function (root) {
+  'use strict';
+
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns) throw new Error('ALBOT_INTERNALS_MISSING');
+
+  const clone = ns.helpers.clone;
+  const cleanText = ns.helpers.cleanText;
 
   function errorDetails(error) {
     return {
@@ -7333,7 +8098,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.10.0-h10';
+      this.version = options.version || '0.11.0-h11';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -7413,6 +8178,15 @@
         actions: this.actions,
         goals: this.goals
       });
+      this.merchant = new ns.MerchantController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        roster: this.roster,
+        movement: this.movement,
+        inventory: this.inventory
+      });
       this.liveTests = new ns.LiveTestRunner({
         runtime: this,
         logger: this.logger,
@@ -7423,6 +8197,7 @@
       this._destroyed = false;
       this._registerCoreModules();
       this._registerLiveTests();
+      this._registerH11LiveTest();
       this._installErrorCapture();
       this.logger.info('AL Bot Runtime erstellt', {
         version: this.version,
@@ -7516,6 +8291,15 @@
         start: context => this.inventory.start(context),
         stop: reason => this.inventory.stop(reason),
         status: () => this.inventory.status()
+      });
+
+      this.modules.register({
+        id: 'merchant',
+        title: 'Merchant',
+        version: '0.11.0',
+        start: context => this.merchant.start(context),
+        stop: reason => this.merchant.stop(reason),
+        status: () => this.merchant.status()
       });
     }
 
@@ -8908,6 +9692,214 @@
       });
     }
 
+    _registerH11LiveTest() {
+      let baseline = null;
+      let testPlan = null;
+      this.liveTests.register({
+        id: 'h11-merchant',
+        title: 'H11 – Merchant-Grundbetrieb',
+        description: 'Ein-Klick-Live-Test für eigene Farmer, sichere Item-Delivery, MLuck-Service, Inventory Pressure und Anti-Pingpong.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.merchant.resetSafety('H11_LIVE_TEST_RESET'); } catch (_) {}
+          try { runtime.merchant.cancelDelivery('H11_LIVE_TEST_RESET'); } catch (_) {}
+          try {
+            const movement = runtime.movement.status();
+            if (movement.activeOrder && String(movement.activeOrder.owner || '') === 'merchant-h11') {
+              runtime.movement.cancel('H11_LIVE_TEST_RESET');
+            }
+          } catch (_) {}
+          const metrics = runtime.merchant.status().metrics;
+          baseline = {
+            transfersDispatched: metrics.transfersDispatched,
+            transfersConfirmed: metrics.transfersConfirmed,
+            transfersUnknown: metrics.transfersUnknown,
+            mluckDispatched: metrics.mluckDispatched,
+            mluckConfirmed: metrics.mluckConfirmed,
+            mluckUnknown: metrics.mluckUnknown,
+            pingPongBlocks: metrics.pingPongBlocks
+          };
+          testPlan = null;
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.merchant.cancelDelivery('H11_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try {
+            const movement = runtime.movement.status();
+            if (movement.activeOrder && String(movement.activeOrder.owner || '') === 'merchant-h11') {
+              runtime.movement.cancel('H11_LIVE_TEST_CLEANUP');
+            }
+          } catch (_) {}
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Merchant, eigener sichtbarer Farmer, MLuck und sichere Delivery prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(String(game.character.ctype || '').toLowerCase() === 'merchant', 'H11_LIVE_TEST_REQUIRES_MERCHANT');
+              assert(game.character.rip !== true, 'CHARACTER_DEAD');
+              const roster = runtime.roster.status();
+              assert(roster && roster.merchant && String(roster.merchant.name) === String(game.character.name),
+                'H11_LOCAL_MERCHANT_NOT_OWNED_ROSTER_MERCHANT');
+              assert(runtime.actions.available('send_item'), 'SEND_ITEM_API_UNAVAILABLE');
+              assert(runtime.actions.available('use_skill'), 'USE_SKILL_API_UNAVAILABLE');
+              const merchantModule = runtime.modules.describe('merchant');
+              assert(merchantModule && merchantModule.state === 'ACTIVE', 'H11_MODULE_NOT_ACTIVE');
+
+              const plan = runtime.merchant.plan();
+              assert(plan && plan.role === 'MERCHANT', 'H11_ROLE_NOT_MERCHANT');
+              assert(Array.isArray(plan.visibleOwnedFarmers) && plan.visibleOwnedFarmers.length > 0,
+                'H11_NEEDS_VISIBLE_OWN_FARMER');
+
+              const inventory = runtime.inventory.plan();
+              const safeRows = (inventory.items || []).filter(row => runtime.merchant._transferSafe(row, { allowUtility: true }));
+              assert(safeRows.length > 0, 'H11_NEEDS_SAFE_TRANSFER_ITEM');
+              const utility = safeRows.find(row => {
+                const type = String(row && row.definition && row.definition.type || '').toLowerCase();
+                return row.disposition === 'KEEP' && ['pot', 'elixir', 'food', 'scroll', 'booster'].includes(type);
+              });
+              const row = utility || safeRows[0];
+              const target = plan.visibleOwnedFarmers.slice().sort((a, b) =>
+                Number(a.distance == null ? Infinity : a.distance) - Number(b.distance == null ? Infinity : b.distance))[0];
+
+              const readiness = runtime.game.skillReadiness('mluck', target.name);
+              assert(readiness && readiness.available === true, 'H11_MLUCK_SKILL_UNAVAILABLE');
+
+              testPlan = {
+                targetName: target.name,
+                itemName: row.name,
+                slot: row.slot,
+                beforeQuantity: Number(row.quantity) || 1,
+                quantity: 1
+              };
+              return {
+                merchant: game.character.name,
+                target: target.name,
+                distance: target.distance,
+                itemName: row.name,
+                itemDisposition: row.disposition,
+                itemQuantity: row.quantity,
+                pressure: plan.pressure,
+                mluckReady: readiness.allowed,
+                mluckReasons: readiness.reasons || []
+              };
+            }
+          },
+          {
+            id: 'delivery',
+            title: 'Genau ein sicheres Item an eigenen Farmer liefern und Delta bestätigen',
+            timeoutMs: 45000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(testPlan, 'H11_LIVE_TEST_PLAN_MISSING');
+              const queued = runtime.merchant.queueDelivery(testPlan.targetName, testPlan.itemName, testPlan.quantity);
+              assert(queued && queued.accepted === true, queued && queued.reason || 'H11_DELIVERY_QUEUE_FAILED');
+              const confirmed = await waitFor(() => {
+                const status = runtime.merchant.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H11_SUSPENDED');
+                if (status.metrics.transfersUnknown > baseline.transfersUnknown) throw new Error('H11_TRANSFER_UNKNOWN');
+                return status.metrics.transfersConfirmed > baseline.transfersConfirmed ? status : null;
+              }, { timeoutMs: 40000, pollMs: 150, label: 'h11-delivery-confirmed' });
+
+              const after = runtime.game.inventorySnapshot();
+              const sameSlot = (after.items || []).find(row =>
+                Number(row.slot) === Number(testPlan.slot) && String(row.name || '') === String(testPlan.itemName));
+              const afterQuantity = sameSlot ? Number(sameSlot.quantity) || 0 : 0;
+              assert(testPlan.beforeQuantity - afterQuantity >= testPlan.quantity,
+                'H11_DELIVERY_LOCAL_DELTA_NOT_CONFIRMED');
+              return {
+                target: testPlan.targetName,
+                itemName: testPlan.itemName,
+                quantity: testPlan.quantity,
+                transfersDispatched: confirmed.metrics.transfersDispatched - baseline.transfersDispatched,
+                transfersConfirmed: confirmed.metrics.transfersConfirmed - baseline.transfersConfirmed,
+                beforeQuantity: testPlan.beforeQuantity,
+                afterQuantity
+              };
+            }
+          },
+          {
+            id: 'mluck',
+            title: 'MLuck für eigenen Farmer sicherstellen ohne Spam',
+            timeoutMs: 45000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(testPlan, 'H11_LIVE_TEST_PLAN_MISSING');
+              const before = runtime.game.playerCondition(testPlan.targetName, 'mluck');
+              if (before && before.active
+                && (before.remainingMs == null || before.remainingMs > runtime.merchant.config.mluckRefreshMs)) {
+                return {
+                  target: testPlan.targetName,
+                  alreadyHealthy: true,
+                  source: before.source,
+                  remainingMs: before.remainingMs,
+                  mluckDispatched: runtime.merchant.status().metrics.mluckDispatched - baseline.mluckDispatched
+                };
+              }
+              const confirmed = await waitFor(() => {
+                const status = runtime.merchant.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H11_SUSPENDED');
+                if (status.metrics.mluckUnknown > baseline.mluckUnknown) throw new Error('H11_MLUCK_UNKNOWN');
+                if (status.metrics.mluckConfirmed <= baseline.mluckConfirmed) return null;
+                const condition = runtime.game.playerCondition(testPlan.targetName, 'mluck');
+                return condition && condition.active ? { status, condition } : null;
+              }, { timeoutMs: 40000, pollMs: 150, label: 'h11-mluck-confirmed' });
+              return {
+                target: testPlan.targetName,
+                alreadyHealthy: false,
+                source: confirmed.condition.source,
+                remainingMs: confirmed.condition.remainingMs,
+                mluckDispatched: confirmed.status.metrics.mluckDispatched - baseline.mluckDispatched,
+                mluckConfirmed: confirmed.status.metrics.mluckConfirmed - baseline.mluckConfirmed
+              };
+            }
+          },
+          {
+            id: 'stability',
+            title: 'Fünf Sekunden ohne UNKNOWN oder Service-Pingpong beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              await sleep(5000);
+              const status = runtime.merchant.status();
+              assert(status.suspended === false, status.suspendedReason || 'H11_SUSPENDED');
+              assert(status.metrics.transfersUnknown === baseline.transfersUnknown, 'H11_TRANSFER_UNKNOWN_DURING_STABILITY');
+              assert(status.metrics.mluckUnknown === baseline.mluckUnknown, 'H11_MLUCK_UNKNOWN_DURING_STABILITY');
+              assert(status.metrics.pingPongBlocks === baseline.pingPongBlocks, 'H11_SERVICE_PINGPONG');
+              return {
+                transfersConfirmed: status.metrics.transfersConfirmed - baseline.transfersConfirmed,
+                mluckConfirmed: status.metrics.mluckConfirmed - baseline.mluckConfirmed,
+                transferUnknown: status.metrics.transfersUnknown - baseline.transfersUnknown,
+                mluckUnknown: status.metrics.mluckUnknown - baseline.mluckUnknown,
+                pingPongBlocks: status.metrics.pingPongBlocks - baseline.pingPongBlocks
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'H11 Delivery und H11-eigene Bewegung vollständig freigeben',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.merchant.cancelDelivery('H11_LIVE_TEST_COMPLETE');
+              const merchant = runtime.merchant.status();
+              const movement = runtime.movement.status();
+              assert(merchant.pending == null, 'H11_PENDING_ACTION_REMAINS');
+              assert(merchant.delivery == null, 'H11_DELIVERY_REMAINS');
+              assert(!(movement.activeOrder && String(movement.activeOrder.owner || '') === 'merchant-h11'),
+                'H11_MOVEMENT_REMAINS');
+              return {
+                pending: !!merchant.pending,
+                delivery: !!merchant.delivery,
+                movementActive: !!movement.activeOrder
+              };
+            }
+          }
+        ]
+      });
+    }
+
     _installErrorCapture() {
       if (!this.root || typeof this.root.addEventListener !== 'function') return;
       this._errorHandler = event => {
@@ -9055,6 +10047,7 @@
         farming: this.farming.status(),
         farmIntelligence: this.farmIntelligence.status(),
         inventory: this.inventory.status(),
+        merchant: this.merchant.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
         roster,
@@ -9080,6 +10073,7 @@
         farming: this.farming.status(),
         farmIntelligence: this.farmIntelligence.status(),
         inventory: this.inventory.status(),
+        merchant: this.merchant.status(),
         liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
         logs: this.logger.list(160),
@@ -9231,6 +10225,7 @@
       this.farmingResult = null;
       this.farmIntelligenceResult = null;
       this.inventoryResult = null;
+      this.merchantResult = null;
       this.liveTestClipboard = null;
       this._offLog = null;
       this._dragCleanup = null;
@@ -9287,7 +10282,7 @@
 </style>
 <div class="albot-head" id="albot-drag-handle"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-minimize" class="albot-window-btn" title="Fenster minimieren" aria-label="Fenster minimieren">—</button><button id="albot-emergency" class="albot-stop">STOP</button></div>
 <div class="albot-tabs">
-<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
+<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="merchant">Merchant</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
 </div>
 <div class="albot-body">
 <section id="albot-panel-overview" class="albot-panel active"></section>
@@ -9298,6 +10293,7 @@
 <section id="albot-panel-farming" class="albot-panel"></section>
 <section id="albot-panel-farm-intelligence" class="albot-panel"></section>
 <section id="albot-panel-inventory" class="albot-panel"></section>
+<section id="albot-panel-merchant" class="albot-panel"></section>
 <section id="albot-panel-live-test" class="albot-panel"></section>
 <section id="albot-panel-knowledge" class="albot-panel"></section>
 <section id="albot-panel-logs" class="albot-panel"></section>
@@ -9437,6 +10433,7 @@
       }
       if (this.activeTab === 'party') this.renderParty(status);
       if (this.activeTab === 'inventory') this.renderInventory(status);
+      if (this.activeTab === 'merchant') this.renderMerchant(status);
       if (this.activeTab === 'live-test') this.renderLiveTest(status);
       if (this.activeTab === 'knowledge') this.renderKnowledge(status);
       if (this.activeTab === 'logs') this.renderLogs();
@@ -9456,6 +10453,7 @@
       this.renderFarming(status);
       this.renderFarmIntelligence(status);
       this.renderInventory(status);
+      this.renderMerchant(status);
       this.renderLiveTest(status);
       this.renderKnowledge(status);
       this.renderLogs();
@@ -9884,6 +10882,85 @@ ${items.length ? items.slice(0, 24).map(row => '<div class="albot-small">#'+esc(
       if (resetButton) resetButton.onclick = () => run(() => this.runtime.inventory.resetSafety('GUI_H10_RESET'));
     }
 
+    renderMerchant(status) {
+      const panel = this.host.querySelector('#albot-panel-merchant');
+      if (!panel) return;
+      const merchant = status.merchant || {};
+      const metrics = merchant.metrics || {};
+      const plan = merchant.lastPlan || null;
+      const pressure = plan && plan.pressure || {};
+      const service = plan && plan.service || {};
+      const farmers = plan && Array.isArray(plan.visibleOwnedFarmers) ? plan.visibleOwnedFarmers : [];
+      const candidates = plan && Array.isArray(plan.handoffCandidates) ? plan.handoffCandidates : [];
+      const pending = merchant.pending || null;
+      const delivery = merchant.delivery || null;
+      const target = merchant.serviceTarget || null;
+      const resultText = this.merchantResult
+        ? JSON.stringify(this.merchantResult, null, 2)
+        : 'Noch keine manuelle H11-Aktion.';
+
+      const farmerOptions = farmers.length
+        ? farmers.map(row => '<option value="'+esc(row.name)+'">'+esc(row.name)+' · '+esc(row.ctype || '-')+'</option>').join('')
+        : '<option value="">kein eigener Farmer sichtbar</option>';
+      const itemOptions = candidates.length
+        ? candidates.map(row => '<option value="'+esc(row.name)+'">'+esc(row.name)+' x'+esc(row.quantity || 1)+' · '+esc(row.disposition || '-')+'</option>').join('')
+        : '<option value="">kein sicheres Transfer-Item</option>';
+
+      panel.innerHTML = `<div class="albot-card"><b>H11 Merchant-Grundbetrieb</b>
+<div class="albot-small">Eigene Farmer↔Merchant-Logistik, MLuck, Inventory Pressure und Service-Anti-Pingpong. Alle Item-Transfers laufen über die zentrale ActionBoundary. Gold, Bank und Markt bleiben in H11 geschlossen.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${merchant.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Rolle</span><div class="albot-v">${esc(plan && plan.role || '-')}</div></div>
+<div><span class="albot-k">Druck</span><div class="albot-v">${esc(pressure.state || '-')} · frei ${esc(pressure.freeSlots == null ? '-' : pressure.freeSlots)}</div></div>
+<div><span class="albot-k">Service</span><div class="albot-v">${esc(service.type || '-')} · ${esc(service.reason || '-')}</div></div>
+<div><span class="albot-k">Ziel</span><div class="albot-v">${esc(target && target.name || service.targetName || '-')}</div></div>
+<div><span class="albot-k">Suspendiert</span><div class="albot-v">${merchant.suspended ? 'JA · '+esc(merchant.suspendedReason || '-') : 'NEIN'}</div></div>
+<div><span class="albot-k">Transfers bestätigt</span><div class="albot-v">${esc(metrics.transfersConfirmed || 0)}</div></div>
+<div><span class="albot-k">MLuck bestätigt</span><div class="albot-v">${esc(metrics.mluckConfirmed || 0)}</div></div>
+<div><span class="albot-k">Transfer UNKNOWN</span><div class="albot-v">${esc(metrics.transfersUnknown || 0)}</div></div>
+<div><span class="albot-k">MLuck UNKNOWN</span><div class="albot-v">${esc(metrics.mluckUnknown || 0)}</div></div>
+<div><span class="albot-k">Pingpong-Blocks</span><div class="albot-v">${esc(metrics.pingPongBlocks || 0)}</div></div>
+<div><span class="albot-k">Movement-Requests</span><div class="albot-v">${esc(metrics.movementRequests || 0)}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Aktueller Service</b>
+<div class="albot-small">Pending: ${pending ? esc(pending.kind)+' → '+esc(pending.targetName || '-') : 'nein'} · Delivery: ${delivery ? esc(delivery.itemName)+' x'+esc(delivery.quantity)+' → '+esc(delivery.targetName) : 'keine'}</div>
+<div class="albot-small">Eigene sichtbare Farmer: ${farmers.length ? farmers.map(row => esc(row.name)+' ('+esc(row.distance == null ? '?' : Math.round(row.distance))+'u)').join(' · ') : 'keine'}</div>
+</div>
+
+<div class="albot-card"><b>Kontrollierte Delivery</b>
+<div class="albot-row"><select id="albot-h11-target">${farmerOptions}</select></div>
+<div class="albot-row"><select id="albot-h11-item">${itemOptions}</select><input id="albot-h11-quantity" type="number" min="1" step="1" value="1" style="max-width:90px"><button id="albot-h11-deliver" class="albot-btn">Delivery planen</button></div>
+<div class="albot-small">Nur eigene Farmer und konservativ transferierbare Items. Gear, Quest-/Goal-Reserve, gelevelte/gelockte und unbekannt riskante Items sind ausgeschlossen.</div>
+</div>
+
+<div class="albot-card"><b>Steuerung</b>
+<div class="albot-row"><button id="albot-h11-plan" class="albot-btn">Service neu bewerten</button><button id="albot-h11-tick" class="albot-btn">Service-Tick</button><button id="albot-h11-reset" class="albot-btn warn" ${merchant.suspended ? '' : 'disabled'}>Safety zurücksetzen</button></div>
+</div>
+
+<div class="albot-card"><b>Letzte Aktion</b><div class="albot-small">${esc(merchant.lastAction && merchant.lastAction.type || '-')} · ${esc(merchant.lastAction && (merchant.lastAction.reason || merchant.lastAction.target) || '-')}</div></div>
+<div class="albot-card"><b>Letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.merchantResult = fn(); }
+        catch (error) { this.merchantResult = { ok: false, reason: String(error && error.message || error) }; }
+        this.renderMerchant(this.runtime.status());
+      };
+      const planButton = panel.querySelector('#albot-h11-plan');
+      if (planButton) planButton.onclick = () => run(() => this.runtime.merchant.plan());
+      const tickButton = panel.querySelector('#albot-h11-tick');
+      if (tickButton) tickButton.onclick = () => run(() => this.runtime.merchant.tick());
+      const resetButton = panel.querySelector('#albot-h11-reset');
+      if (resetButton) resetButton.onclick = () => run(() => this.runtime.merchant.resetSafety('GUI_H11_RESET'));
+      const deliverButton = panel.querySelector('#albot-h11-deliver');
+      if (deliverButton) deliverButton.onclick = () => {
+        const targetName = panel.querySelector('#albot-h11-target').value;
+        const itemName = panel.querySelector('#albot-h11-item').value;
+        const quantity = Number(panel.querySelector('#albot-h11-quantity').value) || 1;
+        run(() => this.runtime.merchant.queueDelivery(targetName, itemName, quantity));
+      };
+    }
+
     async runRecommendedLiveTest() {
       const state = this.runtime.status();
       if (state.emergencyStop && state.emergencyStop.latched) {
@@ -10114,7 +11191,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.10.0-h10',
+    version: '0.11.0-h11',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -10232,6 +11309,15 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
       rules: rules => rules == null ? runtime.inventory.ruleSnapshot() : runtime.inventory.setRules(rules)
     },
 
+    merchant: {
+      status: () => runtime.merchant.status(),
+      plan: () => runtime.merchant.plan(),
+      tick: () => runtime.merchant.tick(),
+      reset: reason => runtime.merchant.resetSafety(reason || 'API_H11_RESET'),
+      deliver: (targetName, itemName, quantity) => runtime.merchant.queueDelivery(targetName, itemName, quantity),
+      cancelDelivery: reason => runtime.merchant.cancelDelivery(reason || 'API_H11_DELIVERY_CANCEL')
+    },
+
     liveTests: {
       status: () => runtime.liveTests.status(),
       list: () => runtime.liveTests.list(),
@@ -10282,6 +11368,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
   Object.freeze(api.farming);
   Object.freeze(api.farmIntelligence);
   Object.freeze(api.inventory);
+  Object.freeze(api.merchant);
   Object.freeze(api.liveTests);
   Object.freeze(api.knowledge);
   Object.freeze(api.roster);

@@ -50,7 +50,7 @@
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.10.0-h10',
+    version: '0.11.0-h11',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -168,6 +168,15 @@
       rules: rules => rules == null ? runtime.inventory.ruleSnapshot() : runtime.inventory.setRules(rules)
     },
 
+    merchant: {
+      status: () => runtime.merchant.status(),
+      plan: () => runtime.merchant.plan(),
+      tick: () => runtime.merchant.tick(),
+      reset: reason => runtime.merchant.resetSafety(reason || 'API_H11_RESET'),
+      deliver: (targetName, itemName, quantity) => runtime.merchant.queueDelivery(targetName, itemName, quantity),
+      cancelDelivery: reason => runtime.merchant.cancelDelivery(reason || 'API_H11_DELIVERY_CANCEL')
+    },
+
     liveTests: {
       status: () => runtime.liveTests.status(),
       list: () => runtime.liveTests.list(),
@@ -218,6 +227,7 @@
   Object.freeze(api.farming);
   Object.freeze(api.farmIntelligence);
   Object.freeze(api.inventory);
+  Object.freeze(api.merchant);
   Object.freeze(api.liveTests);
   Object.freeze(api.knowledge);
   Object.freeze(api.roster);

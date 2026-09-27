@@ -589,6 +589,32 @@
       return clone(rows);
     }
 
+    playerCondition(name, conditionId) {
+      const player = this.playerReference(name, { allowDead: true });
+      const id = cleanText(conditionId || '', 120);
+      if (!player || !id) {
+        return {
+          available: !!player,
+          playerName: cleanText(name || '', 120) || null,
+          conditionId: id || null,
+          active: false,
+          remainingMs: null,
+          source: null
+        };
+      }
+      let raw = null;
+      try { raw = player.s && player.s[id] || null; } catch (_) {}
+      return {
+        available: true,
+        playerName: cleanText(player.name || name || '', 120) || null,
+        conditionId: id,
+        active: !!raw,
+        remainingMs: raw ? finite(raw.ms != null ? raw.ms : raw.duration) : null,
+        source: raw && (raw.f != null ? cleanText(raw.f, 120) : raw.source != null ? cleanText(raw.source, 120) : null),
+        raw: raw ? clone(raw) : null
+      };
+    }
+
     skillDefinition(skillId) {
       const id = cleanText(skillId || '', 120);
       if (!id) return null;

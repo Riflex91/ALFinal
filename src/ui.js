@@ -28,6 +28,7 @@
       this.farmingResult = null;
       this.farmIntelligenceResult = null;
       this.inventoryResult = null;
+      this.merchantResult = null;
       this.liveTestClipboard = null;
       this._offLog = null;
       this._dragCleanup = null;
@@ -84,7 +85,7 @@
 </style>
 <div class="albot-head" id="albot-drag-handle"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-minimize" class="albot-window-btn" title="Fenster minimieren" aria-label="Fenster minimieren">—</button><button id="albot-emergency" class="albot-stop">STOP</button></div>
 <div class="albot-tabs">
-<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
+<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="merchant">Merchant</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
 </div>
 <div class="albot-body">
 <section id="albot-panel-overview" class="albot-panel active"></section>
@@ -95,6 +96,7 @@
 <section id="albot-panel-farming" class="albot-panel"></section>
 <section id="albot-panel-farm-intelligence" class="albot-panel"></section>
 <section id="albot-panel-inventory" class="albot-panel"></section>
+<section id="albot-panel-merchant" class="albot-panel"></section>
 <section id="albot-panel-live-test" class="albot-panel"></section>
 <section id="albot-panel-knowledge" class="albot-panel"></section>
 <section id="albot-panel-logs" class="albot-panel"></section>
@@ -234,6 +236,7 @@
       }
       if (this.activeTab === 'party') this.renderParty(status);
       if (this.activeTab === 'inventory') this.renderInventory(status);
+      if (this.activeTab === 'merchant') this.renderMerchant(status);
       if (this.activeTab === 'live-test') this.renderLiveTest(status);
       if (this.activeTab === 'knowledge') this.renderKnowledge(status);
       if (this.activeTab === 'logs') this.renderLogs();
@@ -253,6 +256,7 @@
       this.renderFarming(status);
       this.renderFarmIntelligence(status);
       this.renderInventory(status);
+      this.renderMerchant(status);
       this.renderLiveTest(status);
       this.renderKnowledge(status);
       this.renderLogs();
@@ -679,6 +683,85 @@ ${items.length ? items.slice(0, 24).map(row => '<div class="albot-small">#'+esc(
       if (planButton) planButton.onclick = () => run(() => this.runtime.inventory.plan());
       const resetButton = panel.querySelector('#albot-h10-reset');
       if (resetButton) resetButton.onclick = () => run(() => this.runtime.inventory.resetSafety('GUI_H10_RESET'));
+    }
+
+    renderMerchant(status) {
+      const panel = this.host.querySelector('#albot-panel-merchant');
+      if (!panel) return;
+      const merchant = status.merchant || {};
+      const metrics = merchant.metrics || {};
+      const plan = merchant.lastPlan || null;
+      const pressure = plan && plan.pressure || {};
+      const service = plan && plan.service || {};
+      const farmers = plan && Array.isArray(plan.visibleOwnedFarmers) ? plan.visibleOwnedFarmers : [];
+      const candidates = plan && Array.isArray(plan.handoffCandidates) ? plan.handoffCandidates : [];
+      const pending = merchant.pending || null;
+      const delivery = merchant.delivery || null;
+      const target = merchant.serviceTarget || null;
+      const resultText = this.merchantResult
+        ? JSON.stringify(this.merchantResult, null, 2)
+        : 'Noch keine manuelle H11-Aktion.';
+
+      const farmerOptions = farmers.length
+        ? farmers.map(row => '<option value="'+esc(row.name)+'">'+esc(row.name)+' · '+esc(row.ctype || '-')+'</option>').join('')
+        : '<option value="">kein eigener Farmer sichtbar</option>';
+      const itemOptions = candidates.length
+        ? candidates.map(row => '<option value="'+esc(row.name)+'">'+esc(row.name)+' x'+esc(row.quantity || 1)+' · '+esc(row.disposition || '-')+'</option>').join('')
+        : '<option value="">kein sicheres Transfer-Item</option>';
+
+      panel.innerHTML = `<div class="albot-card"><b>H11 Merchant-Grundbetrieb</b>
+<div class="albot-small">Eigene Farmer↔Merchant-Logistik, MLuck, Inventory Pressure und Service-Anti-Pingpong. Alle Item-Transfers laufen über die zentrale ActionBoundary. Gold, Bank und Markt bleiben in H11 geschlossen.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${merchant.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Rolle</span><div class="albot-v">${esc(plan && plan.role || '-')}</div></div>
+<div><span class="albot-k">Druck</span><div class="albot-v">${esc(pressure.state || '-')} · frei ${esc(pressure.freeSlots == null ? '-' : pressure.freeSlots)}</div></div>
+<div><span class="albot-k">Service</span><div class="albot-v">${esc(service.type || '-')} · ${esc(service.reason || '-')}</div></div>
+<div><span class="albot-k">Ziel</span><div class="albot-v">${esc(target && target.name || service.targetName || '-')}</div></div>
+<div><span class="albot-k">Suspendiert</span><div class="albot-v">${merchant.suspended ? 'JA · '+esc(merchant.suspendedReason || '-') : 'NEIN'}</div></div>
+<div><span class="albot-k">Transfers bestätigt</span><div class="albot-v">${esc(metrics.transfersConfirmed || 0)}</div></div>
+<div><span class="albot-k">MLuck bestätigt</span><div class="albot-v">${esc(metrics.mluckConfirmed || 0)}</div></div>
+<div><span class="albot-k">Transfer UNKNOWN</span><div class="albot-v">${esc(metrics.transfersUnknown || 0)}</div></div>
+<div><span class="albot-k">MLuck UNKNOWN</span><div class="albot-v">${esc(metrics.mluckUnknown || 0)}</div></div>
+<div><span class="albot-k">Pingpong-Blocks</span><div class="albot-v">${esc(metrics.pingPongBlocks || 0)}</div></div>
+<div><span class="albot-k">Movement-Requests</span><div class="albot-v">${esc(metrics.movementRequests || 0)}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Aktueller Service</b>
+<div class="albot-small">Pending: ${pending ? esc(pending.kind)+' → '+esc(pending.targetName || '-') : 'nein'} · Delivery: ${delivery ? esc(delivery.itemName)+' x'+esc(delivery.quantity)+' → '+esc(delivery.targetName) : 'keine'}</div>
+<div class="albot-small">Eigene sichtbare Farmer: ${farmers.length ? farmers.map(row => esc(row.name)+' ('+esc(row.distance == null ? '?' : Math.round(row.distance))+'u)').join(' · ') : 'keine'}</div>
+</div>
+
+<div class="albot-card"><b>Kontrollierte Delivery</b>
+<div class="albot-row"><select id="albot-h11-target">${farmerOptions}</select></div>
+<div class="albot-row"><select id="albot-h11-item">${itemOptions}</select><input id="albot-h11-quantity" type="number" min="1" step="1" value="1" style="max-width:90px"><button id="albot-h11-deliver" class="albot-btn">Delivery planen</button></div>
+<div class="albot-small">Nur eigene Farmer und konservativ transferierbare Items. Gear, Quest-/Goal-Reserve, gelevelte/gelockte und unbekannt riskante Items sind ausgeschlossen.</div>
+</div>
+
+<div class="albot-card"><b>Steuerung</b>
+<div class="albot-row"><button id="albot-h11-plan" class="albot-btn">Service neu bewerten</button><button id="albot-h11-tick" class="albot-btn">Service-Tick</button><button id="albot-h11-reset" class="albot-btn warn" ${merchant.suspended ? '' : 'disabled'}>Safety zurücksetzen</button></div>
+</div>
+
+<div class="albot-card"><b>Letzte Aktion</b><div class="albot-small">${esc(merchant.lastAction && merchant.lastAction.type || '-')} · ${esc(merchant.lastAction && (merchant.lastAction.reason || merchant.lastAction.target) || '-')}</div></div>
+<div class="albot-card"><b>Letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.merchantResult = fn(); }
+        catch (error) { this.merchantResult = { ok: false, reason: String(error && error.message || error) }; }
+        this.renderMerchant(this.runtime.status());
+      };
+      const planButton = panel.querySelector('#albot-h11-plan');
+      if (planButton) planButton.onclick = () => run(() => this.runtime.merchant.plan());
+      const tickButton = panel.querySelector('#albot-h11-tick');
+      if (tickButton) tickButton.onclick = () => run(() => this.runtime.merchant.tick());
+      const resetButton = panel.querySelector('#albot-h11-reset');
+      if (resetButton) resetButton.onclick = () => run(() => this.runtime.merchant.resetSafety('GUI_H11_RESET'));
+      const deliverButton = panel.querySelector('#albot-h11-deliver');
+      if (deliverButton) deliverButton.onclick = () => {
+        const targetName = panel.querySelector('#albot-h11-target').value;
+        const itemName = panel.querySelector('#albot-h11-item').value;
+        const quantity = Number(panel.querySelector('#albot-h11-quantity').value) || 1;
+        run(() => this.runtime.merchant.queueDelivery(targetName, itemName, quantity));
+      };
     }
 
     async runRecommendedLiveTest() {
