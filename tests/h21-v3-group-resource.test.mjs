@@ -53,6 +53,7 @@ function resourceFixture(options = {}) {
     dispatch: action => {
       state.dispatches.push(action);
       if (options.unknown === true) return { id: 'pot-unknown', state: 'UNKNOWN', error: { message: 'NETWORK_UNCERTAIN' } };
+      if (options.pending === true) return { id: 'pot-pending', state: 'DISPATCHED', value: new Promise(() => {}) };
       if (action === 'use_mp') {
         state.character.mp = Math.min(state.character.maxMp, state.character.mp + 400);
         const row = state.items.find(item => item.name === 'mpot0');
@@ -86,6 +87,21 @@ test('resource topoff preserves enough MP for the most expensive relevant class 
   f.controller.tick();
   assert.equal(f.controller.status().metrics.confirmed, 1);
   assert.equal(f.state.character.mp, 650);
+});
+
+test('resource topoff preserves unverified potion ownership across module stop and restart', () => {
+  const f = resourceFixture({ mp: 100, pending: true });
+  const first = f.controller.tick();
+  assert.equal(first.state, 'DISPATCHED');
+  assert.equal(f.state.dispatches.length, 1);
+  assert.ok(f.controller.status().pending);
+
+  const stopped = f.controller.stop('H19_RUNTIME_RECOVERY_STOP');
+  assert.ok(stopped.pending);
+  f.controller.start({ scope: { interval: () => 'resource-loop-2' } });
+  const next = f.controller.tick();
+  assert.equal(next.state, 'PENDING');
+  assert.equal(f.state.dispatches.length, 1);
 });
 
 test('resource topoff keeps V3 utilization protection for tiny non-operational deficits', () => {
@@ -281,6 +297,18 @@ test('Ranger with self aggro uses a terrain-aware tangential/orbital kite waypoi
   assert.equal(f.controller.status().session.lastDecision.type, 'KITE_ORBIT');
 });
 
+test('Ranger already inside danger radius executes an outward escape instead of freezing', () => {
+  const f = combatFixture({ ctype: 'ranger' });
+  const moved = f.controller._kite(
+    { character: { ...clone(f.character), x: 50, y: 0 } },
+    { id: 'm1', mtype: 'goo', x: 0, y: 0, distance: 50, targetId: 'My_Ranger1', range: 25, speed: 40 }
+  );
+  assert.equal(moved, true);
+  assert.equal(f.state.moves.length, 1);
+  assert.equal(f.controller.status().session.lastDecision.type, 'KITE_ESCAPE');
+  assert.ok(Math.hypot(f.state.moves[0].x, f.state.moves[0].y) > 50);
+});
+
 test('non-aggro Ranger holds fire position instead of kiting', () => {
   const f = combatFixture({ ctype: 'ranger' });
   const moved = f.controller._kite(
@@ -290,6 +318,18 @@ test('non-aggro Ranger holds fire position instead of kiting', () => {
   assert.equal(moved, false);
   assert.equal(f.state.moves.length, 0);
   assert.equal(f.controller.status().metrics.kiteNoAggroHolds, 1);
+});
+
+test('group hard tether fails closed when a configured teammate position is missing', () => {
+  const teammateRows = [
+    { name: 'My_Warrior', local: false, map: 'main', x: 20, y: 0 }
+  ];
+  const f = combatFixture({ ctype: 'ranger', partyRows: teammateRows });
+  const allowed = f.controller._groupTetherAllows(
+    clone(f.character),
+    { x: 120, y: 20 }
+  );
+  assert.equal(allowed, false);
 });
 
 test('group hard tether blocks a kite that would split the combat trio', () => {
@@ -303,6 +343,46 @@ test('group hard tether blocks a kite that would split the combat trio', () => {
     { x: 260, y: 0 }
   );
   assert.equal(allowed, false);
+});
+
+test('group follower rejects stale party focus after group-owned aggro disappears', () => {
+  const { Controller } = loadController('src/combat.js', 'CombatController');
+  const state = { changeTargets: 0 };
+  const character = { name: 'My_Ranger1', ctype: 'ranger', map: 'main', x: 0, y: 0, hp: 2500, maxHp: 2500, mp: 800, maxMp: 1000, range: 200, rip: false };
+  const stale = { id: 'stale', mtype: 'goo', map: 'main', x: 80, y: 0, distance: 80, attack: 10, targetId: null, dead: false, visible: true };
+  const game = {
+    snapshot: () => ({ available: true, character: clone(character), target: null }),
+    visibleMonsters: () => [clone(stale)],
+    entityReference: () => ({ id: 'stale' }),
+    monsterDefinition: () => ({ evasion: 0, avoidance: 0 })
+  };
+  const actions = {
+    available: () => true,
+    dispatch: action => {
+      if (action === 'change_target') state.changeTargets += 1;
+      return { id: 'a1', state: 'DISPATCHED', value: Promise.resolve({ success: true }) };
+    }
+  };
+  const movement = { status: () => ({ activeOrder: null }), captureSafePoint: () => ({}), cancel: () => ({}) };
+  const party = {
+    preferredTargetId: () => 'stale',
+    isOwnedPartyMember: () => true,
+    status: () => ({ party: { ownedMembers: [] } })
+  };
+  const controller = new Controller({ game, actions, movement, party, now: () => 10000 });
+  controller.start({ scope: { interval: () => 'combat-loop' } });
+  const started = controller.startSession({
+    owner: 'farming-h8',
+    partyAssist: true,
+    leaderOwnedPulls: true,
+    groupLeaderName: 'My_Warrior',
+    groupMemberNames: ['My_Priest', 'My_Ranger1', 'My_Warrior']
+  });
+  assert.equal(started.accepted, true);
+  const selected = controller._selectTarget({ character });
+  assert.equal(selected, null);
+  assert.equal(state.changeTargets, 0);
+  assert.equal(controller.status().session.state, 'WAITING_GROUP_TARGET');
 });
 
 test('combat UNKNOWN propagates into Farm Intelligence suspension', () => {
@@ -340,6 +420,8 @@ test('runtime and build wire resource topoff and safe H19 Full Live rearm', () =
   assert.match(runtime, /new ns\.ResourceTopoffController/);
   assert.match(runtime, /id: 'resource-topoff'/);
   assert.match(runtime, /_h19FullAutonomyRearmIntent/);
+  assert.match(runtime, /async emergencyStop[\s\S]*?_h19FullAutonomyRearmIntent = null[\s\S]*?stopLatch\.latch/);
+  assert.match(runtime, /async stop[\s\S]*?EMERGENCY\|UNKNOWN\|UNVERIFIED\|TERMINAL\|SAFETY\|SUSPEND\|FAIL[\s\S]*?_h19FullAutonomyRearmIntent = null/);
   assert.match(runtime, /waitForRoster: true/);
   assert.match(runtime, /this\.merchant\.economy = this\.economy/);
   assert.match(build, /src\/resource-topoff\.js/);
