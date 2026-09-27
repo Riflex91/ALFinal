@@ -244,6 +244,22 @@ test('H19 synchronous UNKNOWN preserves ownership, removes queued duplicate and 
   assert.equal(state.dispatches.length, 1);
 });
 
+test('H19 UNKNOWN ownership requires explicit acknowledgement before safety reset', () => {
+  const { controller, state } = fixture({ syncUnknown: true, noMutation: true });
+  assert.equal(controller.queueStart('My_Merchant').accepted, true);
+  assert.equal(controller.tick().state, 'UNKNOWN');
+  assert.equal(controller.resetSafety('TOO_EARLY').accepted, false);
+
+  const ack = controller.acknowledgeUnknown('TEST_OPERATOR_ACK');
+  assert.equal(ack.accepted, true);
+  assert.equal(ack.safetyResetRequired, true);
+  assert.equal(controller.status().currentAction, null);
+  assert.equal(controller.status().suspended, true);
+  assert.equal(controller.resetSafety('TEST_AFTER_ACK').accepted, true);
+  assert.equal(controller.status().suspended, false);
+  assert.equal(state.dispatches.length, 1);
+});
+
 test('H19 preserves pending lifecycle ownership across module reload and reconciles instead of redispatching', () => {
   const first = fixture({ neverSettle: true });
   assert.equal(first.controller.queueStart('My_Merchant').accepted, true);
@@ -258,6 +274,23 @@ test('H19 preserves pending lifecycle ownership across module reload and reconci
   assert.equal(reconciled.state, 'CONFIRMED');
   assert.equal(second.state.dispatches.length, 1);
   assert.equal(second.controller.status().metrics.reconciliations, 1);
+});
+
+test('H19 late settlement from stopped controller cannot resurrect pending storage', async () => {
+  const first = fixture({ manualSettlement: true });
+  assert.equal(first.controller.queueStart('My_Merchant').accepted, true);
+  assert.equal(first.controller.tick().state, 'DISPATCHED');
+  first.controller.stop('TEST_HOT_RELOAD');
+
+  const second = first.recreate({ manualSettlement: false });
+  assert.equal(second.controller.status().currentAction.restored, true);
+  assert.equal(second.controller.tick().state, 'CONFIRMED');
+  assert.equal([...first.storage.map.keys()].some(key => key.includes(':pending:')), false);
+
+  first.resolve({ success: true });
+  await flush();
+  assert.equal([...first.storage.map.keys()].some(key => key.includes(':pending:')), false);
+  assert.equal(second.controller.status().currentAction, null);
 });
 
 test('H19 captureDesiredActive drives bounded missing-character recovery', async () => {
@@ -442,8 +475,13 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(entry, /runtime\.lifecycle\.queueStart/);
   assert.match(entry, /runtime\.lifecycle\.queueStop/);
   assert.match(entry, /runtime\.lifecycle\.queueRespawn/);
+  assert.match(entry, /runtime\.lifecycle\.acknowledgeUnknown/);
   assert.match(entry, /Object\.freeze\(api\.lifecycle\)/);
   assert.match(ui, /H19 Character Lifecycle & Recovery/);
+  assert.match(ui, /albot-h19-ack-unknown/);
+  assert.match(runtime, /if \(!current\.currentAction\) runtime\.lifecycle\.resetSafety\('H19_LIVE_TEST_RESET'\)/);
+  assert.match(source, /acknowledgeUnknown\(reason = 'H19_EXPLICIT_UNKNOWN_ACK'\)/);
+  assert.match(source, /settlementGeneration/);
   assert.match(boundary, /start_character: Object\.freeze/);
   assert.match(boundary, /stop_character: Object\.freeze/);
   assert.match(boundary, /respawn: Object\.freeze/);
