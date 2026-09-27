@@ -665,9 +665,11 @@ Pre-Live-Teststand:
 - Run #276: 179 Tests, 178 PASS, 1 Safety-Fund;
 - locked Gear als automatische Verbesserung erkannt;
 - behoben in Planung, Queue und unmittelbarer Dispatch-Revalidation;
-- Run #279: `npm test` 180/180 PASS;
-- GitHub markierte Workflow #279 trotzdem als `cancelled`, daher nicht final gate-fähig;
-- neuer Exact-Head-CI nach Dokucommits erforderlich.
+- Review P2 behoben: eindeutige Inventarzuweisung über austauschbare Slots;
+- Run #287: 181/181 PASS, 0 FAIL, 0 SKIP, Workflow completed/success;
+- beide Review-Threads resolved;
+- Bundle source-synchron;
+- nach finalen Dokucommits erneut Exact-Head-CI erforderlich.
 
 H14-Live-Test:
 1. Charakter + Equipment-Snapshot prüfen;
