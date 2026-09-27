@@ -38,7 +38,7 @@ test('H1 bundle loads and exposes ALBot API', () => {
   const ctx = runtimeContext();
   vm.runInNewContext(bundle, ctx, { filename: 'al-bot.js' });
   assert.equal(ctx.ALBot.product, 'AL Bot');
-  assert.equal(ctx.ALBot.version, '0.20.0-h20');
+  assert.equal(ctx.ALBot.version, '0.21.0-h21');
   assert.equal(ctx.ALBot.status().running, false);
   assert.equal(typeof ctx.ALBot.farming.status, 'function');
   assert.equal(typeof ctx.ALBot.farming.plan, 'function');

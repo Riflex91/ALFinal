@@ -333,11 +333,11 @@ test('H10 runtime, public API, UI and one-click live suite are wired', () => {
   assert.match(runtime, /preferredTypes: \[probe\.mtype\]/);
   assert.match(runtime, /safeAhp - safeBhp/);
   assert.match(runtime, /H10_NO_LOOT_PROBE_CANDIDATE/);
-  assert.match(entry, /0\.20\.0-h20/);
+  assert.match(entry, /0\.21\.0-h21/);
   assert.match(entry, /inventory:/);
   assert.match(entry, /reset: reason => runtime\.inventory\.resetSafety/);
   assert.match(build, /src\/inventory\.js/);
-  assert.match(build, /AL Bot 0\.20\.0-h20/);
+  assert.match(build, /AL Bot 0\.21\.0-h21/);
   assert.match(ui, /data-tab="inventory"/);
   assert.match(ui, /H10 Loot & Inventar/);
   assert.match(boundary, /loot: Object\.freeze\(\{ publicName: 'loot'/);
