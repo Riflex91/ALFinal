@@ -5973,6 +5973,7 @@
         running: row.running === true,
         runEpoch: Number.isFinite(Number(row.runEpoch)) ? Number(row.runEpoch) : 0,
         emergencyStopLatched: row.emergencyStopLatched === true,
+        lifecycleAutonomyEnabled: typeof row.lifecycleAutonomyEnabled === 'boolean' ? row.lifecycleAutonomyEnabled : null,
         version: cleanText(row.version || '', 80) || null,
         observedAtMs: Number(observedAtMs) || this.now(),
         aliveUntilMs: (Number(observedAtMs) || this.now()) + this.config.staleMs
@@ -5989,6 +5990,7 @@
         running: state.running === true,
         runEpoch: Number.isFinite(Number(state.runEpoch)) ? Number(state.runEpoch) : 0,
         emergencyStopLatched: state.emergencyStopLatched === true,
+        lifecycleAutonomyEnabled: typeof state.lifecycleAutonomyEnabled === 'boolean' ? state.lifecycleAutonomyEnabled : null,
         version: cleanText(state.version || '', 80) || null
       };
     }
@@ -6178,34 +6180,9 @@
       });
     }
 
-    async _runPartyMutation(callback, args, timeoutReason) {
-      if (typeof callback !== 'function') throw new Error('H19_CROSS_WINDOW_PARTY_ACTION_UNAVAILABLE');
-      const timeoutMs = Math.max(1000, Math.floor(this.config.settlementTimeoutMs * 0.6));
-      if (!this.setTimeoutFn) return Promise.resolve().then(() => callback(...args));
-      return new Promise((resolve, reject) => {
-        let done = false;
-        const timer = this.setTimeoutFn(() => {
-          if (done) return;
-          done = true;
-          reject(new Error(timeoutReason));
-        }, timeoutMs);
-        Promise.resolve().then(() => callback(...args)).then(value => {
-          if (done) return;
-          done = true;
-          try { if (this.clearTimeoutFn) this.clearTimeoutFn(timer); } catch (_) {}
-          resolve(value);
-        }).catch(error => {
-          if (done) return;
-          done = true;
-          try { if (this.clearTimeoutFn) this.clearTimeoutFn(timer); } catch (_) {}
-          reject(error);
-        });
-      });
-    }
-
     async _waitForPartyState(predicate, timeoutReason) {
       const pollMs = 100;
-      const timeoutMs = Math.max(500, Math.floor(this.config.settlementTimeoutMs * 0.25));
+      const timeoutMs = Math.max(1000, Math.floor(this.config.settlementTimeoutMs * 0.8));
       const attempts = Math.max(1, Math.ceil(timeoutMs / pollMs));
       for (let attempt = 0; attempt < attempts; attempt += 1) {
         const snapshot = this._partySnapshot();
@@ -6220,26 +6197,53 @@
       const localName = this._localName();
       if (localState.running !== true) throw new Error('H19_CROSS_WINDOW_PARTY_RUNTIME_NOT_RUNNING');
       if (localState.emergencyStopLatched === true) throw new Error('H19_CROSS_WINDOW_PARTY_EMERGENCY_STOP_LATCHED');
+      if (localState.lifecycleAutonomyEnabled == null) throw new Error('H19_CROSS_WINDOW_PARTY_AUTONOMY_STATE_UNAVAILABLE');
+      if (localState.lifecycleAutonomyEnabled === true) throw new Error('H19_CROSS_WINDOW_PARTY_AUTONOMY_ACTIVE');
+
       const existingLease = this.partyRecoveryLease;
-      if (existingLease && this.now() <= Number(existingLease.validUntilMs || 0)) throw new Error('H19_CROSS_WINDOW_PARTY_RECOVERY_ALREADY_IN_PROGRESS');
+      if (existingLease && this.now() <= Number(existingLease.validUntilMs || 0)) {
+        throw new Error('H19_CROSS_WINDOW_PARTY_RECOVERY_ALREADY_IN_PROGRESS');
+      }
       this.partyRecoveryLease = null;
+
       const before = this._partySnapshot();
       const members = this._partyMemberNames(before);
-      if (!before || !before.partyId || !members.includes(String(localName || ''))) throw new Error('H19_CROSS_WINDOW_PARTY_TARGET_NOT_IN_PARTY');
+      if (!before || !before.partyId || !members.includes(String(localName || ''))) {
+        throw new Error('H19_CROSS_WINDOW_PARTY_TARGET_NOT_IN_PARTY');
+      }
       if (!this._partyHasOnlyOwned(before)) throw new Error('H19_CROSS_WINDOW_FOREIGN_PARTY_MEMBER_PRESENT');
-      if (String(before.leader || '') === String(localName || '')) throw new Error('H19_CROSS_WINDOW_PARTY_LEADER_PROTECTED');
-      if (String(before.leader || '') !== String(sender || '')) throw new Error('H19_CROSS_WINDOW_PARTY_SENDER_NOT_LEADER');
-      await this._runPartyMutation(this.leavePartyLocal, [], 'H19_CROSS_WINDOW_PARTY_LEAVE_ACTION_TIMEOUT');
-      const after = await this._waitForPartyState(snapshot => {
-        const names = this._partyMemberNames(snapshot);
-        return !snapshot.partyId && !names.includes(String(localName || ''));
-      }, 'H19_CROSS_WINDOW_PARTY_LEAVE_UNVERIFIED_TIMEOUT');
+      if (String(before.leader || '') === String(localName || '')) {
+        throw new Error('H19_CROSS_WINDOW_PARTY_LEADER_PROTECTED');
+      }
+      if (String(before.leader || '') !== String(sender || '')) {
+        throw new Error('H19_CROSS_WINDOW_PARTY_SENDER_NOT_LEADER');
+      }
+
+      // Establish recovery authority before the irreversible dispatch. If the
+      // ActionBoundary reports UNKNOWN after dispatch, this authority remains
+      // available for evidence-driven/manual cleanup; it is never auto-retried.
       this.partyRecoveryLease = {
         leader: String(sender || ''),
         targetName: String(localName || ''),
         issuedAtMs: this.now(),
         validUntilMs: this.now() + this.config.settlementTimeoutMs * 2
       };
+
+      try {
+        this.leavePartyLocal();
+      } catch (error) {
+        const reason = errorReason(error, 'H19_CROSS_WINDOW_PARTY_LEAVE_DISPATCH_FAILED');
+        if (!reason.includes('H19_CROSS_WINDOW_PARTY_ACTION_UNKNOWN')) {
+          this.partyRecoveryLease = null;
+        }
+        throw error;
+      }
+
+      const after = await this._waitForPartyState(snapshot => {
+        const names = this._partyMemberNames(snapshot);
+        return !snapshot.partyId && !names.includes(String(localName || ''));
+      }, 'H19_CROSS_WINDOW_PARTY_LEAVE_UNVERIFIED_TIMEOUT');
+
       return {
         reason: 'H19_CROSS_WINDOW_PARTY_LEFT',
         details: {
@@ -6270,7 +6274,15 @@
       const beforeMembers = this._partyMemberNames(before);
       if (!before) throw new Error('H19_CROSS_WINDOW_PARTY_STATE_UNAVAILABLE');
       if (before.partyId || beforeMembers.includes(String(localName || ''))) throw new Error('H19_CROSS_WINDOW_PARTY_TARGET_ALREADY_IN_PARTY');
-      await this._runPartyMutation(this.requestPartyJoinLocal, [sender], 'H19_CROSS_WINDOW_PARTY_REQUEST_ACTION_TIMEOUT');
+      try {
+        this.requestPartyJoinLocal(sender);
+      } catch (error) {
+        const reason = errorReason(error, 'H19_CROSS_WINDOW_PARTY_REQUEST_DISPATCH_FAILED');
+        if (!reason.includes('H19_CROSS_WINDOW_PARTY_ACTION_UNKNOWN')) {
+          this.partyRecoveryLease = lease;
+        }
+        throw error;
+      }
       const after = await this._waitForPartyState(snapshot => {
         const names = this._partyMemberNames(snapshot);
         return !!snapshot.partyId
@@ -16733,20 +16745,20 @@
         economy: this.economy,
         canAct: action => this.actionAllowed(action)
       });
-      const dispatchH19CrossWindowPartyAction = async (actionName, args = []) => {
+      const dispatchH19CrossWindowPartyAction = (actionName, args = []) => {
         let dispatched;
         try { dispatched = this.actions.dispatch(actionName, args); }
         catch (error) { throw new Error('H19_CROSS_WINDOW_PARTY_ACTION_THROW:' + String(error && error.message || error || actionName)); }
-        if (dispatched && dispatched.state === 'UNKNOWN' && dispatched.dispatched === true) throw new Error('H19_CROSS_WINDOW_PARTY_ACTION_UNKNOWN:' + actionName);
+        if (dispatched && dispatched.state === 'UNKNOWN' && dispatched.dispatched === true) {
+          throw new Error('H19_CROSS_WINDOW_PARTY_ACTION_UNKNOWN:' + actionName);
+        }
         if (!dispatched || dispatched.state !== 'DISPATCHED') {
           const reason = dispatched && dispatched.error && dispatched.error.message || 'H19_CROSS_WINDOW_PARTY_ACTION_NOT_DISPATCHED';
           throw new Error(String(reason));
         }
-        let response;
-        try { response = await Promise.resolve(dispatched.value); }
-        catch (error) { throw new Error('H19_CROSS_WINDOW_PARTY_ACTION_REJECTED:' + String(error && error.message || error || actionName)); }
-        if (response && (response.failed === true || response.success === false)) throw new Error(String(response.reason || 'H19_CROSS_WINDOW_PARTY_SERVER_REJECTED'));
-        return response;
+        // The Adventure Land promise is transport/server feedback, not terminal
+        // party evidence. Cross-window settlement is confirmed from party snapshots.
+        return { actionBoundaryId: dispatched.id || null, settlement: dispatched.value || null };
       };
 
       this.lifecycleTransport = new ns.H19CrossWindowLifecycleTransport({
@@ -16761,6 +16773,7 @@
             running: this.running,
             runEpoch: this.runEpoch,
             emergencyStopLatched: this.stopLatch.status().latched,
+            lifecycleAutonomyEnabled: this.lifecycle ? this.lifecycle.status().autonomyEnabled === true : null,
             version: this.version
           };
         },
@@ -17002,7 +17015,7 @@
         title: 'H5 – Einfacher Kampf',
         description: 'Ein-Klick-Live-Test für Targeting, Range, Cooldown, bestätigte Angriffe, Cleanup und Fail-Safe.',
         version: '1',
-        recommended: true,
+        recommended: false,
         autoStartRuntime: true,
         restoreRuntimeState: true,
         prepare: async ({ runtime }) => {
@@ -21687,7 +21700,11 @@
                 const peers = new Map(runtime.lifecycleTransport.freshPeers().map(peer => [String(peer.name), peer]));
                 return members.filter(name => name !== localName && owned.has(name) && online.has(name))
                   .map(name => ({ name, peer: peers.get(name) || null }))
-                  .filter(row => row.peer && row.peer.running === true && row.peer.emergencyStopLatched !== true && String(row.peer.version || '') === String(runtime.version))
+                  .filter(row => row.peer
+                    && row.peer.running === true
+                    && row.peer.emergencyStopLatched !== true
+                    && row.peer.lifecycleAutonomyEnabled === false
+                    && String(row.peer.version || '') === String(runtime.version))
                   .sort((a, b) => a.name.localeCompare(b.name))[0] || null;
               }, { timeoutMs: 8000, pollMs: 250, label: 'h19-party-recovery-target' });
               assert(candidate, 'H19_PARTY_SAFE_CROSS_WINDOW_TARGET_UNAVAILABLE');

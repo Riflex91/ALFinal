@@ -753,8 +753,10 @@ test('H19 party recovery live suite is bounded, leader-protected and fail-closed
   const end = runtime.indexOf('_installErrorCapture()', start);
   assert.ok(start >= 0); assert.ok(end > start);
   const suite = runtime.slice(start, end);
+  assert.match(suite, /recommended: false/);
   assert.match(suite, /H19_PARTY_TEST_REQUIRES_LOCAL_LEADER/);
   assert.match(suite, /H19_PARTY_FOREIGN_MEMBER_PRESENT/);
+  assert.match(suite, /lifecycleAutonomyEnabled === false/);
   assert.match(suite, /requestPartyLeave\(targetName\)/);
   assert.match(suite, /requestPartyJoin\(targetName\)/);
   assert.match(suite, /startAutonomy\(\{ maxActions: 1 \}\)/);
@@ -836,6 +838,8 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(crossWindow, /requestPartyLeave\(targetName\)/);
   assert.match(crossWindow, /requestPartyJoin\(targetName\)/);
   assert.match(crossWindow, /H19_CROSS_WINDOW_PARTY_LEADER_PROTECTED/);
+  assert.match(crossWindow, /H19_CROSS_WINDOW_PARTY_AUTONOMY_ACTIVE/);
+  assert.match(crossWindow, /H19_CROSS_WINDOW_PARTY_ACTION_UNKNOWN/);
   assert.match(crossWindow, /H19_CROSS_WINDOW_PARTY_RECOVERY_AUTHORITY_UNAVAILABLE/);
   assert.match(crossWindow, /partyRecoveryLease/);
   assert.match(build, /src\/cross-window-lifecycle\.js/);
