@@ -1147,3 +1147,27 @@ Nächster Gate-Schritt:
 - erst dann den echten H19-Live-Test durchführen.
 
 **H19 bleibt bis zur erforderlichen echten Adventure-Land-Live-Evidence offen.**
+
+
+### H19 Safety-Hardening vor finalem Merge-Gate
+
+Stand 2026-09-27:
+
+Nach dem ersten technischen H19-Pre-Live-Gate wurden zwei zusätzliche Safety-Grenzen ergänzt:
+
+- Desired Active und Desired Party Membership sind getrennte Zustände;
+- `desiredPartyMemberNames` enthält nur eigene Characters, die beim Capture tatsächlich in der beobachteten Party waren;
+- aktive eigene Characters außerhalb dieser Party werden nicht automatisch eingeladen;
+- `desiredPartyLeader` muss Teil des erfassten Desired-Party-Sets sein;
+- Party-Recovery rekonstruiert ausschließlich diese gespeicherte eigene Party-Topologie;
+- synchrones `UNKNOWN` entfernt den bereits dispatch-gefährdeten Queue-Eintrag, behält aber die persistierte in-flight Ownership;
+- derselbe unklare Auftrag erhöht `actionsUnknown` nur einmal und kann nach Reload weiterhin über Live-Evidence reconciled werden;
+- Control Center zeigt Desired Active, Desired Party Members und Desired Party Leader separat.
+
+Grüner technischer Zwischenstand vor der letzten UI-/Doku-/Workflow-Bereinigung:
+
+- Head `de1d3bdecbd7de1013c1dda2546d81e3c794edf0`;
+- CI #527: **273/273 PASS, 0 FAIL, 0 CANCELLED, 0 SKIP**;
+- `dist/al-bot.js` auf diesem Stand bereits source-synchron.
+
+Der verbindliche Merge-Gate bleibt der danach aktuelle Head mit read-only Testworkflow, `behind_by=0`, vollständig grüner Exact-Head-CI, keinen offenen Review-Threads, keinem `CHANGES_REQUESTED` und `mergeable=true`.
