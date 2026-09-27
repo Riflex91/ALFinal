@@ -224,3 +224,47 @@ Im Review gefundene und behobene Punkte:
 Zusätzliche Regressionen decken die Safety-Fixes ab.
 
 Nach diesem Evidence-Commit ist erneut ein Exact-Head-CI erforderlich. Erst wenn auch dieser neue Head `completed/success`, `behind_by=0`, review-clean und mergeable ist, darf der echte H15-Live-Test freigegeben werden.
+
+
+## Finale H15 Live-Evidence
+
+Adventure-Land-Live-Test vom 2026-09-27:
+
+- Runtime: `0.15.0-h15`
+- Suite: `h15-upgrade-compound`
+- Ergebnis: **PASSED / ALL_STEPS_PASSED**
+- Runtime war vor Test STOPPED und wurde automatisch gestartet
+- Character: `My_Merchant` / merchant
+- gewählte Aktion: `UPGRADE`
+- Item: `gloves`
+- echtes Upgrade: `+0 → +1`
+- Item-Slot: `13`
+- Scroll: `scroll0` in Slot `14`
+- Offering: keines
+- Itemwert-at-risk: `3.400 Gold`
+- Consumable-Kosten: `1.000 Gold`
+- verfügbare Upgrade-Kandidaten: `4`
+- verfügbare Compound-Kandidaten: `0`
+- Live-Test-Policy: genau `1` Versuch, Upgrade max `+3`, Compound max `+1`, Item-Risiko max `25.000`, Consumables max `10.000`, Offering `DISABLED`
+- reale Aktion: **UPGRADE_SUCCEEDED**
+- Evidence: `INVENTORY_LEVEL_DELTA`
+- `upgradesDispatched=1`
+- `upgradesSucceeded=1`
+- `upgradesFailed=0`
+- `upgradesUnknown=0`
+- `compoundsDispatched=0`
+- `compoundsUnknown=0`
+- Stabilität: genau `1` Versuch, `upgradeUnknown=0`, `compoundUnknown=0`, keine Suspension
+- Cleanup: kein Pending, kein Request, Suite-Cleanup `ok=true`
+- Runtime nach Auto-Restore wieder STOPPED
+- Scheduler danach disabled und `totalResources=0`
+- Scheduler-Ressourcen: `created=11`, `cancelled=11`, `callbackErrors=0`
+
+Alle fünf H15-Schritte bestanden:
+1. Preflight
+2. Planning
+3. Real Action
+4. Stability
+5. Cleanup
+
+Damit ist das H15-Live-Gate bestanden. Nach diesem Evidence-Commit ist erneut ein Exact-Head-CI und danach ein vollständiger frischer Merge-Gate-Check erforderlich.
