@@ -3245,13 +3245,25 @@
                     }
 
                     const offers = [];
+                    const liveBank = runtime.game.bankSnapshot();
                     const bankRow = (row.bankRows || []).find(source =>
-                      source && Math.max(1, Math.floor(Number(source.quantity) || 1)) >= quantity);
+                      source
+                      && source.map
+                      && liveBank
+                      && liveBank.available !== false
+                      && liveBank.map
+                      && String(source.map) === String(liveBank.map)
+                      && Math.max(1, Math.floor(Number(source.quantity) || 1)) >= quantity);
                     if (bankRow) {
                       offers.push({
                         source: 'BANK',
                         unitPrice: 0,
-                        bankRow: { pack: bankRow.pack, slot: bankRow.slot, quantity: bankRow.quantity }
+                        bankRow: {
+                          pack: bankRow.pack,
+                          map: bankRow.map,
+                          slot: bankRow.slot,
+                          quantity: bankRow.quantity
+                        }
                       });
                     }
 
@@ -3278,8 +3290,11 @@
                         quantity,
                         bankRows: (row.bankRows || []).slice(0, 4).map(source => ({
                           pack: source.pack,
+                          map: source.map || null,
                           slot: source.slot,
-                          quantity: source.quantity
+                          quantity: source.quantity,
+                          usableOnMountedMap: !!(source && source.map && liveBank && liveBank.map
+                            && String(source.map) === String(liveBank.map))
                         })),
                         npcPrice: Number.isFinite(npcPrice) ? npcPrice : null,
                         npcSources: (row.npcSources || []).slice(0, 4).map(source => ({
