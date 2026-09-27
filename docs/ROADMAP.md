@@ -925,3 +925,9 @@ Stand 2026-09-27:
 - frischer Codex-Review auf dem aktuellen technischen Head derzeit durch ausgeschöpftes Codex-Code-Review-Kontingent blockiert.
 
 **Gate bleibt geschlossen:** kein Merge, bevor ein frischer Codex-Review auf dem dann aktuellen finalen Head clean ist und danach der vollständige Merge-Gate erneut frisch geprüft wurde.
+
+### PR #20 Gate-Policy-Update
+
+Ab 2026-09-27 ist ein frischer Codex-Code-Review für PR #20 keine verpflichtende Merge-Voraussetzung mehr. Der zuvor dokumentierte Codex-Quota-Blocker ist damit aufgehoben.
+
+Weiterhin zwingend: aktueller Head, `behind_by=0`, vollständig grüne relevante CI, keine pending/failing Checks, keine offenen Review-Threads, kein `CHANGES_REQUESTED`, `mergeable=true`, Merge ausschließlich per `merge` mit exaktem `expected_head_sha`, danach `main` verifizieren.
