@@ -30,6 +30,14 @@
       this.party = options.party || null;
       this.movement = options.movement || null;
       this.combat = options.combat || null;
+      this.inventory = options.inventory || null;
+      this.merchant = options.merchant || null;
+      this.bank = options.bank || null;
+      this.trade = options.trade || null;
+      this.gear = options.gear || null;
+      this.upgrade = options.upgrade || null;
+      this.exchangeCraft = options.exchangeCraft || null;
+      this.economy = options.economy || null;
       this.canAct = typeof options.canAct === 'function' ? options.canAct : null;
 
       this.moduleActive = false;
@@ -218,12 +226,53 @@
         .sort((a, b) => Number(b.utility) - Number(a.utility) || String(a.name).localeCompare(String(b.name)) || a.slot - b.slot);
     }
 
-    _findSupplyRow(itemName) {
+    _findSupplyRow(itemName, minQuantity = 1) {
       const wanted = cleanText(itemName || '', 160);
+      const required = Math.max(1, Math.floor(Number(minQuantity) || 1));
       if (!wanted) return null;
       const inventory = this._inventory();
       if (!inventory || inventory.available === false) return null;
-      return (inventory.items || []).find(row => String(row.name || '') === wanted && this._safeSupplyRow(row)) || null;
+      return (inventory.items || [])
+        .filter(row => String(row.name || '') === wanted
+          && this._safeSupplyRow(row)
+          && Math.max(1, Math.floor(Number(row.quantity) || 1)) >= required)
+        .sort((a, b) => Number(a.slot || 0) - Number(b.slot || 0))[0] || null;
+    }
+
+    _supplyRowAt(slot, itemName) {
+      const inventory = this._inventory();
+      if (!inventory || inventory.available === false) return null;
+      return (inventory.items || []).find(row =>
+        Number(row.slot) === Number(slot)
+        && String(row.name || '') === String(itemName || '')
+        && this._safeSupplyRow(row)) || null;
+    }
+
+    _externalBusy() {
+      const rows = [
+        ['inventory', this.inventory],
+        ['merchant', this.merchant],
+        ['bank', this.bank],
+        ['trade', this.trade],
+        ['gear', this.gear],
+        ['upgrade', this.upgrade],
+        ['exchangeCraft', this.exchangeCraft]
+      ];
+      const blockers = [];
+      for (const [name, controller] of rows) {
+        let status = null;
+        try { status = controller && typeof controller.status === 'function' ? controller.status() : null; } catch (_) {}
+        if (status && (status.pending || status.request || status.delivery || status.pendingLoot || status.currentAction)) {
+          blockers.push({ module: name, reason: 'BUSY' });
+        }
+        if (status && status.suspended) blockers.push({ module: name, reason: status.suspendedReason || 'SUSPENDED' });
+      }
+      let economy = null;
+      try { economy = this.economy && typeof this.economy.status === 'function' ? this.economy.status() : null; } catch (_) {}
+      if (economy && (economy.currentAction || economy.autonomyEnabled)) {
+        blockers.push({ module: 'economy', reason: economy.currentAction ? 'BUSY' : 'AUTONOMY_ACTIVE' });
+      }
+      return blockers;
     }
 
     queueSupply(targetName, itemName, quantity = 1) {
@@ -234,9 +283,9 @@
       if (!party || !party.coordinationEnabled) return { accepted: false, reason: 'H18_OWNED_PARTY_REQUIRED' };
       const target = this._ownedTarget(targetName, party);
       if (!target) return { accepted: false, reason: 'H18_TARGET_NOT_OWNED_PARTY_MEMBER' };
-      const row = this._findSupplyRow(itemName);
-      if (!row) return { accepted: false, reason: 'H18_SUPPLY_ITEM_NOT_SAFE_OR_AVAILABLE' };
       const wanted = Math.max(1, Math.floor(Number(quantity) || 1));
+      const row = this._findSupplyRow(itemName, wanted);
+      if (!row) return { accepted: false, reason: 'H18_SUPPLY_ITEM_NOT_SAFE_OR_AVAILABLE' };
       const available = Math.max(1, Math.floor(Number(row.quantity) || 1));
       if (wanted > available) return { accepted: false, reason: 'H18_SUPPLY_QUANTITY_UNAVAILABLE' };
       const request = {
@@ -336,7 +385,7 @@
       }
 
       if (request.kind === 'SUPPLY') {
-        const row = this._findSupplyRow(request.itemName);
+        const row = this._findSupplyRow(request.itemName, request.quantity);
         if (!row) return { state: 'BLOCKED', reason: 'H18_SUPPLY_ITEM_NOT_SAFE_OR_AVAILABLE', selected: null };
         const available = Math.max(1, Math.floor(Number(row.quantity) || 1));
         if (available < request.quantity) return { state: 'BLOCKED', reason: 'H18_SUPPLY_QUANTITY_UNAVAILABLE', selected: null };
@@ -415,6 +464,11 @@
       if (this._combatActive()) {
         this.metrics.combatBlocks += 1;
         return this.lastPlan = { ...base, state: 'BLOCKED', reason: 'H18_COMBAT_ACTIVE', selected: null };
+      }
+      const externalBlockers = this._externalBusy();
+      if (externalBlockers.length) {
+        this.metrics.ownershipBlocks += 1;
+        return this.lastPlan = { ...base, state: 'WAITING', reason: 'H18_EXTERNAL_OWNERSHIP_BUSY', selected: null, blockers: externalBlockers };
       }
       if (this.currentAction) {
         return this.lastPlan = { ...base, state: 'ACTIVE', reason: 'H18_ACTION_ACTIVE', selected: clone(this.currentAction) };
@@ -541,7 +595,7 @@
 
       const settlementFinished = current.settlement !== 'PENDING';
       if (current.kind === 'SUPPLY') {
-        const row = this._findSupplyRow(current.itemName);
+        const row = this._supplyRowAt(current.slot, current.itemName);
         const after = row ? Math.max(1, Math.floor(Number(row.quantity) || 1)) : 0;
         if (settlementFinished && current.beforeQuantity - after >= current.quantity) {
           return { state: 'CONFIRMED', result: this._finishCurrent('CONFIRMED', {
@@ -706,7 +760,7 @@
         if (selected.kind === 'SUPPLY') this.metrics.suppliesRejected += 1;
         if (selected.kind === 'GOLD') this.metrics.goldRejected += 1;
         if (selected.kind === 'REGROUP') this.metrics.regroupsRejected += 1;
-        if (selected.requestId) this._dequeueRequest(selected.requestId);
+        if (selected.requestId && ['SUPPLY','GOLD'].includes(selected.kind)) this._dequeueRequest(selected.requestId);
         this.lastAction = {
           at: nowIso(),
           type: 'ACTION_QUEUE_REJECTED',
