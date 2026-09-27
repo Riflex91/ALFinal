@@ -6,18 +6,15 @@ H13 baut auf dem H12-Bankstand auf und ergänzt kontrollierten NPC-Handel sowie 
 
 ## Abhängigkeit
 
-H13 ist aktuell als gestapelter Branch auf H12 vorbereitet:
+H12 ist live bestanden und als PR #12 gemergt.
 
-- H12 Branch: `chatgpt/h12-bank`
-- H13 Branch: `chatgpt/h13-handel`
-- H13 PR basiert zunächst auf H12 und darf nicht vor H12 gemergt werden.
+Aktiver H13-Branch:
+`chatgpt/h13-handel-v2`
 
-Morgen gilt deshalb:
+Basis:
+H12-Merge-Commit `b68e3f2934877e001f0e5454d83117ef43f7b9e3` auf `main`.
 
-1. H12 echten Adventure-Land-Live-Test ausführen.
-2. Bei PASS H12-Evidence dokumentieren und PR #12 sauber mergen.
-3. H13 anschließend gegen den neuen `main` prüfen/aktualisieren.
-4. Erst dann H13 live testen.
+Der frühere gestapelte Branch `chatgpt/h13-handel` wird wegen der Stale-Branch-Regel nicht weiter beschrieben.
 
 ## Scope
 
@@ -260,4 +257,4 @@ Code-/Bundle-Head vor dieser Dokumentation:
 
 Nach diesen Dokumentationscommits ist erneut Exact-Head-CI erforderlich.
 
-H13 wird erst nach bestandenem H12-Live-Test, H12-Merge und eigenem H13-Live-Test gemergt.
+H13 wird erst nach eigenem bestandenem Adventure-Land-Live-Test und anschließend erneut sauberem Exact-Head-Merge-Gate gemergt.
