@@ -15682,7 +15682,7 @@
         id: 'h16-exchange-craft',
         title: 'H16 – Exchange & Craft',
         description: 'Ein-Klick-Live-Test für Materialbeschaffung, eine kleine niedrig riskante Craft- und Exchange-Sequenz, Live-Outcome-Evidence und Produktionsgraph.',
-        version: '2',
+        version: '3',
         recommended: true,
         autoStartRuntime: true,
         restoreRuntimeState: true,
@@ -15693,9 +15693,9 @@
           previousPolicy = runtime.exchangeCraft.policy();
           runtime.exchangeCraft.policy({
             maxAttemptsPerSession: 2,
-            maxExchangeValueAtRisk: 20000,
-            maxCraftGoldCost: 10000,
-            maxCraftInputValueAtRisk: 20000,
+            maxExchangeValueAtRisk: 2000000,
+            maxCraftGoldCost: 1000000,
+            maxCraftInputValueAtRisk: 2000000,
             goldReserve: 10000,
             maxProductionDepth: 6,
             allowQuestEvent: false
@@ -15746,12 +15746,12 @@
               const crafts = (plan.craftCandidates || []).filter(row =>
                 row.safe === true
                 && row.questEvent !== true
-                && Number(row.cost || 0) <= 10000
-                && Number(row.inputValueAtRisk || 0) <= 20000);
+                && Number(row.cost || 0) <= 1000000
+                && Number(row.inputValueAtRisk || 0) <= 2000000);
               const exchanges = (plan.exchangeCandidates || []).filter(row =>
                 row.safe === true
                 && row.questEvent !== true
-                && Number(row.valueAtRisk || 0) <= 20000);
+                && Number(row.valueAtRisk || 0) <= 2000000);
 
               assert(exchanges.length > 0, 'H16_NEEDS_LOW_RISK_EXCHANGE_CANDIDATE');
 
@@ -15770,7 +15770,7 @@
                   ? outputUnitValue * required
                   : null;
                 if (!Number.isFinite(required) || required <= 0 || outputDef.quest === true || outputDef.cash === true) continue;
-                if (outputRisk == null || outputRisk > 20000) continue;
+                if (outputRisk == null || outputRisk > 2000000) continue;
                 const existing = inventoryQuantity(runtime, craft.itemName, 0);
                 if (existing + 1 < required) continue;
                 selectedCraft = craft;
@@ -15814,11 +15814,11 @@
                 const catalog = runtime.game.craftCatalog();
                 for (const recipe of catalog || []) {
                   if (!recipe || recipe.quest) continue;
-                  if (Number(recipe.cost || 0) > 10000) continue;
+                  if (Number(recipe.cost || 0) > 1000000) continue;
                   const outputDef = runtime.game.itemDefinition(recipe.name);
                   if (!outputDef || outputDef.quest === true || outputDef.cash === true) continue;
                   const inputRisk = recipeInputRisk(runtime, recipe);
-                  if (inputRisk == null || inputRisk > 20000) continue;
+                  if (inputRisk == null || inputRisk > 2000000) continue;
 
                   const candidateProduction = runtime.exchangeCraft.productionPlan(recipe.name, 1, { includeBank: false });
                   if (!candidateProduction || candidateProduction.state !== 'NEEDS_MATERIALS') continue;
