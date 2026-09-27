@@ -599,6 +599,9 @@ Finale Live-Evidence:
 Aktiver Branch:
 `chatgpt/h13-handel-v2`
 
+PR:
+`#14 – H13: Handel (H12-merged main)`
+
 Basis:
 `main` bei H12-Merge-Commit `b68e3f2934877e001f0e5454d83117ef43f7b9e3`
 
