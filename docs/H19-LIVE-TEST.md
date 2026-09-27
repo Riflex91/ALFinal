@@ -443,3 +443,18 @@ Wenn ein Fehler **nach bestätigtem Stop, aber bevor überhaupt ein Start dispat
 Sobald ein Start bereits dispatcht wurde, ein Reject vorliegt, eine Aktion UNKNOWN ist oder H19 suspendiert wurde, führt Cleanup **keinen Blind-Retry** aus.
 
 Die bestehende Death→Respawn-Suite bleibt verfügbar, ist nach erfolgreicher Evidence aber nicht mehr der empfohlene H19-Test. `h19-remote-recovery` wird zum nächsten Recommended Live-Test.
+
+
+### H19 v2 Review-Hardening – Rerun- und Cancel-Cleanup
+
+Stand: 2026-09-27
+
+Vor dem finalen v2-Gate wurden zwei zusätzliche Cleanup-Safety-Punkte geschlossen:
+
+- `targetName`, `baseline` und `originalPolicy` werden zu Beginn jedes neuen Suite-Prepare vollständig zurückgesetzt. Ein früh scheiternder Folgelauf kann dadurch niemals Policy-State eines vorherigen Runs restaurieren.
+- Der Cleanup-Restore verwendet keinen normalen LiveTestRunner-`waitFor` mehr. Dieser respektiert absichtlich den Cancel-Latch und wäre deshalb nach einem Nutzer-Cancel ungeeignet.
+- Stattdessen besitzt v2 einen eigenen cancel-unabhängigen, zeitlich begrenzten Cleanup-Poller ausschließlich für den einmaligen sicheren Restore eines **bereits bestätigt gestoppten** Remote-Characters, wenn noch kein Start dispatcht wurde.
+- Ein Cleanup-Start wird weiterhin blockiert, sobald ein Start bereits dispatcht wurde, ein Reject/UNKNOWN vorliegt, H19 suspendiert ist oder der Roster-Zustand nicht eindeutig ist.
+- Restore-Fehler werden nicht mehr verschluckt. Ein nicht erfolgreich wiederhergestellter Remote-Character macht den Cleanup sichtbar fehlerhaft.
+
+Exact-Head-CI #560 bestätigte den gehärteten Source-/Test-Stand vollständig grün.
