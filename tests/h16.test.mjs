@@ -528,6 +528,12 @@ test('H16 runtime, API, UI, build, adapter and ActionBoundary are wired', () => 
   assert.match(runtime, /PROTECTED_RECIPE_IN_PRODUCTION/);
   assert.match(runtime, /PRODUCTION_NOT_NEEDS_MATERIALS/);
   assert.ok(runtime.indexOf("PROTECTED_RECIPE_IN_PRODUCTION") < runtime.indexOf("PRODUCTION_NOT_NEEDS_MATERIALS"));
+  assert.match(runtime, /missingItemName: row\.itemName/);
+  const nearMatchBuilder = runtime.slice(
+    runtime.indexOf("const recordFallbackReject"),
+    runtime.indexOf("const buildPreflightDiagnostics")
+  );
+  assert.ok(nearMatchBuilder.indexOf("...details") < nearMatchBuilder.indexOf("itemName: recipe"));
   assert.match(runtime, /TOO_MANY_MISSING_LEAVES/);
   assert.match(runtime, /MISSING_LEAF_NO_NPC_OR_MARKET_SOURCE/);
   assert.match(runtime, /MATERIAL_ACQUISITION_OVER_CAP/);
