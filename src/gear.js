@@ -436,7 +436,7 @@
       return rows;
     }
 
-    _groupPlan(inventoryRows, roster, localName) {
+    _groupPlan(inventoryRows, roster, localName, localCtype) {
       const targets = this._priorityTargets(roster);
       const usedInventorySlots = new Set();
       const proposals = [];
@@ -445,11 +445,13 @@
         const equipment = this._equipmentSnapshot(target.name);
         const visible = !!(equipment && equipment.available !== false);
         targetRows.push({ ...target, visible, equipment: visible ? clone(equipment) : null });
-        if (!visible || target.name === localName) continue;
+        if (!visible || target.name === localName || String(localCtype || '').toLowerCase() !== 'merchant') continue;
 
+        const transferRows = inventoryRows.filter(row =>
+          !row.locked && !row.giveaway && !row.gift && !row.expiresAt);
         const candidateRows = [];
         for (const slot of GEAR_SLOTS) {
-          const slotPlan = this._slotPlan(slot, target.ctype, equipment, inventoryRows, usedInventorySlots);
+          const slotPlan = this._slotPlan(slot, target.ctype, equipment, transferRows, usedInventorySlots);
           if (!slotPlan.improvement || !slotPlan.bestInventory) continue;
           candidateRows.push({
             targetName: target.name,
@@ -489,12 +491,21 @@
           && (!goal.itemName || String(equipped.name) === String(goal.itemName))
           && Math.max(0, Number(equipped.level) || 0) >= goal.minLevel);
         let inventoryMatch = null;
-        if (!achieved && goal.targetName === localName) {
+        if (!achieved) {
+          const targetCtype = target && target.ctype || equipment && equipment.character && equipment.character.ctype;
           inventoryMatch = inventoryRows.find(row =>
             (!goal.itemName || String(row.name) === String(goal.itemName))
             && Math.max(0, Number(row.level) || 0) >= goal.minLevel
-            && this._canEquip(row, goal.slot, target && target.ctype || equipment && equipment.character && equipment.character.ctype).ok) || null;
+            && this._canEquip(row, goal.slot, targetCtype).ok) || null;
         }
+        const localCtype = local && local.character && local.character.ctype;
+        const readyToEquip = !!(inventoryMatch && goal.targetName === localName);
+        const readyToDeliver = !!(inventoryMatch
+          && goal.targetName !== localName
+          && String(localCtype || '').toLowerCase() === 'merchant'
+          && target && target.role === 'FARMER'
+          && equipment && equipment.available !== false
+          && !inventoryMatch.locked && !inventoryMatch.giveaway && !inventoryMatch.gift && !inventoryMatch.expiresAt);
         results.push({
           ...clone(goal),
           role: target && target.role || null,
@@ -503,7 +514,7 @@
           equipped: equipped ? clone(equipped) : null,
           achieved,
           localInventoryMatch: inventoryMatch ? clone(inventoryMatch) : null,
-          state: achieved ? 'ACHIEVED' : inventoryMatch ? 'READY_TO_EQUIP' : 'NEEDS_ACQUISITION'
+          state: achieved ? 'ACHIEVED' : readyToEquip ? 'READY_TO_EQUIP' : readyToDeliver ? 'READY_TO_DELIVER' : 'NEEDS_ACQUISITION'
         });
       }
       results.sort((a, b) => b.targetPriority - a.targetPriority || b.priority - a.priority || String(a.id).localeCompare(String(b.id)));
@@ -527,7 +538,7 @@
       }
       const inventoryRows = this._inventoryGear();
       const local = this._localPlan(inventoryRows);
-      const group = this._groupPlan(inventoryRows, roster, snap.character.name);
+      const group = this._groupPlan(inventoryRows, roster, snap.character.name, snap.character.ctype);
       const goals = this._goalPlan(roster, inventoryRows);
       this.metrics.localImprovements = local.improvements ? local.improvements.length : 0;
       this.metrics.groupProposals = group.proposals.length;
