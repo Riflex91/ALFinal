@@ -48,8 +48,14 @@
       this.lastAction = null;
       this.sequence = 0;
       this.restoredPending = false;
+      this.partySignals = [];
+      this.previousPartyInviteHandler = null;
+      this.previousPartyRequestHandler = null;
+      this.partyInviteHandler = null;
+      this.partyRequestHandler = null;
       this.policyState = {
-        desiredActiveNames: []
+        desiredActiveNames: [],
+        desiredPartyLeader: null
       };
       this.metrics = {
         ticks: 0,
@@ -65,6 +71,15 @@
         stopsConfirmed: 0,
         respawnsQueued: 0,
         respawnsConfirmed: 0,
+        partyInvitesDispatched: 0,
+        partyInvitesConfirmed: 0,
+        partyRequestsDispatched: 0,
+        partyRequestsConfirmed: 0,
+        partyAcceptsDispatched: 0,
+        partyAcceptsConfirmed: 0,
+        partySignalsObserved: 0,
+        partySignalsIgnored: 0,
+        partyConflictBlocks: 0,
         reconciliations: 0,
         sessionBudgetBlocks: 0,
         ownershipBlocks: 0,
@@ -84,6 +99,101 @@
     _localName() {
       const local = this._local();
       return cleanText(local && local.name || '', 120);
+    }
+
+    _partySnapshot() {
+      try {
+        return this.party && typeof this.party.snapshot === 'function' ? this.party.snapshot() : null;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    _partyMemberSet(snapshot = null) {
+      const party = snapshot || this._partySnapshot();
+      const names = party && Array.isArray(party.memberNames)
+        ? party.memberNames
+        : party && Array.isArray(party.ownedMemberNames)
+          ? party.ownedMemberNames
+          : [];
+      return new Set(names.map(String));
+    }
+
+    _installPartyHooks() {
+      if (!this.root || this.partyInviteHandler || this.partyRequestHandler) return;
+      try {
+        this.previousPartyInviteHandler = typeof this.root.on_party_invite === 'function' ? this.root.on_party_invite : null;
+        this.previousPartyRequestHandler = typeof this.root.on_party_request === 'function' ? this.root.on_party_request : null;
+      } catch (_) {
+        this.previousPartyInviteHandler = null;
+        this.previousPartyRequestHandler = null;
+      }
+
+      this.partyInviteHandler = name => {
+        try {
+          if (this.previousPartyInviteHandler) this.previousPartyInviteHandler(name);
+        } catch (_) {}
+        this._recordPartySignal('INVITE', name);
+      };
+      this.partyRequestHandler = name => {
+        try {
+          if (this.previousPartyRequestHandler) this.previousPartyRequestHandler(name);
+        } catch (_) {}
+        this._recordPartySignal('REQUEST', name);
+      };
+
+      try { this.root.on_party_invite = this.partyInviteHandler; } catch (_) {}
+      try { this.root.on_party_request = this.partyRequestHandler; } catch (_) {}
+    }
+
+    _restorePartyHooks() {
+      if (!this.root) return;
+      try {
+        if (this.root.on_party_invite === this.partyInviteHandler) {
+          this.root.on_party_invite = this.previousPartyInviteHandler || function () {};
+        }
+      } catch (_) {}
+      try {
+        if (this.root.on_party_request === this.partyRequestHandler) {
+          this.root.on_party_request = this.previousPartyRequestHandler || function () {};
+        }
+      } catch (_) {}
+      this.partyInviteHandler = null;
+      this.partyRequestHandler = null;
+      this.previousPartyInviteHandler = null;
+      this.previousPartyRequestHandler = null;
+    }
+
+    _recordPartySignal(kind, name) {
+      if (!this.moduleActive) return false;
+      const targetName = cleanText(name || '', 120);
+      if (!targetName) return false;
+      const roster = this._roster();
+      const owned = this._ownedRow(targetName, roster);
+      const desired = new Set(this.policyState.desiredActiveNames.map(String));
+      const leader = this.policyState.desiredPartyLeader;
+      const allowed = !!owned
+        && desired.has(targetName)
+        && (kind === 'INVITE'
+          ? (!leader || String(leader) === targetName)
+          : (!leader || String(leader) === this._localName()));
+      if (!allowed) {
+        this.metrics.partySignalsIgnored += 1;
+        return false;
+      }
+      const signal = {
+        id: 'h19-party-signal-' + (++this.sequence),
+        kind,
+        targetName,
+        observedAt: nowIso(),
+        observedAtMs: Date.now()
+      };
+      this.partySignals = this.partySignals
+        .filter(row => !(row.kind === kind && String(row.targetName) === targetName))
+        .slice(-7);
+      this.partySignals.push(signal);
+      this.metrics.partySignalsObserved += 1;
+      return true;
     }
 
     _storageKey(kind) {
@@ -135,7 +245,8 @@
 
     _persistPolicy() {
       this._writeStorage('policy', {
-        desiredActiveNames: clone(this.policyState.desiredActiveNames)
+        desiredActiveNames: clone(this.policyState.desiredActiveNames),
+        desiredPartyLeader: this.policyState.desiredPartyLeader || null
       });
     }
 
@@ -148,6 +259,7 @@
         this.policyState.desiredActiveNames = policy.desiredActiveNames
           .map(name => cleanText(name, 120))
           .filter(Boolean);
+        this.policyState.desiredPartyLeader = cleanText(policy.desiredPartyLeader || '', 120) || null;
       }
 
       const pending = this._readStorage('pending');
@@ -174,6 +286,7 @@
       this.moduleActive = true;
       this.scope = context && context.scope || null;
       this._restoreState();
+      this._installPartyHooks();
       if (this.scope && typeof this.scope.interval === 'function') {
         this.scope.interval('character-lifecycle-tick', () => this.tick(), this.config.tickMs, { immediate: true });
       }
@@ -183,6 +296,7 @@
     stop(reason = 'H19_MODULE_STOP') {
       this.moduleActive = false;
       this.autonomyEnabled = false;
+      this._restorePartyHooks();
       this.scope = null;
       this.lastAction = {
         at: nowIso(),
@@ -296,8 +410,15 @@
         .map(String)
         .filter(name => owned.has(name))
         .sort((a, b) => a.localeCompare(b));
+      const party = this._partySnapshot();
+      const partyLeader = cleanText(party && party.leader || '', 120);
+      this.policyState.desiredPartyLeader = partyLeader && owned.has(partyLeader) ? partyLeader : null;
       this._persistPolicy();
-      return { accepted: true, desiredActiveNames: clone(this.policyState.desiredActiveNames) };
+      return {
+        accepted: true,
+        desiredActiveNames: clone(this.policyState.desiredActiveNames),
+        desiredPartyLeader: this.policyState.desiredPartyLeader
+      };
     }
 
     setPolicy(next = {}) {
@@ -308,6 +429,14 @@
         const normalized = [...new Set(next.desiredActiveNames.map(name => cleanText(name, 120)).filter(Boolean))];
         if (normalized.some(name => !owned.has(name))) return { accepted: false, reason: 'H19_POLICY_CONTAINS_NON_OWNED_CHARACTER' };
         this.policyState.desiredActiveNames = normalized.sort((a,b) => a.localeCompare(b));
+      }
+      if (Object.prototype.hasOwnProperty.call(next, 'desiredPartyLeader')) {
+        if (!roster || roster.accountStateAvailable !== true) return { accepted: false, reason: 'H19_ACCOUNT_ROSTER_UNAVAILABLE' };
+        const leader = cleanText(next.desiredPartyLeader || '', 120) || null;
+        const owned = new Set((roster.accountCharacters || []).map(row => String(row.name || '')));
+        if (leader && !owned.has(leader)) return { accepted: false, reason: 'H19_PARTY_LEADER_NOT_OWNED' };
+        if (leader && !this.policyState.desiredActiveNames.includes(leader)) return { accepted: false, reason: 'H19_PARTY_LEADER_NOT_DESIRED_ACTIVE' };
+        this.policyState.desiredPartyLeader = leader;
       }
       if (next.maxActionsPerSession != null) {
         const value = Math.floor(Number(next.maxActionsPerSession));
@@ -350,11 +479,67 @@
       return { accepted: true, status: this.status() };
     }
 
+    _proposalPartySignal(roster) {
+      const party = this._partySnapshot();
+      const members = this._partyMemberSet(party);
+      const nowMs = Date.now();
+      while (this.partySignals.length) {
+        const signal = this.partySignals[0];
+        if (!signal || nowMs - Number(signal.observedAtMs || 0) > this.config.outcomeTimeoutMs * 2) {
+          this.partySignals.shift();
+          continue;
+        }
+        if (members.has(String(signal.targetName || ''))) {
+          this.partySignals.shift();
+          continue;
+        }
+        const active = this._activeSet(roster);
+        if (!active.has(String(signal.targetName || '')) || !this._ownedRow(signal.targetName, roster)) {
+          this.partySignals.shift();
+          continue;
+        }
+        if (signal.kind === 'INVITE') {
+          return {
+            state: 'READY',
+            reason: 'H19_OWNED_PARTY_INVITE_OBSERVED',
+            request: {
+              id: 'h19-auto-accept-invite-' + signal.targetName,
+              kind: 'PARTY_ACCEPT_INVITE',
+              targetName: signal.targetName,
+              queuedAt: nowIso(),
+              automatic: true,
+              signalId: signal.id
+            }
+          };
+        }
+        if (signal.kind === 'REQUEST') {
+          return {
+            state: 'READY',
+            reason: 'H19_OWNED_PARTY_REQUEST_OBSERVED',
+            request: {
+              id: 'h19-auto-accept-request-' + signal.targetName,
+              kind: 'PARTY_ACCEPT_REQUEST',
+              targetName: signal.targetName,
+              queuedAt: nowIso(),
+              automatic: true,
+              signalId: signal.id
+            }
+          };
+        }
+        this.partySignals.shift();
+      }
+      return null;
+    }
+
     _proposalFromDesired() {
       const roster = this._roster();
       if (!roster || roster.accountStateAvailable !== true || roster.activeStateAvailable !== true) {
         return { state: 'BLOCKED', reason: 'H19_ROSTER_LIVE_STATE_UNAVAILABLE' };
       }
+
+      const signalProposal = this._proposalPartySignal(roster);
+      if (signalProposal) return signalProposal;
+
       const active = this._activeSet(roster);
       const localName = this._localName();
       for (const name of this.policyState.desiredActiveNames) {
@@ -374,7 +559,52 @@
           };
         }
       }
-      return { state: 'IDLE', reason: 'H19_DESIRED_ACTIVE_SET_HEALTHY' };
+
+      const leader = this.policyState.desiredPartyLeader;
+      if (!leader) return { state: 'IDLE', reason: 'H19_DESIRED_ACTIVE_SET_HEALTHY' };
+      const party = this._partySnapshot();
+      const members = this._partyMemberSet(party);
+      const foreign = party && Array.isArray(party.foreignMemberNames) ? party.foreignMemberNames : [];
+      if (foreign.length) {
+        this.metrics.partyConflictBlocks += 1;
+        return { state: 'BLOCKED', reason: 'H19_FOREIGN_PARTY_MEMBER_PRESENT' };
+      }
+
+      if (party && party.partyId && party.leader && String(party.leader) !== String(leader)) {
+        this.metrics.partyConflictBlocks += 1;
+        return { state: 'BLOCKED', reason: 'H19_DIFFERENT_PARTY_LEADER_ACTIVE' };
+      }
+
+      if (String(localName) === String(leader)) {
+        for (const name of this.policyState.desiredActiveNames) {
+          if (name === localName || !active.has(name) || members.has(name)) continue;
+          return {
+            state: 'READY',
+            reason: 'H19_DESIRED_PARTY_MEMBER_MISSING',
+            request: {
+              id: 'h19-auto-party-invite-' + name,
+              kind: 'PARTY_INVITE',
+              targetName: name,
+              queuedAt: nowIso(),
+              automatic: true
+            }
+          };
+        }
+      } else if (active.has(String(leader)) && !members.has(String(leader))) {
+        return {
+          state: 'READY',
+          reason: 'H19_DESIRED_PARTY_LEADER_MISSING',
+          request: {
+            id: 'h19-auto-party-request-' + leader,
+            kind: 'PARTY_REQUEST',
+            targetName: leader,
+            queuedAt: nowIso(),
+            automatic: true
+          }
+        };
+      }
+
+      return { state: 'IDLE', reason: 'H19_DESIRED_ACTIVE_AND_PARTY_SET_HEALTHY' };
     }
 
     plan() {
@@ -442,6 +672,36 @@
         actionName = 'respawn';
         args = [];
         before = { targetWasDead: true };
+      } else if (['PARTY_INVITE', 'PARTY_REQUEST', 'PARTY_ACCEPT_INVITE', 'PARTY_ACCEPT_REQUEST'].includes(request.kind)) {
+        const roster = this._roster();
+        if (!roster || roster.accountStateAvailable !== true || roster.activeStateAvailable !== true) {
+          return { accepted: false, reason: 'H19_ROSTER_LIVE_STATE_UNAVAILABLE' };
+        }
+        if (!this._ownedRow(request.targetName, roster)) {
+          this.metrics.ownershipBlocks += 1;
+          return { accepted: false, reason: 'H19_PARTY_TARGET_NOT_OWNED' };
+        }
+        if (!this._activeSet(roster).has(String(request.targetName || ''))) {
+          return { accepted: false, reason: 'H19_PARTY_TARGET_NOT_ACTIVE' };
+        }
+        const party = this._partySnapshot();
+        const members = this._partyMemberSet(party);
+        if (members.has(String(request.targetName || ''))) {
+          return { accepted: false, reason: 'H19_PARTY_TARGET_ALREADY_MEMBER' };
+        }
+        const mapping = {
+          PARTY_INVITE: 'send_party_invite',
+          PARTY_REQUEST: 'send_party_request',
+          PARTY_ACCEPT_INVITE: 'accept_party_invite',
+          PARTY_ACCEPT_REQUEST: 'accept_party_request'
+        };
+        actionName = mapping[request.kind];
+        args = [request.targetName];
+        before = {
+          partyId: party && party.partyId || null,
+          leader: party && party.leader || null,
+          memberNames: [...members]
+        };
       } else {
         return { accepted: false, reason: 'H19_REQUEST_KIND_UNSUPPORTED' };
       }
@@ -453,6 +713,7 @@
         kind: request.kind,
         targetName: request.targetName || null,
         automatic: request.automatic === true,
+        signalId: request.signalId || null,
         preparedAt: nowIso(),
         preparedAtMs: nowMs,
         deadlineAtMs: nowMs + this.config.outcomeTimeoutMs,
@@ -499,6 +760,9 @@
       action.actionBoundaryId = dispatched.id || null;
       this.currentAction = action;
       this.metrics.actionsDispatched += 1;
+      if (request.kind === 'PARTY_INVITE') this.metrics.partyInvitesDispatched += 1;
+      if (request.kind === 'PARTY_REQUEST') this.metrics.partyRequestsDispatched += 1;
+      if (request.kind === 'PARTY_ACCEPT_INVITE' || request.kind === 'PARTY_ACCEPT_REQUEST') this.metrics.partyAcceptsDispatched += 1;
       this._persistCurrent();
       this._watchSettlement(dispatched.value, action);
       this.lastAction = { at: nowIso(), type: request.kind + '_DISPATCHED', actionId: action.id, targetName: action.targetName };
@@ -515,6 +779,14 @@
       if (current.kind === 'START') this.metrics.startsConfirmed += 1;
       if (current.kind === 'STOP') this.metrics.stopsConfirmed += 1;
       if (current.kind === 'RESPAWN') this.metrics.respawnsConfirmed += 1;
+      if (current.kind === 'PARTY_INVITE') this.metrics.partyInvitesConfirmed += 1;
+      if (current.kind === 'PARTY_REQUEST') this.metrics.partyRequestsConfirmed += 1;
+      if (current.kind === 'PARTY_ACCEPT_INVITE' || current.kind === 'PARTY_ACCEPT_REQUEST') this.metrics.partyAcceptsConfirmed += 1;
+      if ((current.kind === 'PARTY_ACCEPT_INVITE' || current.kind === 'PARTY_REQUEST') && !this.policyState.desiredPartyLeader) {
+        this.policyState.desiredPartyLeader = current.targetName || null;
+        this._persistPolicy();
+      }
+      if (current.signalId) this.partySignals = this.partySignals.filter(row => String(row.id) !== String(current.signalId));
       this.lastAction = { at: nowIso(), type: current.kind + '_CONFIRMED', targetName: current.targetName, ...clone(details) };
       return { state: 'CONFIRMED', kind: current.kind, targetName: current.targetName, details: clone(details) };
     }
@@ -550,6 +822,17 @@
         const local = this._local();
         if (settlementFinished && local && String(local.name || '') === String(current.targetName || '') && local.rip !== true) {
           return this._confirmCurrent({ evidence: 'LOCAL_CHARACTER_ALIVE' });
+        }
+      } else if (['PARTY_INVITE', 'PARTY_REQUEST', 'PARTY_ACCEPT_INVITE', 'PARTY_ACCEPT_REQUEST'].includes(current.kind)) {
+        const party = this._partySnapshot();
+        const members = this._partyMemberSet(party);
+        const localName = this._localName();
+        if (settlementFinished
+          && party
+          && party.partyId
+          && members.has(String(current.targetName || ''))
+          && members.has(String(localName || ''))) {
+          return this._confirmCurrent({ evidence: 'PARTY_SNAPSHOT_MEMBERSHIP', partyId: party.partyId, leader: party.leader || null });
         }
       }
 
@@ -607,8 +890,10 @@
         actionsThisSession: this.actionsThisSession,
         policy: {
           desiredActiveNames: clone(this.policyState.desiredActiveNames),
+          desiredPartyLeader: this.policyState.desiredPartyLeader,
           maxActionsPerSession: this.config.maxActionsPerSession
         },
+        partySignals: clone(this.partySignals),
         config: clone(this.config),
         lastPlan: clone(this.lastPlan),
         lastAction: clone(this.lastAction),
