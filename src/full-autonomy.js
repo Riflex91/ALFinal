@@ -267,8 +267,12 @@
           && row.peerFresh && row.running !== true)
         .map(row => String(row.name))
         .sort();
+      const offlineDesiredNames = stableDesired.filter(name => !onlineSet.has(String(name))).sort();
       const runtimeRecoveryRequired = coordinator && stoppedDesiredNames.length > 0;
-      const shouldRunLifecycle = coordinator ? (!partyTopologyHealthy || runtimeRecoveryRequired) : !localInParty;
+      const rosterRecoveryRequired = coordinator && offlineDesiredNames.length > 0;
+      const shouldRunLifecycle = coordinator
+        ? (!partyTopologyHealthy || runtimeRecoveryRequired || rosterRecoveryRequired)
+        : !localInParty;
       const current = lifecycle.status();
       const recoverySafetyBlocked = current.suspended === true
         || !!(current.currentAction && current.currentAction.unknownRecorded === true);
@@ -313,7 +317,9 @@
         partyTopologyHealthy,
         recoveryRequired: shouldRunLifecycle,
         runtimeRecoveryRequired,
+        rosterRecoveryRequired,
         stoppedDesiredNames,
+        offlineDesiredNames,
         recoverySafetyBlocked,
         recoveryBlockReason
       };
@@ -526,6 +532,9 @@
             stoppedDesiredNames: readiness.stoppedNames,
             lifecycleRecoveryRequired: lifecycle.recoveryRequired === true,
             runtimeRecoveryRequired: lifecycle.runtimeRecoveryRequired === true,
+            rosterRecoveryRequired: lifecycle.rosterRecoveryRequired === true,
+            stoppedDesiredNames: lifecycle.stoppedDesiredNames || readiness.stoppedNames,
+            offlineDesiredNames: lifecycle.offlineDesiredNames || [],
             lifecycleCoordinator: lifecycle.coordinatorName
           };
         }
