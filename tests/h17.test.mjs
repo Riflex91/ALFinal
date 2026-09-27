@@ -422,7 +422,7 @@ test('H17 runtime, API, UI, build and generated bundle are wired without direct 
   assert.match(runtime, /new ns\.EconomyController/);
   assert.match(runtime, /id: 'economy'/);
   assert.match(runtime, /id: 'h17-economy-autonomy'/);
-  assert.match(runtime, /version: '0\.17\.0-h17'/);
+  assert.match(runtime, /options\.version \|\| '0\.17\.0-h17'/);
   assert.match(runtime, /trade\.movementUnknown/);
   assert.match(runtime, /inventory\.lootUnknown/);
   assert.match(runtime, /status\.pendingLoot/);
