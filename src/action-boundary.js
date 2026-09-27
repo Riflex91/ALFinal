@@ -24,7 +24,9 @@
     buy_with_gold: Object.freeze({ publicName: 'buy_with_gold', family: 'npc-trade' }),
     sell: Object.freeze({ publicName: 'sell', family: 'npc-trade' }),
     trade_buy: Object.freeze({ publicName: 'trade_buy', family: 'player-trade' }),
-    trade_sell: Object.freeze({ publicName: 'trade_sell', family: 'player-trade' })
+    trade_sell: Object.freeze({ publicName: 'trade_sell', family: 'player-trade' }),
+    equip: Object.freeze({ publicName: 'equip', family: 'gear' }),
+    unequip: Object.freeze({ publicName: 'unequip', family: 'gear' })
   });
 
   function errorDetails(error) {
