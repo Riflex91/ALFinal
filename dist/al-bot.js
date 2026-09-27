@@ -12053,6 +12053,8 @@
         else this.metrics.safetyBlocks += 1;
         return { accepted: false, reason: candidate.reason };
       }
+      const destination = this.game && this.game.npcLocation ? this.game.npcLocation('exchange') : null;
+      if (!destination) return { accepted: false, reason: 'H16_EXCHANGE_NPC_LOCATION_UNAVAILABLE' };
       return this._queue({
         kind: 'EXCHANGE',
         inventorySlot: candidate.inventorySlot,
@@ -12063,7 +12065,7 @@
         valueAtRisk: candidate.valueAtRisk,
         questEvent: candidate.questEvent,
         allowQuestEvent: options.allowQuestEvent === true,
-        destination: 'exchange'
+        destination: clone(destination)
       });
     }
 
@@ -12079,6 +12081,8 @@
         else this.metrics.safetyBlocks += 1;
         return { accepted: false, reason: source.reason, details: clone(source) };
       }
+      const destination = this.game && this.game.npcLocation ? this.game.npcLocation('craftsman') : null;
+      if (!destination) return { accepted: false, reason: 'H16_CRAFT_NPC_LOCATION_UNAVAILABLE' };
       return this._queue({
         kind: 'CRAFT',
         itemName: name,
@@ -12088,7 +12092,7 @@
         inputValueAtRisk: source.inputValueAtRisk,
         questEvent: !!recipe.quest,
         allowQuestEvent: options.allowQuestEvent === true,
-        destination: 'craftsman'
+        destination: clone(destination)
       });
     }
 
@@ -12155,28 +12159,41 @@
       let movement = null;
       try { movement = this.movement && this.movement.status ? this.movement.status() : null; } catch (_) {}
       if (movement && movement.activeOrder) {
-        if (String(movement.activeOrder.owner || '') === 'exchange-craft-h16') return { ready: false, waiting: true };
+        if (String(movement.activeOrder.owner || '') === 'exchange-craft-h16'
+            && (!request.travelOrderId || String(movement.activeOrder.id) === String(request.travelOrderId))) {
+          return { ready: false, waiting: true };
+        }
         this.metrics.movementBlocks += 1;
         return { ready: false, waiting: true, reason: 'H16_MOVEMENT_OWNED_BY_OTHER' };
       }
       if (request.travelRequested) {
+        const last = movement && movement.lastOrder || null;
+        if (last && String(last.id || '') === String(request.travelOrderId || '')
+            && String(last.owner || '') === 'exchange-craft-h16') {
+          if (last.state === 'COMPLETED') return { ready: true };
+          if (['CANCELLED', 'STUCK', 'UNKNOWN', 'FAILED_SAFE'].includes(String(last.state || ''))) {
+            return this._suspend(request.kind, 'H16_MOVEMENT_' + String(last.state || 'UNKNOWN'));
+          }
+        }
         if (Date.now() - request.travelStartedAtMs > this.config.movementTimeoutMs) {
           return this._suspend(request.kind, 'H16_MOVEMENT_TIMEOUT');
         }
-        return { ready: true };
+        return { ready: false, waiting: true, reason: 'H16_WAITING_FOR_ARRIVAL_EVIDENCE' };
       }
+      if (!request.destination) return this._suspend(request.kind, 'H16_DESTINATION_UNAVAILABLE');
       if (!this.movement || typeof this.movement.smartMove !== 'function') {
         return this._suspend(request.kind, 'H16_MOVEMENT_UNAVAILABLE');
       }
       const moved = this.movement.smartMove(request.destination, { owner: 'exchange-craft-h16' });
-      if (!moved || moved.accepted !== true) {
+      if (!moved || moved.accepted !== true || !moved.order || !moved.order.id) {
         this.metrics.movementBlocks += 1;
         return this._suspend(request.kind, moved && moved.reason || 'H16_MOVEMENT_REJECTED');
       }
       request.travelRequested = true;
       request.travelStartedAtMs = Date.now();
+      request.travelOrderId = moved.order.id;
       this.metrics.movementRequests += 1;
-      this.lastAction = { at: nowIso(), type: request.kind + '_MOVE_REQUESTED', destination: request.destination };
+      this.lastAction = { at: nowIso(), type: request.kind + '_MOVE_REQUESTED', destination: request.destination, orderId: request.travelOrderId };
       return { ready: false, waiting: true };
     }
 
@@ -12335,7 +12352,7 @@
         return this._knownReject(pending, pending.response.reason || 'H16_ACTION_REJECTED');
       }
       if (pending.settlement === 'REJECTED') {
-        return this._knownReject(pending, pending.error || 'H16_ACTION_REJECTED');
+        return this._suspend(pending.kind, pending.error || 'H16_ACTION_REJECTED_WITHOUT_LIVE_OUTCOME');
       }
       if (Date.now() >= pending.deadlineAtMs) return this._suspend(pending.kind, 'H16_' + pending.kind + '_UNVERIFIED_TIMEOUT');
       return false;
@@ -17402,14 +17419,17 @@ ${items.length ? items.slice(0, 24).map(row => '<div class="albot-small">#'+esc(
       const crafts = plan && Array.isArray(plan.craftCandidates) ? plan.craftCandidates : [];
       const safeExchanges = exchanges.filter(row => row.safe);
       const safeCrafts = crafts.filter(row => row.safe);
+      const questOptInReason = 'H16_QUEST_EVENT_REQUIRES_EXPLICIT_OPT_IN';
+      const selectableExchanges = exchanges.filter(row => row.safe || row.reason === questOptInReason);
+      const selectableCrafts = crafts.filter(row => row.safe || row.reason === questOptInReason);
       const resultText = this.exchangeCraftResult ? JSON.stringify(this.exchangeCraftResult, null, 2) : 'Noch keine manuelle H16-Aktion.';
 
-      const exchangeOptions = safeExchanges.length
-        ? safeExchanges.map(row => '<option value="'+esc(row.inventorySlot)+'">'+esc(row.itemName)+' · '+esc(row.requiredQuantity)+' Stück · Risiko '+esc(row.valueAtRisk)+'</option>').join('')
-        : '<option value="">kein sicherer Exchange-Kandidat</option>';
-      const craftOptions = safeCrafts.length
-        ? safeCrafts.map(row => '<option value="'+esc(row.itemName)+'">'+esc(row.itemName)+' · Gold '+esc(row.cost)+' · Input-Risiko '+esc(row.inputValueAtRisk)+'</option>').join('')
-        : '<option value="">kein sicherer Craft-Kandidat</option>';
+      const exchangeOptions = selectableExchanges.length
+        ? selectableExchanges.map(row => '<option value="'+esc(row.inventorySlot)+'">'+esc(row.itemName)+' · '+esc(row.requiredQuantity)+' Stück · Risiko '+esc(row.valueAtRisk)+(row.safe ? '' : ' · QUEST/EVENT OPT-IN')+'</option>').join('')
+        : '<option value="">kein sicherer oder explizit freigebbarer Exchange-Kandidat</option>';
+      const craftOptions = selectableCrafts.length
+        ? selectableCrafts.map(row => '<option value="'+esc(row.itemName)+'">'+esc(row.itemName)+' · Gold '+esc(row.cost)+' · Input-Risiko '+esc(row.inputValueAtRisk)+(row.safe ? '' : ' · QUEST/EVENT OPT-IN')+'</option>').join('')
+        : '<option value="">kein sicherer oder explizit freigebbarer Craft-Kandidat</option>';
 
       panel.innerHTML = `<div class="albot-card"><b>H16 Exchange & Craft</b>
 <div class="albot-small">Live Exchange-Mengen, Craft-Rezepte aus G.craft, Produktionsgraph, Materialquellen und konservative Risiko-/Kostenbudgets. Quest-/Event-Rezepte und -Exchanges sind standardmäßig blockiert.</div>
