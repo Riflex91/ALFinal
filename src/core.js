@@ -373,6 +373,10 @@
       }
       const characters = [...byName.values()].filter(row => row.online || row.state).sort((a,b) => a.name.localeCompare(b.name));
       const accountCharacters = account.rows.slice().sort((a,b) => a.name.localeCompare(b.name));
+      const onlineCharacterNames = [...new Set([
+        ...account.rows.filter(row => row.online === true).map(row => row.name),
+        ...(local && local.name ? [local.name] : [])
+      ])].sort((a,b) => a.localeCompare(b));
       const activeCharacterNames = [...new Set([
         ...active.rows.map(row => row.name),
         ...(local && local.name ? [local.name] : [])
@@ -383,11 +387,14 @@
         observedAt: nowIso(),
         source: account.available ? 'get_characters+get_active_characters' : active.available ? 'get_active_characters-fallback' : 'local-only',
         accountStateAvailable: account.available,
+        onlineStateAvailable: account.available,
         activeStateAvailable: active.available,
         local,
         characters,
         accountCharacters,
+        onlineCharacterNames,
         activeCharacterNames,
+        runnerActiveCharacterNames: activeCharacterNames,
         farmers,
         merchant: merchants.length === 1 ? merchants[0] : null,
         merchantCandidates: merchants,

@@ -374,6 +374,10 @@
       }
       const characters = [...byName.values()].filter(row => row.online || row.state).sort((a,b) => a.name.localeCompare(b.name));
       const accountCharacters = account.rows.slice().sort((a,b) => a.name.localeCompare(b.name));
+      const onlineCharacterNames = [...new Set([
+        ...account.rows.filter(row => row.online === true).map(row => row.name),
+        ...(local && local.name ? [local.name] : [])
+      ])].sort((a,b) => a.localeCompare(b));
       const activeCharacterNames = [...new Set([
         ...active.rows.map(row => row.name),
         ...(local && local.name ? [local.name] : [])
@@ -384,11 +388,14 @@
         observedAt: nowIso(),
         source: account.available ? 'get_characters+get_active_characters' : active.available ? 'get_active_characters-fallback' : 'local-only',
         accountStateAvailable: account.available,
+        onlineStateAvailable: account.available,
         activeStateAvailable: active.available,
         local,
         characters,
         accountCharacters,
+        onlineCharacterNames,
         activeCharacterNames,
+        runnerActiveCharacterNames: activeCharacterNames,
         farmers,
         merchant: merchants.length === 1 ? merchants[0] : null,
         merchantCandidates: merchants,
@@ -6027,13 +6034,13 @@
       return roster.accountCharacters.find(row => String(row && row.name || '') === wanted) || null;
     }
 
-    _activeSet(roster) {
-      return new Set(roster && Array.isArray(roster.activeCharacterNames) ? roster.activeCharacterNames.map(String) : []);
+    _onlineSet(roster) {
+      return new Set(roster && Array.isArray(roster.onlineCharacterNames) ? roster.onlineCharacterNames.map(String) : []);
     }
 
     _validateRemoteTarget(name, mode) {
       const roster = this._roster();
-      if (!roster || roster.accountStateAvailable !== true || roster.activeStateAvailable !== true) {
+      if (!roster || roster.accountStateAvailable !== true || roster.onlineStateAvailable !== true) {
         return { ok: false, reason: 'H19_ROSTER_LIVE_STATE_UNAVAILABLE' };
       }
       const owned = this._ownedRow(name, roster);
@@ -6045,7 +6052,7 @@
       if (String(owned.name) === String(localName)) {
         return { ok: false, reason: 'H19_REMOTE_TARGET_IS_LOCAL' };
       }
-      const active = this._activeSet(roster).has(String(owned.name));
+      const active = this._onlineSet(roster).has(String(owned.name));
       if (mode === 'START' && active) return { ok: false, reason: 'H19_TARGET_ALREADY_ACTIVE' };
       if (mode === 'STOP' && !active) return { ok: false, reason: 'H19_TARGET_ALREADY_STOPPED' };
       return { ok: true, roster, owned, active };
@@ -6103,11 +6110,11 @@
 
     captureDesiredActive() {
       const roster = this._roster();
-      if (!roster || roster.accountStateAvailable !== true || roster.activeStateAvailable !== true) {
+      if (!roster || roster.accountStateAvailable !== true || roster.onlineStateAvailable !== true) {
         return { accepted: false, reason: 'H19_ROSTER_LIVE_STATE_UNAVAILABLE' };
       }
       const owned = new Set((roster.accountCharacters || []).map(row => String(row.name || '')));
-      this.policyState.desiredActiveNames = (roster.activeCharacterNames || [])
+      this.policyState.desiredActiveNames = (roster.onlineCharacterNames || [])
         .map(String)
         .filter(name => owned.has(name))
         .sort((a, b) => a.localeCompare(b));
@@ -6250,7 +6257,7 @@
           this.partySignals.shift();
           continue;
         }
-        const active = this._activeSet(roster);
+        const active = this._onlineSet(roster);
         if (!active.has(String(signal.targetName || '')) || !this._ownedRow(signal.targetName, roster)) {
           this.partySignals.shift();
           continue;
@@ -6290,14 +6297,14 @@
 
     _proposalFromDesired() {
       const roster = this._roster();
-      if (!roster || roster.accountStateAvailable !== true || roster.activeStateAvailable !== true) {
+      if (!roster || roster.accountStateAvailable !== true || roster.onlineStateAvailable !== true) {
         return { state: 'BLOCKED', reason: 'H19_ROSTER_LIVE_STATE_UNAVAILABLE' };
       }
 
       const signalProposal = this._proposalPartySignal(roster);
       if (signalProposal) return signalProposal;
 
-      const active = this._activeSet(roster);
+      const active = this._onlineSet(roster);
       const localName = this._localName();
       for (const name of this.policyState.desiredActiveNames) {
         if (name === localName) continue;
@@ -6425,7 +6432,7 @@
         actionName = request.kind === 'START' ? 'start_character' : 'stop_character';
         args = [request.targetName];
         before = {
-          activeStateAvailable: true,
+          onlineStateAvailable: true,
           targetWasActive: check.active
         };
       } else if (request.kind === 'RESPAWN') {
@@ -6449,14 +6456,14 @@
         };
       } else if (['PARTY_INVITE', 'PARTY_REQUEST', 'PARTY_ACCEPT_INVITE', 'PARTY_ACCEPT_REQUEST'].includes(request.kind)) {
         const roster = this._roster();
-        if (!roster || roster.accountStateAvailable !== true || roster.activeStateAvailable !== true) {
+        if (!roster || roster.accountStateAvailable !== true || roster.onlineStateAvailable !== true) {
           return { accepted: false, reason: 'H19_ROSTER_LIVE_STATE_UNAVAILABLE' };
         }
         if (!this._ownedRow(request.targetName, roster)) {
           this.metrics.ownershipBlocks += 1;
           return { accepted: false, reason: 'H19_PARTY_TARGET_NOT_OWNED' };
         }
-        if (!this._activeSet(roster).has(String(request.targetName || ''))) {
+        if (!this._onlineSet(roster).has(String(request.targetName || ''))) {
           return { accepted: false, reason: 'H19_PARTY_TARGET_NOT_ACTIVE' };
         }
         const party = this._partySnapshot();
@@ -6593,8 +6600,8 @@
       const settlementFinished = current.settlement !== 'PENDING' && current.settlement !== 'PREPARED';
       if (current.kind === 'START' || current.kind === 'STOP') {
         const roster = this._roster();
-        if (roster && roster.activeStateAvailable === true) {
-          const active = this._activeSet(roster).has(String(current.targetName || ''));
+        if (roster && roster.onlineStateAvailable === true) {
+          const active = this._onlineSet(roster).has(String(current.targetName || ''));
           if (settlementFinished && current.kind === 'START' && active) {
             return this._confirmCurrent({ evidence: 'ACTIVE_ROSTER_PRESENT' });
           }
@@ -19945,9 +19952,9 @@
       let targetName = null;
       let originalPolicy = null;
 
-      const activeSet = roster => new Set(
-        roster && Array.isArray(roster.activeCharacterNames)
-          ? roster.activeCharacterNames.map(String)
+      const onlineSet = roster => new Set(
+        roster && Array.isArray(roster.onlineCharacterNames)
+          ? roster.onlineCharacterNames.map(String)
           : []
       );
 
@@ -20026,11 +20033,11 @@
 
             if (targetName && baseline) {
               let roster = runtime.roster.refresh();
-              if (!roster || roster.activeStateAvailable !== true) {
+              if (!roster || roster.onlineStateAvailable !== true) {
                 throw new Error('H19_REMOTE_CLEANUP_ROSTER_UNAVAILABLE');
               }
 
-              let targetActive = activeSet(roster).has(String(targetName));
+              let targetActive = onlineSet(roster).has(String(targetName));
               if (!targetActive) {
                 const dispatchedDelta = Number(status.metrics.actionsDispatched || 0) - baseline.actionsDispatched;
                 const rejectedDelta = Number(status.metrics.actionsRejected || 0) - baseline.actionsRejected;
@@ -20067,8 +20074,8 @@
                   return Number(current.metrics.startsConfirmed || 0) > baseline.startsConfirmed
                     && current.currentAction == null
                     && liveRoster
-                    && liveRoster.activeStateAvailable === true
-                    && activeSet(liveRoster).has(String(targetName))
+                    && liveRoster.onlineStateAvailable === true
+                    && onlineSet(liveRoster).has(String(targetName))
                     ? true
                     : false;
                 }, {
@@ -20080,8 +20087,8 @@
                 status = runtime.lifecycle.status();
                 roster = runtime.roster.refresh();
                 targetActive = roster
-                  && roster.activeStateAvailable === true
-                  && activeSet(roster).has(String(targetName));
+                  && roster.onlineStateAvailable === true
+                  && onlineSet(roster).has(String(targetName));
                 if (!targetActive) throw new Error('H19_REMOTE_CLEANUP_TARGET_STILL_OFFLINE');
               }
             }
@@ -20124,7 +20131,7 @@
 
               const roster = runtime.roster.refresh();
               assert(roster && roster.accountStateAvailable === true, 'H19_REMOTE_ACCOUNT_ROSTER_UNAVAILABLE');
-              assert(roster.activeStateAvailable === true, 'H19_REMOTE_ACTIVE_ROSTER_UNAVAILABLE');
+              assert(roster.onlineStateAvailable === true, 'H19_REMOTE_ACTIVE_ROSTER_UNAVAILABLE');
               assert(runtime.actions.available('stop_character'), 'H19_REMOTE_STOP_API_UNAVAILABLE');
               assert(runtime.actions.available('start_character'), 'H19_REMOTE_START_API_UNAVAILABLE');
 
@@ -20134,7 +20141,7 @@
               assert(status.queue.length === 0, 'H19_REMOTE_QUEUE_NOT_EMPTY');
 
               const localName = String(game.character.name || '');
-              const active = activeSet(roster);
+              const online = onlineSet(roster);
               const party = runtime.party.snapshot();
               const leader = party && party.leader ? String(party.leader) : null;
               const partyMembers = new Set(party && Array.isArray(party.memberNames) ? party.memberNames.map(String) : []);
@@ -20142,7 +20149,7 @@
               const candidates = (roster.accountCharacters || [])
                 .filter(row => row && row.name)
                 .map(row => ({ name: String(row.name), ctype: row.ctype || null }))
-                .filter(row => row.name !== localName && row.name !== leader && active.has(row.name))
+                .filter(row => row.name !== localName && row.name !== leader && online.has(row.name))
                 .sort((a, b) => {
                   const aParty = partyMembers.has(a.name) ? 1 : 0;
                   const bParty = partyMembers.has(b.name) ? 1 : 0;
@@ -20173,7 +20180,8 @@
                 targetCtype: candidates[0].ctype,
                 targetWasPartyMember: partyMembers.has(targetName),
                 partyLeader: leader,
-                activeCharacterNames: roster.activeCharacterNames
+                onlineCharacterNames: roster.onlineCharacterNames,
+                runnerActiveCharacterNames: roster.activeCharacterNames
               };
             }
           },
@@ -20195,8 +20203,8 @@
                 return Number(status.metrics.stopsConfirmed || 0) > baseline.stopsConfirmed
                   && status.currentAction == null
                   && roster
-                  && roster.activeStateAvailable === true
-                  && !activeSet(roster).has(String(targetName))
+                  && roster.onlineStateAvailable === true
+                  && !onlineSet(roster).has(String(targetName))
                   ? { status, roster }
                   : null;
               }, { timeoutMs: 25000, pollMs: 250, label: 'h19-remote-stop' });
@@ -20209,7 +20217,7 @@
               assert(dispatched === 1, 'H19_REMOTE_STOP_DISPATCH_COUNT_INVALID');
               assert(confirmed === 1, 'H19_REMOTE_STOP_CONFIRM_COUNT_INVALID');
               assert(stopped === 1, 'H19_REMOTE_STOP_CONFIRMATION_MISSING');
-              assert(!activeSet(roster).has(String(targetName)), 'H19_REMOTE_TARGET_STILL_ACTIVE');
+              assert(!onlineSet(roster).has(String(targetName)), 'H19_REMOTE_TARGET_STILL_ACTIVE');
               return { target: targetName, dispatched, confirmed, stopsConfirmed: stopped };
             }
           },
@@ -20231,8 +20239,8 @@
                 return Number(status.metrics.startsConfirmed || 0) > baseline.startsConfirmed
                   && status.currentAction == null
                   && roster
-                  && roster.activeStateAvailable === true
-                  && activeSet(roster).has(String(targetName))
+                  && roster.onlineStateAvailable === true
+                  && onlineSet(roster).has(String(targetName))
                   ? { status, roster }
                   : null;
               }, { timeoutMs: 35000, pollMs: 250, label: 'h19-remote-restart' });
@@ -20253,7 +20261,7 @@
               assert(startedCount === 1, 'H19_REMOTE_START_CONFIRM_COUNT_INVALID');
               assert(rejected === 0, 'H19_REMOTE_REJECTED');
               assert(unknown === 0, 'H19_REMOTE_UNKNOWN');
-              assert(activeSet(roster).has(String(targetName)), 'H19_REMOTE_TARGET_NOT_ACTIVE_AFTER_RECOVERY');
+              assert(onlineSet(roster).has(String(targetName)), 'H19_REMOTE_TARGET_NOT_ACTIVE_AFTER_RECOVERY');
 
               return {
                 target: targetName,
@@ -20282,7 +20290,7 @@
               assert(Number(after.metrics.actionsDispatched || 0) === beforeDispatch, 'H19_REMOTE_RETRY_AFTER_RECOVERY');
               assert(Number(after.metrics.actionsUnknown || 0) === baseline.actionsUnknown, 'H19_REMOTE_UNKNOWN_DURING_STABILITY');
               assert(Number(after.metrics.actionsRejected || 0) === baseline.actionsRejected, 'H19_REMOTE_REJECT_DURING_STABILITY');
-              assert(roster && roster.activeStateAvailable === true && activeSet(roster).has(String(targetName)), 'H19_REMOTE_TARGET_LOST_DURING_STABILITY');
+              assert(roster && roster.onlineStateAvailable === true && onlineSet(roster).has(String(targetName)), 'H19_REMOTE_TARGET_LOST_DURING_STABILITY');
               return {
                 target: targetName,
                 actionsDispatched: Number(after.metrics.actionsDispatched || 0) - baseline.actionsDispatched,
@@ -20306,7 +20314,7 @@
               assert(status.currentAction == null, 'H19_REMOTE_CURRENT_ACTION_REMAINS');
               assert(status.queue.length === 0, 'H19_REMOTE_QUEUE_REMAINS');
               assert(status.suspended === false, status.suspendedReason || 'H19_REMOTE_SUSPENDED_AT_CLEANUP');
-              assert(roster && roster.activeStateAvailable === true && activeSet(roster).has(String(targetName)), 'H19_REMOTE_TARGET_NOT_RESTORED');
+              assert(roster && roster.onlineStateAvailable === true && onlineSet(roster).has(String(targetName)), 'H19_REMOTE_TARGET_NOT_RESTORED');
               return {
                 target: targetName,
                 autonomyEnabled: status.autonomyEnabled,
