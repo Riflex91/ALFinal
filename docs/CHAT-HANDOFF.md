@@ -1005,3 +1005,23 @@ Externer Blocker:
 - **PR #20 darf deshalb noch nicht gemergt werden**;
 - sobald ein frischer Codex-Review wieder möglich ist: Review auf exakt aktuellem Head anfordern, echte Funde beheben, anschließend finalen Exact-Head-CI und vollständigen Merge-Gate frisch prüfen;
 - erst nach sauberem Merge nach `main` genau einen neuen echten `h16-exchange-craft`-v6-Live-Test anfordern.
+
+## PR #20 Gate-Policy-Update
+
+Ab 2026-09-27 ist ein frischer Codex-Code-Review **keine verpflichtende Merge-Voraussetzung mehr**.
+
+Damit ist der zuvor dokumentierte Codex-Quota-Blocker aufgehoben. Historische Review-Evidence bleibt append-only bestehen.
+
+Für PR #20 bleiben als Merge-Gates verpflichtend:
+- frischer aktueller Head-SHA;
+- `behind_by=0`;
+- alle relevanten CI-Runs completed;
+- nur success/skipped/neutral;
+- keine pending/failing Checks;
+- keine offenen Review-Threads;
+- kein `CHANGES_REQUESTED`;
+- `mergeable=true`;
+- Merge nur mit Methode `merge` und exaktem aktuellem `expected_head_sha`;
+- danach `main` frisch verifizieren.
+
+Nach erfolgreichem Merge genau einen echten `h16-exchange-craft`-v6-Live-Test auf Adventure Land anfordern und dessen vollständigen Bericht auswerten.
