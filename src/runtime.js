@@ -4223,8 +4223,10 @@
           baseline = {
             actionsDispatched: Number(status.metrics.actionsDispatched || 0),
             actionsConfirmed: Number(status.metrics.actionsConfirmed || 0),
+            actionsRejected: Number(status.metrics.actionsRejected || 0),
             actionsUnknown: Number(status.metrics.actionsUnknown || 0),
-            respawnsConfirmed: Number(status.metrics.respawnsConfirmed || 0)
+            respawnsConfirmed: Number(status.metrics.respawnsConfirmed || 0),
+            respawnCooldownRejects: Number(status.metrics.respawnCooldownRejects || 0)
           };
         },
         cleanup: async ({ runtime }) => {
@@ -4256,20 +4258,24 @@
               note({
                 local: game.character.name,
                 ctype: game.character.ctype,
-                desiredActiveNames: status.policy.desiredActiveNames
+                desiredActiveNames: status.policy.desiredActiveNames,
+                respawnReadyAtMs: status.respawn && status.respawn.readyAtMs,
+                respawnWaitMs: status.respawn && status.respawn.waitMs
               });
               return {
                 local: game.character.name,
                 ctype: game.character.ctype,
                 rip: game.character.rip,
-                activeCharacterNames: roster.activeCharacterNames
+                activeCharacterNames: roster.activeCharacterNames,
+                respawnReadyAtMs: status.respawn && status.respawn.readyAtMs,
+                respawnWaitMs: status.respawn && status.respawn.waitMs
               };
             }
           },
           {
             id: 'death-recovery',
-            title: 'Genau einen echten Respawn bestätigen',
-            timeoutMs: 30000,
+            title: 'Respawn-Cooldown abwarten und genau einen echten Respawn bestätigen',
+            timeoutMs: 40000,
             run: async ({ runtime, assert, waitFor }) => {
               const queued = runtime.lifecycle.queueRespawn();
               assert(queued && queued.accepted === true, queued && queued.reason || 'H19_RESPAWN_QUEUE_FAILED');
@@ -4280,11 +4286,13 @@
                 const status = runtime.lifecycle.status();
                 if (status.suspended) throw new Error(status.suspendedReason || 'H19_SUSPENDED_DURING_RESPAWN');
                 if (Number(status.metrics.actionsUnknown || 0) > baseline.actionsUnknown) throw new Error('H19_ACTION_UNKNOWN');
+                if (Number(status.metrics.respawnCooldownRejects || 0) > baseline.respawnCooldownRejects) throw new Error('H19_RESPAWN_COOLDOWN_REJECTED');
+                if (Number(status.metrics.actionsRejected || 0) > baseline.actionsRejected) throw new Error('H19_RESPAWN_REJECTED');
                 return Number(status.metrics.respawnsConfirmed || 0) > baseline.respawnsConfirmed
                   && status.currentAction == null
                   ? status
                   : null;
-              }, { timeoutMs: 25000, pollMs: 200, label: 'h19-respawn' });
+              }, { timeoutMs: 35000, pollMs: 200, label: 'h19-respawn' });
 
               runtime.lifecycle.stopAutonomy('H19_RESPAWN_COMPLETE');
               const game = runtime.game.snapshot();

@@ -112,7 +112,10 @@ function fixture(options = {}) {
         return { id: 'act-' + state.dispatches.length, state: 'DISPATCHED', value };
       }
       if (options.rejectPromise) {
-        return { id: 'act-' + state.dispatches.length, state: 'DISPATCHED', value: Promise.reject(new Error('PROMISE_REJECTED')) };
+        const reason = options.rejectReason || 'PROMISE_REJECTED';
+        const error = new Error(reason);
+        error.reason = reason;
+        return { id: 'act-' + state.dispatches.length, state: 'DISPATCHED', value: Promise.reject(error) };
       }
       if (options.serverReject) {
         return { id: 'act-' + state.dispatches.length, state: 'DISPATCHED', value: Promise.resolve({ success: false, reason: 'SERVER_REJECTED_TEST' }) };
@@ -200,15 +203,50 @@ test('H19 stop confirms only after settlement and target disappears from active 
   assert.equal(controller.status().metrics.stopsConfirmed, 1);
 });
 
-test('H19 respawn is local-only and needs settled live rip=false evidence', async () => {
+test('H19 respawn waits for the observed 12-second game cooldown before dispatch', async () => {
   const { controller, state } = fixture({ dead: true });
   assert.equal(controller.queueRespawn().accepted, true);
+
+  const waiting = controller.tick();
+  assert.equal(waiting.state, 'WAIT');
+  assert.equal(waiting.reason, 'H19_RESPAWN_COOLDOWN');
+  assert.equal(state.dispatches.length, 0);
+  assert.equal(controller.status().metrics.respawnCooldownBlocks >= 1, true);
+
+  controller.deathObservedAtMs = Date.now() - controller.status().config.respawnGraceMs - 1;
   assert.equal(controller.tick().state, 'DISPATCHED');
+  assert.equal(state.dispatches.length, 1);
   await flush();
   const confirmed = controller.tick();
   assert.equal(confirmed.state, 'CONFIRMED');
   assert.equal(state.character.rip, false);
   assert.equal(controller.status().metrics.respawnsConfirmed, 1);
+});
+
+test('H19 cant_respawn is a known reject, not UNKNOWN, and is never blindly retried', async () => {
+  const { controller, state } = fixture({
+    dead: true,
+    rejectPromise: true,
+    rejectReason: 'cant_respawn',
+    noMutation: true
+  });
+  assert.equal(controller.queueRespawn().accepted, true);
+  controller.deathObservedAtMs = Date.now() - controller.status().config.respawnGraceMs - 1;
+
+  assert.equal(controller.tick().state, 'DISPATCHED');
+  await flush();
+  const rejected = controller.tick();
+  assert.equal(rejected.state, 'REJECTED');
+  assert.equal(rejected.reason, 'H19_RESPAWN_COOLDOWN');
+  assert.equal(rejected.serverReason, 'cant_respawn');
+  assert.equal(controller.status().suspended, false);
+  assert.equal(controller.status().metrics.actionsRejected, 1);
+  assert.equal(controller.status().metrics.actionsUnknown, 0);
+  assert.equal(controller.status().metrics.respawnCooldownRejects, 1);
+  assert.equal(state.dispatches.length, 1);
+
+  controller.tick();
+  assert.equal(state.dispatches.length, 1);
 });
 
 test('H19 rejected lifecycle Promise suspends without blind retry', async () => {
@@ -482,6 +520,8 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(runtime, /if \(!current\.currentAction\) runtime\.lifecycle\.resetSafety\('H19_LIVE_TEST_RESET'\)/);
   assert.match(source, /acknowledgeUnknown\(reason = 'H19_EXPLICIT_UNKNOWN_ACK'\)/);
   assert.match(source, /settlementGeneration/);
+  assert.match(source, /respawnGraceMs/);
+  assert.match(source, /H19_RESPAWN_COOLDOWN/);
   assert.match(boundary, /start_character: Object\.freeze/);
   assert.match(boundary, /stop_character: Object\.freeze/);
   assert.match(boundary, /respawn: Object\.freeze/);
