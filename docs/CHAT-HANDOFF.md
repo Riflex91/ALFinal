@@ -1502,3 +1502,39 @@ Cleanup-Safety:
 - nach bereits dispatchtem Start, Reject, UNKNOWN oder Suspension kein Blind-Retry.
 
 Bei PASS dieser Suite gelten Remote Start/Stop sowie Disconnect-/Restart-Recovery als live bestätigt. Danach bleibt Party-Recovery als letzter gezielter H19-Live-Gate offen.
+
+
+## H19 v2 – Live-Truth-Fix nach erstem Remote-Preflight
+
+Stand: 2026-09-27.
+
+PR #32 ist bereits auf `main` gemergt. Der erste echte `h19-remote-recovery`-Versuch danach hat auf Merchant und Warrior denselben fail-closed Befund geliefert:
+
+- accountweiter `get_characters()`-Roster: vier eigene Characters `online=true`;
+- lokale `get_active_characters()`-Sicht: jeweils nur der aktuelle Character;
+- Preflight: `H19_REMOTE_SAFE_ACTIVE_TARGET_UNAVAILABLE`;
+- keine Game-Mutation, keine Dispatches, keine Rejects, keine UNKNOWNs.
+
+Neuer Arbeitsbranch:
+
+`chatgpt/h19-account-online-live-truth`
+
+Aktuelle Korrektur auf diesem Branch:
+
+- `CharacterRosterService` führt `onlineStateAvailable` und `onlineCharacterNames` aus accountweitem `get_characters().online`;
+- `activeCharacterNames` bleibt als lokale Runner-/Worker-Sicht erhalten; zusätzlich wird sie explizit als `runnerActiveCharacterNames` ausgewiesen;
+- `CharacterLifecycleController` verwendet für Remote START/STOP, Desired Active, Party-Lifecycle-Evidence und Reconciliation die accountweite Online-Sicht;
+- `h19-remote-recovery` wählt und bestätigt Remote-Ziele anhand dieser accountweiten Online-Evidence;
+- Regression simuliert exakt die Live-Situation: Remote Character accountweit online, aber nicht in der lokalen Runner-Active-Sicht.
+
+Noch zu tun:
+
+- Full CI auf dem neuen Branch;
+- committed `dist/al-bot.js` aus exakt diesem Source-Stand synchronisieren;
+- Workflow danach wieder read-only;
+- finaler Exact-Head-CI;
+- Review-/Merge-Gate vollständig prüfen;
+- nur dann per `merge` + exaktem `expected_head_sha` mergen;
+- danach genau einen neuen echten `H19 – Remote Start/Stop & Restart Recovery`-Live-Test anfordern.
+
+Kein Blind-Rerun der beiden fehlgeschlagenen Preflight-Läufe.
