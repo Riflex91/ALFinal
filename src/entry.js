@@ -50,7 +50,7 @@
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.14.0-h14',
+    version: '0.15.0-h15',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -228,6 +228,18 @@
       deliver: (targetName, inventorySlot) => runtime.gear.queueDelivery(targetName, inventorySlot)
     },
 
+    upgrade: {
+      status: () => runtime.upgrade.status(),
+      plan: () => runtime.upgrade.plan(),
+      tick: () => runtime.upgrade.tick(),
+      reset: reason => runtime.upgrade.resetSafety(reason || 'API_H15_RESET'),
+      cancel: reason => runtime.upgrade.cancelRequest(reason || 'API_H15_REQUEST_CANCEL'),
+      policy: value => runtime.upgrade.policy(value),
+      best: kind => runtime.upgrade.queueBest(kind),
+      item: (inventorySlot, options) => runtime.upgrade.queueUpgrade(inventorySlot, options || {}),
+      compound: (inventorySlots, options) => runtime.upgrade.queueCompound(inventorySlots, options || {})
+    },
+
     liveTests: {
       status: () => runtime.liveTests.status(),
       list: () => runtime.liveTests.list(),
@@ -282,6 +294,7 @@
   Object.freeze(api.bank);
   Object.freeze(api.trade);
   Object.freeze(api.gear);
+  Object.freeze(api.upgrade);
   Object.freeze(api.liveTests);
   Object.freeze(api.knowledge);
   Object.freeze(api.roster);
@@ -299,7 +312,7 @@
     };
   } catch (_) {}
 
-  runtime.logger.info('AL Bot H14 geladen', {
+  runtime.logger.info('AL Bot H15 geladen', {
     version: api.version,
     bootCount,
     hotReload: !!previous,
