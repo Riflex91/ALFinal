@@ -310,3 +310,59 @@ Hotfix-Verhalten:
 - es gibt weiterhin keinen automatischen Blind-Retry außerhalb des explizit gestarteten H19-Live-Tests.
 
 Auch dieser Lauf ist **keine H19-PASS-Evidence**. Nach Merge dieses Fixes ist ein weiterer echter Death→Respawn-Live-Test erforderlich.
+
+
+## Live-Versuch 3 – Death→Respawn PASS
+
+Stand: 2026-09-27
+
+Der dritte echte H19-Live-Lauf auf `My_Warrior` mit Runtime `0.19.0-h19` hat den bounded Death→Respawn-Gate vollständig bestanden.
+
+Gesamtergebnis:
+
+- Suite: `h19-character-lifecycle` v1;
+- Status: **PASSED**;
+- Reason: `ALL_STEPS_PASSED`;
+- Start: `2026-09-27T16:48:00.469Z`;
+- Ende: `2026-09-27T16:48:18.352Z`;
+- Runtime wurde für den Test automatisch gestartet und danach sauber wiederhergestellt;
+- Cleanup: `attempted=true`, `ok=true`, kein Cleanup-Fehler.
+
+Schritt-Evidence:
+
+1. **preflight – PASSED**
+   - lokaler Character: `My_Warrior` / Warrior;
+   - `rip=true`;
+   - Respawn-Readiness meldete zunächst noch `11898 ms` Rest-Wartezeit bis zum bounded Grace-Gate.
+
+2. **death-recovery – PASSED**
+   - der Respawn-Cooldown wurde abgewartet;
+   - exakt `1` Respawn dispatcht;
+   - exakt `1` Respawn bestätigt;
+   - `respawnsConfirmed=1`;
+   - `unknown=0`.
+
+3. **stability – PASSED**
+   - fünf Sekunden ohne zusätzlichen Respawn-Retry;
+   - insgesamt weiterhin exakt `1` Dispatch / `1` Confirm;
+   - `actionsUnknown=0`.
+
+4. **cleanup – PASSED**
+   - `autonomyEnabled=false`;
+   - `currentAction=null`;
+   - Queue leer;
+   - `suspended=false`.
+
+Finaler Lifecycle-Stand nach Restore:
+
+- `actionsDispatched=1`;
+- `actionsConfirmed=1`;
+- `actionsRejected=0`;
+- `actionsUnknown=0`;
+- `respawnsConfirmed=1`;
+- `respawnCooldownBlocks=15`;
+- `respawnCooldownRejects=0`;
+- lokaler Character wieder lebend: `rip=false`;
+- keine aktive Lifecycle-Aktion und keine Suspension.
+
+Damit ist **H19 Death Recovery live bestätigt**. Dieser PASS ersetzt nicht die noch offene Live-Evidence für Remote Character Start/Stop, Disconnect/Restart-Recovery und Party-Recovery. H19 bleibt bis zu diesen gezielten bounded Gates offen.

@@ -1171,3 +1171,34 @@ Grüner technischer Zwischenstand vor der letzten UI-/Doku-/Workflow-Bereinigung
 - `dist/al-bot.js` auf diesem Stand bereits source-synchron.
 
 Der verbindliche Merge-Gate bleibt der danach aktuelle Head mit read-only Testworkflow, `behind_by=0`, vollständig grüner Exact-Head-CI, keinen offenen Review-Threads, keinem `CHANGES_REQUESTED` und `mergeable=true`.
+
+
+### H19 Death-Recovery Live-Gate bestanden
+
+Stand 2026-09-27, Runtime `0.19.0-h19`.
+
+Der dritte echte Lauf der Suite `h19-character-lifecycle` v1 ist mit **PASSED / ALL_STEPS_PASSED** abgeschlossen.
+
+Live-Evidence:
+
+- Preflight auf totem lokalen Warrior: PASS;
+- Respawn-Grace korrekt abgewartet;
+- exakt 1 Respawn dispatcht;
+- exakt 1 Respawn bestätigt;
+- 0 Rejects;
+- 0 UNKNOWN;
+- 15 bounded Cooldown-Blocks vor Readiness;
+- 0 `cant_respawn`-Rejects;
+- Stability fünf Sekunden ohne Retry/UNKNOWN: PASS;
+- Cleanup: Autonomie AUS, `currentAction=null`, Queue leer, keine Suspension;
+- lokaler Character danach wieder `rip=false`.
+
+Damit ist **Death Recovery live bestätigt**.
+
+H19 bleibt offen für die noch erforderlichen gezielten bounded Live-Gates:
+
+- Remote Character Start/Stop;
+- Disconnect-/Restart-Recovery über Desired Active;
+- Party-Recovery über die gespeicherte eigene Desired-Party-Topologie.
+
+Der nächste H19-Live-Gate soll diese Pfade kontrolliert prüfen, ohne unbeabsichtigte Runner-/Party-Nebenwirkungen.
