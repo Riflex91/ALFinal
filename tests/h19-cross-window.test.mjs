@@ -101,6 +101,27 @@ async function flush() {
   await Promise.resolve();
 }
 
+test('H19 cross-window heartbeat timer unrefs when the host timer supports it', () => {
+  const names = ['My_Ranger1'];
+  const network = new Map();
+  const nowRef = { value: 900 };
+  const state = { running: true, runEpoch: 1, emergencyStopLatched: false };
+  const setup = makeContext('My_Ranger1', names, network, state, nowRef);
+  let unrefCalls = 0;
+  let cleared = 0;
+  const timer = { unref() { unrefCalls += 1; } };
+  setup.transport.setIntervalFn = () => timer;
+  setup.transport.clearIntervalFn = value => {
+    assert.equal(value, timer);
+    cleared += 1;
+  };
+
+  setup.transport.install();
+  assert.equal(unrefCalls, 1);
+  setup.transport.destroy();
+  assert.equal(cleared, 1);
+});
+
 test('H19 cross-window transport discovers separate browser runtimes by CM heartbeat', () => {
   const names = ['My_Ranger1', 'My_Merchant'];
   const network = new Map();
