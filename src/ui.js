@@ -1547,7 +1547,7 @@ ${items.length ? items.slice(0, 24).map(row => '<div class="albot-small">#'+esc(
 <div class="albot-card"><b>Manuelle Lifecycle-Aktion</b>
 <div class="albot-row"><select id="albot-h19-target">${targetOptions}</select></div>
 <div class="albot-row"><button id="albot-h19-start-char" class="albot-btn" ${action ? 'disabled' : ''}>Character starten</button><button id="albot-h19-stop-char" class="albot-btn warn" ${action ? 'disabled' : ''}>Character stoppen</button><button id="albot-h19-respawn" class="albot-btn" ${action ? 'disabled' : ''}>Lokalen Respawn vormerken</button></div>
-<div class="albot-row"><button id="albot-h19-plan" class="albot-btn">Plan</button><button id="albot-h19-tick" class="albot-btn">Tick</button><button id="albot-h19-cancel" class="albot-btn warn" ${action ? 'disabled' : ''}>Queue leeren</button><button id="albot-h19-reset" class="albot-btn warn" ${lifecycle.suspended && !action ? '' : 'disabled'}>Safety zurücksetzen</button></div>
+<div class="albot-row"><button id="albot-h19-plan" class="albot-btn">Plan</button><button id="albot-h19-tick" class="albot-btn">Tick</button><button id="albot-h19-cancel" class="albot-btn warn" ${action ? 'disabled' : ''}>Queue leeren</button><button id="albot-h19-ack-unknown" class="albot-btn warn" ${lifecycle.suspended && action && action.unknownRecorded ? '' : 'disabled'}>UNKNOWN bestätigen</button><button id="albot-h19-reset" class="albot-btn warn" ${lifecycle.suspended && !action ? '' : 'disabled'}>Safety zurücksetzen</button></div>
 </div>
 
 <div class="albot-card"><b>Letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
@@ -1581,6 +1581,8 @@ ${items.length ? items.slice(0, 24).map(row => '<div class="albot-small">#'+esc(
       if (tickButton) tickButton.onclick = () => run(() => this.runtime.lifecycle.tick());
       const cancel = panel.querySelector('#albot-h19-cancel');
       if (cancel) cancel.onclick = () => run(() => this.runtime.lifecycle.cancelQueued());
+      const acknowledgeUnknown = panel.querySelector('#albot-h19-ack-unknown');
+      if (acknowledgeUnknown) acknowledgeUnknown.onclick = () => run(() => this.runtime.lifecycle.acknowledgeUnknown('GUI_H19_UNKNOWN_ACK'));
       const reset = panel.querySelector('#albot-h19-reset');
       if (reset) reset.onclick = () => run(() => this.runtime.lifecycle.resetSafety('GUI_H19_RESET'));
     }
