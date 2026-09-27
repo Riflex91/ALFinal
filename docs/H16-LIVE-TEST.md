@@ -78,7 +78,7 @@ Die eigentliche gemeinsame autonome Auswahl zwischen Bank, Markt und anderen Eco
 
 ## Ein-Klick-Live-Test
 
-Aktueller Stand: **Suite-Version 4**.
+Aktueller Stand: **Suite-Version 5**.
 
 Suite:
 
@@ -361,3 +361,44 @@ Nach den Fixes:
 - Bundle wieder exakt source-synchron
 
 Ein letzter Codex-Review wurde auf Head `9e007bc6...` angefordert. Der zweite Live-Test bleibt gesperrt, bis dieser Review abgeschlossen/clean und der nachfolgenden Doku-Head-CI ebenfalls grün ist.
+
+
+## Preflight-Diagnostik v5
+
+Nach mehreren korrekt fail-closed beendeten Live-Versuchen wird der H16-Preflight ab Suite-Version 5 nicht mehr nur mit einem Sammel-Reason beendet.
+
+Vor einem möglichen Fail schreibt der Schritt strukturierte Diagnose-Evidence in `step.details`:
+
+- `totalCraftCandidates`
+- `safeCraftCandidates`
+- `safeExchangeCandidates`
+- `localCraftRejects`
+- `fallbackRejects`
+- `topNearMatches` (maximal 5)
+- aktive Caps und Strukturgrenzen
+
+`localCraftRejects` zählt die bereits im normalen H16-Craft-Plan verworfenen Kandidaten nach ihrem vorhandenen Reason.
+
+`fallbackRejects` differenziert den Materialbeschaffungsfallback unter anderem in:
+
+- `QUEST_EVENT_RECIPE`
+- `CRAFT_COST_OVER_CAP`
+- `OUTPUT_DEFINITION_UNAVAILABLE`
+- `OUTPUT_QUEST_OR_CASH_BLOCKED`
+- `INPUT_RISK_UNAVAILABLE`
+- `INPUT_RISK_OVER_CAP`
+- `PRODUCTION_NOT_NEEDS_MATERIALS`
+- `PROTECTED_RECIPE_IN_PRODUCTION`
+- `NESTED_OR_MULTI_STAGE_RECIPE`
+- `DIRECT_STAGE_MISMATCH`
+- `NO_MISSING_LEAVES_AFTER_NEEDS_MATERIALS`
+- `TOO_MANY_MISSING_LEAVES`
+- `NO_DISJOINT_EXCHANGE_CANDIDATE`
+- `MISSING_LEAF_LEVEL_NONZERO`
+- `MISSING_LEAF_NO_NPC_OR_MARKET_SOURCE`
+- `MATERIAL_ACQUISITION_OVER_CAP`
+- `GOLD_RESERVE_AFTER_ACQUISITION_AND_CRAFT`
+
+`topNearMatches` zeigt die fünf Kandidaten, die dem erlaubten Pfad am nächsten kamen, inklusive relevanter Material-, Quellen-, Risiko- und Kosteninformationen.
+
+Wichtig: Diese Änderung erweitert **nur Diagnose/Evidence**. Sie lockert keine Safety-Regel und löst keine Mutation aus. Der Preflight bleibt fail-closed.
