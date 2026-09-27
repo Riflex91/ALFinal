@@ -3068,17 +3068,19 @@
                   }
 
                   const candidateProduction = runtime.exchangeCraft.productionPlan(recipe.name, 1, { includeBank: false });
-                  if (!candidateProduction || candidateProduction.state !== 'NEEDS_MATERIALS') {
-                    recordFallbackReject(recipe, 'PRODUCTION_NOT_NEEDS_MATERIALS', {
-                      productionState: candidateProduction && candidateProduction.state || null,
-                      productionReason: candidateProduction && candidateProduction.reason || null,
+                  if (candidateProduction && (candidateProduction.protectedRecipes || []).length) {
+                    recordFallbackReject(recipe, 'PROTECTED_RECIPE_IN_PRODUCTION', {
+                      productionState: candidateProduction.state || null,
+                      productionReason: candidateProduction.reason || null,
+                      protectedRecipes: (candidateProduction.protectedRecipes || []).slice(0, 3),
                       inputRisk
                     }, 7);
                     continue;
                   }
-                  if ((candidateProduction.protectedRecipes || []).length) {
-                    recordFallbackReject(recipe, 'PROTECTED_RECIPE_IN_PRODUCTION', {
-                      protectedRecipes: (candidateProduction.protectedRecipes || []).slice(0, 3),
+                  if (!candidateProduction || candidateProduction.state !== 'NEEDS_MATERIALS') {
+                    recordFallbackReject(recipe, 'PRODUCTION_NOT_NEEDS_MATERIALS', {
+                      productionState: candidateProduction && candidateProduction.state || null,
+                      productionReason: candidateProduction && candidateProduction.reason || null,
                       inputRisk
                     }, 7);
                     continue;
