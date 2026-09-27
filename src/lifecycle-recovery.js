@@ -173,10 +173,11 @@
       const desired = new Set(this.policyState.desiredActiveNames.map(String));
       const leader = this.policyState.desiredPartyLeader;
       const allowed = !!owned
+        && !!leader
         && desired.has(targetName)
         && (kind === 'INVITE'
-          ? (!leader || String(leader) === targetName)
-          : (!leader || String(leader) === this._localName()));
+          ? String(leader) === targetName
+          : String(leader) === this._localName());
       if (!allowed) {
         this.metrics.partySignalsIgnored += 1;
         return false;
@@ -482,6 +483,16 @@
     _proposalPartySignal(roster) {
       const party = this._partySnapshot();
       const members = this._partyMemberSet(party);
+      const foreign = party && Array.isArray(party.foreignMemberNames) ? party.foreignMemberNames : [];
+      const leader = this.policyState.desiredPartyLeader;
+      if (foreign.length) {
+        this.metrics.partyConflictBlocks += 1;
+        return { state: 'BLOCKED', reason: 'H19_FOREIGN_PARTY_MEMBER_PRESENT' };
+      }
+      if (party && party.partyId && party.leader && leader && String(party.leader) !== String(leader)) {
+        this.metrics.partyConflictBlocks += 1;
+        return { state: 'BLOCKED', reason: 'H19_DIFFERENT_PARTY_LEADER_ACTIVE' };
+      }
       const nowMs = Date.now();
       while (this.partySignals.length) {
         const signal = this.partySignals[0];
