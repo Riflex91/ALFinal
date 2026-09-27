@@ -530,5 +530,5 @@ test('H13 runtime, API, UI, build, adapter and ActionBoundary are wired', () => 
   assert.match(boundary, /ALBOT_PLAYER_TRADE_RID_MISMATCH/);
   assert.match(adapter, /marketSnapshot\(options = \{\}\)/);
   assert.match(adapter, /npcShopSources\(itemName\)/);
-  assert.equal(pkg.version, '0.16.0');
+  assert.equal(pkg.version, '0.17.0');
 });
