@@ -513,6 +513,13 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(runtime, /_registerH19RemoteRecoveryLiveTest\(\)/);
   assert.match(runtime, /row\.name !== localName && row\.name !== leader && active\.has\(row\.name\)/);
   assert.match(runtime, /safeFirstStartRecovery/);
+  assert.match(runtime, /targetName = null;\s*baseline = null;\s*originalPolicy = null;/);
+  assert.match(runtime, /const cleanupSleep = \(runtime, ms\) => new Promise/);
+  assert.match(runtime, /const waitForCleanup = async \(runtime, predicate, options = \{\}\)/);
+  assert.match(runtime, /cleanup: async \(\{ runtime \}\) =>/);
+  assert.match(runtime, /H19_REMOTE_CLEANUP_RESTORE_UNSAFE_RETRY_BLOCKED/);
+  assert.match(runtime, /H19_REMOTE_CLEANUP_RESTORE_TIMEOUT/);
+  assert.match(runtime, /if \(cleanupFailure\) throw cleanupFailure/);
   assert.match(runtime, /dispatchedDelta === 1/);
   assert.match(runtime, /rejectedDelta === 0/);
   assert.match(runtime, /unknownDelta === 0/);
