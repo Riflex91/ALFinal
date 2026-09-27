@@ -543,45 +543,69 @@ Finale Review-Härtung:
 - keine offenen Review-Threads;
 - finaler Exact-Head-CI vor Merge grün.
 
-## H11 – Merchant-Grundbetrieb – live bestanden, finaler Merge-Gate offen
+## H11 – Merchant-Grundbetrieb – abgeschlossen und gemergt
 
-Aktiver Branch:
+H11 ist live bestanden und gemergt.
+
+Finaler Branch:
 `chatgpt/h11-merchant-grundbetrieb`
 
 PR:
 `#11 – H11: Merchant-Grundbetrieb`
 
-Version:
-`0.11.0-h11`
+Merge-Commit auf `main`:
+`0b8b45089ae47ea352e05115074142a427d7ff79`
 
 Finale Live-Evidence:
-- Suite `h11-merchant`: **PASSED / ALL_STEPS_PASSED**;
-- Merchant `My_Merchant`, eigener Farmer `My_Priest`;
-- exakt 1 `hpot0` geliefert;
-- Sender-Inventardelta `6000 -> 5999`;
-- `transfersDispatched=1`, `transfersConfirmed=1`, `transfersUnknown=0`;
-- MLuck bereits gesund (`remainingMs=3576369`), deshalb korrekt kein neuer Cast;
-- `mluckUnknown=0`, `pingPongBlocks=0`;
-- keine Suspension;
-- Cleanup PASSED: kein Pending, keine Delivery, keine H11-Movement-Order;
-- Runtime wieder STOPPED;
-- Scheduler `totalResources=0`.
+- Suite `h11-merchant`: **PASSED / ALL_STEPS_PASSED**
+- Merchant `My_Merchant`, eigener Farmer `My_Priest`
+- 1 `hpot0` geliefert; Inventardelta `6000 -> 5999`
+- `transfersConfirmed=1`, `transfersUnknown=0`
+- MLuck bereits gesund, korrekt kein Spam
+- `mluckUnknown=0`, `pingPongBlocks=0`
+- Cleanup vollständig
+- Runtime wieder STOPPED, Scheduler 0 Ressourcen
 
-Safety:
-- Itemwrites nur über ActionBoundary `send_item`;
-- Bestätigung nur durch beobachtetes Inventardelta;
-- unavailable Inventory ist kein Erfolg;
-- Transfer-/MLuck-UNKNOWN ohne Blind-Retry;
-- fremde Targets blockiert;
-- kein Goldtransfer, keine Bank-/Sell-/Exchange-/Markt-Aktionen.
+## H12 – Bank – live bestanden, finaler Merge-Gate offen
 
-Nächster Schritt:
-1. Exact-Head-CI des Evidence-Heads grün bestätigen;
-2. `behind_by=0`, Checks, Reviews, Threads und Mergeability frisch prüfen;
-3. PR #11 mit Methode `merge` und exaktem `expected_head_sha` mergen;
-4. Merge auf `main` verifizieren;
-5. H12 Bank auf frischem Branch vom neuen `main` beginnen.
+Aktiver Branch:
+`chatgpt/h12-bank`
 
+PR:
+`#12 – H12: Bank`
+
+Version:
+`0.12.0-h12`
+
+Finale Live-Evidence vom 2026-09-27:
+- Suite `h12-bank`: **PASSED / ALL_STEPS_PASSED**
+- Merchant `My_Merchant`
+- sicheres H10-BANK-Item `slice_honey`
+- Menge `155`
+- ursprünglicher Inventarslot `3`
+- automatische Bankfahrt: `movementRequests=1`
+- Deposit nach `items0/0` bestätigt
+- Withdraw aus exakt `items0/0` zurück in Slot 3 bestätigt
+- `depositsConfirmed=1`
+- `withdrawalsConfirmed=1`
+- `depositsUnknown=0`
+- `withdrawalsUnknown=0`
+- `movementUnknown=0`
+- `reconciliationEntries=43`
+- `reconciliationFailures=0`
+- `itemRestored=true`
+- Cleanup PASSED: `pending=false`, `request=false`, `movementActive=false`
+- Runtime danach wieder STOPPED
+- Scheduler danach `totalResources=0`
+
+Nächster verbindlicher H12-Ablauf:
+1. neuen exakten Head nach diesen Evidence-Commits bestimmen;
+2. dessen CI bis completed/success abwarten;
+3. frisch prüfen: `behind_by=0`, keine pending/failing Runs oder Checks, keine offenen Review-Threads, kein `CHANGES_REQUESTED`, `mergeable=true`;
+4. PR #12 ausschließlich mit Methode `merge` und exaktem `expected_head_sha` mergen;
+5. Merge auf `main` verifizieren.
+
+H13 ist bereits vorbereitet, darf aber erst nach H12-Merge sauber auf den neuen `main` gebracht und danach live getestet werden.
 
 ## H2 Architekturregel für spätere Module
 

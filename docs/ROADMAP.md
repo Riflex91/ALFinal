@@ -368,24 +368,51 @@ Nach H9 existiert ein echter autonomer Farming-Bot.
 - Runtime wieder STOPPED, Scheduler `totalResources=0`
 - finale Evidence: `docs/H11-LIVE-TEST.md`
 
-Vor Merge: neuer Exact-Head-CI und vollständiger Merge-Gate.
+H11 wurde nach bestandenem Live-Test und sauberem Exact-Head-Gate als PR #11 gemergt. Merge-Commit: `0b8b45089ae47ea352e05115074142a427d7ff79`.
 
 ---
 
 ## H12 – Bank
 
-**🟦 BAU**
-- Deposit/Withdraw
+**🟩 BESTANDEN – 2026-09-27**
+
+**BAU**
+- Live-Bank-Snapshot aus `character.bank`
+- verifizierte Pack→Bank-Map-Zuordnung; unbekannte Zuordnung fail-closed
 - Bank-Suche
-- Packs
-- Reservierungen
-- Workspace
-- Bank/Inventory Reconciliation
+- sichere Item-Deposits via ActionBoundary `bank_store`
+- sichere Item-Withdraws via ActionBoundary `bank_retrieve`
+- Gold Deposit/Withdraw via `bank_deposit` / `bank_withdraw`, nur bei beobachtbaren Goldständen
+- automatische Deposits nur für H10-Disposition `BANK`
+- Reservierungen und Workspace-Pack
+- Inventory/Bank Reconciliation
+- H4-Bankfahrt mit Owner `bank-h12`
+- bounded UNKNOWN + Suspension, kein Blind-Retry
+- Headless API `ALBot.bank.*`
+- Control-Center-Tab **Bank**
+- H12-Ein-Klick-Suite `h12-bank`
+- `docs/H12-LIVE-TEST.md`
 
-**🟧 LIVE-TEST**
-- automatische Banknutzung
-- Items bleiben nach Aktionen eindeutig auffindbar
+**🟩 PRE-LIVE CI**
+- Run #235: 144/144 Tests grün
+- H1–H11 Regressionen grün
+- zusätzlicher Pack→Map-Fail-Closed-Patch eingebaut
+- `dist/al-bot.js` source-synchron auf `0.12.0-h12`
+- nach finalen Bundle-/Dokumentationscommits erneut Exact-Head-CI
 
+**🟩 LIVE-TEST BESTANDEN**
+- Suite `h12-bank`: `PASSED / ALL_STEPS_PASSED`
+- Merchant `My_Merchant`
+- `slice_honey` x155 aus Inventarslot 3 in `items0/0` eingelagert
+- derselbe Stack vollständig zurück in Slot 3 geholt
+- `depositsConfirmed=1`, `withdrawalsConfirmed=1`
+- `depositsUnknown=0`, `withdrawalsUnknown=0`, `movementUnknown=0`
+- `reconciliationEntries=43`, `reconciliationFailures=0`, `itemRestored=true`
+- Cleanup ohne Pending/Request/H12-Movement
+- Runtime wieder STOPPED, Scheduler `totalResources=0`
+- finale Evidence in `docs/H12-LIVE-TEST.md`
+
+Vor Merge: neuen Exact-Head-CI und vollständigen Merge-Gate erneut prüfen.
 ---
 
 ## H13 – Handel

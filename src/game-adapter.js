@@ -425,6 +425,108 @@
       };
     }
 
+    bankPackDefinitions() {
+      const raw = this._read('bank_packs');
+      if (!raw || typeof raw !== 'object') return {};
+      const out = {};
+      for (const [name, value] of Object.entries(raw)) {
+        let map = null;
+        if (Array.isArray(value)) map = value[0] == null ? null : cleanText(value[0], 120);
+        else if (value && typeof value === 'object') {
+          map = value.map == null
+            ? (value[0] == null ? null : cleanText(value[0], 120))
+            : cleanText(value.map, 120);
+        }
+        out[String(name)] = { name: String(name), map };
+      }
+      return out;
+    }
+
+    bankSnapshot() {
+      const character = this._character();
+      if (!character || !character.name) {
+        return {
+          schemaVersion: 1,
+          available: false,
+          reason: 'CHARACTER_UNAVAILABLE',
+          map: null,
+          gold: null,
+          capacity: 0,
+          usedSlots: 0,
+          freeSlots: 0,
+          packs: []
+        };
+      }
+
+      const rawBank = character.bank;
+      if (!rawBank || typeof rawBank !== 'object') {
+        return {
+          schemaVersion: 1,
+          available: false,
+          reason: 'BANK_NOT_MOUNTED',
+          map: character.map == null ? null : cleanText(character.map, 120),
+          gold: null,
+          capacity: 0,
+          usedSlots: 0,
+          freeSlots: 0,
+          packs: []
+        };
+      }
+
+      const definitions = this.bankPackDefinitions();
+      const packs = [];
+      let capacity = 0;
+      let usedSlots = 0;
+      for (const [packName, rawPack] of Object.entries(rawBank)) {
+        if (!Array.isArray(rawPack)) continue;
+        const items = [];
+        for (let slot = 0; slot < rawPack.length; slot += 1) {
+          const item = rawPack[slot];
+          if (!item || !item.name) continue;
+          const name = cleanText(item.name, 160);
+          items.push({
+            pack: String(packName),
+            slot,
+            name,
+            quantity: Math.max(1, finite(item.q) || 1),
+            level: Math.max(0, finite(item.level) || 0),
+            statType: item.stat_type == null ? null : cleanText(item.stat_type, 80),
+            locked: !!item.l,
+            giveaway: !!item.giveaway,
+            gift: !!item.gift,
+            property: item.p == null ? null : clone(item.p),
+            expiresAt: item.expires == null ? null : item.expires,
+            definition: this.itemDefinition(name)
+          });
+        }
+        const packCapacity = rawPack.length;
+        capacity += packCapacity;
+        usedSlots += items.length;
+        const definition = definitions[String(packName)] || null;
+        packs.push({
+          name: String(packName),
+          map: definition && definition.map || null,
+          capacity: packCapacity,
+          usedSlots: items.length,
+          freeSlots: Math.max(0, packCapacity - items.length),
+          items
+        });
+      }
+
+      packs.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+      return {
+        schemaVersion: 1,
+        available: true,
+        reason: null,
+        map: character.map == null ? null : cleanText(character.map, 120),
+        gold: finite(rawBank.gold),
+        capacity,
+        usedSlots,
+        freeSlots: Math.max(0, capacity - usedSlots),
+        packs
+      };
+    }
+
     chestSnapshot() {
       let raw = null;
       const getChests = this._resolveFunction('get_chests');

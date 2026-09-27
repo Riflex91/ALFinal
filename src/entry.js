@@ -50,7 +50,7 @@
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.11.0-h11',
+    version: '0.12.0-h12',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -109,6 +109,7 @@
       itemDefinition: name => runtime.game.itemDefinition(name),
       farmSpots: options => runtime.game.farmSpotCatalog(options || {}),
       inventory: () => runtime.game.inventorySnapshot(),
+      bank: () => runtime.game.bankSnapshot(),
       chests: () => runtime.game.chestSnapshot()
     },
 
@@ -177,6 +178,22 @@
       cancelDelivery: reason => runtime.merchant.cancelDelivery(reason || 'API_H11_DELIVERY_CANCEL')
     },
 
+    bank: {
+      status: () => runtime.bank.status(),
+      plan: () => runtime.bank.plan(),
+      tick: () => runtime.bank.tick(),
+      search: itemName => runtime.bank.search(itemName),
+      reconcile: () => runtime.bank.reconcile(),
+      reset: reason => runtime.bank.resetSafety(reason || 'API_H12_RESET'),
+      cancel: reason => runtime.bank.cancelRequest(reason || 'API_H12_REQUEST_CANCEL'),
+      reservations: value => value == null ? { ...runtime.bank.reservations } : runtime.bank.setReservations(value),
+      workspace: value => value == null ? { ...runtime.bank.workspace } : runtime.bank.setWorkspace(value),
+      deposit: (itemName, options) => runtime.bank.queueDeposit(itemName, options || {}),
+      withdraw: (packName, bankSlot, options) => runtime.bank.queueWithdraw(packName, bankSlot, options || {}),
+      depositGold: amount => runtime.bank.queueGoldDeposit(amount),
+      withdrawGold: amount => runtime.bank.queueGoldWithdraw(amount)
+    },
+
     liveTests: {
       status: () => runtime.liveTests.status(),
       list: () => runtime.liveTests.list(),
@@ -228,6 +245,7 @@
   Object.freeze(api.farmIntelligence);
   Object.freeze(api.inventory);
   Object.freeze(api.merchant);
+  Object.freeze(api.bank);
   Object.freeze(api.liveTests);
   Object.freeze(api.knowledge);
   Object.freeze(api.roster);
@@ -245,7 +263,7 @@
     };
   } catch (_) {}
 
-  runtime.logger.info('AL Bot H10 geladen', {
+  runtime.logger.info('AL Bot H12 geladen', {
     version: api.version,
     bootCount,
     hotReload: !!previous,
