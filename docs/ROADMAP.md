@@ -1078,3 +1078,24 @@ Post-Merge-PR #26 `H18: Finalize bundle and pre-live evidence`:
 - verändert keine Gameplay- oder Safety-Grenzen.
 
 **H18 ist technisch implementiert, aber bis PR #26 gemergt und `h18-party-logistics` live bestanden ist weiterhin offen.**
+
+
+### H18 abgeschlossen – echter Party-Logistics-Live-PASS
+
+Stand 2026-09-27:
+
+- PR #25 und Post-Merge-Finalisierung PR #26 sind auf `main`;
+- Runtime/Bundle `0.18.0-h18`, Package `0.18.0`;
+- drei unabhängige echte `h18-party-logistics`-Läufe auf eigenen Combat-Charakteren: **PASSED / ALL_STEPS_PASSED**;
+- Ranger-Lauf hat den echten Regroup-Pfad ausgeführt: 1 Regroup bestätigt / 0 UNKNOWN;
+- Ranger-Supply: `mpot0`, 1 dispatched / 1 confirmed / 0 rejected / 0 UNKNOWN;
+- Priest-Supply: `hpot0`, 1 dispatched / 1 confirmed / 0 rejected / 0 UNKNOWN;
+- Warrior: zusätzlicher unabhängiger Supply-PASS;
+- Stability und Cleanup in allen drei H18-Läufen erfolgreich;
+- Autonomie danach AUS, keine aktive Aktion, Queue leer, keine Suspension;
+- kein Blind-Retry, keine H18-UNKNOWN-Evidence;
+- ein separater Merchant-Runner lief noch auf H17 und wurde per GUI STOP abgebrochen; dieser Lauf ist keine H18-Fehlevidence.
+
+**H18 – Party-Logistik: abgeschlossen.**
+
+Nächster Entwicklungsblock: **H19 – Character Lifecycle & Recovery**.
