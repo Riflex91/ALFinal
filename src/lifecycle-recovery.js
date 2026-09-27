@@ -743,6 +743,9 @@
         action.error = errorReason(dispatched.error, 'H19_DISPATCH_SYNC_UNKNOWN');
         this.currentAction = action;
         this.metrics.actionsDispatched += 1;
+        if (request.kind === 'PARTY_INVITE') this.metrics.partyInvitesDispatched += 1;
+        if (request.kind === 'PARTY_REQUEST') this.metrics.partyRequestsDispatched += 1;
+        if (request.kind === 'PARTY_ACCEPT_INVITE' || request.kind === 'PARTY_ACCEPT_REQUEST') this.metrics.partyAcceptsDispatched += 1;
         this._persistCurrent();
         return this._suspend('H19_DISPATCH_SYNC_UNKNOWN', { error: action.error });
       }
@@ -841,8 +844,14 @@
         this.currentAction = null;
         this._removeStorage('pending');
         this.metrics.actionsRejected += 1;
-        this.lastAction = { at: nowIso(), type: current.kind + '_REJECTED', reason: cleanText(reason, 300) };
-        return { state: 'REJECTED', reason: cleanText(reason, 300) };
+        if (current.automatic === true) this.autonomyEnabled = false;
+        this.lastAction = {
+          at: nowIso(),
+          type: current.kind + '_REJECTED',
+          reason: cleanText(reason, 300),
+          autonomyStopped: current.automatic === true
+        };
+        return { state: 'REJECTED', reason: cleanText(reason, 300), autonomyStopped: current.automatic === true };
       }
 
       if (current.settlement === 'REJECTED') {
