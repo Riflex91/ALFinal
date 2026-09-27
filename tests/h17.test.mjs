@@ -27,6 +27,7 @@ function fixture(options = {}) {
     lastOrder: null
   };
   const statuses = {
+    inventory: { suspended: false, pendingLoot: options.pendingLoot ? { id: 'loot-pending' } : null, lastAction: null },
     merchant: { suspended: false, pending: null, request: null, delivery: null, lastAction: null },
     bank: { suspended: false, pending: null, request: null, lastAction: null },
     trade: { suspended: false, pending: null, request: null, lastAction: null },
@@ -159,6 +160,7 @@ function fixture(options = {}) {
     }
   });
 
+  const inventory = controller('inventory');
   const merchant = controller('merchant');
   const game = {
     snapshot: () => ({ available: options.gameAvailable !== false, character: options.gameAvailable === false ? null : clone(character) }),
@@ -179,7 +181,7 @@ function fixture(options = {}) {
   const Controller = ctx.__ALBOT_INTERNALS__.EconomyController;
   const economy = new Controller({
     root: ctx, game, movement: movementController, combat,
-    merchant, bank, trade, gear, upgrade, exchangeCraft,
+    inventory, merchant, bank, trade, gear, upgrade, exchangeCraft,
     canAct: () => options.actionBlocked !== true
   });
   economy.start({ scope: { interval: () => 'h17-resource' } });
@@ -276,6 +278,29 @@ test('H17 refuses planning while combat, foreign movement, or another child owns
   assert.equal(busy.economy.plan().reason, 'H17_CHILD_BUSY');
 });
 
+test('H17 treats pending loot as inventory ownership and blocks economy planning', () => {
+  const f = fixture({
+    pendingLoot: true,
+    exchanges: [{ safe: true, itemName: 'anniversarygift', inventorySlot: 4, requiredQuantity: 1, valueAtRisk: 100 }]
+  });
+  const plan = f.economy.plan();
+  assert.equal(plan.state, 'WAITING');
+  assert.equal(plan.reason, 'H17_CHILD_BUSY');
+  assert.ok(plan.blockers.some(row => row.module === 'inventory'));
+  assert.equal(f.calls.length, 0);
+});
+
+test('H17 manual queue is rejected while the economy module is stopped', () => {
+  const f = fixture({
+    exchanges: [{ safe: true, itemName: 'anniversarygift', inventorySlot: 4, requiredQuantity: 1, valueAtRisk: 100 }]
+  });
+  f.economy.stop('TEST_STOP');
+  const result = f.economy.queueSelected();
+  assert.equal(result.accepted, false);
+  assert.equal(result.reason, 'H17_MODULE_NOT_ACTIVE');
+  assert.equal(f.calls.length, 0);
+});
+
 test('H17 queues one safe exchange and confirms it only from child evidence', () => {
   const f = fixture({
     exchanges: [{ safe: true, itemName: 'anniversarygift', inventorySlot: 4, requiredQuantity: 1, valueAtRisk: 100 }]
@@ -291,9 +316,26 @@ test('H17 queues one safe exchange and confirms it only from child evidence', ()
   assert.equal(f.calls.length, 1);
 
   f.settle('exchangeCraft', 'EXCHANGE_CONFIRMED');
-  f.economy.tick();
+  const confirmed = f.economy.tick();
+  assert.equal(confirmed.state, 'CONFIRMED');
   assert.equal(f.economy.status().currentAction, null);
   assert.equal(f.economy.status().metrics.actionsConfirmed, 1);
+  assert.equal(f.calls.length, 1);
+});
+
+test('H17 treats a child BLOCKED outcome as a terminal rejection', () => {
+  const f = fixture({
+    exchanges: [{ safe: true, itemName: 'anniversarygift', inventorySlot: 4, requiredQuantity: 1, valueAtRisk: 100 }]
+  });
+  f.economy.startAutonomy({ maxActions: 2 });
+  assert.equal(f.economy.tick().state, 'QUEUED');
+  f.settle('exchangeCraft', 'EXCHANGE_BLOCKED');
+  const result = f.economy.tick();
+  assert.equal(result.state, 'REJECTED');
+  assert.equal(f.economy.status().currentAction, null);
+  assert.equal(f.economy.status().suspended, false);
+  assert.equal(f.economy.status().metrics.actionsRejected, 1);
+  assert.equal(f.calls.length, 1);
 });
 
 test('H17 child UNKNOWN suspends autonomy without blind retry', () => {
@@ -382,6 +424,12 @@ test('H17 runtime, API, UI, build and generated bundle are wired without direct 
   assert.match(runtime, /id: 'h17-economy-autonomy'/);
   assert.match(runtime, /version: '0\.17\.0-h17'/);
   assert.match(runtime, /trade\.movementUnknown/);
+  assert.match(runtime, /inventory\.lootUnknown/);
+  assert.match(runtime, /status\.pendingLoot/);
+  assert.match(source, /H17_MODULE_NOT_ACTIVE/);
+  assert.match(source, /child\.pendingLoot/);
+  assert.match(source, /type\.includes\('BLOCKED'\)/);
+  assert.match(source, /if \(observed\.state !== 'IDLE'\) return observed/);
   assert.match(entry, /0\.17\.0-h17/);
   assert.match(entry, /runtime\.economy\.startAutonomy/);
   assert.match(entry, /Object\.freeze\(api\.economy\)/);
