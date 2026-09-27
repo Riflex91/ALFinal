@@ -783,7 +783,8 @@ Implementiert:
 - H16-Regressionen;
 - `dist/al-bot.js` auf H16-Source synchronisiert.
 
-H16 Live-Test v4:
+H16 Live-Test v5:
+- v5 ergänzt strukturierte Preflight-Diagnostik: `localCraftRejects`, `fallbackRejects`, `topNearMatches` und aktive Caps werden auch bei FAILED-Step in `step.details` geschrieben;
 - bevorzugt echte `CRAFT_TO_EXCHANGE_CHAIN`;
 - sonst `CRAFT_AND_EXCHANGE_COVERAGE`;
 - wenn kein lokaler Craft bereit ist: `ACQUIRE_CRAFT_AND_EXCHANGE_COVERAGE`;
