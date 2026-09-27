@@ -837,11 +837,22 @@ Pre-Live-Hardening:
 - kein `CHANGES_REQUESTED`;
 - `behind_by=0`, `mergeable=true`.
 
+v2 technischer Pre-Live-Stand:
+- technischer Head `3e36f6ccaa34d7359e8cf7d26e5d44af942811cc`;
+- Exact-Head-CI Run #355: **211/211 PASS, 0 FAIL, 0 SKIP, completed/success**;
+- `behind_by=0`, PR `mergeable=true`;
+- keine offenen Review-Threads, kein `CHANGES_REQUESTED` zum Prüfzeitpunkt;
+- Bundle exakt source-synchron auf `0.16.0-h16`;
+- Craft→Exchange-Output-Risiko wird bereits im Preflight geblockt;
+- H16-UNKNOWN-Suspension bleibt auch nach Suite-Cleanup erhalten;
+- v2-Safety/Wiring regressionsseitig abgedeckt;
+- frischer Codex-Review wurde auf dem technischen v2-Head angefordert.
+
 Noch offen:
-- v2-Code, Regressionen und Bundle über neuen Exact-Head-CI prüfen;
-- neuen Codex-Review auf v2-Funde auswerten;
-- alle neuen Threads resolve;
-- finalen v2-Pre-Live-Head vollständig grün prüfen;
+- frischen Codex-Review abschließen/auswerten;
+- alle eventuell neuen Threads resolve;
+- finalen Doku-Exact-Head-CI grün bestätigen;
+- vollständiges v2-Pre-Live-Gate frisch prüfen;
 - danach Nutzer genau einmal den zweiten echten `h16-exchange-craft`-Test starten lassen;
 - Diagnose vollständig auswerten;
 - bei PASS finale Evidence anhängen, erneut Exact-Head-CI + Merge-Gate und erst danach PR #17 mergen.
@@ -939,4 +950,4 @@ Bei Fehler:
 
 ## Nächster Schritt
 
-H16 Live-Versuch 1 war ein sauberer fail-closed Preflight-Abbruch ohne Mutation. Jetzt v2-Materialbeschaffungsfallback über CI und Review härten. Erst wenn der neue Exact-Head-CI vollständig grün, der Branch `behind_by=0`, Review-Threads resolved und PR mergeable ist, den Nutzer genau einmal den zweiten `h16-exchange-craft`-Live-Test starten lassen. Erst nach PASS finale Evidence und Merge-Gate.
+H16 v2 ist technisch grün (Head `3e36f6cc...`, Run #355: 211/211 PASS). Jetzt nur noch frischen Codex-Review und finalen Doku-Exact-Head-CI abschließen. Danach vollständiges Pre-Live-Gate prüfen und erst dann den Nutzer genau einmal den zweiten `h16-exchange-craft`-Live-Test starten lassen.
