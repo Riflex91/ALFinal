@@ -13,6 +13,8 @@
   ]);
 
   function finite(value) {
+    if (value == null) return null;
+    if (typeof value === 'string' && !value.trim()) return null;
     const number = Number(value);
     return Number.isFinite(number) ? number : null;
   }
@@ -93,26 +95,37 @@
 
     start(context = {}) {
       if (this.moduleActive) return { started: false, reason: 'H18_ALREADY_ACTIVE' };
+      const resumedInFlight = !!(this.currentAction && ['SUPPLY','GOLD'].includes(String(this.currentAction.kind || '')));
       this.moduleActive = true;
       this.scope = context.scope || null;
       this.autonomyEnabled = false;
-      this.suspendedReason = null;
-      this.currentAction = null;
-      this.actionsThisSession = 0;
+      if (!resumedInFlight) {
+        this.suspendedReason = null;
+        this.currentAction = null;
+        this.actionsThisSession = 0;
+      }
       if (this.scope && typeof this.scope.interval === 'function') {
         this.scope.interval('party-logistics-tick', () => this.tick(), this.config.tickMs, { immediate: true });
       }
-      return { started: true };
+      return { started: true, resumedInFlight };
     }
 
     stop(reason = 'H18_MODULE_STOP') {
+      const preserveInFlight = !!(this.currentAction && ['SUPPLY','GOLD'].includes(String(this.currentAction.kind || '')));
       this.moduleActive = false;
       this.autonomyEnabled = false;
       this.scope = null;
-      this._cancelOwnedMovement(reason);
-      this.currentAction = null;
-      this.lastAction = { at: nowIso(), type: 'STOP', reason: cleanText(reason, 240) };
-      return { stopped: true };
+      if (!preserveInFlight) {
+        this._cancelOwnedMovement(reason);
+        this.currentAction = null;
+      }
+      this.lastAction = {
+        at: nowIso(),
+        type: preserveInFlight ? 'STOP_WITH_INFLIGHT_PRESERVED' : 'STOP',
+        reason: cleanText(reason, 240),
+        currentAction: preserveInFlight ? clone(this.currentAction) : null
+      };
+      return { stopped: true, inFlightPreserved: preserveInFlight };
     }
 
     startAutonomy(options = {}) {
@@ -204,9 +217,11 @@
     _safeSupplyRow(row) {
       if (!row || !row.name || row.locked || row.giveaway || row.gift || row.expiresAt) return false;
       if (Math.max(0, Number(row.level) || 0) > 0) return false;
-      const definition = row.definition || {};
-      if (definition.quest === true || definition.cash === true || definition.upgrade === true || definition.compound === true) return false;
+      const definition = row.definition;
+      if (!definition || typeof definition !== 'object') return false;
       const type = cleanText(definition.type || '', 80).toLowerCase();
+      if (!type) return false;
+      if (definition.quest === true || definition.cash === true || definition.upgrade === true || definition.compound === true) return false;
       if (EQUIPMENT_TYPES.has(type)) return false;
       return true;
     }
@@ -283,11 +298,16 @@
       if (!party || !party.coordinationEnabled) return { accepted: false, reason: 'H18_OWNED_PARTY_REQUIRED' };
       const target = this._ownedTarget(targetName, party);
       if (!target) return { accepted: false, reason: 'H18_TARGET_NOT_OWNED_PARTY_MEMBER' };
-      const wanted = Math.max(1, Math.floor(Number(quantity) || 1));
+      const rawQuantity = finite(quantity);
+      if (rawQuantity == null || rawQuantity <= 0 || !Number.isInteger(rawQuantity)) {
+        return { accepted: false, reason: 'H18_SUPPLY_QUANTITY_INVALID' };
+      }
+      const wanted = rawQuantity;
+      const anyRow = this._findSupplyRow(itemName, 1);
+      if (!anyRow) return { accepted: false, reason: 'H18_SUPPLY_ITEM_NOT_SAFE_OR_AVAILABLE' };
       const row = this._findSupplyRow(itemName, wanted);
-      if (!row) return { accepted: false, reason: 'H18_SUPPLY_ITEM_NOT_SAFE_OR_AVAILABLE' };
+      if (!row) return { accepted: false, reason: 'H18_SUPPLY_QUANTITY_UNAVAILABLE' };
       const available = Math.max(1, Math.floor(Number(row.quantity) || 1));
-      if (wanted > available) return { accepted: false, reason: 'H18_SUPPLY_QUANTITY_UNAVAILABLE' };
       const request = {
         id: 'h18-request-' + (++this.sequence),
         kind: 'SUPPLY',
