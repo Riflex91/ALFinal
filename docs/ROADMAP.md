@@ -1011,3 +1011,49 @@ Stand 2026-09-27:
 Damit ist **Meilenstein 2 – Farming plus vollständige Merchant-/Economy-Basis** erreicht.
 
 Nächster Entwicklungsblock: **H18 – Party-Logistik**.
+
+
+### H18 – Party-Logistik technischer Pre-Live-Gate
+
+Stand 2026-09-27, PR #25 `H18: Add bounded party logistics`.
+
+Implementiert:
+
+- eigener `PartyLogisticsController`;
+- Supply-Verteilung nur an eigene Party-Mitglieder;
+- Potions/Scrolls/Elixiere sowie konservativ sichere Level-0-Supplies;
+- unbekannte Item-Definitionen fail-closed;
+- Gold-Verteilung mit konfigurierbarer Sender-Goldreserve;
+- exakte Sender-Slot-/Gold-Deltas plus abgeschlossene Dispatch-Settlement als Outcome-Evidence;
+- mehrere gleichnamige Item-Stacks sicher behandelt;
+- irreversible Supply-/Gold-Aktionen bleiben über Modulstop erhalten und werden nach Restart reconciled;
+- Regroup/Approach ausschließlich über H4 Movement Owner `party-logistics-h18`;
+- fremde Party und Combat blockieren H18;
+- H10 Loot, H11 Merchant und H17 Economy respektieren H18-Ownership;
+- H18 wartet auf laufende H10–H17-Mutationspfade;
+- bounded Session-Budget;
+- UNKNOWN suspendiert ohne Blind-Retry;
+- Headless API `ALBot.partyLogistics`;
+- H18-Steuerung im bestehenden Party-Tab;
+- Live-Suite `h18-party-logistics` v1 mit Preflight, optionalem Regroup, exakt einem echten Supply-Transfer, Stability und Cleanup;
+- Runtime/Bundle `0.18.0-h18`, Package `0.18.0`.
+
+Technische Evidence vor finalen Dokucommits:
+
+- Safety-Head `10ba7540545d49ff7d5100c469533092fdc65bf1`;
+- CI #490: **256/256 PASS, 0 FAIL, 0 CANCELLED, 0 SKIP**;
+- fünf konkrete Review-Funde behoben;
+- alle fünf Review-Threads resolved;
+- zusätzlicher Cross-Module-Ownership-Hardening;
+- `dist/al-bot.js` anschließend source-synchron aktualisiert;
+- beim letzten Write `behind_by=0`.
+
+Nächster Schritt:
+
+- finalen Doku-Head durch Exact-Head-CI laufen lassen;
+- vollständiges Merge-Gate frisch prüfen;
+- PR #25 ausschließlich per `merge` mit exaktem aktuellem `expected_head_sha` mergen;
+- `main` verifizieren;
+- danach genau einen echten `h18-party-logistics`-Live-Test durchführen.
+
+**H18 bleibt bis zum echten Adventure-Land-Live-PASS offen.**
