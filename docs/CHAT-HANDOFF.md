@@ -1313,3 +1313,44 @@ Nächste verpflichtende Schritte:
 10. erst dann den Nutzer **genau einmal** den echten `h18-party-logistics`-Live-Test starten lassen und vollständigen Bericht auswerten.
 
 Bei Live-FAIL kein Blind-Rerun.
+
+
+## H18 abgeschlossen – finaler Live-PASS
+
+Stand 2026-09-27.
+
+Nach PR #25 und der Post-Merge-Bundle-/Evidence-Finalisierung über PR #26 wurde `h18-party-logistics` live auf einer echten Vierer-Party ausgeführt.
+
+Finale H18-Evidence:
+
+- drei unabhängige H18-Läufe mit Runtime `0.18.0-h18`: **PASSED / ALL_STEPS_PASSED**;
+- Ranger: echter Regroup von >100 Units, 1 bestätigt / 0 UNKNOWN;
+- Ranger: `mpot0` an eigenen Merchant, 1 dispatched / 1 confirmed / 0 rejected / 0 UNKNOWN;
+- Priest: `hpot0` an eigenen Merchant, 1 dispatched / 1 confirmed / 0 rejected / 0 UNKNOWN;
+- Warrior: zusätzlicher unabhängiger Supply-PASS;
+- Stability in allen H18-Läufen PASS;
+- Cleanup in allen H18-Läufen PASS;
+- nach Cleanup Autonomie AUS, `currentAction=null`, Queue leer, keine Suspension;
+- keine Supply-/Regroup-UNKNOWN-Evidence;
+- echter Movement-Owner `party-logistics-h18` wurde im Ranger-Lauf erfolgreich abgeschlossen.
+
+Ein parallel laufender Merchant war noch auf `0.17.0-h17`; sein erneut gestarteter H17-Test wurde per `GUI_EMERGENCY_STOP` abgebrochen und zählt nicht als H18-Evidence.
+
+Damit ist **H18 – Party Logistics vollständig abgeschlossen**.
+
+### Nächster Entwicklungsblock: H19 – Character Lifecycle & Recovery
+
+Scope laut Roadmap:
+
+- Character Start/Stop;
+- Party Recovery;
+- Disconnect Recovery;
+- Death Recovery;
+- Restart Recovery.
+
+Live-Ziel:
+
+- Tod/Disconnect/Restart gezielt auslösen;
+- Bot soll kontrolliert und fail-safe in einen gültigen Betriebszustand zurückfinden.
+
+Bestehende Projektregeln bleiben unverändert: GLOBAL STOP höchste Priorität, Live Truth > Knowledge, keine hartcodierten Namen, zentrale Roster-/Ownership-Schichten, sichere Movement-/Scheduler-/ActionBoundary-Pfade, UNKNOWN niemals blind wiederholen, Supabase READ-ONLY und GitHub-Writes nur auf einem nicht-stalen Branch.
