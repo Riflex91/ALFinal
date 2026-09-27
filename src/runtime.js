@@ -2944,11 +2944,11 @@
               const recordFallbackReject = (recipe, reason, details = {}, distance = 9) => {
                 bump(fallbackRejects, reason);
                 nearMatches.push({
+                  ...details,
                   itemName: recipe && recipe.name || null,
                   reason,
                   distance,
-                  craftCost: recipe ? Number(recipe.cost || 0) : null,
-                  ...details
+                  craftCost: recipe ? Number(recipe.cost || 0) : null
                 });
               };
               const buildPreflightDiagnostics = () => {
@@ -3137,7 +3137,7 @@
                     if (level !== 0) {
                       viable = false;
                       viabilityReason = 'MISSING_LEAF_LEVEL_NONZERO';
-                      viabilityDetails = { itemName: row.itemName, level, quantity };
+                      viabilityDetails = { missingItemName: row.itemName, level, quantity };
                       break;
                     }
 
@@ -3160,7 +3160,7 @@
                       viable = false;
                       viabilityReason = 'MISSING_LEAF_NO_NPC_OR_MARKET_SOURCE';
                       viabilityDetails = {
-                        itemName: row.itemName,
+                        missingItemName: row.itemName,
                         level,
                         quantity,
                         npcPrice: Number.isFinite(npcPrice) ? npcPrice : null,
