@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.19.0-h19';
+      this.version = options.version || '0.20.0-h20';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -199,7 +199,8 @@
             runEpoch: this.runEpoch,
             emergencyStopLatched: this.stopLatch.status().latched,
             lifecycleAutonomyEnabled: this.lifecycle ? this.lifecycle.status().autonomyEnabled === true : null,
-            version: this.version
+            version: this.version,
+            profile: this.accountStrategy ? this.accountStrategy.localProfile() : null
           };
         },
         getPartyState: () => this.party.snapshot(),
@@ -218,6 +219,21 @@
         storage: this.storage,
         crossWindow: this.lifecycleTransport,
         canAct: action => this.actionAllowed(action)
+      });
+      this.accountStrategy = new ns.AccountStrategyController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        roster: this.roster,
+        party: this.party,
+        crossWindow: this.lifecycleTransport,
+        gear: this.gear
+      });
+      this.fullAutonomy = new ns.FullAutonomyController({
+        root: this.root,
+        logger: this.logger,
+        runtime: this,
+        strategy: this.accountStrategy
       });
       this.inventory.partyLogistics = this.partyLogistics;
       this.merchant.partyLogistics = this.partyLogistics;
@@ -418,6 +434,24 @@
         start: context => this.lifecycle.start(context),
         stop: reason => this.lifecycle.stop(reason),
         status: () => this.lifecycle.status()
+      });
+
+      this.modules.register({
+        id: 'account-strategy',
+        title: 'Account Progression & Party Optimizer',
+        version: '0.20.0',
+        start: context => this.accountStrategy.start(context),
+        stop: reason => this.accountStrategy.stop(reason),
+        status: () => this.accountStrategy.status()
+      });
+
+      this.modules.register({
+        id: 'full-autonomy',
+        title: 'Full Live Autonomy',
+        version: '0.20.0',
+        start: context => this.fullAutonomy.start(context),
+        stop: reason => this.fullAutonomy.stop(reason),
+        status: () => this.fullAutonomy.status()
       });
     }
 
@@ -5417,6 +5451,8 @@
         partyLogistics: this.partyLogistics.status(),
         lifecycleTransport: this.lifecycleTransport.status(),
         lifecycle: this.lifecycle.status(),
+        accountStrategy: this.accountStrategy.status(),
+        fullAutonomy: this.fullAutonomy.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
         roster,
@@ -5452,6 +5488,8 @@
         partyLogistics: this.partyLogistics.status(),
         lifecycleTransport: this.lifecycleTransport.status(),
         lifecycle: this.lifecycle.status(),
+        accountStrategy: this.accountStrategy.status(),
+        fullAutonomy: this.fullAutonomy.status(),
         liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
         logs: this.logger.list(160),
@@ -5489,6 +5527,8 @@
         && typeof this.lifecycleTransport.freshPeer === 'function'
         && typeof this.lifecycleTransport.requestRuntimeState === 'function', this.lifecycleTransport.status());
       push('character-lifecycle-controller', !!this.lifecycle.status() && typeof this.lifecycle.plan === 'function' && typeof this.lifecycle.queueStart === 'function' && typeof this.lifecycle.queueRespawn === 'function', this.lifecycle.status());
+      push('account-strategy-controller', !!this.accountStrategy.status() && typeof this.accountStrategy.optimizeTask === 'function' && typeof this.accountStrategy.progressionPlan === 'function', this.accountStrategy.status());
+      push('full-autonomy-controller', !!this.fullAutonomy.status() && typeof this.fullAutonomy.startAutonomy === 'function' && typeof this.fullAutonomy.stopAutonomy === 'function', this.fullAutonomy.status());
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
       push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);
