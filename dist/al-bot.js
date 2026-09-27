@@ -6038,6 +6038,15 @@
       return new Set(roster && Array.isArray(roster.onlineCharacterNames) ? roster.onlineCharacterNames.map(String) : []);
     }
 
+    _runnerActiveSet(roster) {
+      const names = roster && Array.isArray(roster.runnerActiveCharacterNames)
+        ? roster.runnerActiveCharacterNames
+        : roster && Array.isArray(roster.activeCharacterNames)
+          ? roster.activeCharacterNames
+          : [];
+      return new Set(names.map(String));
+    }
+
     _validateRemoteTarget(name, mode) {
       const roster = this._roster();
       if (!roster || roster.accountStateAvailable !== true || roster.onlineStateAvailable !== true) {
@@ -6052,10 +6061,18 @@
       if (String(owned.name) === String(localName)) {
         return { ok: false, reason: 'H19_REMOTE_TARGET_IS_LOCAL' };
       }
-      const active = this._onlineSet(roster).has(String(owned.name));
+      const targetName = String(owned.name);
+      const active = this._onlineSet(roster).has(targetName);
+      const runnerActive = this._runnerActiveSet(roster).has(targetName);
       if (mode === 'START' && active) return { ok: false, reason: 'H19_TARGET_ALREADY_ACTIVE' };
       if (mode === 'STOP' && !active) return { ok: false, reason: 'H19_TARGET_ALREADY_STOPPED' };
-      return { ok: true, roster, owned, active };
+      if (mode === 'STOP' && roster.activeStateAvailable !== true) {
+        return { ok: false, reason: 'H19_RUNNER_ACTIVE_STATE_UNAVAILABLE' };
+      }
+      if (mode === 'STOP' && !runnerActive) {
+        return { ok: false, reason: 'H19_REMOTE_TARGET_NOT_RUNNER_CONTROLLABLE' };
+      }
+      return { ok: true, roster, owned, active, runnerActive };
     }
 
     _enqueue(kind, targetName, details = {}) {
@@ -19958,6 +19975,14 @@
           : []
       );
 
+      const runnerActiveSet = roster => new Set(
+        roster && Array.isArray(roster.runnerActiveCharacterNames)
+          ? roster.runnerActiveCharacterNames.map(String)
+          : roster && Array.isArray(roster.activeCharacterNames)
+            ? roster.activeCharacterNames.map(String)
+            : []
+      );
+
       const restorePolicy = runtime => {
         if (!originalPolicy) return null;
         return runtime.lifecycle.setPolicy({
@@ -20132,6 +20157,7 @@
               const roster = runtime.roster.refresh();
               assert(roster && roster.accountStateAvailable === true, 'H19_REMOTE_ACCOUNT_ROSTER_UNAVAILABLE');
               assert(roster.onlineStateAvailable === true, 'H19_REMOTE_ACTIVE_ROSTER_UNAVAILABLE');
+              assert(roster.activeStateAvailable === true, 'H19_REMOTE_RUNNER_ACTIVE_ROSTER_UNAVAILABLE');
               assert(runtime.actions.available('stop_character'), 'H19_REMOTE_STOP_API_UNAVAILABLE');
               assert(runtime.actions.available('start_character'), 'H19_REMOTE_START_API_UNAVAILABLE');
 
@@ -20142,6 +20168,7 @@
 
               const localName = String(game.character.name || '');
               const online = onlineSet(roster);
+              const runnerActive = runnerActiveSet(roster);
               const party = runtime.party.snapshot();
               const leader = party && party.leader ? String(party.leader) : null;
               const partyMembers = new Set(party && Array.isArray(party.memberNames) ? party.memberNames.map(String) : []);
@@ -20149,7 +20176,10 @@
               const candidates = (roster.accountCharacters || [])
                 .filter(row => row && row.name)
                 .map(row => ({ name: String(row.name), ctype: row.ctype || null }))
-                .filter(row => row.name !== localName && row.name !== leader && online.has(row.name))
+                .filter(row => row.name !== localName
+                  && row.name !== leader
+                  && online.has(row.name)
+                  && runnerActive.has(row.name))
                 .sort((a, b) => {
                   const aParty = partyMembers.has(a.name) ? 1 : 0;
                   const bParty = partyMembers.has(b.name) ? 1 : 0;
@@ -20157,7 +20187,7 @@
                   return a.name.localeCompare(b.name);
                 });
 
-              assert(candidates.length > 0, 'H19_REMOTE_SAFE_ACTIVE_TARGET_UNAVAILABLE');
+              assert(candidates.length > 0, 'H19_REMOTE_CONTROLLABLE_TARGET_UNAVAILABLE');
               targetName = candidates[0].name;
 
               const captured = runtime.lifecycle.captureDesiredActive();
@@ -20181,7 +20211,7 @@
                 targetWasPartyMember: partyMembers.has(targetName),
                 partyLeader: leader,
                 onlineCharacterNames: roster.onlineCharacterNames,
-                runnerActiveCharacterNames: roster.activeCharacterNames
+                runnerActiveCharacterNames: roster.runnerActiveCharacterNames || roster.activeCharacterNames
               };
             }
           },
