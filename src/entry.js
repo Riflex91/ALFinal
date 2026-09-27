@@ -2,6 +2,7 @@
   'use strict';
   const ns = root.__ALBOT_INTERNALS__;
   if (!ns || !ns.ALBotRuntime) throw new Error('ALBOT_RUNTIME_MISSING');
+  const cleanText = ns.helpers && ns.helpers.cleanText ? ns.helpers.cleanText : (value => String(value == null ? '' : value));
 
   function resolveSharedHost(start) {
     let current = start;
@@ -144,6 +145,13 @@
       supported: ctype => runtime.classSkills.supportedSkills(ctype),
       live: ctype => runtime.classSkills.liveSkillSummary(ctype),
       preview: targetId => runtime.classSkills.preview(targetId)
+    },
+
+    resourceTopoff: {
+      status: () => runtime.resourceTopoff.status(),
+      supply: () => runtime.resourceTopoff.supply(),
+      tick: () => runtime.resourceTopoff.tick(),
+      reset: reason => runtime.resourceTopoff.resetSafety(reason || 'API_RESOURCE_TOPOFF_RESET')
     },
 
     party: {
@@ -363,6 +371,7 @@
   Object.freeze(api.movement);
   Object.freeze(api.combat);
   Object.freeze(api.classSkills);
+  Object.freeze(api.resourceTopoff);
   Object.freeze(api.party);
   Object.freeze(api.partyLogistics);
   Object.freeze(api.lifecycle);
