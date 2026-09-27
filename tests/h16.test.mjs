@@ -524,6 +524,10 @@ test('H16 runtime, API, UI, build, adapter and ActionBoundary are wired', () => 
   assert.match(runtime, /topNearMatches: nearMatches\.slice\(0, 5\)/);
   assert.match(runtime, /buildPreflightDiagnostics/);
   assert.match(runtime, /note\(buildPreflightDiagnostics\(\)\)/);
+  const finalPreflightFailIndex = runtime.indexOf("assert(selectedCraft && selectedExchange");
+  assert.ok(finalPreflightFailIndex > -1);
+  assert.ok(runtime.lastIndexOf("note(buildPreflightDiagnostics())", finalPreflightFailIndex) > -1);
+  assert.match(runtime, /const recordLocalCraftReject/);
   assert.match(runtime, /H16_NEEDS_LOW_RISK_EXCHANGE_CANDIDATE/);
   assert.match(runtime, /PROTECTED_RECIPE_IN_PRODUCTION/);
   assert.match(runtime, /PRODUCTION_NOT_NEEDS_MATERIALS/);
@@ -534,10 +538,15 @@ test('H16 runtime, API, UI, build, adapter and ActionBoundary are wired', () => 
     runtime.indexOf("const buildPreflightDiagnostics")
   );
   assert.ok(nearMatchBuilder.indexOf("...details") < nearMatchBuilder.indexOf("itemName: recipe"));
+  assert.match(runtime, /NESTED_OR_MULTI_STAGE_RECIPE/);
   assert.match(runtime, /TOO_MANY_MISSING_LEAVES/);
+  assert.match(runtime, /MISSING_LEAF_LEVEL_NONZERO/);
   assert.match(runtime, /MISSING_LEAF_NO_NPC_OR_MARKET_SOURCE/);
   assert.match(runtime, /MATERIAL_ACQUISITION_OVER_CAP/);
   assert.match(runtime, /GOLD_RESERVE_AFTER_ACQUISITION_AND_CRAFT/);
+  assert.match(runtime, /MATERIAL_ACQUISITION_REQUIRES_MERCHANT/);
+  assert.match(runtime, /MATERIAL_ACQUISITION_TRADE_SUSPENDED/);
+  assert.match(runtime, /recordLocalCraftReject\(craft, 'NO_DISJOINT_EXCHANGE_CANDIDATE'/);
   assert.match(runtime, /acquisitionGold > 1000000/);
   assert.match(runtime, /materialAcquisitionGold <= 1000000/);
   assert.match(runtime, /outputRisk == null \|\| outputRisk > 2000000/);
