@@ -176,6 +176,32 @@ async function flush() {
   await Promise.resolve();
 }
 
+test('H19 roster separates account-wide online truth from runner-active truth', () => {
+  const coreSource = fs.readFileSync(path.resolve(here, '../src/core.js'), 'utf8');
+  const ctx = {
+    console, Date, Math, JSON, Map, Set, Promise, Object, Array, String, Number, Boolean, Error,
+    character: { name: 'My_Ranger', ctype: 'ranger' },
+    get_characters: () => [
+      { name: 'My_Ranger', ctype: 'ranger', online: true },
+      { name: 'My_Priest', ctype: 'priest', online: true },
+      { name: 'My_Merchant', ctype: 'merchant', online: true },
+      { name: 'My_Warrior', ctype: 'warrior', online: false }
+    ],
+    get_active_characters: () => ({ My_Ranger: 'self' })
+  };
+  ctx.globalThis = ctx;
+  vm.runInNewContext(coreSource, ctx, { filename: 'core.js' });
+
+  const roster = new ctx.__ALBOT_INTERNALS__.CharacterRosterService({ root: ctx });
+  const snapshot = roster.refresh();
+  assert.equal(snapshot.accountStateAvailable, true);
+  assert.equal(snapshot.onlineStateAvailable, true);
+  assert.equal(snapshot.activeStateAvailable, true);
+  assert.equal(snapshot.onlineCharacterNames.join(','), 'My_Merchant,My_Priest,My_Ranger');
+  assert.equal(snapshot.activeCharacterNames.join(','), 'My_Ranger');
+  assert.equal(snapshot.runnerActiveCharacterNames.join(','), 'My_Ranger');
+});
+
 test('H19 lifecycle only targets account-owned non-local characters', () => {
   const { controller } = fixture();
   assert.equal(controller.queueStart('Not_Mine').accepted, false);
