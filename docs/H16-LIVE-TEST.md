@@ -1,0 +1,173 @@
+# H16 – Exchange & Craft Live-Test
+
+Stand: 2026-09-27
+
+H16 erweitert den gemergten H15-Stand um Exchange, Crafting, Produktionsgraph und explizite Materialbeschaffung.
+
+## Implementierter Scope
+
+- eigener `ExchangeCraftController`
+- Exchange und Craft ausschließlich über die zentrale ActionBoundary
+- Exchange-Mengen aus Live-`G.items[*].e`
+- Craft-Rezepte aus Live-`G.craft`
+- Quest-/Event-Exchange und Quest-/Event-Craft standardmäßig fail-closed
+- explizites Opt-in für Quest-/Event-Aktionen
+- protected Items (`locked`, `gift`, `giveaway`, expiring) aus Automatisierung ausgeschlossen
+- Craft-Quellslotwahl entspricht Adventure Lands `auto_craft`: erster passender Stack mit ausreichender Menge
+- Quellslots und Definitionen unmittelbar vor Dispatch erneut validiert
+- Exchange-Value-at-Risk-Budget
+- Craft-Goldkosten-Budget
+- Craft-Input-Value-at-Risk-Budget
+- Goldreserve
+- Session-Attempt-Budget
+- Combat-Block
+- Movement-Ownership `exchange-craft-h16`
+- Outcome-Bestätigung ausschließlich über beobachtete Live-Deltas
+- UNKNOWN -> Suspension ohne Blind-Retry
+- rekursiver Produktionsgraph mit Cycle-/Depth-Guard
+- Produktionsplanung nutzt lokales Inventar und optional gemounteten Bankbestand
+- fehlende Materialien zeigen Bank-, NPC- und Marktquellen
+- explizite Materialbeschaffung delegiert an H12 Bank oder H13 Handel
+- gemeinsamer autonomer Economy-Konfliktlöser bleibt H17
+- Headless API `ALBot.exchangeCraft.*`
+- Control-Center-Tab **Exchange & Craft**
+- Ein-Klick-Suite `h16-exchange-craft`
+
+## Ergebnis-Wahrheit
+
+Promise-/API-Erfolg allein ist kein bestätigtes Ergebnis.
+
+### Exchange bestätigt
+
+Erforderlich:
+
+- die erwartete Exchange-Quellmenge sinkt live um mindestens `G.items[item].e`;
+- Item-Name und Level werden exakt beobachtet.
+
+### Craft bestätigt
+
+Erforderlich:
+
+- Output-Menge steigt live um mindestens 1;
+- jede Recipe-Zutat sinkt live um die geforderte Menge;
+- bei Recipe-Goldkosten sinkt Character-Gold mindestens um diese Kosten.
+
+### UNKNOWN
+
+Wenn innerhalb des bounded Outcome-Timeouts keine belastbare Live-Evidence entsteht:
+
+- passende UNKNOWN-Metrik steigt;
+- H16 suspendiert;
+- Request/Pending wird verworfen;
+- kein automatischer Retry.
+
+## Produktionsgraph
+
+`productionPlan(itemName, quantity)`:
+
+- verbraucht zuerst vorhandenen lokalen Bestand;
+- berücksichtigt optional gemounteten Bankbestand;
+- expandiert fehlende craftbare Zwischenprodukte rekursiv;
+- begrenzt Tiefe;
+- blockiert Zyklen;
+- blockiert Quest-/Event-Rezepte ohne explizites Opt-in;
+- liefert geordnete Craft-Stufen;
+- meldet fehlende Leaf-Materialien mit vorhandenen Bank-, NPC- und Marktquellen.
+
+Die eigentliche gemeinsame autonome Auswahl zwischen Bank, Markt und anderen Economy-Modulen folgt in H17.
+
+## Ein-Klick-Live-Test
+
+Suite:
+
+`h16-exchange-craft`
+
+Die Suite startet eine zuvor gestoppte Runtime automatisch und stellt den vorherigen Runtime-Zustand am Ende wieder her.
+
+### Temporäre Live-Test-Policy
+
+- maximal 2 echte H16-Aktionen;
+- Exchange-Value-at-Risk maximal 20.000 Gold;
+- Craft-Goldkosten maximal 10.000 Gold;
+- Craft-Input-Value-at-Risk maximal 20.000 Gold;
+- Goldreserve 10.000 Gold;
+- Quest-/Event-Aktionen deaktiviert;
+- Produktionsgraph-Tiefe maximal 6.
+
+### Kandidatenwahl
+
+Bevorzugt wird:
+
+`CRAFT_TO_EXCHANGE_CHAIN`
+
+Dabei wird ein niedrig riskantes Item gecraftet, dessen Output anschließend direkt exchangebar ist.
+
+Falls keine solche direkte Kette vorhanden ist, ist zulässig:
+
+`CRAFT_AND_EXCHANGE_COVERAGE`
+
+Dabei werden ein niedrig riskanter Craft und ein davon quellslot-disjunkter niedrig riskanter Exchange in derselben Suite getestet.
+
+Wenn nicht mindestens ein sicherer Craft- und Exchange-Kandidat vorhanden ist:
+
+`H16_NEEDS_LOW_RISK_CRAFT_AND_EXCHANGE_CANDIDATES`
+
+Dann erfolgt **keine Mutation**.
+
+## Schritte
+
+1. **Preflight**
+   - Character verfügbar und lebendig;
+   - H16-Modul ACTIVE;
+   - `auto_craft`- und `exchange`-API verfügbar;
+   - sichere Kandidaten innerhalb der Live-Test-Budgets;
+   - keine Quest-/Event-Aktion.
+
+2. **Planning**
+   - lokaler Produktionsplan des gewählten Crafts ist `READY`;
+   - keine fehlenden Materialien;
+   - keine geschützten Rezepte;
+   - Live-Test-Policy aktiv.
+
+3. **Craft**
+   - exakt eine echte Craft-Aktion;
+   - Erfolg nur durch Output-/Input-/Gold-Live-Deltas.
+
+4. **Exchange**
+   - exakt eine echte Exchange-Aktion;
+   - Erfolg nur durch Quellmengen-Live-Delta.
+
+5. **Stability**
+   - fünf Sekunden;
+   - exakt zwei Session-Versuche;
+   - Exchange-UNKNOWN-Delta 0;
+   - Craft-UNKNOWN-Delta 0;
+   - keine Suspension;
+   - kein Pending;
+   - kein Request.
+
+6. **Cleanup**
+   - kein Pending/Request;
+   - temporäre Policy wird im Suite-Cleanup wiederhergestellt;
+   - vorheriger Runtime-Zustand wird wiederhergestellt.
+
+## Erwartete PASS-Evidence
+
+- Runtime `0.16.0-h16`
+- Suite `h16-exchange-craft`
+- `PASSED / ALL_STEPS_PASSED`
+- Preflight PASSED
+- Planning PASSED
+- Craft PASSED
+- Exchange PASSED
+- Stability PASSED
+- Cleanup PASSED
+- `craftsConfirmed=1` Delta
+- `exchangesConfirmed=1` Delta
+- beide UNKNOWN-Deltas 0
+- genau zwei H16-Session-Versuche
+- keine Suspension
+- kein Pending/Request
+- bei zuvor gestoppter Runtime anschließend wieder STOPPED und Scheduler `totalResources=0`.
+
+H16 darf erst nach grünem Exact-Head-CI, sauberem Review-Gate und echtem Adventure-Land-Live-PASS gemergt werden.
