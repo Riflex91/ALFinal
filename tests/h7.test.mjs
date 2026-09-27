@@ -207,10 +207,10 @@ test('H7 exposes normalized owned party roles and coordinator API', async t => {
   t.after(async () => { try { await ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {} });
   await ctx.ALBot.start();
 
-  assert.equal(ctx.ALBot.version, '0.17.0-h17');
+  assert.equal(ctx.ALBot.version, '0.18.0-h18');
   assert.equal(typeof ctx.ALBot.party.status, 'function');
   assert.equal(typeof ctx.ALBot.party.snapshot, 'function');
-  assert.equal(ctx.ALBot.liveTests.status().recommendedId, 'h17-economy-autonomy');
+  assert.equal(ctx.ALBot.liveTests.status().recommendedId, 'h18-party-logistics');
 
   const snapshot = ctx.ALBot.party.snapshot();
   assert.equal(snapshot.size, 2);
