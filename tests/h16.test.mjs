@@ -22,6 +22,7 @@ function row(overrides = {}) {
 
 const definitions = {
   gem0: { id: 'gem0', name: 'Raw Emerald', type: 'material', g: 100, e: 5, upgrade: false, compound: false, cash: false, quest: false },
+  gem1: { id: 'gem1', name: 'Polished Emerald', type: 'material', g: 200, e: 2, upgrade: false, compound: false, cash: false, quest: false },
   eventtoken: { id: 'eventtoken', name: 'Event Token', type: 'quest', g: 10, e: 1, upgrade: false, compound: false, cash: false, quest: true },
   whiteegg: { id: 'whiteegg', name: 'White Egg', type: 'material', g: 10, e: null, upgrade: false, compound: false, cash: false, quest: false },
   cake: { id: 'cake', name: 'Cake', type: 'elixir', g: 100, e: null, upgrade: false, compound: false, cash: false, quest: false },
@@ -197,6 +198,20 @@ test('H16 confirms exchange only after observed source quantity delta', () => {
   assert.equal(status.metrics.exchangesUnknown, 0);
   assert.equal(state.dispatches.length, 1);
   assert.equal(state.dispatches[0].name, 'exchange');
+});
+
+test('H16 observes the exact exchange item level instead of assuming level zero', () => {
+  const { controller, state, arrive } = fixture({
+    rows: [row({ slot: 0, name: 'gem1', quantity: 2, level: 2 })]
+  });
+  assert.equal(controller.queueExchange(0).accepted, true);
+  controller.tick();
+  arrive();
+  assert.equal(controller.tick().accepted, true);
+  controller.tick();
+  assert.equal(controller.status().metrics.exchangesConfirmed, 1);
+  assert.equal(controller.status().metrics.exchangesUnknown, 0);
+  assert.equal(state.dispatches.length, 1);
 });
 
 test('H16 quest and event exchange requires explicit opt-in', () => {
