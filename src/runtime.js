@@ -5408,6 +5408,9 @@
 
     async stop(reason = 'MANUAL_STOP') {
       if (this._destroyed) return this.status();
+      if (/EMERGENCY|UNKNOWN|UNVERIFIED|TERMINAL|SAFETY|SUSPEND|FAIL/i.test(String(reason || ''))) {
+        this._h19FullAutonomyRearmIntent = null;
+      }
       this.running = false;
       await this.modules.stopAll(reason);
       this.scheduler.stop(reason);
@@ -5417,6 +5420,7 @@
     }
 
     async emergencyStop(reason = 'MANUAL_EMERGENCY_STOP') {
+      this._h19FullAutonomyRearmIntent = null;
       const stop = this.stopLatch.latch(reason);
       this.running = false;
       try { this.liveTests.cancel('EMERGENCY_STOP'); } catch (_) {}
