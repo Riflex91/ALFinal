@@ -242,9 +242,14 @@ Erster H14-Code-/Bundle-Lauf:
 Danach:
 
 - Run #279: `npm test` selbst 180/180 PASS, 0 FAIL, 0 SKIP
-- GitHub markierte den Workflow nach erfolgreichem Testjob trotzdem als `cancelled`.
-- Dieser Lauf gilt deshalb **nicht** als finaler Merge-Gate-CI.
+- GitHub markierte den Workflow nach erfolgreichem Testjob trotzdem als `cancelled`; dieser Lauf zählt nicht als Gate.
+- Review P1: protected gear aus lokaler Automation ausschließen – behoben.
+- Review P2: eindeutige Inventarzuweisung für austauschbare Slots wie `ring1/ring2` – behoben.
+- zusätzliche Regression für zwei unterschiedliche Ring-Kandidaten eingebaut.
+- Run #287: **181/181 PASS, 0 FAIL, 0 SKIP, Workflow completed/success**
+- beide Review-Threads resolved
+- `dist/al-bot.js` auf denselben H14-Source-Stand synchronisiert.
 
-Nach diesen Dokumentationscommits ist erneut ein Exact-Head-CI erforderlich, dessen Workflow selbst `completed/success` sein muss.
+Nach diesem Dokumentationscommit ist noch ein neuer Exact-Head-CI erforderlich. Der H14-Live-Test wird erst freigegeben, wenn auch dieser aktuelle Head `completed/success`, `behind_by=0`, review-clean und mergeable ist.
 
 H14 wird erst nach grünem Exact-Head-CI, sauberem Review-Gate und echtem Adventure-Land-Live-Test gemergt.
