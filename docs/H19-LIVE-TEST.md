@@ -366,3 +366,95 @@ Finaler Lifecycle-Stand nach Restore:
 - keine aktive Lifecycle-Aktion und keine Suspension.
 
 Damit ist **H19 Death Recovery live bestätigt**. Dieser PASS ersetzt nicht die noch offene Live-Evidence für Remote Character Start/Stop, Disconnect/Restart-Recovery und Party-Recovery. H19 bleibt bis zu diesen gezielten bounded Gates offen.
+
+
+## H19 v2 – Remote Start/Stop & Restart Recovery
+
+Stand: 2026-09-27
+
+Nach erfolgreicher Death→Respawn-Evidence ist der nächste bounded H19-Live-Gate die Suite `h19-remote-recovery` v1.
+
+Ziel:
+
+- einen account-eigenen, nichtlokalen, aktuell aktiven Character kontrolliert stoppen;
+- die Abwesenheit aus dem Live-Active-Roster eindeutig bestätigen;
+- den zuvor erfassten Desired-Active-Zustand verwenden;
+- genau einen automatischen `start_character`-Recovery-Versuch zulassen;
+- die erneute Live-Roster-Präsenz bestätigen;
+- anschließend fünf Sekunden ohne Retry, Reject oder UNKNOWN beobachten;
+- die vorherige H19-Policy wiederherstellen.
+
+### Safe Target Selection
+
+Preflight wählt ausschließlich einen Character, der:
+
+- account-eigen ist;
+- nicht der lokale Character ist;
+- aktuell in `activeCharacterNames` steht;
+- **nicht** der aktuell beobachtete Party-Leader ist.
+
+Wenn mehrere Kandidaten existieren, werden Characters außerhalb der aktuellen Party bevorzugt. Namen sind vollständig dynamisch; es gibt keine hardcodierten Character-Namen.
+
+Fehlt ein sicherer aktiver Remote-Kandidat, schlägt Preflight fail-closed mit `H19_REMOTE_SAFE_ACTIVE_TARGET_UNAVAILABLE` fehl und es erfolgt keine Mutation.
+
+### Schritte
+
+1. **preflight**
+   - lokaler Character lebt;
+   - H19-Modul ACTIVE;
+   - Account- und Active-Roster live verfügbar;
+   - `stop_character` und `start_character` verfügbar;
+   - keine Suspension, keine aktive H19-Aktion, Queue leer;
+   - Desired Active wird **vor** dem Stop aus dem aktuellen Live-Zustand erfasst.
+
+2. **remote-stop**
+   - genau einen `STOP` für den ausgewählten Remote-Character queueen;
+   - Bestätigung erst nach Settlement + echter Abwesenheit aus dem Live-Active-Roster;
+   - erwartet: 1 Dispatch / 1 Confirm / 1 Stop-Confirm / 0 Reject / 0 UNKNOWN.
+
+3. **restart-recovery**
+   - H19-Autonomie mit `maxActions=1` starten;
+   - Desired Active erkennt den fehlenden eigenen Character;
+   - genau einen `START` dispatchen;
+   - Bestätigung erst nach Settlement + erneuter Live-Roster-Präsenz;
+   - erwartet kumuliert: 2 Dispatches / 2 Confirms / 1 Stop-Confirm / 1 Start-Confirm / 0 Reject / 0 UNKNOWN.
+
+4. **stability**
+   - Autonomie AUS;
+   - fünf Sekunden keine weitere Lifecycle-Mutation;
+   - Ziel bleibt aktiv;
+   - keine Rejects/UNKNOWNs.
+
+5. **cleanup**
+   - ursprüngliche H19-Policy wiederherstellen;
+   - Ziel muss aktiv sein;
+   - Autonomie AUS, keine aktive Aktion, Queue leer, keine Suspension.
+
+### Cleanup-Safety
+
+Wenn ein Fehler **nach bestätigtem Stop, aber bevor überhaupt ein Start dispatcht wurde** auftritt, darf Cleanup genau einen ersten Restore-Start versuchen. Dieser Pfad ist nur erlaubt, wenn gleichzeitig:
+
+- Ziel live eindeutig als inaktiv beobachtet wird;
+- keine aktive H19-Aktion existiert;
+- H19 nicht suspendiert ist;
+- seit Baseline exakt 1 Lifecycle-Dispatch stattgefunden hat – der bestätigte Stop;
+- 0 Rejects und 0 UNKNOWNs hinzugekommen sind.
+
+Sobald ein Start bereits dispatcht wurde, ein Reject vorliegt, eine Aktion UNKNOWN ist oder H19 suspendiert wurde, führt Cleanup **keinen Blind-Retry** aus.
+
+Die bestehende Death→Respawn-Suite bleibt verfügbar, ist nach erfolgreicher Evidence aber nicht mehr der empfohlene H19-Test. `h19-remote-recovery` wird zum nächsten Recommended Live-Test.
+
+
+### H19 v2 Review-Hardening – Rerun- und Cancel-Cleanup
+
+Stand: 2026-09-27
+
+Vor dem finalen v2-Gate wurden zwei zusätzliche Cleanup-Safety-Punkte geschlossen:
+
+- `targetName`, `baseline` und `originalPolicy` werden zu Beginn jedes neuen Suite-Prepare vollständig zurückgesetzt. Ein früh scheiternder Folgelauf kann dadurch niemals Policy-State eines vorherigen Runs restaurieren.
+- Der Cleanup-Restore verwendet keinen normalen LiveTestRunner-`waitFor` mehr. Dieser respektiert absichtlich den Cancel-Latch und wäre deshalb nach einem Nutzer-Cancel ungeeignet.
+- Stattdessen besitzt v2 einen eigenen cancel-unabhängigen, zeitlich begrenzten Cleanup-Poller ausschließlich für den einmaligen sicheren Restore eines **bereits bestätigt gestoppten** Remote-Characters, wenn noch kein Start dispatcht wurde.
+- Ein Cleanup-Start wird weiterhin blockiert, sobald ein Start bereits dispatcht wurde, ein Reject/UNKNOWN vorliegt, H19 suspendiert ist oder der Roster-Zustand nicht eindeutig ist.
+- Restore-Fehler werden nicht mehr verschluckt. Ein nicht erfolgreich wiederhergestellter Remote-Character macht den Cleanup sichtbar fehlerhaft.
+
+Exact-Head-CI #560 bestätigte den gehärteten Source-/Test-Stand vollständig grün.

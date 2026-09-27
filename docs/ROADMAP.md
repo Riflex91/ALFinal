@@ -1202,3 +1202,27 @@ H19 bleibt offen für die noch erforderlichen gezielten bounded Live-Gates:
 - Party-Recovery über die gespeicherte eigene Desired-Party-Topologie.
 
 Der nächste H19-Live-Gate soll diese Pfade kontrolliert prüfen, ohne unbeabsichtigte Runner-/Party-Nebenwirkungen.
+
+
+### H19 v2 – Remote Start/Stop & Restart-Recovery Pre-Live-Gate
+
+Stand 2026-09-27.
+
+Nach dem erfolgreichen Death→Respawn-Live-Gate ist als nächster H19-Live-Pfad `h19-remote-recovery` vorbereitet.
+
+Der Gate prüft bounded:
+
+- dynamische Auswahl eines account-eigenen, nichtlokalen, aktuell aktiven Remote-Characters;
+- aktuellen Party-Leader ausdrücklich nicht als Stop-Ziel verwenden;
+- Characters außerhalb der aktuellen Party bevorzugen;
+- Desired Active **vor** der Mutation erfassen;
+- genau einen bestätigten Remote-Stop;
+- danach genau einen automatischen Desired-Active-Start;
+- Stop und Start jeweils nur durch Settlement + Live-Roster-Delta bestätigen;
+- kumuliert 2 Dispatches / 2 Confirms / 0 Rejects / 0 UNKNOWNs;
+- fünf Sekunden Stabilität ohne Retry;
+- ursprüngliche H19-Policy im Cleanup wiederherstellen.
+
+Cleanup darf nur dann einen einmaligen ersten Restore-Start auslösen, wenn der Stop bestätigt wurde und **noch kein Start dispatcht wurde**. Nach Reject, UNKNOWN, Suspension oder bereits dispatchtem Start gibt es keinen Cleanup-Retry.
+
+Nach erfolgreicher v2-Evidence sind Remote Character Start/Stop sowie Disconnect-/Restart-Recovery live bestätigt. Party-Recovery bleibt anschließend als letzter gezielter H19-Live-Gate offen.

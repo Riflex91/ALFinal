@@ -200,7 +200,7 @@ test('H6 exposes class skill API, module and recommended live suite', async t =>
   assert.equal(ctx.ALBot.version, '0.19.0-h19');
   assert.equal(typeof ctx.ALBot.classSkills.status, 'function');
   assert.equal(typeof ctx.ALBot.classSkills.preview, 'function');
-  assert.equal(ctx.ALBot.liveTests.status().recommendedId, 'h19-character-lifecycle');
+  assert.equal(ctx.ALBot.liveTests.status().recommendedId, 'h19-remote-recovery');
 
   const module = ctx.ALBot.modules.list().find(row => row.id === 'class-skills');
   assert.equal(module.state, 'ACTIVE');
