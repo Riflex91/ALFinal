@@ -547,3 +547,48 @@ H19 uebernimmt diese Semantik nativ fuer ALFinal:
 Der Live-Test `h19-remote-recovery` Version 2 bevorzugt nun ein frisches getrenntes Fenster als Testziel und verwendet nur dann den Child-Pfad, wenn kein geeigneter Cross-Window-Peer vorhanden ist.
 
 Vor dem naechsten echten Live-Test muessen alle beteiligten getrennten Adventure-Land-Fenster denselben neuen ALFinal-Build geladen haben und einige Sekunden fuer gegenseitige Heartbeats laufen.
+
+
+## Cross-Window Readiness Gate vor dem mutierenden Remote-Recovery-Lauf
+
+Stand: 2026-09-27
+
+Vor dem naechsten echten `h19-remote-recovery`-Lauf wird zuerst die neue Suite `h19-cross-window-readiness` ausgefuehrt.
+
+Die Readiness-Suite ist absichtlich **nicht mutierend**:
+
+- sie startet oder stoppt keinen Remote-Character;
+- sie queued keinen H19 START/STOP;
+- sie veraendert keine Desired-Active-Policy;
+- sie startet keine H19-Autonomie;
+- sie startet die lokale Runtime nicht automatisch.
+
+Voraussetzungen:
+
+1. Alle beteiligten Adventure-Land-Fenster laden denselben aktuellen `dist/al-bot.js` von `main`.
+2. ALFinal ist in allen beteiligten Fenstern gestartet.
+3. Einige Sekunden fuer gegenseitige CM-Heartbeats verstreichen lassen.
+4. Dann genau in einem Fenster `h19-cross-window-readiness` starten.
+
+PASS bedeutet:
+
+- lokale Runtime laeuft und H19 Lifecycle ist aktiv;
+- Cross-Window-Transport ist installiert;
+- alle accountweit online sichtbaren eigenen Remote-Characters, die keine Child-Runner sind, liefern einen frischen H19-Heartbeat;
+- alle frischen H19-Peers melden dieselbe ALFinal-Version wie der Test-Runner;
+- kein frischer Remote-Peer hat den Emergency-Stop-Latch gesetzt;
+- mindestens ein nichtlokaler, nicht als Party-Leader geschuetzter, laufender Cross-Window-Peer ist als Testziel geeignet.
+
+Erst nach diesem PASS wird `h19-remote-recovery` exakt einmal gestartet.
+
+Bei Readiness-FAIL erfolgt **keine** Remote-Lifecycle-Mutation. Relevante Fehlercodes:
+
+- `H19_READINESS_RUNTIME_NOT_RUNNING`
+- `H19_READINESS_LIFECYCLE_MODULE_NOT_ACTIVE`
+- `H19_READINESS_CROSS_WINDOW_TRANSPORT_UNAVAILABLE`
+- `H19_READINESS_MISSING_REMOTE_HEARTBEAT`
+- `H19_READINESS_VERSION_MISMATCH`
+- `H19_READINESS_REMOTE_EMERGENCY_STOP_LATCHED`
+- `H19_READINESS_CROSS_WINDOW_TARGET_UNAVAILABLE`
+
+Bei einem solchen Fail wird zuerst der Diagnoseexport ausgewertet; kein Blind-Rerun des mutierenden Remote-Recovery-Tests.
