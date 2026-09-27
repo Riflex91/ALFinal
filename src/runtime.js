@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.18.0-h18';
+      this.version = options.version || '0.19.0-h19';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -170,6 +170,16 @@
         economy: this.economy,
         canAct: action => this.actionAllowed(action)
       });
+      this.lifecycle = new ns.CharacterLifecycleController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        roster: this.roster,
+        party: this.party,
+        storage: this.storage,
+        canAct: action => this.actionAllowed(action)
+      });
       this.inventory.partyLogistics = this.partyLogistics;
       this.merchant.partyLogistics = this.partyLogistics;
       this.economy.partyLogistics = this.partyLogistics;
@@ -191,6 +201,7 @@
       this._registerH16LiveTest();
       this._registerH17LiveTest();
       this._registerH18LiveTest();
+      this._registerH19LiveTest();
       this._installErrorCapture();
       this.logger.info('AL Bot Runtime erstellt', {
         version: this.version,
@@ -356,6 +367,15 @@
         start: context => this.partyLogistics.start(context),
         stop: reason => this.partyLogistics.stop(reason),
         status: () => this.partyLogistics.status()
+      });
+
+      this.modules.register({
+        id: 'character-lifecycle',
+        title: 'Character Lifecycle & Recovery',
+        version: '0.19.0',
+        start: context => this.lifecycle.start(context),
+        stop: reason => this.lifecycle.stop(reason),
+        status: () => this.lifecycle.status()
       });
     }
 
@@ -4335,6 +4355,7 @@
         exchangeCraft: this.exchangeCraft.status(),
         economy: this.economy.status(),
         partyLogistics: this.partyLogistics.status(),
+        lifecycle: this.lifecycle.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
         roster,
@@ -4368,6 +4389,7 @@
         exchangeCraft: this.exchangeCraft.status(),
         economy: this.economy.status(),
         partyLogistics: this.partyLogistics.status(),
+        lifecycle: this.lifecycle.status(),
         liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
         logs: this.logger.list(160),
@@ -4400,6 +4422,7 @@
       push('exchange-craft-controller', !!this.exchangeCraft.status() && typeof this.exchangeCraft.plan === 'function' && typeof this.exchangeCraft.productionPlan === 'function', this.exchangeCraft.status());
       push('economy-controller', !!this.economy.status() && typeof this.economy.plan === 'function' && typeof this.economy.startAutonomy === 'function', this.economy.status());
       push('party-logistics-controller', !!this.partyLogistics.status() && typeof this.partyLogistics.plan === 'function' && typeof this.partyLogistics.queueSupply === 'function', this.partyLogistics.status());
+      push('character-lifecycle-controller', !!this.lifecycle.status() && typeof this.lifecycle.plan === 'function' && typeof this.lifecycle.queueStart === 'function' && typeof this.lifecycle.queueRespawn === 'function', this.lifecycle.status());
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
       push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);
