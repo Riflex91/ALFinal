@@ -8309,7 +8309,11 @@
       if (!this._localMerchant()) return { accepted: false, reason: 'H12_REQUIRES_LIVE_MERCHANT' };
       const bank = this._bankSnapshot();
       const snap = this._snapshot();
-      const value = Math.max(1, Math.floor(Number(amount) || 0));
+      const requested = finite(amount);
+      if (requested == null || requested <= 0 || !Number.isInteger(requested)) {
+        return { accepted: false, reason: 'H12_GOLD_AMOUNT_INVALID' };
+      }
+      const value = requested;
       if (!bank || bank.available === false || finite(bank.gold) == null) {
         return { accepted: false, reason: 'H12_BANK_GOLD_UNOBSERVABLE' };
       }
