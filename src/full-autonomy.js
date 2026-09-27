@@ -40,6 +40,7 @@
       this.lastLogisticsProbeAtMs = 0;
       this.desiredCharacterNames = [];
       this.tickResourceId = null;
+      this.lifecycleArmed = false;
     }
 
     start(context = {}) {
@@ -89,6 +90,7 @@
         };
       }
       this.desiredCharacterNames = initialOnline.slice().sort();
+      this.lifecycleArmed = false;
       this.enabled = true;
       this.startedAt = new Date().toISOString();
       this.lastError = null;
@@ -122,6 +124,7 @@
       this.tickResourceId = null;
       this.enabled = false;
       this.desiredCharacterNames = [];
+      this.lifecycleArmed = false;
       this.started = { lifecycle: false, farming: false, economy: false, partyLogistics: false };
       this.lastDecision = { at: new Date().toISOString(), type: 'STOP', reason: cleanText(reason, 200) };
       return this.status();
@@ -176,7 +179,9 @@
       const stableDesired = this.desiredCharacterNames.length
         ? this.desiredCharacterNames.slice()
         : readiness.online.slice();
-      const desiredPartyAll = [...new Set([...selected, ...support])]
+      const desiredPartyAll = (this.config.keepSupportInParty
+        ? stableDesired.slice()
+        : [...new Set([...selected, ...support])])
         .filter(name => stableDesired.includes(String(name)))
         .slice(0, 4)
         .sort();
@@ -193,10 +198,6 @@
       const desiredPartyMembers = desiredPartyAll
         .filter(name => coordinator || onlineSet.has(String(name)))
         .sort();
-      if (!desiredPartyMembers.includes(localName) && onlineSet.has(localName) && this.config.keepSupportInParty) {
-        if (desiredPartyMembers.length < 4) desiredPartyMembers.push(localName);
-      }
-      desiredPartyMembers.sort();
 
       const desiredRuntimeRunningNames = coordinator
         ? readiness.profiles
@@ -228,7 +229,7 @@
       const shouldRunLifecycle = coordinator || !localPartyHealthy;
 
       const current = lifecycle.status();
-      if (shouldRunLifecycle && this.started.lifecycle && current.autonomyEnabled !== true) {
+      if (shouldRunLifecycle && this.lifecycleArmed && current.autonomyEnabled !== true) {
         return {
           ok: false,
           reason: 'FULL_AUTONOMY_LIFECYCLE_STOP_REQUIRES_EXPLICIT_RESTART',
@@ -236,15 +237,21 @@
           actionsThisSession: Number(current.actionsThisSession || 0)
         };
       }
-      if (shouldRunLifecycle && current.autonomyEnabled !== true) {
+      if (shouldRunLifecycle && current.autonomyEnabled === true) {
+        this.lifecycleArmed = true;
+      } else if (shouldRunLifecycle) {
         const started = lifecycle.startAutonomy({ maxActions: this.config.lifecycleMaxActions });
         if (!started || started.accepted !== true) {
           return { ok: false, reason: started && started.reason || 'FULL_AUTONOMY_LIFECYCLE_START_REJECTED' };
         }
         this.started.lifecycle = true;
-      } else if (!shouldRunLifecycle && this.started.lifecycle && current.autonomyEnabled === true) {
+        this.lifecycleArmed = true;
+      } else if (this.started.lifecycle && current.autonomyEnabled === true) {
         try { lifecycle.stopAutonomy('FULL_AUTONOMY_PARTY_HEALTHY_NON_COORDINATOR'); } catch (_) {}
         this.started.lifecycle = false;
+        this.lifecycleArmed = false;
+      } else if (!shouldRunLifecycle) {
+        this.lifecycleArmed = false;
       }
 
       return {
@@ -452,6 +459,7 @@
         startedControllers: clone(this.started),
         desiredCharacterNames: clone(this.desiredCharacterNames),
         tickScheduled: !!this.tickResourceId,
+        lifecycleArmed: this.lifecycleArmed,
         lastPlan: clone(this.lastPlan),
         lastDecision: clone(this.lastDecision),
         lastError: clone(this.lastError)
