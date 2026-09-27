@@ -707,13 +707,22 @@ H15 Live-Test-Design:
 - fünf Sekunden Stabilität
 - Cleanup und Runtime Auto-Restore
 
+Pre-Live-Hardening:
+- Review-Fund `offeringFromLevel=0` korrigiert;
+- Quest-/Cash-Items definition-level aus automatischer Mutation ausgeschlossen;
+- Compound-Value-at-Risk zählt alle drei Inputs;
+- H1–H14 Wiring-/Versions-/Scheduler-Regressionen auf H15 aktualisiert;
+- `dist/al-bot.js` exakt source-synchron, Banner `0.15.0-h15`;
+- CI Run #323 auf Head `a515dc27e9de1f140f399caf0393b2cd42b7da30`: **194/194 PASS, 0 FAIL, 0 SKIP, completed/success**;
+- alle bisherigen Review-Threads resolved;
+- kein `CHANGES_REQUESTED`.
+
 Noch offen:
-- H15-CI und Review-Hardening vollständig grün bekommen
-- `dist/al-bot.js` auf finalen H15-Source-Stand synchronisieren
-- finalen Exact-Head-CI abwarten
-- vollständiges Pre-Live-Gate prüfen
-- danach Nutzer genau einmal `Test starten` drücken lassen
-- bei PASS Evidence anhängen und erst dann mergen
+- nach diesen finalen Evidence-Dokucommits neuen Exact-Head-CI abwarten;
+- vollständiges Pre-Live-Gate frisch prüfen;
+- danach Nutzer genau einmal `Test starten` drücken lassen;
+- Diagnose vollständig auswerten;
+- bei PASS finale Evidence anhängen und erst danach PR #16 mergen.
 
 ## H2 Architekturregel für spätere Module
 
@@ -808,4 +817,4 @@ Bei Fehler:
 
 ## Nächster Schritt
 
-H15 technisch bis zum Pre-Live-Gate fertigstellen: CI/Reviews bereinigen, Bundle synchronisieren und Exact-Head-CI grün bestätigen. Danach dem Nutzer nur den echten Adventure-Land-Ein-Klick-Test `h15-upgrade-compound` überlassen. H15 erst nach bestandenem Live-Test mergen.
+H15 steht unmittelbar vor dem Live-Test. Nach dem neuen Exact-Head-CI der finalen Evidence-Dokucommits den vollständigen Pre-Live-Gate prüfen. Nur bei komplett grünem Gate den Build `chatgpt/h15-upgrade-compound/dist/al-bot.js` für genau einen echten `h15-upgrade-compound`-Ein-Klick-Test freigeben. H15 erst nach bestandenem Live-Test, finaler Evidence und erneut grünem Merge-Gate mergen.
