@@ -21,3 +21,8 @@ jobs:
         with:
           node-version: 22
       - run: npm test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: h18-dist
+          path: dist/al-bot.js
+          if-no-files-found: error
