@@ -38,11 +38,11 @@ test('H1 bundle loads and exposes ALBot API', () => {
   const ctx = runtimeContext();
   vm.runInNewContext(bundle, ctx, { filename: 'al-bot.js' });
   assert.equal(ctx.ALBot.product, 'AL Bot');
-  assert.equal(ctx.ALBot.version, '0.14.0-h14');
+  assert.equal(ctx.ALBot.version, '0.15.0-h15');
   assert.equal(ctx.ALBot.status().running, false);
   assert.equal(typeof ctx.ALBot.farming.status, 'function');
   assert.equal(typeof ctx.ALBot.farming.plan, 'function');
-  assert.equal(ctx.ALBot.liveTests.status().recommendedId, 'h14-gear');
+  assert.equal(ctx.ALBot.liveTests.status().recommendedId, 'h15-upgrade-compound');
 });
 
 test('dynamic roster discovers active farmers without hardcoded names', () => {

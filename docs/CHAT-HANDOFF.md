@@ -624,71 +624,125 @@ Finale Post-Live-Härtung:
 - exakter Bid-Fingerprint inklusive Stat-Type/Property;
 - finaler Exact-Head-CI und Review-Gate grün.
 
-## H14 – Gear – live bestanden, Merge-Gate offen
+## H14 – Gear – abgeschlossen und gemergt
 
-Aktiver Branch:
+H14 ist vollständig live bestanden und gemergt.
+
+Finaler Branch:
 `chatgpt/h14-gear`
 
 PR:
 `#15 – H14: Gear`
 
-Basis:
-`main` bei H13-Merge-Commit `5238d4af8bfb99e6f6fe04d13029b80f77a9f420`
+Finaler Head vor Merge:
+`7a846862739e8e3284f6491fb44d36adbd12d230`
 
-Version:
-`0.14.0-h14`
+Finaler Exact-Head-CI:
+- Run `#293`
+- `completed / success`
+- `behind_by=0`
+- `mergeable=true`
+- keine offenen Review-Threads
+- kein `CHANGES_REQUESTED`
 
-Implementiert:
-- `src/gear.js` / `GearController`;
-- Live-Equipment-Snapshot;
-- Live-Equipment-Definitionen und Klassenprofile;
-- klassenabhängiges Gear-Ranking;
-- sichere lokale Equip-/Unequip-Swaps;
-- Combat-Block;
-- Zielslot-Revalidation direkt vor Equip;
-- Zwei-Hand-/Offhand-Konflikt-Schutz;
-- locked/gift/giveaway/expiring Gear aus Automation ausgeschlossen;
-- Farmer-Priorität 100 vor Merchant-Priorität 10;
-- Remote-Proposals nur vom Merchant und nur mit transfer-sicherem Gear;
-- Gear Goals mit `ACHIEVED`, `READY_TO_EQUIP`, `READY_TO_DELIVER`, `NEEDS_ACQUISITION`;
-- explizite Merchant→eigener-Farmer-Gear-Delivery;
-- Replacement- und read-only Upgrade-/Compound-Planung;
-- Bestätigung nur über Equipment-/Inventar-Live-Deltas;
-- bounded UNKNOWN + Suspension ohne Blind-Retry;
-- Gear-Control-Center-Tab;
-- `ALBot.gear.*`;
-- `dist/al-bot.js` source-synchron auf `0.14.0-h14`;
-- Ein-Klick-Suite `h14-gear`;
-- `docs/H14-LIVE-TEST.md`.
-
-Pre-Live-Teststand:
-- Run #276: 179 Tests, 178 PASS, 1 Safety-Fund;
-- locked Gear als automatische Verbesserung erkannt;
-- behoben in Planung, Queue und unmittelbarer Dispatch-Revalidation;
-- Review P2 behoben: eindeutige Inventarzuweisung über austauschbare Slots;
-- Run #287: 181/181 PASS, 0 FAIL, 0 SKIP, Workflow completed/success;
-- beide Review-Threads resolved;
-- Bundle source-synchron;
-- nach finalen Dokucommits erneut Exact-Head-CI erforderlich.
+Merge-Commit auf `main`:
+`ec7518ee6ce083f883a94c75ec341b65cf387df0`
 
 Finale H14-Live-Evidence vom 2026-09-27:
-- Runtime `0.14.0-h14`;
-- Suite `h14-gear`: **PASSED / ALL_STEPS_PASSED**;
-- alle sechs Schritte PASSED: Preflight, Planning, Equip Swap, Restore, Stability, Cleanup;
-- Character `My_Merchant` / Merchant;
-- Zielslot `shoes`;
-- echte Verbesserung: `wshoes +5` (Score `59.2375`) → `shoes1 +3` (Score `73.9675`), Delta `+14.73`;
-- Farmer-Priorität `100` vor Merchant-Priorität `10`;
-- realer Equip bestätigt, Original danach exakt zurückgerüstet;
-- `equipsConfirmed=2`;
-- `equipUnknown=0`, `unequipUnknown=0`, `deliveryUnknown=0`;
-- keine H14-Suspension;
-- Cleanup ohne Pending/Request, vorherige Goals restauriert;
-- Runtime war vor Test STOPPED, wurde automatisch gestartet und danach wieder STOPPED;
-- Scheduler danach `totalResources=0`;
-- Live-Test-Cleanup `ok=true`.
+- Runtime `0.14.0-h14`
+- Suite `h14-gear`: **PASSED / ALL_STEPS_PASSED**
+- Preflight, Planning, Equip Swap, Restore, Stability und Cleanup PASSED
+- Character `My_Merchant`
+- Zielslot `shoes`
+- `wshoes +5` → `shoes1 +3`, Score-Delta `+14.73`
+- `equipsConfirmed=2`
+- alle H14 UNKNOWN-Deltas `0`
+- Original-Gear exakt restauriert
+- Runtime wieder STOPPED, Scheduler `totalResources=0`
 
-H14 Live-Gate ist bestanden. Noch erforderlich: neuer Exact-Head-CI nach den Evidence-Dokucommits, danach vollständiger frischer Merge-Gate-Check und Merge von PR #15 ausschließlich mit Methode `merge` und exaktem aktuellem `expected_head_sha`.
+## H15 – Upgrade & Compound – Entwicklung läuft
+
+Aktiver Branch:
+`chatgpt/h15-upgrade-compound`
+
+PR:
+`#16 – H15: Upgrade & Compound`
+
+Basis:
+H14-Merge auf `main` bei `ec7518ee6ce083f883a94c75ec341b65cf387df0`
+
+Version:
+`0.15.0-h15`
+
+Bereits umgesetzt:
+- neuer `src/upgrade.js` / `UpgradeCompoundController`
+- `upgrade` und `compound` über ActionBoundary
+- Live-Inventar-Revalidation unmittelbar vor Dispatch
+- protected Items aus Automation ausgeschlossen
+- Grade-basierte Scrollwahl `scroll0/1/2` und `cscroll0/1/2`
+- Offering-Policy `DISABLED / OPTIONAL / REQUIRED`
+- Level-, Itemwert-, Consumable- und Session-Attempt-Budgets
+- logischer Workspace / reservierte Slots
+- Compound nur mit exakt drei identischen Itemvarianten desselben Levels
+- Combat-Block
+- Ergebnisprüfung über Live-Inventar- und Consumable-Deltas
+- bekannte Outcomes `SUCCEEDED / FAILED`
+- bounded UNKNOWN + Suspension ohne Blind-Retry
+- Headless API `ALBot.upgrade.*`
+- neuer Control-Center-Tab **Upgrade & Compound**
+- Ein-Klick-Suite `h15-upgrade-compound`
+- `docs/H15-LIVE-TEST.md`
+- H15-Regressionen für Safety, Budget, Offering, Source-Drift, Upgrade- und Compound-Outcomes
+
+H15 Live-Test-Design:
+- genau eine echte niedrig riskante Aktion
+- Upgrade oder Compound, abhängig vom sichersten vorhandenen Kandidaten
+- temporär höchstens ein Versuch
+- Itemwert-at-risk höchstens 25.000 Gold
+- Consumables höchstens 10.000 Gold
+- Offering deaktiviert
+- bekanntes `*_SUCCEEDED` oder `*_FAILED` ist ein valides beobachtetes Spielresultat
+- UNKNOWN ist immer FAIL
+- kein geeigneter Kandidat -> `H15_NEEDS_LOW_RISK_UPGRADE_OR_COMPOUND_CANDIDATE`, ohne Mutation
+- fünf Sekunden Stabilität
+- Cleanup und Runtime Auto-Restore
+
+Pre-Live-Hardening:
+- Review-Fund `offeringFromLevel=0` korrigiert;
+- Quest-/Cash-Items definition-level aus automatischer Mutation ausgeschlossen;
+- Compound-Value-at-Risk zählt alle drei Inputs;
+- H1–H14 Wiring-/Versions-/Scheduler-Regressionen auf H15 aktualisiert;
+- `dist/al-bot.js` exakt source-synchron, Banner `0.15.0-h15`;
+- CI Run #323 auf Head `a515dc27e9de1f140f399caf0393b2cd42b7da30`: **194/194 PASS, 0 FAIL, 0 SKIP, completed/success**;
+- alle bisherigen Review-Threads resolved;
+- kein `CHANGES_REQUESTED`.
+
+Finale H15-Live-Evidence vom 2026-09-27:
+- Runtime `0.15.0-h15`;
+- Suite `h15-upgrade-compound`: **PASSED / ALL_STEPS_PASSED**;
+- alle fünf Schritte PASSED: Preflight, Planning, Real Action, Stability, Cleanup;
+- Character `My_Merchant` / merchant;
+- reale Aktion: `gloves +0 → +1`;
+- Scroll `scroll0`;
+- Itemwert-at-risk `3.400 Gold`;
+- Consumable-Kosten `1.000 Gold`;
+- Outcome `UPGRADE_SUCCEEDED`;
+- Evidence `INVENTORY_LEVEL_DELTA`;
+- genau ein Versuch;
+- `upgradeUnknown=0`, `compoundUnknown=0`;
+- keine Suspension;
+- Cleanup ohne Pending/Request, Suite-Cleanup `ok=true`;
+- Runtime war vorher STOPPED, wurde automatisch gestartet und danach wieder STOPPED;
+- Scheduler danach `totalResources=0`.
+
+H15 Live-Gate ist bestanden.
+
+Noch offen:
+- nach diesen Evidence-Dokucommits neuen Exact-Head-CI abwarten;
+- vollständigen Merge-Gate frisch prüfen;
+- PR #16 nur mit Methode `merge` und exakt aktuellem `expected_head_sha` mergen;
+- Merge auf `main` verifizieren;
+- danach H16 – Bank & Exchange Autonomie frisch vom neuen `main` starten.
 
 ## H2 Architekturregel für spätere Module
 
@@ -783,4 +837,4 @@ Bei Fehler:
 
 ## Nächster Schritt
 
-Nach den H14-Evidence-Dokucommits den neuen Exact-Head-CI abwarten und den vollständigen Merge-Gate frisch prüfen. Bei komplett grünem Gate PR #15 mit Methode `merge` und exakt aktuellem `expected_head_sha` mergen, Merge auf `main` verifizieren und danach H15 – Upgrade & Compound frisch vom neuen `main` starten.
+H15-Live-Gate ist bestanden. Jetzt den neuen Exact-Head-CI der Evidence-Dokucommits abwarten, danach das vollständige Merge-Gate frisch prüfen und PR #16 nur bei komplett grünem Gate mit Methode `merge` und exakt aktuellem `expected_head_sha` mergen. Anschließend Merge auf `main` verifizieren und H16 frisch vom neuen `main` starten.

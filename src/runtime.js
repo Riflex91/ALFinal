@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.14.0-h14';
+      this.version = options.version || '0.15.0-h15';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -119,6 +119,13 @@
         roster: this.roster,
         combat: this.combat
       });
+      this.upgrade = new ns.UpgradeCompoundController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        combat: this.combat
+      });
       this.liveTests = new ns.LiveTestRunner({
         runtime: this,
         logger: this.logger,
@@ -133,6 +140,7 @@
       this._registerH12LiveTest();
       this._registerH13LiveTest();
       this._registerH14LiveTest();
+      this._registerH15LiveTest();
       this._installErrorCapture();
       this.logger.info('AL Bot Runtime erstellt', {
         version: this.version,
@@ -262,6 +270,15 @@
         start: context => this.gear.start(context),
         stop: reason => this.gear.stop(reason),
         status: () => this.gear.status()
+      });
+
+      this.modules.register({
+        id: 'upgrade-compound',
+        title: 'Upgrade & Compound',
+        version: '0.15.0',
+        start: context => this.upgrade.start(context),
+        stop: reason => this.upgrade.stop(reason),
+        status: () => this.upgrade.status()
       });
     }
 
@@ -2564,6 +2581,225 @@
       });
     }
 
+    _registerH15LiveTest() {
+      let baseline = null;
+      let testPlan = null;
+      let previousPolicy = null;
+
+      this.liveTests.register({
+        id: 'h15-upgrade-compound',
+        title: 'H15 – Upgrade & Compound',
+        description: 'Ein-Klick-Live-Test für Scrollwahl, Risiko-/Kostenbudget und genau eine niedrig riskante echte Upgrade- oder Compound-Aktion mit Live-Outcome-Evidence.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.upgrade.resetSafety('H15_LIVE_TEST_RESET'); } catch (_) {}
+          try { runtime.upgrade.cancelRequest('H15_LIVE_TEST_RESET'); } catch (_) {}
+          previousPolicy = runtime.upgrade.policy();
+          runtime.upgrade.policy({
+            maxAttemptsPerSession: 1,
+            maxUpgradeLevel: 3,
+            maxCompoundLevel: 1,
+            maxItemValueAtRisk: 25000,
+            maxConsumableCost: 10000,
+            offeringMode: 'DISABLED',
+            offeringFromLevel: 99
+          });
+          const metrics = runtime.upgrade.status().metrics;
+          baseline = {
+            upgradesDispatched: metrics.upgradesDispatched,
+            upgradesSucceeded: metrics.upgradesSucceeded,
+            upgradesFailed: metrics.upgradesFailed,
+            upgradesUnknown: metrics.upgradesUnknown,
+            compoundsDispatched: metrics.compoundsDispatched,
+            compoundsSucceeded: metrics.compoundsSucceeded,
+            compoundsFailed: metrics.compoundsFailed,
+            compoundsUnknown: metrics.compoundsUnknown
+          };
+          testPlan = null;
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.upgrade.cancelRequest('H15_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try { runtime.upgrade.resetSafety('H15_LIVE_TEST_CLEANUP'); } catch (_) {}
+          if (previousPolicy) {
+            try { runtime.upgrade.policy(previousPolicy); } catch (_) {}
+          }
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Niedrig riskanten Upgrade-/Compound-Kandidaten und Live-APIs prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(game.character.rip !== true, 'CHARACTER_DEAD');
+              const module = runtime.modules.describe('upgrade-compound');
+              assert(module && module.state === 'ACTIVE', 'H15_MODULE_NOT_ACTIVE');
+
+              const plan = runtime.upgrade.plan();
+              assert(plan && plan.state === 'READY', plan && plan.reason || 'H15_PLAN_UNAVAILABLE');
+              const choices = [];
+              for (const row of plan.upgradeCandidates || []) {
+                if (Number(row.fromLevel) <= 2 && Number(row.budget && row.budget.itemValueAtRisk) <= 25000
+                    && Number(row.budget && row.budget.consumableCost) <= 10000) choices.push(row);
+              }
+              for (const row of plan.compoundCandidates || []) {
+                if (Number(row.fromLevel) <= 0 && Number(row.budget && row.budget.itemValueAtRisk) <= 25000
+                    && Number(row.budget && row.budget.consumableCost) <= 10000) choices.push(row);
+              }
+              choices.sort((a, b) => Number(a.budget.itemValueAtRisk) - Number(b.budget.itemValueAtRisk)
+                || Number(a.budget.consumableCost) - Number(b.budget.consumableCost)
+                || (a.kind === 'UPGRADE' ? -1 : 1));
+              const selected = choices[0];
+              assert(selected, 'H15_NEEDS_LOW_RISK_UPGRADE_OR_COMPOUND_CANDIDATE');
+              assert(runtime.actions.available(selected.kind === 'COMPOUND' ? 'compound' : 'upgrade'),
+                selected.kind === 'COMPOUND' ? 'COMPOUND_API_UNAVAILABLE' : 'UPGRADE_API_UNAVAILABLE');
+
+              testPlan = {
+                kind: selected.kind,
+                itemName: selected.kind === 'COMPOUND' ? selected.items[0].name : selected.item.name,
+                itemSlot: selected.itemSlot == null ? null : Number(selected.itemSlot),
+                itemSlots: selected.itemSlots ? selected.itemSlots.map(Number) : null,
+                fromLevel: Number(selected.fromLevel) || 0,
+                targetLevel: Number(selected.targetLevel) || 0,
+                scrollName: selected.scrollName,
+                scrollSlot: Number(selected.scroll.slot),
+                offeringName: selected.offering ? selected.offering.name : null,
+                offeringSlot: selected.offering ? Number(selected.offering.slot) : null,
+                itemValueAtRisk: Number(selected.budget.itemValueAtRisk) || 0,
+                consumableCost: Number(selected.budget.consumableCost) || 0
+              };
+
+              return {
+                character: game.character.name,
+                ctype: game.character.ctype,
+                kind: testPlan.kind,
+                item: testPlan.itemName,
+                fromLevel: testPlan.fromLevel,
+                targetLevel: testPlan.targetLevel,
+                itemSlot: testPlan.itemSlot,
+                itemSlots: testPlan.itemSlots,
+                scroll: testPlan.scrollName,
+                scrollSlot: testPlan.scrollSlot,
+                offering: testPlan.offeringName,
+                itemValueAtRisk: testPlan.itemValueAtRisk,
+                consumableCost: testPlan.consumableCost,
+                availableUpgradeCandidates: (plan.upgradeCandidates || []).length,
+                availableCompoundCandidates: (plan.compoundCandidates || []).length
+              };
+            }
+          },
+          {
+            id: 'planning',
+            title: 'Scroll-Grade, Workspace und H15-Budgets vor Mutation bestätigen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              assert(testPlan, 'H15_LIVE_TEST_PLAN_MISSING');
+              const plan = runtime.upgrade.plan();
+              assert(plan && plan.state === 'READY', plan && plan.reason || 'H15_PLAN_UNAVAILABLE');
+              assert(testPlan.itemValueAtRisk <= 25000, 'H15_LIVE_ITEM_RISK_TOO_HIGH');
+              assert(testPlan.consumableCost <= 10000, 'H15_LIVE_CONSUMABLE_COST_TOO_HIGH');
+              const policy = runtime.upgrade.policy();
+              assert(policy.maxAttemptsPerSession === 1, 'H15_LIVE_ATTEMPT_BUDGET_NOT_ONE');
+              assert(policy.offeringMode === 'DISABLED', 'H15_LIVE_OFFERING_MUST_BE_DISABLED');
+              return {
+                kind: testPlan.kind,
+                policy,
+                workspace: plan.workspace,
+                itemValueAtRisk: testPlan.itemValueAtRisk,
+                consumableCost: testPlan.consumableCost
+              };
+            }
+          },
+          {
+            id: 'real-action',
+            title: 'Genau eine echte niedrig riskante H15-Aktion ausführen und Outcome beobachten',
+            timeoutMs: 15000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(testPlan, 'H15_LIVE_TEST_PLAN_MISSING');
+              const queued = testPlan.kind === 'COMPOUND'
+                ? runtime.upgrade.queueCompound(testPlan.itemSlots)
+                : runtime.upgrade.queueUpgrade(testPlan.itemSlot);
+              assert(queued && queued.accepted === true, queued && queued.reason || 'H15_QUEUE_FAILED');
+              const dispatched = runtime.upgrade.tick();
+              assert(dispatched && dispatched.accepted === true, dispatched && dispatched.reason || 'H15_DISPATCH_FAILED');
+
+              const outcome = await waitFor(() => {
+                const status = runtime.upgrade.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H15_SUSPENDED');
+                if (status.metrics.upgradesUnknown > baseline.upgradesUnknown) throw new Error('H15_UPGRADE_UNKNOWN');
+                if (status.metrics.compoundsUnknown > baseline.compoundsUnknown) throw new Error('H15_COMPOUND_UNKNOWN');
+                const succeeded = testPlan.kind === 'COMPOUND'
+                  ? status.metrics.compoundsSucceeded > baseline.compoundsSucceeded
+                  : status.metrics.upgradesSucceeded > baseline.upgradesSucceeded;
+                const failed = testPlan.kind === 'COMPOUND'
+                  ? status.metrics.compoundsFailed > baseline.compoundsFailed
+                  : status.metrics.upgradesFailed > baseline.upgradesFailed;
+                return succeeded || failed ? status : null;
+              }, { timeoutMs: 12000, pollMs: 100, label: 'h15-live-outcome' });
+
+              const lastAction = outcome.lastAction || {};
+              assert([testPlan.kind + '_SUCCEEDED', testPlan.kind + '_FAILED'].includes(lastAction.type),
+                'H15_OUTCOME_NOT_CLASSIFIED');
+              return {
+                kind: testPlan.kind,
+                outcome: lastAction.type,
+                evidence: lastAction.evidence || null,
+                fromLevel: testPlan.fromLevel,
+                targetLevel: testPlan.targetLevel,
+                upgradesDispatched: outcome.metrics.upgradesDispatched - baseline.upgradesDispatched,
+                upgradesSucceeded: outcome.metrics.upgradesSucceeded - baseline.upgradesSucceeded,
+                upgradesFailed: outcome.metrics.upgradesFailed - baseline.upgradesFailed,
+                compoundsDispatched: outcome.metrics.compoundsDispatched - baseline.compoundsDispatched,
+                compoundsSucceeded: outcome.metrics.compoundsSucceeded - baseline.compoundsSucceeded,
+                compoundsFailed: outcome.metrics.compoundsFailed - baseline.compoundsFailed
+              };
+            }
+          },
+          {
+            id: 'stability',
+            title: 'Fünf Sekunden ohne H15 UNKNOWN, Retry oder Suspension beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              await sleep(5000);
+              const status = runtime.upgrade.status();
+              assert(status.suspended === false, status.suspendedReason || 'H15_SUSPENDED');
+              assert(status.metrics.upgradesUnknown === baseline.upgradesUnknown, 'H15_UPGRADE_UNKNOWN_DURING_STABILITY');
+              assert(status.metrics.compoundsUnknown === baseline.compoundsUnknown, 'H15_COMPOUND_UNKNOWN_DURING_STABILITY');
+              assert(status.attemptsThisSession === 1, 'H15_LIVE_ATTEMPT_COUNT_NOT_ONE');
+              assert(status.pending == null, 'H15_PENDING_REMAINS_DURING_STABILITY');
+              assert(status.request == null, 'H15_REQUEST_REMAINS_DURING_STABILITY');
+              return {
+                attempts: status.attemptsThisSession,
+                upgradeUnknown: status.metrics.upgradesUnknown - baseline.upgradesUnknown,
+                compoundUnknown: status.metrics.compoundsUnknown - baseline.compoundsUnknown,
+                suspended: status.suspended
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'H15 Request/Pending freigeben und Test-Policy zurücksetzen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.upgrade.cancelRequest('H15_LIVE_TEST_COMPLETE');
+              const status = runtime.upgrade.status();
+              assert(status.pending == null, 'H15_PENDING_REMAINS');
+              assert(status.request == null, 'H15_REQUEST_REMAINS');
+              return {
+                pending: !!status.pending,
+                request: !!status.request,
+                outcome: status.lastAction && status.lastAction.type || null
+              };
+            }
+          }
+        ]
+      });
+    }
+
     _installErrorCapture() {
       if (!this.root || typeof this.root.addEventListener !== 'function') return;
       this._errorHandler = event => {
@@ -2715,6 +2951,7 @@
         bank: this.bank.status(),
         trade: this.trade.status(),
         gear: this.gear.status(),
+        upgrade: this.upgrade.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
         roster,
@@ -2744,6 +2981,7 @@
         bank: this.bank.status(),
         trade: this.trade.status(),
         gear: this.gear.status(),
+        upgrade: this.upgrade.status(),
         liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
         logs: this.logger.list(160),
@@ -2772,6 +3010,7 @@
       push('bank-controller', !!this.bank.status() && typeof this.bank.plan === 'function' && typeof this.bank.reconcile === 'function', this.bank.status());
       push('trade-controller', !!this.trade.status() && typeof this.trade.marketAnalysis === 'function' && typeof this.trade.queueAcquire === 'function', this.trade.status());
       push('gear-controller', !!this.gear.status() && typeof this.gear.plan === 'function' && typeof this.gear.queueBestLocal === 'function', this.gear.status());
+      push('upgrade-compound-controller', !!this.upgrade.status() && typeof this.upgrade.plan === 'function' && typeof this.upgrade.queueBest === 'function', this.upgrade.status());
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
       push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);
