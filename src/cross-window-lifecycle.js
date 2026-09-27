@@ -657,6 +657,11 @@
         this.heartbeatTimer = this.setIntervalFn(() => {
           try { this.broadcastHeartbeat(); } catch (_) {}
         }, this.config.heartbeatIntervalMs);
+        try {
+          if (this.heartbeatTimer && typeof this.heartbeatTimer.unref === 'function') {
+            this.heartbeatTimer.unref();
+          }
+        } catch (_) {}
       }
       return this.status();
     }
