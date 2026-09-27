@@ -129,7 +129,13 @@
       const ready = new Set(profiles.filter(row => row && row.online && (row.local || row.peerFresh)).map(row => String(row.name)));
       if (local && local.name) ready.add(String(local.name));
       const missing = this.config.requireAllOnlineProfiles ? online.filter(name => !ready.has(name)) : [];
-      return { profiles, online, missing, readyNames: [...ready].sort() };
+      return {
+        profiles,
+        online,
+        missing,
+        readyNames: [...ready].sort(),
+        onlineLimitExceeded: online.length > 4
+      };
     }
 
     _ensureLifecycle(plan, readiness) {
@@ -277,6 +283,15 @@
         const readiness = this._profileReadiness();
         const local = this._local();
         if (!local) return { state: 'BLOCKED', reason: 'CHARACTER_UNAVAILABLE' };
+        if (readiness.onlineLimitExceeded) {
+          this.strategy.recordTraining(false);
+          return this.lastDecision = {
+            at: new Date().toISOString(),
+            state: 'BLOCKED',
+            reason: 'FULL_AUTONOMY_ONLINE_CHARACTER_LIMIT_EXCEEDED',
+            onlineCharacterNames: readiness.online
+          };
+        }
         if (readiness.missing.length) {
           this.strategy.recordTraining(false);
           return this.lastDecision = {
