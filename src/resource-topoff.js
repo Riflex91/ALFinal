@@ -107,17 +107,27 @@
       this.moduleActive = false;
       this.scope = null;
       this.heartbeat = null;
-      this.pending = null;
-      this.lastDecision = { at: new Date().toISOString(), state: 'STOPPED', reason: cleanText(reason, 240) };
+      this.lastDecision = {
+        at: new Date().toISOString(),
+        state: this.pending ? 'STOPPED_WITH_PENDING_PRESERVED' : 'STOPPED',
+        reason: cleanText(reason, 240),
+        pending: this.pending ? clone(this.pending) : null
+      };
       return this.status();
     }
 
     resetSafety(reason = 'RESOURCE_TOPOFF_EXPLICIT_RESET') {
-      this.pending = null;
+      if (this.pending) {
+        return {
+          ...this.status(),
+          reset: false,
+          reason: 'RESOURCE_TOPOFF_PENDING_OUTCOME_REQUIRES_RECONCILIATION'
+        };
+      }
       this.suspendedReason = null;
       this.backoffUntilMs = 0;
       this.lastDecision = { at: new Date().toISOString(), state: 'RESET', reason: cleanText(reason, 240) };
-      return this.status();
+      return { ...this.status(), reset: true };
     }
 
     _gameData() {
