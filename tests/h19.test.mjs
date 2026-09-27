@@ -344,6 +344,30 @@ test('H19 accepts an observed invite only from the desired owned leader', async 
   assert.equal(controller.status().partySignals.length, 0);
 });
 
+test('H19 party recovery ignores signals without captured leader and blocks foreign party topology', () => {
+  const noLeader = fixture({ activeNames: ['My_Ranger', 'My_Priest'] });
+  assert.equal(noLeader.controller.setPolicy({
+    desiredActiveNames: ['My_Ranger', 'My_Priest']
+  }).accepted, true);
+  noLeader.ctx.on_party_invite('My_Priest');
+  assert.equal(noLeader.controller.status().partySignals.length, 0);
+
+  const foreign = fixture({
+    activeNames: ['My_Ranger', 'My_Priest'],
+    foreignPartyNames: ['Foreign_Player']
+  });
+  assert.equal(foreign.controller.setPolicy({
+    desiredActiveNames: ['My_Ranger', 'My_Priest'],
+    desiredPartyLeader: 'My_Priest'
+  }).accepted, true);
+  assert.equal(foreign.controller.startAutonomy({ maxActions: 1 }).accepted, true);
+  foreign.ctx.on_party_invite('My_Priest');
+  const plan = foreign.controller.plan();
+  assert.equal(plan.state, 'BLOCKED');
+  assert.equal(plan.reason, 'H19_FOREIGN_PARTY_MEMBER_PRESENT');
+  assert.equal(foreign.state.dispatches.length, 0);
+});
+
 test('H19 automatic known reject stops autonomy and does not immediately retry', async () => {
   const { controller, state } = fixture({
     activeNames: ['My_Ranger', 'My_Priest'],
