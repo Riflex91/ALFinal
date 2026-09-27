@@ -1196,3 +1196,74 @@ Safety-Regeln bleiben unverändert:
 - Supabase READ-ONLY;
 - vor jedem GitHub-Write frisch `main` gegen Arbeitsbranch vergleichen und nur bei `behind_by=0` schreiben;
 - Merge nur nach vollständigem frischem Gate per `merge` und exaktem `expected_head_sha`.
+
+
+## H18 – Party Logistics technischer Pre-Live-Stand
+
+Stand 2026-09-27, PR #25 `H18: Add bounded party logistics`.
+
+H18 baut auf dem vollständig live bestandenen H17 auf.
+
+### Scope
+
+- eigener `PartyLogisticsController`;
+- explizite Supply-Aufträge an eigene Party-Mitglieder;
+- Potions, Scrolls, Elixiere und konservativ sichere Level-0-Supplies;
+- explizite Gold-Verteilung mit Sender-Goldreserve;
+- kontrolliertes Regrouping/Approach über H4;
+- keine erfundenen Remote-Inventarbedarfe;
+- keine fremden Party-Mitglieder;
+- keine parallele Combat-/Economy-/Inventory-/Merchant-Mutation.
+
+### Safety
+
+- Global STOP / Runtime Action Gate autoritativ;
+- Item-Definition muss live vorhanden sein;
+- leveled/locked/gift/giveaway/expiring/Quest/Cash/Upgrade/Compound/Equipment fail-closed;
+- positive finite Integer-Mengen erforderlich;
+- Transferbestätigung nur über exakten Sender-Slot bzw. Sender-Gold-Delta **und** abgeschlossene Dispatch-Settlement;
+- UNKNOWN suspendiert, kein Blind-Retry;
+- in-flight Supply/Gold bleibt über Modulstop erhalten und wird nach Restart reconciled;
+- Movement Owner `party-logistics-h18`;
+- Movement-Reject verwirft keinen expliziten Supply-Auftrag;
+- H10 Loot und H11 Merchant warten bei H18-Ownership;
+- H17 Economy führt H18 als Child-Owner;
+- H18 blockiert bei aktiven H10–H17-Mutationspfaden.
+
+### Technische Evidence
+
+- technischer Safety-Head: `10ba7540545d49ff7d5100c469533092fdc65bf1`;
+- CI #490: **256/256 PASS, 0 FAIL, 0 CANCELLED, 0 SKIP, completed/success**;
+- fünf Review-Funde vollständig behoben;
+- alle fünf Review-Threads resolved;
+- zusätzlicher Cross-Module-Ownership-Hardening regressionsseitig abgedeckt;
+- Runtime/Bundle `0.18.0-h18`, Package `0.18.0`;
+- `dist/al-bot.js` nach dem technischen CI source-synchronisiert;
+- `docs/H18-LIVE-TEST.md` beschreibt das Live-Gate.
+
+### Live-Suite
+
+`h18-party-logistics` v1:
+
+1. `preflight` – eigene Party, sichtbares eigenes Ziel, sicheres Supply-Item;
+2. `regroup` – falls nötig echter H4-Regroup, sonst `alreadyGrouped`;
+3. `supply` – exakt ein echter sicherer `send_item`-Transfer;
+4. `stability` – fünf Sekunden ohne Retry/UNKNOWN;
+5. `cleanup` – Autonomie AUS, keine aktive Aktion, Queue leer, keine Suspension.
+
+### Nächster Schritt
+
+Jetzt finalen Exact-Head-CI der Doku-/Bundle-Commits abwarten und danach vollständig frisch prüfen:
+
+- aktueller Head;
+- `behind_by=0`;
+- alle relevanten Runs completed;
+- nur success/skipped/neutral;
+- keine pending/failing Checks;
+- keine offenen Review-Threads;
+- kein `CHANGES_REQUESTED`;
+- `mergeable=true`.
+
+Dann PR #25 ausschließlich per `merge` mit exakt aktuellem `expected_head_sha` mergen und `main` verifizieren.
+
+Erst danach Nutzer genau einmal `h18-party-logistics` starten lassen und den vollständigen Bericht auswerten. Bei FAIL kein Blind-Rerun.
