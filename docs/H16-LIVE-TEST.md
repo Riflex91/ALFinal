@@ -326,3 +326,36 @@ Frischer Codex-v2-Review auf Commit `3e36f6ccaa...` meldete zwei zusätzliche Pu
 Beide Review-Threads sind resolved. Regressionen decken recoverable Bank-Fallback, non-recoverable Bank-Stop sowie das vollständige Goldreserve-Gate ab.
 
 Der frische Codex-v2-Review ist ausgewertet und seine beiden neuen Threads sind resolved. Nach diesen finalen Dokucommits ist noch ein neuer Exact-Head-CI erforderlich. Der zweite echte H16-Live-Test darf erst freigegeben werden, wenn dieser Doku-Head `completed/success`, `behind_by=0`, `mergeable=true`, review-clean und ohne pending/failing Checks ist.
+
+
+## v2 Review Round 2 Evidence
+
+Frischer Codex-Review auf technischem v2-Head `3e36f6ccaa34d7359e8cf7d26e5d44af942811cc` fand zwei zusätzliche Punkte:
+
+1. **Gesamt-Golddeckung vor Materialkäufen**
+   - Vor jeder Materialmutation muss bereits im Preflight gelten:
+     `currentGold >= acquisitionGold + recipe.cost + goldReserve`.
+   - Damit kann der Test nicht erst Materialien kaufen und anschließend wegen fehlender Craft-/Reserve-Deckung abbrechen.
+   - Die gewählte Acquisition-Planung trägt `currentGold` und `requiredGoldWithReserve` als Evidence.
+
+2. **Mehrere Bank-Stacks korrekt durchsuchen**
+   - Ein recoverably unbrauchbarer erster Bank-Stack darf spätere brauchbare Stacks nicht blockieren.
+   - Recoverable Gründe:
+     - `H12_WITHDRAW_WRONG_OR_UNKNOWN_BANK_MAP`
+     - `H12_BANK_RESERVATION_BLOCKED`
+     - `H12_WITHDRAW_ITEM_NOT_FOUND`
+   - Bei globalen/nicht recoverable Fehlern wie `H12_BUSY` wird **nicht** parallel auf Trade ausgewichen.
+   - Neue Regressionen decken sowohl den späteren gültigen Stack als auch den Non-Recoverable-Block ab.
+
+Nach den Fixes:
+
+- technischer Head: `9e007bc6bfdf872ebf91ecd9f8dbf7f7c2140428`
+- Exact-Head-CI Run `#362`: **completed / success**
+- `npm test`: **213/213 PASS, 0 FAIL, 0 SKIP**
+- Branch `behind_by=0`
+- PR #17 `mergeable=true`
+- beide Review-Threads resolved
+- kein `CHANGES_REQUESTED`
+- Bundle wieder exakt source-synchron
+
+Ein letzter Codex-Review wurde auf Head `9e007bc6...` angefordert. Der zweite Live-Test bleibt gesperrt, bis dieser Review abgeschlossen/clean und der nachfolgenden Doku-Head-CI ebenfalls grün ist.
