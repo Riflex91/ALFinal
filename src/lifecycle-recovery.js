@@ -372,6 +372,15 @@
       return new Set(roster && Array.isArray(roster.onlineCharacterNames) ? roster.onlineCharacterNames.map(String) : []);
     }
 
+    _runnerActiveSet(roster) {
+      const names = roster && Array.isArray(roster.runnerActiveCharacterNames)
+        ? roster.runnerActiveCharacterNames
+        : roster && Array.isArray(roster.activeCharacterNames)
+          ? roster.activeCharacterNames
+          : [];
+      return new Set(names.map(String));
+    }
+
     _validateRemoteTarget(name, mode) {
       const roster = this._roster();
       if (!roster || roster.accountStateAvailable !== true || roster.onlineStateAvailable !== true) {
@@ -386,10 +395,18 @@
       if (String(owned.name) === String(localName)) {
         return { ok: false, reason: 'H19_REMOTE_TARGET_IS_LOCAL' };
       }
-      const active = this._onlineSet(roster).has(String(owned.name));
+      const targetName = String(owned.name);
+      const active = this._onlineSet(roster).has(targetName);
+      const runnerActive = this._runnerActiveSet(roster).has(targetName);
       if (mode === 'START' && active) return { ok: false, reason: 'H19_TARGET_ALREADY_ACTIVE' };
       if (mode === 'STOP' && !active) return { ok: false, reason: 'H19_TARGET_ALREADY_STOPPED' };
-      return { ok: true, roster, owned, active };
+      if (mode === 'STOP' && roster.activeStateAvailable !== true) {
+        return { ok: false, reason: 'H19_RUNNER_ACTIVE_STATE_UNAVAILABLE' };
+      }
+      if (mode === 'STOP' && !runnerActive) {
+        return { ok: false, reason: 'H19_REMOTE_TARGET_NOT_RUNNER_CONTROLLABLE' };
+      }
+      return { ok: true, roster, owned, active, runnerActive };
     }
 
     _enqueue(kind, targetName, details = {}) {
