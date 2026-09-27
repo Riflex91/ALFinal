@@ -78,7 +78,8 @@
         foreignPartyBlocks: 0,
         combatBlocks: 0,
         ownershipBlocks: 0,
-        sessionBudgetBlocks: 0
+        sessionBudgetBlocks: 0,
+        actionsQueued: 0
       };
     }
 
