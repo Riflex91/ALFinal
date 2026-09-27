@@ -223,3 +223,77 @@ PR #26 `H18: Finalize bundle and pre-live evidence` korrigiert ausschließlich d
 - keine Gameplay- oder Safety-Regel wird gelockert.
 
 **H18 bleibt bis zum Merge von PR #26 und einem echten erfolgreichen `h18-party-logistics`-Adventure-Land-Lauf offen.**
+
+
+## H18 abgeschlossen – echter Adventure-Land-Live-PASS
+
+Stand: 2026-09-27
+
+Nach Merge von PR #26 wurde die H18-Suite auf einer echten Vierer-Party ausgeführt. Drei H18-fähige Combat-Runner lieferten unabhängig voneinander `PASSED / ALL_STEPS_PASSED`.
+
+### Ranger-Lauf – vollständiger Regroup + Supply-Pfad
+
+- Runtime: `0.18.0-h18`;
+- lokale Rolle: Ranger / DPS;
+- Party: 4 eigene Mitglieder, keine fremden Mitglieder;
+- Ziel: eigener Merchant;
+- Supply: `mpot0`, Menge 1;
+- Preflight: PASS;
+- Regroup: PASS, `alreadyGrouped=false`;
+- Distanz vor Regroup: ca. 123 Units;
+- Regroup: 1 bestätigt / 0 UNKNOWN;
+- Supply: 1 dispatched / 1 confirmed / 0 rejected / 0 UNKNOWN;
+- Stability: PASS;
+- Cleanup: PASS;
+- danach Autonomie AUS, `currentAction=null`, Queue leer, keine Suspension.
+
+Dieser Lauf deckt den verpflichtenden echten Movement-/Regroup- und Supply-Pfad gemeinsam ab.
+
+### Priest-Lauf – Already-Grouped + Potion-Supply
+
+- Runtime: `0.18.0-h18`;
+- lokale Rolle: Priest / Healer;
+- Party: 4 eigene Mitglieder;
+- Ziel: eigener Merchant;
+- Supply: `hpot0`, Menge 1;
+- Regroup-Schritt: PASS mit `alreadyGrouped=true`;
+- Supply: 1 dispatched / 1 confirmed / 0 rejected / 0 UNKNOWN;
+- Stability und Cleanup: PASS;
+- keine Suspension, keine UNKNOWN-Evidence.
+
+### Warrior-Lauf – zusätzlicher unabhängiger Supply-PASS
+
+- Runtime: `0.18.0-h18`;
+- lokale Rolle: Warrior / Tank;
+- Party: 4 eigene Mitglieder;
+- Ziel: eigener Merchant;
+- Regroup-Schritt: PASS mit `alreadyGrouped=true`;
+- Supply: 1 dispatched / 1 confirmed / 0 rejected / 0 UNKNOWN;
+- Stability und Cleanup: PASS;
+- keine Suspension, keine UNKNOWN-Evidence.
+
+### Separater Merchant-Dump
+
+Ein gleichzeitig gestarteter Merchant-Runner war noch auf `0.17.0-h17` und führte deshalb nicht H18, sondern erneut `h17-economy-autonomy` aus. Dieser alte Runner wurde per `GUI_EMERGENCY_STOP` beendet und der H17-Lauf dadurch `CANCELLED / LIVE_TEST_CANCELLED`. Das ist keine H18-Fehlevidence und wird nicht als H18-Lauf gewertet.
+
+### Abschlussbewertung
+
+Der definierte H18-Live-Gate ist erfüllt:
+
+- echter eigener Party-Kontext;
+- echter H18-Regroup mit H4-Movement-Ownership bestätigt;
+- echter Potion-Supply-Transfer bestätigt;
+- Dispatch-/Outcome-Evidence sauber;
+- Supply UNKNOWN = 0;
+- Regroup UNKNOWN = 0;
+- Stability PASS;
+- Cleanup PASS;
+- kein Blind-Retry;
+- keine H18-Suspension;
+- Runtime Auto-Restore erfolgreich.
+
+Die Gold-Verteilung wurde im bounded H18-Live-Gate bewusst nicht mutiert; sie bleibt durch die automatischen H18-Regressions- und Safety-Tests abgedeckt.
+
+**H18 – Party Logistics ist damit abgeschlossen.**
+
+Nächster Entwicklungsblock: **H19 – Character Lifecycle & Recovery**.
