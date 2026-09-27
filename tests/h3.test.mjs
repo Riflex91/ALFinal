@@ -296,7 +296,7 @@ test('Knowledge refresh failure preserves Last Known Good and runtime stability'
   assert.equal(failed.lastKnownGood.generation, 7);
   assert.equal(ctx.ALBot.knowledge.fact('server.eu.i.monster.frog.spawn').wert.mtype, 'frog');
   assert.equal(ctx.ALBot.status().running, true);
-  assert.equal(ctx.ALBot.scheduler.status().totalResources, 13);
+  assert.equal(ctx.ALBot.scheduler.status().totalResources, 14);
 
   await ctx.ALBot.stop('DONE');
 });
@@ -311,7 +311,7 @@ test('Bridge outage without any LKG is diagnosable but does not crash core', asy
   assert.equal(status.lastKnownGood, null);
   assert.match(status.lastRefreshError, /KNOWLEDGE_FETCH_FAILED/);
   assert.equal(ctx.ALBot.status().running, true);
-  assert.equal(ctx.ALBot.scheduler.status().totalResources, 13);
+  assert.equal(ctx.ALBot.scheduler.status().totalResources, 14);
 
   await ctx.ALBot.stop('DONE');
 });
