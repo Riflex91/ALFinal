@@ -727,6 +727,26 @@ test('H19 remote stop requires runner controllability while start still uses acc
   assert.equal(controller.status().metrics.startsConfirmed, 1);
 });
 
+test('H19 cross-window readiness suite is non-mutating and gates complete peer readiness', () => {
+  const runtime = fs.readFileSync(path.resolve(here, '../src/runtime.js'), 'utf8');
+  const start = runtime.indexOf("id: 'h19-cross-window-readiness'");
+  const end = runtime.indexOf("id: 'h19-remote-recovery'", start);
+  assert.ok(start >= 0);
+  assert.ok(end > start);
+  const readiness = runtime.slice(start, end);
+  assert.match(readiness, /recommended: false/);
+  assert.match(readiness, /autoStartRuntime: false/);
+  assert.match(readiness, /restoreRuntimeState: false/);
+  assert.match(readiness, /H19_READINESS_MISSING_REMOTE_HEARTBEAT/);
+  assert.match(readiness, /H19_READINESS_VERSION_MISMATCH/);
+  assert.match(readiness, /H19_READINESS_REMOTE_EMERGENCY_STOP_LATCHED/);
+  assert.match(readiness, /H19_READINESS_CROSS_WINDOW_TARGET_UNAVAILABLE/);
+  assert.doesNotMatch(readiness, /queueStart\(/);
+  assert.doesNotMatch(readiness, /queueStop\(/);
+  assert.doesNotMatch(readiness, /captureDesiredActive\(/);
+  assert.doesNotMatch(readiness, /startAutonomy\(/);
+});
+
 test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired', () => {
   const runtime = fs.readFileSync(path.resolve(here, '../src/runtime.js'), 'utf8');
   const entry = fs.readFileSync(path.resolve(here, '../src/entry.js'), 'utf8');
@@ -742,6 +762,7 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(runtime, /new ns\.CharacterLifecycleController/);
   assert.match(runtime, /id: 'character-lifecycle'/);
   assert.match(runtime, /id: 'h19-character-lifecycle'/);
+  assert.match(runtime, /id: 'h19-cross-window-readiness'/);
   assert.match(runtime, /id: 'h19-remote-recovery'/);
   assert.match(runtime, /_registerH19RemoteRecoveryLiveTest\(\)/);
   assert.match(runtime, /const runnerActive = runnerActiveSet\(liveRoster\)/);
@@ -797,6 +818,7 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(dist, /AL Bot 0\.19\.0-h19/);
   assert.match(dist, /class H19CrossWindowLifecycleTransport/);
   assert.match(dist, /albot-h19-cross-window-v1/);
+  assert.match(dist, /h19-cross-window-readiness/);
   assert.match(dist, /class CharacterLifecycleController/);
   assert.match(dist, /H19_REMOTE_TARGET_NOT_RUNNER_CONTROLLABLE/);
   assert.match(dist, /H19_REMOTE_CONTROLLABLE_TARGET_UNAVAILABLE/);
