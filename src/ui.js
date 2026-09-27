@@ -1516,6 +1516,7 @@ ${items.length ? items.slice(0, 24).map(row => '<div class="albot-small">#'+esc(
         ? targetRows.map(row => '<option value="'+esc(row.name)+'">'+esc(row.name)+' · '+esc(row.ctype || '-')+'</option>').join('')
         : '<option value="">Kein Remote-Character verfügbar</option>';
       const desired = Array.isArray(policy.desiredActiveNames) ? policy.desiredActiveNames : [];
+      const desiredParty = Array.isArray(policy.desiredPartyMemberNames) ? policy.desiredPartyMemberNames : [];
       const action = lifecycle.currentAction || null;
       const resultText = this.lifecycleResult ? JSON.stringify(this.lifecycleResult, null, 2) : 'Noch keine manuelle H19-Steuerung.';
 
@@ -1527,7 +1528,7 @@ ${items.length ? items.slice(0, 24).map(row => '<div class="albot-small">#'+esc(
 <div><span class="albot-k">Plan</span><div class="albot-v">${esc(plan && plan.state || '-')} · ${esc(plan && plan.reason || '-')}</div></div>
 <div><span class="albot-k">Aktive Aktion</span><div class="albot-v">${action ? esc(action.kind)+' · '+esc(action.targetName || '-')+' · '+esc(action.settlement || '-') : 'keine'}</div></div>
 <div><span class="albot-k">Desired Active</span><div class="albot-v">${desired.length ? desired.map(esc).join(', ') : 'nicht erfasst'}</div></div>
-<div><span class="albot-k">Desired Party Leader</span><div class="albot-v">${esc(policy.desiredPartyLeader || '-')}</div></div>
+<div><span class="albot-k">Desired Party Members</span><div class="albot-v">${desiredParty.length ? desiredParty.map(esc).join(', ') : 'nicht erfasst'}</div></div>\n<div><span class="albot-k">Desired Party Leader</span><div class="albot-v">${esc(policy.desiredPartyLeader || '-')}</div></div>
 <div><span class="albot-k">Session-Aktionen</span><div class="albot-v">${esc(lifecycle.actionsThisSession || 0)} / ${esc(policy.maxActionsPerSession || '-')}</div></div>
 <div><span class="albot-k">Bestätigt / Reject / Unknown</span><div class="albot-v">${esc(metrics.actionsConfirmed || 0)} / ${esc(metrics.actionsRejected || 0)} / ${esc(metrics.actionsUnknown || 0)}</div></div>
 <div><span class="albot-k">Start / Stop / Respawn bestätigt</span><div class="albot-v">${esc(metrics.startsConfirmed || 0)} / ${esc(metrics.stopsConfirmed || 0)} / ${esc(metrics.respawnsConfirmed || 0)}</div></div>
