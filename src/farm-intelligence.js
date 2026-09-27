@@ -747,6 +747,10 @@
       }
       if (!group.local || !group.leader || !group.sameMap || group.distance == null) {
         this._stopOwnedFarming('H9_GROUP_LEADER_POSITION_UNAVAILABLE');
+        if (this._ownedMovement(movement)) {
+          try { this.movement.cancel('H9_GROUP_LEADER_POSITION_UNAVAILABLE'); } catch (_) {}
+        }
+        this.groupMove = null;
         return { state: 'WAITING', reason: 'H9_GROUP_LEADER_POSITION_UNAVAILABLE', leaderName: group.leaderName };
       }
 
