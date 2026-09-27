@@ -1226,3 +1226,24 @@ Der Gate prüft bounded:
 Cleanup darf nur dann einen einmaligen ersten Restore-Start auslösen, wenn der Stop bestätigt wurde und **noch kein Start dispatcht wurde**. Nach Reject, UNKNOWN, Suspension oder bereits dispatchtem Start gibt es keinen Cleanup-Retry.
 
 Nach erfolgreicher v2-Evidence sind Remote Character Start/Stop sowie Disconnect-/Restart-Recovery live bestätigt. Party-Recovery bleibt anschließend als letzter gezielter H19-Live-Gate offen.
+
+
+### H19 v2 Live-Truth-Korrektur – accountweiter Online-Status
+
+Stand 2026-09-27.
+
+Der erste echte `h19-remote-recovery`-Preflight hat eine falsche Roster-Annahme sichtbar gemacht, bevor irgendeine Game-Mutation ausgeführt wurde:
+
+- `get_characters().online` meldete auf zwei unabhängigen laufenden Clients vier eigene Characters online;
+- `get_active_characters()` / `activeCharacterNames` enthielt jeweils nur den lokalen Character;
+- beide Läufe stoppten fail-closed mit `H19_REMOTE_SAFE_ACTIVE_TARGET_UNAVAILABLE`;
+- 0 Lifecycle-Dispatches, 0 Rejects, 0 UNKNOWNs.
+
+Korrektur:
+
+- Roster trennt nun accountweite `onlineCharacterNames` von lokaler `activeCharacterNames` / `runnerActiveCharacterNames`;
+- H19 Remote Start/Stop, Desired Active, Recovery-Reconciliation und v2-Live-Gate verwenden accountweite Online-Evidence;
+- die lokale Runner-Active-Sicht bleibt für andere Semantiken unverändert erhalten;
+- Regression deckt explizit den Live-Fall „Remote accountweit online, aber nicht in der lokalen Runner-Active-Sicht“ ab.
+
+Die bisherigen FAIL-Evidence bleibt append-only dokumentiert. H19 Remote Start/Stop + Restart-Recovery ist weiterhin **nicht live bestätigt**, bis der korrigierte Gate nach finalem Merge einmal vollständig PASSED ist.
