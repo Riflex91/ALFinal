@@ -471,20 +471,29 @@
         return this._materialSource(name, level, q);
       });
 
+      const snapshot = this._snapshot();
+      const liveGold = snapshot && snapshot.character ? finite(snapshot.character.gold) : null;
+      const craftCostOverBudget = totalCraftGold > this.config.maxCraftGoldCost * Math.max(1, targetQuantity);
+      const goldUnavailable = liveGold == null;
+      const goldReserveBlocked = liveGold != null && liveGold - totalCraftGold < this.config.goldReserve;
       const state = protectedRecipes.length
         ? 'BLOCKED'
         : missingRows.length
           ? 'NEEDS_MATERIALS'
-          : totalCraftGold > this.config.maxCraftGoldCost * Math.max(1, targetQuantity)
+          : craftCostOverBudget || goldUnavailable || goldReserveBlocked
             ? 'BLOCKED'
             : 'READY';
       const reason = protectedRecipes.length
         ? 'H16_PRODUCTION_QUEST_EVENT_REQUIRES_EXPLICIT_OPT_IN'
         : missingRows.length
           ? 'H16_PRODUCTION_NEEDS_MATERIALS'
-          : state === 'READY'
-            ? 'H16_PRODUCTION_READY'
-            : 'H16_PRODUCTION_COST_OVER_BUDGET';
+          : craftCostOverBudget
+            ? 'H16_PRODUCTION_COST_OVER_BUDGET'
+            : goldUnavailable
+              ? 'H16_PRODUCTION_GOLD_UNAVAILABLE'
+              : goldReserveBlocked
+                ? 'H16_PRODUCTION_GOLD_RESERVE_BLOCKED'
+                : 'H16_PRODUCTION_READY';
 
       return {
         state,
@@ -496,7 +505,9 @@
         stages,
         missing: missingRows,
         protectedRecipes,
-        totalCraftGold
+        totalCraftGold,
+        gold: liveGold,
+        goldReserve: this.config.goldReserve
       };
     }
 
@@ -611,8 +622,12 @@
 
     queueMaterialAcquire(itemName, quantity = 1, options = {}) {
       const name = cleanText(itemName || '', 160);
-      const q = Math.max(1, Math.floor(Number(quantity) || 1));
+      const rawQuantity = finite(quantity);
       if (!name) return { accepted: false, reason: 'H16_MATERIAL_NAME_REQUIRED' };
+      if (rawQuantity == null || rawQuantity <= 0 || !Number.isInteger(rawQuantity)) {
+        return { accepted: false, reason: 'H16_MATERIAL_QUANTITY_INVALID' };
+      }
+      const q = rawQuantity;
 
       const bank = this._bankSnapshot();
       let lastRecoverableBankReject = null;
@@ -920,6 +935,7 @@
       const gate = this._localReady();
       if (!gate.ok) {
         this.request = null;
+        this._cancelOwnedMovement(gate.reason || 'H16_SAFETY_GATE_BLOCKED');
         this.metrics.safetyBlocks += 1;
         return { state: 'BLOCKED', reason: gate.reason };
       }
