@@ -63,10 +63,7 @@
       this.heartbeat = null;
       this.session = null;
       this.sequence = 0;
-      this.groupPolicy = {
-        leaderName: this.session.groupLeaderName,
-        memberNames: this.session.groupMemberNames.slice()
-      };
+      this.groupPolicy = { leaderName: null, memberNames: [] };
       this.groupMove = null;
       this.currentSelection = null;
       this.lastPlan = null;
@@ -74,8 +71,6 @@
       this.history = [];
       this.observations = new Map();
       this.suspendedReason = null;
-      this.groupPolicy = { leaderName: null, memberNames: [] };
-      this.groupMove = null;
       this.metrics = {
         sessions: 0,
         decisions: 0,
@@ -156,6 +151,11 @@
         stoppedAt: null,
         reason: null
       };
+      this.groupPolicy = {
+        leaderName: this.session.groupLeaderName,
+        memberNames: this.session.groupMemberNames.slice()
+      };
+      this.groupMove = null;
       this.currentSelection = null;
       this.lastPlan = null;
       this.lastAction = null;
