@@ -1625,3 +1625,39 @@ Erwartung fuer den Cross-Window-Live-PASS:
 - Desired Active startet dieselbe Ziel-Session wieder auf `running=true`;
 - insgesamt 2 Dispatch / 2 Confirm / 1 STOP / 1 START / 0 Reject / 0 UNKNOWN;
 - danach 5 Sekunden stabil ohne Retry.
+
+
+
+## H19 – Finale Cross-Window- und Party-Recovery-Live-Evidence
+
+Stand: 2026-09-27
+
+Die beiden letzten dedizierten H19-Cross-Window-Live-Gates sind jetzt erfolgreich bestaetigt.
+
+Remote-Recovery:
+
+- Suite `h19-remote-recovery` v2: `PASSED / ALL_STEPS_PASSED`;
+- Test-Runner `My_Priest`, Remote-Ziel `My_Merchant`, Control Mode `cross-window-runtime`;
+- genau 1 bestaetigter Remote STOP und 1 bestaetigter Recovery START;
+- insgesamt 2 Dispatch / 2 Confirm / 1 Stop / 1 Start;
+- 2 CM-Commands / 2 ACKs / 2 erfolgreiche terminale Settlements;
+- 0 Rejects / 0 UNKNOWNs und 5 Sekunden stabil ohne Retry;
+- Cleanup PASS, Ziel aktiv, Autonomie aus, keine aktive Aktion, Queue leer, keine Suspension; Lifecycle-Policy wiederhergestellt.
+
+Party-Recovery:
+
+- Suite `h19-party-recovery` v1: `PASSED / ALL_STEPS_PASSED`;
+- lokaler geschuetzter Party-Leader: `My_Priest`;
+- kontrolliertes Nicht-Leader-Ziel: `My_Merchant`;
+- Ausgangstopologie: `My_Priest`, `My_Ranger1`, `My_Warrior`, `My_Merchant`;
+- der kontrollierte Leave von `My_Merchant` wurde terminal als `H19_CROSS_WINDOW_PARTY_LEFT` bestaetigt, waehrend dessen Runtime weiterlief;
+- exakt 1 Lifecycle-Dispatch / 1 Lifecycle-Confirm / 1 bestaetigter Party-Accept;
+- 2 CM-Commands / 2 ACKs / 2 Settlements;
+- 0 Rejects / 0 UNKNOWNs;
+- die exakte urspruengliche Vierer-Party mit `My_Priest` als Leader wurde wiederhergestellt;
+- Stability PASS nach 5 Sekunden ohne weiteren Lifecycle-Dispatch oder CM-Retry;
+- Cleanup PASS: Autonomie aus, keine aktive Aktion, Queue leer, keine Suspension, Zielruntime weiter aktiv; Cleanup insgesamt `ok=true`.
+
+Damit sind die dedizierten H19-Live-Gates fuer getrennte Browserfenster und Party-Recovery vollstaendig PASSED.
+
+Release-Status: H20 bleibt bis zum Merge dieser append-only H19-Evidence blockiert. Nach diesem Merge kann H19 als abgeschlossen behandelt und H20 freigegeben werden.
