@@ -35,6 +35,7 @@
       this.upgradeResult = null;
       this.exchangeCraftResult = null;
       this.lifecycleResult = null;
+      this.fullAutonomyResult = null;
       this.liveTestClipboard = null;
       this._offLog = null;
       this._dragCleanup = null;
@@ -91,7 +92,7 @@
 </style>
 <div class="albot-head" id="albot-drag-handle"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-minimize" class="albot-window-btn" title="Fenster minimieren" aria-label="Fenster minimieren">—</button><button id="albot-emergency" class="albot-stop">STOP</button></div>
 <div class="albot-tabs">
-<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="merchant">Merchant</button><button class="albot-tab" data-tab="bank">Bank</button><button class="albot-tab" data-tab="trade">Handel</button><button class="albot-tab" data-tab="gear">Gear</button><button class="albot-tab" data-tab="upgrade">Upgrade & Compound</button><button class="albot-tab" data-tab="exchange-craft">Exchange & Craft</button><button class="albot-tab" data-tab="economy">Economy</button><button class="albot-tab" data-tab="lifecycle">Lifecycle</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
+<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="merchant">Merchant</button><button class="albot-tab" data-tab="bank">Bank</button><button class="albot-tab" data-tab="trade">Handel</button><button class="albot-tab" data-tab="gear">Gear</button><button class="albot-tab" data-tab="upgrade">Upgrade & Compound</button><button class="albot-tab" data-tab="exchange-craft">Exchange & Craft</button><button class="albot-tab" data-tab="economy">Economy</button><button class="albot-tab" data-tab="lifecycle">Lifecycle</button><button class="albot-tab" data-tab="full-autonomy">Full Live</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
 </div>
 <div class="albot-body">
 <section id="albot-panel-overview" class="albot-panel active"></section>
@@ -110,6 +111,7 @@
 <section id="albot-panel-exchange-craft" class="albot-panel"></section>
 <section id="albot-panel-economy" class="albot-panel"></section>
 <section id="albot-panel-lifecycle" class="albot-panel"></section>
+<section id="albot-panel-full-autonomy" class="albot-panel"></section>
 <section id="albot-panel-live-test" class="albot-panel"></section>
 <section id="albot-panel-knowledge" class="albot-panel"></section>
 <section id="albot-panel-logs" class="albot-panel"></section>
@@ -257,6 +259,7 @@
       if (this.activeTab === 'exchange-craft') this.renderExchangeCraft(status);
       if (this.activeTab === 'economy') this.renderEconomy(status);
       if (this.activeTab === 'lifecycle') this.renderLifecycle(status);
+      if (this.activeTab === 'full-autonomy') this.renderFullAutonomy(status);
       if (this.activeTab === 'live-test') this.renderLiveTest(status);
       if (this.activeTab === 'knowledge') this.renderKnowledge(status);
       if (this.activeTab === 'logs') this.renderLogs();
@@ -284,6 +287,7 @@
       this.renderExchangeCraft(status);
       this.renderEconomy(status);
       this.renderLifecycle(status);
+      this.renderFullAutonomy(status);
       this.renderLiveTest(status);
       this.renderKnowledge(status);
       this.renderLogs();
@@ -1587,6 +1591,70 @@ ${items.length ? items.slice(0, 24).map(row => '<div class="albot-small">#'+esc(
       if (reset) reset.onclick = () => run(() => this.runtime.lifecycle.resetSafety('GUI_H19_RESET'));
     }
 
+
+    renderFullAutonomy(status) {
+      const panel = this.host.querySelector('#albot-panel-full-autonomy');
+      if (!panel) return;
+      const full = status.fullAutonomy || {};
+      const strategy = status.accountStrategy || {};
+      let profiles = Array.isArray(strategy.profiles) ? strategy.profiles : [];
+      let progression = strategy.progression || null;
+      try {
+        if (!profiles.length && this.runtime.accountStrategy && typeof this.runtime.accountStrategy.profiles === 'function') {
+          profiles = this.runtime.accountStrategy.profiles();
+        }
+        if (!progression && this.runtime.accountStrategy && typeof this.runtime.accountStrategy.progressionPlan === 'function') {
+          progression = this.runtime.accountStrategy.progressionPlan();
+        }
+      } catch (_) {}
+      const plan = full.lastPlan || strategy.taskPlan || null;
+      const decision = full.lastDecision || null;
+      const selected = plan && plan.selected && Array.isArray(plan.selected.memberNames) ? plan.selected.memberNames : [];
+      const support = plan && Array.isArray(plan.supportMemberNames) ? plan.supportMemberNames : [];
+      const resultText = this.fullAutonomyResult
+        ? JSON.stringify(this.fullAutonomyResult, null, 2)
+        : 'Noch keine manuelle Full-Live-Aktion.';
+
+      panel.innerHTML = '<div class="albot-card"><b>V6 Full Live · Account & Party Optimizer</b>'
+        + '<div class="albot-small">Startet die vorhandenen Bot-Module gemeinsam und verteilt Rollen accountweit. Combat-Characters farmen/kaempfen nach Task-Plan, der Merchant uebernimmt Economy und bei Bedarf Party-Logistik. Sicherheits-Suspensions und UNKNOWN werden niemals automatisch zurueckgesetzt.</div>'
+        + '<div class="albot-grid" style="margin-top:8px">'
+        + '<div><span class="albot-k">Full Live</span><div class="albot-v">'+(full.enabled ? 'AKTIV' : 'AUS')+'</div></div>'
+        + '<div><span class="albot-k">Task</span><div class="albot-v">'+esc(full.config && full.config.taskType || '-')+'</div></div>'
+        + '<div><span class="albot-k">Status</span><div class="albot-v">'+esc(decision && decision.state || '-')+' · '+esc(decision && decision.reason || '-')+'</div></div>'
+        + '<div><span class="albot-k">Leader</span><div class="albot-v">'+esc(plan && plan.leaderName || decision && decision.leader || '-')+'</div></div>'
+        + '<div><span class="albot-k">Execution Group</span><div class="albot-v">'+(selected.length ? selected.map(esc).join(', ') : '-')+'</div></div>'
+        + '<div><span class="albot-k">Support</span><div class="albot-v">'+(support.length ? support.map(esc).join(', ') : '-')+'</div></div>'
+        + '<div><span class="albot-k">Catch-up Ziel</span><div class="albot-v">'+esc(progression && progression.selectedCharacterName || plan && plan.progression && plan.progression.selectedCharacterName || '-')+'</div></div>'
+        + '<div><span class="albot-k">Lokale Rolle</span><div class="albot-v">'+esc(decision && decision.localRole || '-')+'</div></div>'
+        + '</div></div>'
+        + '<div class="albot-card"><b>Account-Profile</b>'
+        + (profiles.length ? profiles.map(row => '<div class="albot-small"><b>'+esc(row.name)+'</b> · '+esc(row.ctype || '?')+' · Lv '+esc(row.level == null ? '?' : row.level)+' · Gear '+esc(row.gearScore == null ? '?' : Math.round(Number(row.gearScore)))+' · Training '+esc(Math.round(Number(row.trainingMs || 0)/1000))+'s · '+(row.local ? 'LOCAL' : row.peerFresh ? 'FRESH PEER' : row.online ? 'ROSTER ONLY' : 'OFFLINE')+'</div>').join('') : '<div class="albot-small">Noch keine Character-Profile.</div>')
+        + '</div>'
+        + '<div class="albot-card"><b>Steuerung</b>'
+        + '<div class="albot-row"><select id="albot-full-task">'
+        + ['FARM','QUEST','BOSS','EVENT','SPECIAL'].map(value => '<option value="'+value+'" '+((full.config && full.config.taskType || 'FARM') === value ? 'selected' : '')+'>'+value+'</option>').join('')
+        + '</select><button id="albot-full-start" class="albot-btn" '+(full.enabled || status.emergencyStop && status.emergencyStop.latched ? 'disabled' : '')+'>Full Live starten</button><button id="albot-full-stop" class="albot-btn warn" '+(full.enabled ? '' : 'disabled')+'>Full Live stoppen</button></div>'
+        + '<div class="albot-small">Auf allen vier Fenstern denselben aktuellen Build laden. Der Modus bleibt WARMING, bis fuer jeden online gemeldeten Character ein frisches Cross-Window-Profil vorliegt.</div>'
+        + '<div class="albot-log" style="margin-top:8px">'+esc(resultText)+'</div></div>';
+
+      const start = panel.querySelector('#albot-full-start');
+      if (start) start.onclick = async () => {
+        try {
+          if (!this.runtime.running) await this.runtime.start();
+          const taskType = panel.querySelector('#albot-full-task').value;
+          this.fullAutonomyResult = this.runtime.fullAutonomy.startAutonomy({ taskType });
+        } catch (error) {
+          this.fullAutonomyResult = { accepted: false, reason: String(error && error.message || error) };
+        }
+        this.render();
+      };
+      const stop = panel.querySelector('#albot-full-stop');
+      if (stop) stop.onclick = () => {
+        try { this.fullAutonomyResult = this.runtime.fullAutonomy.stopAutonomy('GUI_FULL_AUTONOMY_STOP'); }
+        catch (error) { this.fullAutonomyResult = { stopped: false, reason: String(error && error.message || error) }; }
+        this.render();
+      };
+    }
 
     async runRecommendedLiveTest() {
       const state = this.runtime.status();
