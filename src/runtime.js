@@ -94,6 +94,14 @@
         movement: this.movement,
         inventory: this.inventory
       });
+      this.bank = new ns.BankController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        movement: this.movement,
+        inventory: this.inventory
+      });
       this.liveTests = new ns.LiveTestRunner({
         runtime: this,
         logger: this.logger,
@@ -105,6 +113,7 @@
       this._registerCoreModules();
       this._registerLiveTests();
       this._registerH11LiveTest();
+      this._registerH12LiveTest();
       this._installErrorCapture();
       this.logger.info('AL Bot Runtime erstellt', {
         version: this.version,
@@ -207,6 +216,15 @@
         start: context => this.merchant.start(context),
         stop: reason => this.merchant.stop(reason),
         status: () => this.merchant.status()
+      });
+
+      this.modules.register({
+        id: 'bank',
+        title: 'Bank',
+        version: '0.12.0',
+        start: context => this.bank.start(context),
+        stop: reason => this.bank.stop(reason),
+        status: () => this.bank.status()
       });
     }
 
@@ -1807,6 +1825,218 @@
       });
     }
 
+    _registerH12LiveTest() {
+      let baseline = null;
+      let testPlan = null;
+      this.liveTests.register({
+        id: 'h12-bank',
+        title: 'H12 – Bank',
+        description: 'Ein-Klick-Live-Test für sichere Bankfahrt, Deposit/Withdraw, Workspace und Inventory/Bank-Reconciliation.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.bank.resetSafety('H12_LIVE_TEST_RESET'); } catch (_) {}
+          try { runtime.bank.cancelRequest('H12_LIVE_TEST_RESET'); } catch (_) {}
+          try {
+            const movement = runtime.movement.status();
+            if (movement.activeOrder && String(movement.activeOrder.owner || '') === 'bank-h12') {
+              runtime.movement.cancel('H12_LIVE_TEST_RESET');
+            }
+          } catch (_) {}
+          const metrics = runtime.bank.status().metrics;
+          baseline = {
+            depositsConfirmed: metrics.depositsConfirmed,
+            depositsUnknown: metrics.depositsUnknown,
+            withdrawalsConfirmed: metrics.withdrawalsConfirmed,
+            withdrawalsUnknown: metrics.withdrawalsUnknown,
+            movementUnknown: metrics.movementUnknown,
+            reconciliationFailures: metrics.reconciliationFailures
+          };
+          testPlan = null;
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.bank.cancelRequest('H12_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try {
+            const movement = runtime.movement.status();
+            if (movement.activeOrder && String(movement.activeOrder.owner || '') === 'bank-h12') {
+              runtime.movement.cancel('H12_LIVE_TEST_CLEANUP');
+            }
+          } catch (_) {}
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Merchant, Bank-APIs und sicheres BANK-Item prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(String(game.character.ctype || '').toLowerCase() === 'merchant', 'H12_LIVE_TEST_REQUIRES_MERCHANT');
+              assert(game.character.rip !== true, 'CHARACTER_DEAD');
+              const bankModule = runtime.modules.describe('bank');
+              assert(bankModule && bankModule.state === 'ACTIVE', 'H12_MODULE_NOT_ACTIVE');
+              assert(runtime.actions.available('bank_store'), 'BANK_STORE_API_UNAVAILABLE');
+              assert(runtime.actions.available('bank_retrieve'), 'BANK_RETRIEVE_API_UNAVAILABLE');
+              assert(runtime.actions.available('smart_move'), 'SMART_MOVE_API_UNAVAILABLE');
+
+              const inventory = runtime.inventory.plan();
+              const candidates = (inventory.items || []).filter(row =>
+                row && String(row.disposition || '').toUpperCase() === 'BANK'
+                && row.locked !== true
+                && row.giveaway !== true
+                && row.gift !== true
+                && !row.expiresAt
+                && Math.max(0, Number(row.level) || 0) === 0);
+              assert(candidates.length > 0, 'H12_NEEDS_SAFE_BANK_ITEM');
+              const row = candidates.slice().sort((a, b) => Number(a.slot) - Number(b.slot))[0];
+              testPlan = {
+                itemName: row.name,
+                originalSlot: Number(row.slot),
+                quantity: Math.max(1, Math.floor(Number(row.quantity) || 1))
+              };
+              const bank = runtime.game.bankSnapshot();
+              return {
+                merchant: game.character.name,
+                map: game.character.map,
+                itemName: row.name,
+                itemDisposition: row.disposition,
+                quantity: testPlan.quantity,
+                originalSlot: testPlan.originalSlot,
+                bankMounted: !!(bank && bank.available),
+                bankMap: bank && bank.map || null
+              };
+            }
+          },
+          {
+            id: 'deposit',
+            title: 'Sicheres Item automatisch zur Bank bringen und eindeutig einlagern',
+            timeoutMs: 90000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(testPlan, 'H12_LIVE_TEST_PLAN_MISSING');
+              const queued = runtime.bank.queueDeposit(testPlan.itemName, { inventorySlot: testPlan.originalSlot });
+              assert(queued && queued.accepted === true, queued && queued.reason || 'H12_DEPOSIT_QUEUE_FAILED');
+              const confirmed = await waitFor(() => {
+                const status = runtime.bank.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H12_SUSPENDED');
+                if (status.metrics.depositsUnknown > baseline.depositsUnknown) throw new Error('H12_DEPOSIT_UNKNOWN');
+                if (status.metrics.movementUnknown > baseline.movementUnknown) throw new Error('H12_MOVEMENT_UNKNOWN');
+                if (status.metrics.depositsConfirmed <= baseline.depositsConfirmed) return null;
+                return status;
+              }, { timeoutMs: 85000, pollMs: 150, label: 'h12-deposit-confirmed' });
+
+              const action = confirmed.lastAction || {};
+              assert(action.pack, 'H12_DEPOSIT_PACK_EVIDENCE_MISSING');
+              assert(action.bankSlot != null, 'H12_DEPOSIT_SLOT_EVIDENCE_MISSING');
+              const bank = runtime.game.bankSnapshot();
+              const pack = (bank.packs || []).find(row => String(row.name) === String(action.pack));
+              const stored = pack && (pack.items || []).find(row => Number(row.slot) === Number(action.bankSlot));
+              assert(stored && String(stored.name) === String(testPlan.itemName), 'H12_DEPOSIT_BANK_ITEM_NOT_FOUND');
+              const inventory = runtime.game.inventorySnapshot();
+              const original = (inventory.items || []).find(row => Number(row.slot) === testPlan.originalSlot);
+              assert(!original || String(original.name) !== String(testPlan.itemName), 'H12_DEPOSIT_INVENTORY_DELTA_NOT_CONFIRMED');
+
+              testPlan.pack = String(action.pack);
+              testPlan.bankSlot = Number(action.bankSlot);
+              return {
+                itemName: testPlan.itemName,
+                quantity: testPlan.quantity,
+                originalSlot: testPlan.originalSlot,
+                pack: testPlan.pack,
+                bankSlot: testPlan.bankSlot,
+                depositsConfirmed: confirmed.metrics.depositsConfirmed - baseline.depositsConfirmed,
+                movementRequests: confirmed.metrics.movementRequests
+              };
+            }
+          },
+          {
+            id: 'withdraw',
+            title: 'Dasselbe Bank-Item exakt in den ursprünglichen Inventarslot zurückholen',
+            timeoutMs: 45000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(testPlan && testPlan.pack && testPlan.bankSlot != null, 'H12_DEPOSIT_EVIDENCE_MISSING');
+              const queued = runtime.bank.queueWithdraw(testPlan.pack, testPlan.bankSlot, {
+                inventorySlot: testPlan.originalSlot
+              });
+              assert(queued && queued.accepted === true, queued && queued.reason || 'H12_WITHDRAW_QUEUE_FAILED');
+              const confirmed = await waitFor(() => {
+                const status = runtime.bank.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H12_SUSPENDED');
+                if (status.metrics.withdrawalsUnknown > baseline.withdrawalsUnknown) throw new Error('H12_WITHDRAW_UNKNOWN');
+                if (status.metrics.withdrawalsConfirmed <= baseline.withdrawalsConfirmed) return null;
+                return status;
+              }, { timeoutMs: 40000, pollMs: 150, label: 'h12-withdraw-confirmed' });
+
+              const inventory = runtime.game.inventorySnapshot();
+              const restored = (inventory.items || []).find(row => Number(row.slot) === testPlan.originalSlot);
+              assert(restored && String(restored.name) === String(testPlan.itemName),
+                'H12_WITHDRAW_ORIGINAL_SLOT_NOT_RESTORED');
+              assert(Math.max(1, Math.floor(Number(restored.quantity) || 1)) === testPlan.quantity,
+                'H12_WITHDRAW_QUANTITY_NOT_RESTORED');
+              const bank = runtime.game.bankSnapshot();
+              const pack = (bank.packs || []).find(row => String(row.name) === String(testPlan.pack));
+              const bankRow = pack && (pack.items || []).find(row => Number(row.slot) === testPlan.bankSlot);
+              assert(!bankRow || String(bankRow.name) !== String(testPlan.itemName),
+                'H12_WITHDRAW_BANK_DELTA_NOT_CONFIRMED');
+              return {
+                itemName: testPlan.itemName,
+                quantity: testPlan.quantity,
+                originalSlot: testPlan.originalSlot,
+                pack: testPlan.pack,
+                bankSlot: testPlan.bankSlot,
+                withdrawalsConfirmed: confirmed.metrics.withdrawalsConfirmed - baseline.withdrawalsConfirmed
+              };
+            }
+          },
+          {
+            id: 'reconciliation',
+            title: 'Fünf Sekunden Reconciliation ohne UNKNOWN oder verlorene Item-Position prüfen',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              await sleep(5000);
+              const status = runtime.bank.status();
+              assert(status.suspended === false, status.suspendedReason || 'H12_SUSPENDED');
+              assert(status.metrics.depositsUnknown === baseline.depositsUnknown, 'H12_DEPOSIT_UNKNOWN_DURING_STABILITY');
+              assert(status.metrics.withdrawalsUnknown === baseline.withdrawalsUnknown, 'H12_WITHDRAW_UNKNOWN_DURING_STABILITY');
+              assert(status.metrics.movementUnknown === baseline.movementUnknown, 'H12_MOVEMENT_UNKNOWN_DURING_STABILITY');
+              const reconciliation = runtime.bank.reconcile();
+              assert(reconciliation.available === true, reconciliation.reason || 'H12_RECONCILIATION_UNAVAILABLE');
+              const inventory = runtime.game.inventorySnapshot();
+              const restored = (inventory.items || []).find(row => Number(row.slot) === testPlan.originalSlot);
+              assert(restored && String(restored.name) === String(testPlan.itemName), 'H12_ITEM_LOCATION_LOST');
+              return {
+                depositsUnknown: status.metrics.depositsUnknown - baseline.depositsUnknown,
+                withdrawalsUnknown: status.metrics.withdrawalsUnknown - baseline.withdrawalsUnknown,
+                movementUnknown: status.metrics.movementUnknown - baseline.movementUnknown,
+                reconciliationEntries: reconciliation.ledger.length,
+                itemRestored: true
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'H12 Pending/Request und H12-eigene Bewegung vollständig freigeben',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.bank.cancelRequest('H12_LIVE_TEST_COMPLETE');
+              const bank = runtime.bank.status();
+              const movement = runtime.movement.status();
+              assert(bank.pending == null, 'H12_PENDING_ACTION_REMAINS');
+              assert(bank.request == null, 'H12_REQUEST_REMAINS');
+              assert(!(movement.activeOrder && String(movement.activeOrder.owner || '') === 'bank-h12'),
+                'H12_MOVEMENT_REMAINS');
+              return {
+                pending: !!bank.pending,
+                request: !!bank.request,
+                movementActive: !!(movement.activeOrder && String(movement.activeOrder.owner || '') === 'bank-h12')
+              };
+            }
+          }
+        ]
+      });
+    }
+
     _installErrorCapture() {
       if (!this.root || typeof this.root.addEventListener !== 'function') return;
       this._errorHandler = event => {
@@ -1955,6 +2185,7 @@
         farmIntelligence: this.farmIntelligence.status(),
         inventory: this.inventory.status(),
         merchant: this.merchant.status(),
+        bank: this.bank.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
         roster,
@@ -1981,6 +2212,7 @@
         farmIntelligence: this.farmIntelligence.status(),
         inventory: this.inventory.status(),
         merchant: this.merchant.status(),
+        bank: this.bank.status(),
         liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
         logs: this.logger.list(160),
@@ -2005,6 +2237,8 @@
       push('adaptive-farming-controller', !!this.farming.status() && typeof this.farming.plan === 'function' && typeof this.farming.startSession === 'function', this.farming.status());
       push('farm-intelligence-controller', !!this.farmIntelligence.status() && typeof this.farmIntelligence.plan === 'function' && typeof this.farmIntelligence.startAutonomy === 'function', this.farmIntelligence.status());
       push('loot-inventory-controller', !!this.inventory.status() && typeof this.inventory.plan === 'function' && typeof this.inventory.tick === 'function', this.inventory.status());
+      push('merchant-controller', !!this.merchant.status() && typeof this.merchant.plan === 'function', this.merchant.status());
+      push('bank-controller', !!this.bank.status() && typeof this.bank.plan === 'function' && typeof this.bank.reconcile === 'function', this.bank.status());
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
       push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);
