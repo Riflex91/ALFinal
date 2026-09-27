@@ -428,6 +428,8 @@ test('H16 runtime, API, UI, build, adapter and ActionBoundary are wired', () => 
   assert.match(runtime, /H16_NEEDS_LOW_RISK_CRAFT_OR_ACQUIRABLE_MATERIALS/);
   assert.match(runtime, /ACQUIRE_CRAFT_AND_EXCHANGE_COVERAGE/);
   assert.match(runtime, /allowBank: false/);
+  assert.match(runtime, /outputRisk == null \|\| outputRisk > 20000/);
+  assert.match(runtime, /if \(!current\.suspended\) runtime\.exchangeCraft\.resetSafety/);
   assert.match(entry, /0\.16\.0-h16/);
   assert.match(entry, /exchangeCraft:/);
   assert.match(entry, /runtime\.exchangeCraft\.productionPlan/);
