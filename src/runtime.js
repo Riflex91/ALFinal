@@ -2928,8 +2928,6 @@
                 && row.questEvent !== true
                 && Number(row.valueAtRisk || 0) <= 2000000);
 
-              assert(exchanges.length > 0, 'H16_NEEDS_LOW_RISK_EXCHANGE_CANDIDATE');
-
               let selectedCraft = null;
               let selectedExchange = null;
               let materials = [];
@@ -2953,10 +2951,39 @@
                   ...details
                 });
               };
+              const buildPreflightDiagnostics = () => {
+                nearMatches.sort((a, b) =>
+                  Number(a.distance) - Number(b.distance)
+                  || Number(a.craftCost == null ? Number.MAX_SAFE_INTEGER : a.craftCost)
+                    - Number(b.craftCost == null ? Number.MAX_SAFE_INTEGER : b.craftCost)
+                  || String(a.itemName || '').localeCompare(String(b.itemName || '')));
+                return {
+                  suiteVersion: 5,
+                  selectedMode: mode,
+                  totalCraftCandidates: (plan.craftCandidates || []).length,
+                  safeCraftCandidates: crafts.length,
+                  safeExchangeCandidates: exchanges.length,
+                  localCraftRejects,
+                  fallbackRejects,
+                  topNearMatches: nearMatches.slice(0, 5),
+                  caps: {
+                    exchangeValueAtRisk: 2000000,
+                    craftInputValueAtRisk: 2000000,
+                    craftCost: 1000000,
+                    materialAcquisition: 1000000,
+                    goldReserve: 10000,
+                    maxMissingLeaves: 2,
+                    missingLeafLevel: 0
+                  }
+                };
+              };
 
               for (const row of plan.craftCandidates || []) {
                 if (row && row.safe !== true) bump(localCraftRejects, row.reason || 'H16_CRAFT_UNSAFE');
               }
+
+              note(buildPreflightDiagnostics());
+              assert(exchanges.length > 0, 'H16_NEEDS_LOW_RISK_EXCHANGE_CANDIDATE');
 
               for (const craft of crafts) {
                 const outputDef = craft.definition || runtime.game.itemDefinition(craft.itemName);
@@ -3237,31 +3264,7 @@
                 }
               }
 
-              nearMatches.sort((a, b) =>
-                Number(a.distance) - Number(b.distance)
-                || Number(a.craftCost == null ? Number.MAX_SAFE_INTEGER : a.craftCost)
-                  - Number(b.craftCost == null ? Number.MAX_SAFE_INTEGER : b.craftCost)
-                || String(a.itemName || '').localeCompare(String(b.itemName || '')));
-              const preflightDiagnostics = {
-                suiteVersion: 5,
-                selectedMode: mode,
-                totalCraftCandidates: (plan.craftCandidates || []).length,
-                safeCraftCandidates: crafts.length,
-                safeExchangeCandidates: exchanges.length,
-                localCraftRejects,
-                fallbackRejects,
-                topNearMatches: nearMatches.slice(0, 5),
-                caps: {
-                  exchangeValueAtRisk: 2000000,
-                  craftInputValueAtRisk: 2000000,
-                  craftCost: 1000000,
-                  materialAcquisition: 1000000,
-                  goldReserve: 10000,
-                  maxMissingLeaves: 2,
-                  missingLeafLevel: 0
-                }
-              };
-              note(preflightDiagnostics);
+              note(buildPreflightDiagnostics());
 
               assert(selectedCraft && selectedExchange,
                 'H16_NEEDS_LOW_RISK_CRAFT_OR_ACQUIRABLE_MATERIALS');
