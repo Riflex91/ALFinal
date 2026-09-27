@@ -581,7 +581,7 @@ H15-Live-Gate ist bestanden. Nach den Evidence-Dokucommits ist nur noch der neue
 
 ## H16 – Exchange & Craft
 
-**🟦 IMPLEMENTIERT · PRE-LIVE CI/REVIEW GRÜN · FINALER DOKU-CI OFFEN · LIVE-TEST OFFEN**
+**🟦 IMPLEMENTIERT · LIVE V1 FAIL-CLOSED · MATERIAL-FALLBACK V2 IMPLEMENTIERT · CI/REVIEW OFFEN**
 
 **BAU**
 - eigener `ExchangeCraftController`
@@ -617,18 +617,28 @@ H15-Live-Gate ist bestanden. Nach den Evidence-Dokucommits ist nur noch der neue
 - Suite `h16-exchange-craft`
 - bevorzugt echte `CRAFT_TO_EXCHANGE_CHAIN`
 - sonst sichere `CRAFT_AND_EXCHANGE_COVERAGE`
-- maximal zwei echte H16-Aktionen
+- v2 zusätzlich `ACQUIRE_CRAFT_AND_EXCHANGE_COVERAGE`
+- maximal zwei echte H16-Aktionen (Craft + Exchange)
+- bei Bedarf höchstens zwei fehlende Level-0-Leaf-Materialien via H16 → H13
+- Materialbeschaffung insgesamt maximal 10.000 Gold
+- Bank im Live-Test-Fallback explizit deaktiviert (`allowBank:false`)
 - niedrige temporäre Risiko-/Kostenbudgets
 - keine Quest-/Event-Aktion im automatischen Live-Test
 - Craft und Exchange jeweils über Live-Deltas bestätigen
-- beide UNKNOWN-Deltas 0
+- Exchange-, Craft- und Material-Trade-UNKNOWN-Deltas 0
 - 5-Sekunden-Stabilität ohne Retry/Suspension
 - Cleanup + Runtime Auto-Restore
 
-Fehlen sichere Craft-/Exchange-Kandidaten:
-`H16_NEEDS_LOW_RISK_CRAFT_AND_EXCHANGE_CANDIDATES`
+Live-Versuch 1:
+- sauberer Preflight-Abbruch ohne Mutation;
+- 1 sicherer Exchange-Kandidat (`anniversarygift`, Risiko 100 Gold);
+- 0 lokal sichere Crafts;
+- 106 Craft-Rezepte mit fehlenden Materialien;
+- 28 Quest/Event-Rezepte;
+- 0 Dispatches, 0 UNKNOWN, 0 Movement;
+- Runtime/Scheduler sauber restauriert.
 
-Dann wird nichts verändert.
+v2 behebt genau diese Testlücke durch begrenzte Materialbeschaffung. Fehlt weiterhin ein sicherer Pfad, wird erneut fail-closed ohne weitere Mutation beendet.
 
 H16 wird erst nach grünem Exact-Head-CI, sauberem Review-Gate und echtem Adventure-Land-Live-PASS gemergt.
 
