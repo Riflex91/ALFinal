@@ -543,45 +543,75 @@ Finale Review-Härtung:
 - keine offenen Review-Threads;
 - finaler Exact-Head-CI vor Merge grün.
 
-## H11 – Merchant-Grundbetrieb – live bestanden, finaler Merge-Gate offen
+## H11 – Merchant-Grundbetrieb – abgeschlossen und gemergt
 
-Aktiver Branch:
+H11 ist live bestanden und gemergt.
+
+Finaler Branch:
 `chatgpt/h11-merchant-grundbetrieb`
 
 PR:
 `#11 – H11: Merchant-Grundbetrieb`
 
-Version:
-`0.11.0-h11`
+Merge-Commit auf `main`:
+`0b8b45089ae47ea352e05115074142a427d7ff79`
 
 Finale Live-Evidence:
-- Suite `h11-merchant`: **PASSED / ALL_STEPS_PASSED**;
-- Merchant `My_Merchant`, eigener Farmer `My_Priest`;
-- exakt 1 `hpot0` geliefert;
-- Sender-Inventardelta `6000 -> 5999`;
-- `transfersDispatched=1`, `transfersConfirmed=1`, `transfersUnknown=0`;
-- MLuck bereits gesund (`remainingMs=3576369`), deshalb korrekt kein neuer Cast;
-- `mluckUnknown=0`, `pingPongBlocks=0`;
-- keine Suspension;
-- Cleanup PASSED: kein Pending, keine Delivery, keine H11-Movement-Order;
-- Runtime wieder STOPPED;
-- Scheduler `totalResources=0`.
+- Suite `h11-merchant`: **PASSED / ALL_STEPS_PASSED**
+- Merchant `My_Merchant`, eigener Farmer `My_Priest`
+- 1 `hpot0` geliefert; Inventardelta `6000 -> 5999`
+- `transfersConfirmed=1`, `transfersUnknown=0`
+- MLuck bereits gesund, korrekt kein Spam
+- `mluckUnknown=0`, `pingPongBlocks=0`
+- Cleanup vollständig
+- Runtime wieder STOPPED, Scheduler 0 Ressourcen
 
-Safety:
-- Itemwrites nur über ActionBoundary `send_item`;
-- Bestätigung nur durch beobachtetes Inventardelta;
-- unavailable Inventory ist kein Erfolg;
-- Transfer-/MLuck-UNKNOWN ohne Blind-Retry;
-- fremde Targets blockiert;
-- kein Goldtransfer, keine Bank-/Sell-/Exchange-/Markt-Aktionen.
+## H12 – Bank – implementiert, Live-Test offen
 
-Nächster Schritt:
-1. Exact-Head-CI des Evidence-Heads grün bestätigen;
-2. `behind_by=0`, Checks, Reviews, Threads und Mergeability frisch prüfen;
-3. PR #11 mit Methode `merge` und exaktem `expected_head_sha` mergen;
-4. Merge auf `main` verifizieren;
-5. H12 Bank auf frischem Branch vom neuen `main` beginnen.
+Aktiver Branch:
+`chatgpt/h12-bank`
 
+PR:
+`#12 – H12: Bank`
+
+Basis:
+`main` bei H11-Merge-Commit `0b8b45089ae47ea352e05115074142a427d7ff79`
+
+Version:
+`0.12.0-h12`
+
+Implementiert:
+- `src/bank.js` / `BankController`
+- Live-`character.bank` Snapshot mit Packs und Pack→Map-Wahrheit
+- `bank_store`, `bank_retrieve`, `bank_deposit`, `bank_withdraw` nur via ActionBoundary
+- automatische Deposits ausschließlich für H10-Disposition `BANK`
+- Pack-Suche, Workspace, Reservierungen
+- Inventory/Bank Reconciliation
+- Bestätigung nur über beobachtete Live-Deltas
+- unavailable Snapshot ist niemals Erfolg
+- bounded UNKNOWN + Suspension ohne Blind-Retry
+- H4-Bankfahrt mit Owner `bank-h12`
+- unbekannte/falsche Pack→Bank-Map fail-closed blockiert
+- Bank-Control-Center-Tab und `ALBot.bank.*`
+- `dist/al-bot.js` auf H12 source-synchron
+- Ein-Klick-Suite `h12-bank`
+- `docs/H12-LIVE-TEST.md`
+
+Pre-Live CI:
+- Run #235: 144/144 Tests PASS
+- nach Pack→Map-Härtung, Bundle und Dokumentation erneut Exact-Head-CI erforderlich.
+
+H12-Live-Test:
+1. sicheres `BANK`-Item im Merchant-Inventar wählen;
+2. bei Bedarf automatisch zur Bank fahren;
+3. Stack in verifizierten leeren Workspace-Slot einlagern;
+4. exakt denselben Pack/Slot in den ursprünglichen Inventarslot zurückholen;
+5. ursprüngliche Menge und Position bestätigen;
+6. fünf Sekunden Reconciliation ohne Deposit-/Withdraw-/Movement-UNKNOWN;
+7. Cleanup ohne Pending/Request/H12-Movement;
+8. vorherigen Runtime-Zustand automatisch wiederherstellen.
+
+H12 darf erst nach echtem Adventure-Land-Live-PASS gemergt werden.
 
 ## H2 Architekturregel für spätere Module
 
