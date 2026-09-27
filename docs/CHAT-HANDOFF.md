@@ -594,7 +594,7 @@ Finale Live-Evidence:
 - Cleanup ohne Pending/Request/H12-Movement
 - Runtime STOPPED, Scheduler 0 Ressourcen
 
-## H13 – Handel – auf H12-merged main vorbereitet, Live-Test offen
+## H13 – Handel – live bestanden, finaler Merge-Gate offen
 
 Aktiver Branch:
 `chatgpt/h13-handel-v2`
@@ -602,47 +602,44 @@ Aktiver Branch:
 PR:
 `#14 – H13: Handel (H12-merged main)`
 
-Basis:
-`main` bei H12-Merge-Commit `b68e3f2934877e001f0e5454d83117ef43f7b9e3`
-
 Version:
 `0.13.0-h13`
 
-Der frühere gestapelte Branch `chatgpt/h13-handel` / PR #13 ist nach dem H12-Merge stale und wird nicht weiter beschrieben.
+Finale Live-Evidence vom 2026-09-27:
+- Suite `h13-trade`: **PASSED / ALL_STEPS_PASSED**
+- Merchant `My_Merchant`
+- Start-Map `bank`
+- Testitem `hpot0`
+- genau 1 Stück zum Live-NPC-Preis `20` Gold gekauft
+- Inventar `5999 -> 6000`
+- Gold `14195004 -> 14194984`
+- `npcBuysConfirmed=1`
+- `movementRequests=1`
+- Player-Market read-only: 51 Asks, 1 Bid
+- `marketBuysDispatched=0`
+- `marketSellsDispatched=0`
+- `npcBuyUnknown=0`
+- `npcSellUnknown=0`
+- `marketBuyUnknown=0`
+- `marketSellUnknown=0`
+- `movementUnknown=0`
+- Cleanup: `pending=false`, `request=false`, `movementActive=false`
+- Runtime danach wieder STOPPED
+- Scheduler danach `totalResources=0`
 
-Implementiert:
-- NPC Buy/Sell nur via ActionBoundary;
-- Player Market Buy/Sell nur via ActionBoundary;
-- sichtbare Market-Analyse;
-- Pflicht-Maximalpreis für Käufe;
-- Mindestpreis für Player-Market-Sells;
-- Goldreserve;
-- Listing-`rid`, Preis, Richtung und verfügbare Menge unmittelbar vor Dispatch erneut geprüft;
-- Acquisition überspringt zu kleine billige Asks und wählt nur eine Quelle, die die Gesamtmenge liefern kann;
-- Trade-Signaturen werden über ActionBoundary zwischen CODE-Wrapper und nativer RID-Signatur sicher normalisiert;
-- H10-`SELL` als einzige automatische Sell-Quelle;
-- H4-Bewegung mit Owner `trade-h13`;
-- Bestätigung nur durch Inventory-/Gold-Live-Deltas;
-- bounded UNKNOWN + Suspension ohne Blind-Retry;
-- Control-Center-Tab **Handel**;
-- `ALBot.trade.*`;
-- `dist/al-bot.js` auf `0.13.0-h13`;
-- Ein-Klick-Suite `h13-trade`;
-- `docs/H13-LIVE-TEST.md`.
+Post-Live-Hardening:
+- der Report zeigte globalen Spread zwischen unterschiedlichen Items;
+- Spread wird jetzt nur noch berechnet, wenn Best Ask und Best Bid dasselbe Item+Level betreffen;
+- Regression hinzugefügt;
+- Bundle synchronisiert;
+- kein Gameplay-Write-Pfad wurde dadurch verändert.
 
-Vorheriger H13-CI-Stand:
-- Run #256
-- 160 Tests
-- 160 PASS
-- 0 FAIL
-- 0 SKIPPED
-- alle vier Codex-Threads resolved.
-
-Nächster Ablauf:
-1. H13-v2 Exact-Head-CI auf aktuellem `main` grün bestätigen;
-2. neuen PR gegen `main` öffnen und Review-Gate prüfen;
-3. dann auf dem eigenen Merchant H13 einmal **Test starten**;
-4. bei echtem PASS Evidence dokumentieren und erst danach mergen.
+Nächster verbindlicher H13-Ablauf:
+1. neuen exakten Head nach Hardening/Evidence-Commits bestimmen;
+2. dessen CI bis completed/success abwarten;
+3. frisch prüfen: `behind_by=0`, keine pending/failing Runs oder Checks, keine offenen Review-Threads, kein `CHANGES_REQUESTED`, `mergeable=true`;
+4. PR #14 ausschließlich mit Methode `merge` und exaktem `expected_head_sha` mergen;
+5. Merge auf `main` verifizieren.
 
 ## H2 Architekturregel für spätere Module
 
@@ -737,4 +734,4 @@ Bei Fehler:
 
 ## Nächster Schritt
 
-H13-v2 auf aktuellem `main` durch Exact-Head-CI und Review-Gate bestätigen. Danach auf dem eigenen Merchant die Suite `h13-trade` einmal starten. Bei PASS finale Evidence dokumentieren und erst dann mergen.
+H13 ist live bestanden. Jetzt nur noch finalen Exact-Head-CI und vollständigen Merge-Gate auf PR #14 prüfen und danach mit exaktem Head per `merge` mergen.
