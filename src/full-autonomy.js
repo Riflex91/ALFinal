@@ -34,9 +34,11 @@
         logisticsProbeMs: 30000,
         lifecycleMaxActions: 20,
         economyMaxActions: 100,
-        logisticsMaxActions: 10
+        logisticsMaxActions: 10,
+        expectedOnlineCount: 4
       };
       this.lastLogisticsProbeAtMs = 0;
+      this.desiredCharacterNames = [];
     }
 
     start(context = {}) {
@@ -64,6 +66,9 @@
       if (options.logisticsProbeMs != null) {
         this.config.logisticsProbeMs = Math.max(5000, Math.min(300000, Math.floor(Number(options.logisticsProbeMs) || 30000)));
       }
+      if (options.expectedOnlineCount != null) {
+        this.config.expectedOnlineCount = Math.max(1, Math.min(4, Math.floor(Number(options.expectedOnlineCount) || 4)));
+      }
       return clone(this.config);
     }
 
@@ -74,6 +79,17 @@
         return { accepted: false, reason: 'FULL_AUTONOMY_EMERGENCY_STOP_LATCHED', status: this.status() };
       }
       this.configure(options);
+      const initialOnline = this._onlineNames();
+      if (initialOnline.length !== this.config.expectedOnlineCount) {
+        return {
+          accepted: false,
+          reason: 'FULL_AUTONOMY_EXPECTED_ONLINE_COUNT_MISMATCH',
+          expectedOnlineCount: this.config.expectedOnlineCount,
+          onlineCharacterNames: initialOnline,
+          status: this.status()
+        };
+      }
+      this.desiredCharacterNames = initialOnline.slice().sort();
       this.enabled = true;
       this.startedAt = new Date().toISOString();
       this.lastError = null;
@@ -99,6 +115,7 @@
         }
       }
       this.enabled = false;
+      this.desiredCharacterNames = [];
       this.started = { lifecycle: false, farming: false, economy: false, partyLogistics: false };
       this.lastDecision = { at: new Date().toISOString(), type: 'STOP', reason: cleanText(reason, 200) };
       return this.status();
@@ -144,44 +161,87 @@
       if (status.suspended || status.currentAction && status.currentAction.unknownRecorded === true) {
         return { ok: false, reason: status.suspendedReason || 'H19_SUSPENDED' };
       }
+
+      const local = this._local();
+      if (!local || !local.name) return { ok: false, reason: 'CHARACTER_UNAVAILABLE' };
+      const localName = String(local.name);
       const selected = plan && plan.selected ? plan.selected.memberNames.slice() : [];
       const support = this.config.keepSupportInParty ? (plan.supportMemberNames || []) : [];
-      const partyNames = [...new Set([...selected, ...support])]
-        .filter(name => readiness.online.includes(name))
+      const stableDesired = this.desiredCharacterNames.length
+        ? this.desiredCharacterNames.slice()
+        : readiness.online.slice();
+      const desiredPartyAll = [...new Set([...selected, ...support])]
+        .filter(name => stableDesired.includes(String(name)))
         .slice(0, 4)
         .sort();
-      const local = this._local();
-      if (local && local.name && readiness.online.includes(String(local.name)) && !partyNames.includes(String(local.name))) {
-        if (partyNames.length < 4 && this.config.keepSupportInParty) partyNames.push(String(local.name));
-      }
-      partyNames.sort();
-
-      const runtimeNames = readiness.profiles
-        .filter(row => row && row.peerFresh && row.running === true && !row.local)
-        .map(row => row.name)
-        .filter(name => readiness.online.includes(name))
-        .sort();
-
-      const desiredActiveNames = readiness.online.slice(0, 4);
-      const leader = plan.leaderName && partyNames.includes(plan.leaderName)
+      const leader = plan.leaderName && desiredPartyAll.includes(plan.leaderName)
         ? plan.leaderName
-        : (partyNames[0] || null);
+        : (desiredPartyAll[0] || null);
+      if (!leader) return { ok: false, reason: 'FULL_AUTONOMY_PARTY_LEADER_UNAVAILABLE' };
+
+      const coordinator = localName === String(leader);
+      const onlineSet = new Set(readiness.online.map(String));
+      const desiredActiveNames = coordinator
+        ? stableDesired.slice().sort()
+        : stableDesired.filter(name => onlineSet.has(String(name))).sort();
+      const desiredPartyMembers = desiredPartyAll
+        .filter(name => coordinator || onlineSet.has(String(name)))
+        .sort();
+      if (!desiredPartyMembers.includes(localName) && onlineSet.has(localName) && this.config.keepSupportInParty) {
+        if (desiredPartyMembers.length < 4) desiredPartyMembers.push(localName);
+      }
+      desiredPartyMembers.sort();
+
+      const desiredRuntimeRunningNames = coordinator
+        ? readiness.profiles
+          .filter(row => row && row.peerFresh && !row.local && stableDesired.includes(String(row.name)))
+          .map(row => row.name)
+          .sort()
+        : [];
+
+      const effectiveLeader = desiredPartyMembers.includes(leader)
+        ? leader
+        : (desiredPartyMembers[0] || null);
       const policy = lifecycle.setPolicy({
         desiredActiveNames,
-        desiredRuntimeRunningNames: runtimeNames,
-        desiredPartyMemberNames: partyNames,
-        desiredPartyLeader: leader,
+        desiredRuntimeRunningNames,
+        desiredPartyMemberNames: desiredPartyMembers,
+        desiredPartyLeader: effectiveLeader,
         maxActionsPerSession: this.config.lifecycleMaxActions
       });
-      if (!policy || policy.accepted !== true) return { ok: false, reason: policy && policy.reason || 'FULL_AUTONOMY_LIFECYCLE_POLICY_REJECTED' };
+      if (!policy || policy.accepted !== true) {
+        return { ok: false, reason: policy && policy.reason || 'FULL_AUTONOMY_LIFECYCLE_POLICY_REJECTED' };
+      }
+
+      let party = null;
+      try { party = this.runtime.party && this.runtime.party.snapshot ? this.runtime.party.snapshot() : null; } catch (_) {}
+      const memberNames = new Set(party && Array.isArray(party.memberNames) ? party.memberNames.map(String) : []);
+      const localPartyHealthy = memberNames.has(localName)
+        && effectiveLeader
+        && String(party && party.leader || '') === String(effectiveLeader);
+      const shouldRunLifecycle = coordinator || !localPartyHealthy;
 
       const current = lifecycle.status();
-      if (current.autonomyEnabled !== true) {
+      if (shouldRunLifecycle && current.autonomyEnabled !== true) {
         const started = lifecycle.startAutonomy({ maxActions: this.config.lifecycleMaxActions });
-        if (!started || started.accepted !== true) return { ok: false, reason: started && started.reason || 'FULL_AUTONOMY_LIFECYCLE_START_REJECTED' };
+        if (!started || started.accepted !== true) {
+          return { ok: false, reason: started && started.reason || 'FULL_AUTONOMY_LIFECYCLE_START_REJECTED' };
+        }
         this.started.lifecycle = true;
+      } else if (!shouldRunLifecycle && this.started.lifecycle && current.autonomyEnabled === true) {
+        try { lifecycle.stopAutonomy('FULL_AUTONOMY_PARTY_HEALTHY_NON_COORDINATOR'); } catch (_) {}
+        this.started.lifecycle = false;
       }
-      return { ok: true, desiredActiveNames, desiredRuntimeRunningNames: runtimeNames, partyNames, leader };
+
+      return {
+        ok: true,
+        coordinator,
+        coordinatorName: leader,
+        desiredActiveNames,
+        desiredRuntimeRunningNames,
+        partyNames: desiredPartyMembers,
+        leader: effectiveLeader
+      };
     }
 
     _ensureCombatRole(plan) {
@@ -353,6 +413,9 @@
           supportMembers: plan.supportMemberNames,
           desiredParty: lifecycle.partyNames,
           leader: lifecycle.leader,
+          lifecycleCoordinator: lifecycle.coordinatorName,
+          localLifecycleCoordinator: lifecycle.coordinator === true,
+          missingDesiredCharacters: this.desiredCharacterNames.filter(name => !readiness.online.includes(name)),
           progressionTarget: plan.progression && plan.progression.selectedCharacterName || null
         };
       } catch (error) {
@@ -373,6 +436,7 @@
         startedAt: this.startedAt,
         config: clone(this.config),
         startedControllers: clone(this.started),
+        desiredCharacterNames: clone(this.desiredCharacterNames),
         lastPlan: clone(this.lastPlan),
         lastDecision: clone(this.lastDecision),
         lastError: clone(this.lastError)
