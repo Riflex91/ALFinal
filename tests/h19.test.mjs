@@ -518,6 +518,11 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(ui, /H19 Character Lifecycle & Recovery/);
   assert.match(ui, /albot-h19-ack-unknown/);
   assert.match(runtime, /if \(!current\.currentAction\) runtime\.lifecycle\.resetSafety\('H19_LIVE_TEST_RESET'\)/);
+  assert.match(runtime, /action\.restored === true/);
+  assert.match(runtime, /action\.unknownRecorded === true/);
+  assert.match(runtime, /action\.kind === 'RESPAWN'/);
+  assert.match(runtime, /H19_LIVE_TEST_EXPLICIT_RETRY_ACK/);
+  assert.match(runtime, /String\(action\.targetName \|\| ''\) === String\(local\.name \|\| ''\)/);
   assert.match(source, /acknowledgeUnknown\(reason = 'H19_EXPLICIT_UNKNOWN_ACK'\)/);
   assert.match(source, /settlementGeneration/);
   assert.match(source, /respawnGraceMs/);
