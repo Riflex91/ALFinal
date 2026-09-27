@@ -221,6 +221,42 @@ test('H3 game adapter handles no target without inventing one', () => {
   assert.equal(snap.character.targetId, null);
 });
 
+test('H12 game adapter exposes bank packs with verified map truth and leaves unknown pack maps null', () => {
+  const bankCharacter = {
+    name: 'MerchantA',
+    ctype: 'merchant',
+    map: 'bank',
+    hp: 100,
+    max_hp: 100,
+    mp: 50,
+    max_mp: 50,
+    gold: 1000,
+    items: new Array(6).fill(null),
+    bank: {
+      gold: 5000,
+      items0: [{ name: 'hpot0', q: 3 }, null],
+      mystery: [{ name: 'hpot0', q: 1 }, null]
+    }
+  };
+  const { context: ctx } = runtimeContext({ character: bankCharacter, entities: {} });
+  ctx.bank_packs = {
+    items0: ['bank', 0, 0],
+    items8: ['bank_b', 0, 0]
+  };
+  vm.runInNewContext(bundle, ctx);
+
+  const bank = ctx.ALBot.game.bank();
+  assert.equal(bank.available, true);
+  assert.equal(bank.map, 'bank');
+  assert.equal(bank.gold, 5000);
+  const items0 = bank.packs.find(row => row.name === 'items0');
+  const mystery = bank.packs.find(row => row.name === 'mystery');
+  assert.equal(items0.map, 'bank');
+  assert.equal(items0.items[0].name, 'hpot0');
+  assert.equal(items0.items[0].quantity, 3);
+  assert.equal(mystery.map, null);
+});
+
 test('Windows Bridge GitHub mirror snapshot is validated and persisted as LKG', async () => {
   const mirror = validMirrorFetch();
   const { context: ctx } = runtimeContext({ fetch: mirror.fetch });
