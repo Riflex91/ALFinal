@@ -413,6 +413,7 @@ test('H16 production plan exposes mounted bank rows while includeBank false keep
   assert.equal(plan.missing[0].itemName, 'spidersilk');
   assert.equal(plan.missing[0].bankRows.length, 1);
   assert.equal(plan.missing[0].bankRows[0].pack, 'items0');
+  assert.equal(plan.missing[0].bankRows[0].map, 'bank');
   assert.equal(plan.missing[0].bankRows[0].quantity, 1000);
 });
 
@@ -569,6 +570,9 @@ test('H16 runtime, API, UI, build, adapter and ActionBoundary are wired', () => 
   assert.match(runtime, /MISSING_LEAF_LEVEL_NONZERO/);
   assert.match(runtime, /MISSING_LEAF_NO_BANK_NPC_OR_MARKET_SOURCE/);
   assert.match(runtime, /source: 'BANK'/);
+  assert.match(runtime, /source\.map/);
+  assert.match(runtime, /String\(source\.map\) === String\(liveBank\.map\)/);
+  assert.match(runtime, /usableOnMountedMap/);
   assert.match(runtime, /expectedSource: chosen\.source/);
   assert.match(runtime, /queued\.delegatedTo === \(bankExpected \? 'bank' : 'trade'\)/);
   assert.match(runtime, /MATERIAL_ACQUISITION_OVER_CAP/);
