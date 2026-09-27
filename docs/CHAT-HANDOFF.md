@@ -660,7 +660,7 @@ Finale H14-Live-Evidence vom 2026-09-27:
 - Original-Gear exakt restauriert
 - Runtime wieder STOPPED, Scheduler `totalResources=0`
 
-## H15 – Upgrade & Compound – Entwicklung läuft
+## H15 – Upgrade & Compound – abgeschlossen und gemergt
 
 Aktiver Branch:
 `chatgpt/h15-upgrade-compound`
@@ -737,12 +737,71 @@ Finale H15-Live-Evidence vom 2026-09-27:
 
 H15 Live-Gate ist bestanden.
 
+Finaler H15-Abschluss:
+- finaler Evidence-Head: `8202ff54f6ce4d2c1b8f11a2ec0c81714c29c6d9`;
+- Exact-Head-CI Run #328: **194/194 PASS, 0 FAIL, 0 SKIP, completed/success**;
+- Merge mit Methode `merge` und exaktem `expected_head_sha`;
+- Merge-Commit auf `main`: `4675760a9b33861cdf88af2e479c95fbaed1dab7`;
+- PR #16 geschlossen und als merged bestätigt.
+
+## H16 – Exchange & Craft – Entwicklung läuft
+
+Aktiver Branch:
+`chatgpt/h16-exchange-craft`
+
+PR:
+`#17 – H16: Exchange & Craft`
+
+Basis:
+H15-Merge auf `main` bei `4675760a9b33861cdf88af2e479c95fbaed1dab7`
+
+Version:
+`0.16.0-h16`
+
+Implementiert:
+- `src/exchange-craft.js` / `ExchangeCraftController`;
+- Exchange-/Craft-Writes nur über ActionBoundary;
+- Exchange-Mengen aus Live-`G.items[*].e`;
+- Craft-Rezepte aus Live-`G.craft`;
+- Quest-/Event-Aktionen standardmäßig fail-closed mit explizitem Opt-in;
+- protected Items aus Automation ausgeschlossen;
+- Craft-Quellslotwahl passend zu Adventure Lands `auto_craft`;
+- unmittelbare Revalidation vor Dispatch;
+- Exchange-/Craft-Risiko-, Gold- und Session-Budgets;
+- Combat-Block und eigene Movement-Ownership;
+- Outcome-Bestätigung über Live-Inventar-/Gold-Deltas;
+- bounded UNKNOWN + Suspension ohne Blind-Retry;
+- rekursiver Produktionsgraph mit Cycle-/Depth-Guard;
+- Produktionsplanung mit lokalem Inventar und optional gemountetem Bankbestand;
+- fehlende Materialien mit Bank-/NPC-/Marktquellen;
+- explizite Materialbeschaffung via H12 Bank oder H13 Handel;
+- gemeinsamer Economy-Konfliktlöser bleibt H17;
+- `ALBot.exchangeCraft.*`;
+- Control-Center-Tab **Exchange & Craft**;
+- Ein-Klick-Suite `h16-exchange-craft`;
+- `docs/H16-LIVE-TEST.md`;
+- H16-Regressionen;
+- `dist/al-bot.js` auf H16-Source synchronisiert.
+
+H16 Live-Test:
+- bevorzugt echte `CRAFT_TO_EXCHANGE_CHAIN`;
+- sonst `CRAFT_AND_EXCHANGE_COVERAGE` mit disjunkten Quellslots;
+- maximal zwei echte H16-Aktionen;
+- niedrige temporäre Risiko-/Kostenbudgets;
+- keine Quest-/Event-Aktionen;
+- Craft und Exchange müssen durch Live-Deltas bestätigt werden;
+- beide UNKNOWN-Deltas müssen 0 bleiben;
+- fünf Sekunden Stabilität;
+- Cleanup + Runtime Auto-Restore;
+- fehlt ein sicherer Craft-/Exchange-Kandidat: `H16_NEEDS_LOW_RISK_CRAFT_AND_EXCHANGE_CANDIDATES` ohne Mutation.
+
 Noch offen:
-- nach diesen Evidence-Dokucommits neuen Exact-Head-CI abwarten;
-- vollständigen Merge-Gate frisch prüfen;
-- PR #16 nur mit Methode `merge` und exakt aktuellem `expected_head_sha` mergen;
-- Merge auf `main` verifizieren;
-- danach H16 – Bank & Exchange Autonomie frisch vom neuen `main` starten.
+- PR #17 CI/Review-Hardening;
+- Bundle/Tests nach Review-Fixes erneut synchronisieren;
+- finalen Pre-Live Exact-Head-CI grün bestätigen;
+- danach Nutzer nur den echten Adventure-Land-Ein-Klick-Test ausführen lassen;
+- bei PASS finale Evidence, neuer Exact-Head-CI und Merge-Gate;
+- PR #17 erst danach mergen.
 
 ## H2 Architekturregel für spätere Module
 
@@ -837,4 +896,4 @@ Bei Fehler:
 
 ## Nächster Schritt
 
-H15-Live-Gate ist bestanden. Jetzt den neuen Exact-Head-CI der Evidence-Dokucommits abwarten, danach das vollständige Merge-Gate frisch prüfen und PR #16 nur bei komplett grünem Gate mit Methode `merge` und exakt aktuellem `expected_head_sha` mergen. Anschließend Merge auf `main` verifizieren und H16 frisch vom neuen `main` starten.
+H16 auf PR #17 technisch bis zum Pre-Live-Gate fertigstellen: CI und Reviews auswerten, echte Safety-Funde gezielt beheben, Regressionen ergänzen, Bundle synchron halten und finalen Exact-Head-CI grün bestätigen. Erst danach den Nutzer genau einmal die Suite `h16-exchange-craft` in Adventure Land starten lassen. H16 erst nach bestandenem Live-Test und finalem Merge-Gate mergen.
