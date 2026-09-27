@@ -401,6 +401,9 @@
         String(row.playerName) === name && String(row.slot) === slot);
       if (!listing || listing.buying !== true || listing.giveaway) return { accepted: false, reason: 'H13_MARKET_BID_NOT_AVAILABLE' };
       if (!listing.rid) return { accepted: false, reason: 'H13_MARKET_RID_UNAVAILABLE' };
+      if (q > Math.max(1, Math.floor(Number(listing.quantity) || 1))) {
+        return { accepted: false, reason: 'H13_MARKET_BID_QUANTITY_UNAVAILABLE' };
+      }
       const unitPrice = finite(listing.price);
       if (unitPrice == null || unitPrice < minUnitPrice) {
         this.metrics.priceBlocks += 1;
@@ -442,15 +445,23 @@
       const sources = this.game && this.game.npcShopSources ? this.game.npcShopSources(name) : [];
       const npcAvailable = npcPrice != null && npcPrice > 0 && npcPrice <= maxUnitPrice && (sources || []).some(row => row.location);
       const analysis = this.marketAnalysis(name, { level: options.level == null ? 0 : options.level });
-      const bestAsk = analysis.bestAsk;
-      if (npcAvailable && (!bestAsk || npcPrice <= Number(bestAsk.price))) {
+      const eligibleAsk = (analysis.asks || []).find(row =>
+        Number(row.price) <= maxUnitPrice
+        && Math.max(1, Math.floor(Number(row.quantity) || 1)) >= q) || null;
+      if (npcAvailable && (!eligibleAsk || npcPrice <= Number(eligibleAsk.price))) {
         return this.queueNpcBuy(name, q, { maxUnitPrice });
       }
-      if (bestAsk && Number(bestAsk.price) <= maxUnitPrice) {
-        return this.queueMarketBuy(bestAsk.playerName, bestAsk.slot, q, { maxUnitPrice });
+      if (eligibleAsk) {
+        return this.queueMarketBuy(eligibleAsk.playerName, eligibleAsk.slot, q, { maxUnitPrice });
       }
       this.metrics.priceBlocks += 1;
-      return { accepted: false, reason: 'H13_NO_ACQUISITION_WITHIN_PRICE_LIMIT', npcPrice, bestAsk: clone(bestAsk) };
+      return {
+        accepted: false,
+        reason: 'H13_NO_ACQUISITION_WITHIN_PRICE_LIMIT',
+        npcPrice,
+        bestAsk: clone(analysis.bestAsk),
+        eligibleAsk: null
+      };
     }
 
     _metric(kind, suffix) {
@@ -687,7 +698,9 @@
 
       if (request.kind === 'MARKET_BUY') {
         const listing = this._marketListingStillMatches(request, false);
-        if (!listing || Number(listing.price) > Number(request.maxUnitPrice)) {
+        if (!listing
+          || Number(listing.price) > Number(request.maxUnitPrice)
+          || Math.max(1, Math.floor(Number(listing.quantity) || 1)) < request.quantity) {
           this.request = null;
           this.metrics.priceBlocks += 1;
           return { state: 'BLOCKED', reason: 'H13_MARKET_ASK_CHANGED' };
@@ -698,7 +711,7 @@
           return { state: 'BLOCKED', reason: 'H13_MARKET_TARGET_UNAVAILABLE' };
         }
         const beforeQuantity = this._quantityByName(inventory, request.itemName, request.level || 0);
-        return this._dispatch('trade_buy', [target, request.tradeSlot, request.quantity], {
+        return this._dispatch('trade_buy', [target, request.tradeSlot, request.rid, request.quantity], {
           kind: request.kind,
           itemName: request.itemName,
           level: request.level || 0,
@@ -715,7 +728,9 @@
 
       if (request.kind === 'MARKET_SELL') {
         const listing = this._marketListingStillMatches(request, true);
-        if (!listing || Number(listing.price) < Number(request.minUnitPrice)) {
+        if (!listing
+          || Number(listing.price) < Number(request.minUnitPrice)
+          || Math.max(1, Math.floor(Number(listing.quantity) || 1)) < request.quantity) {
           this.request = null;
           this.metrics.priceBlocks += 1;
           return { state: 'BLOCKED', reason: 'H13_MARKET_BID_CHANGED' };
@@ -726,7 +741,7 @@
           return { state: 'BLOCKED', reason: 'H13_MARKET_TARGET_UNAVAILABLE' };
         }
         const beforeQuantity = this._quantity(inventory, request.fingerprint);
-        return this._dispatch('trade_sell', [target, request.tradeSlot, request.quantity], {
+        return this._dispatch('trade_sell', [target, request.tradeSlot, request.rid, request.quantity], {
           kind: request.kind,
           itemName: request.itemName,
           fingerprint: request.fingerprint,
