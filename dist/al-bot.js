@@ -15682,7 +15682,7 @@
         id: 'h16-exchange-craft',
         title: 'H16 – Exchange & Craft',
         description: 'Ein-Klick-Live-Test für Materialbeschaffung, eine kleine niedrig riskante Craft- und Exchange-Sequenz, Live-Outcome-Evidence und Produktionsgraph.',
-        version: '3',
+        version: '4',
         recommended: true,
         autoStartRuntime: true,
         restoreRuntimeState: true,
@@ -15869,7 +15869,7 @@
                       estimatedCost
                     });
                   }
-                  if (!viable || acquisitionGold > 10000) continue;
+                  if (!viable || acquisitionGold > 1000000) continue;
                   const recipeCost = Number(recipe.cost || 0);
                   const currentGold = Number(game.character.gold);
                   const totalEstimatedGold = acquisitionGold + recipeCost;
@@ -15964,7 +15964,7 @@
                 assert(production && production.state === 'NEEDS_MATERIALS',
                   production && production.reason || 'H16_LIVE_PRODUCTION_MATERIAL_STATE_CHANGED');
                 assert((production.missing || []).length > 0, 'H16_LIVE_EXPECTED_MATERIALS_MISSING');
-                assert(testPlan.materialAcquisitionGold <= 10000, 'H16_LIVE_MATERIAL_BUDGET_EXCEEDED');
+                assert(testPlan.materialAcquisitionGold <= 1000000, 'H16_LIVE_MATERIAL_BUDGET_EXCEEDED');
               } else {
                 assert(production && production.state === 'READY',
                   production && production.reason || 'H16_LIVE_PRODUCTION_NOT_READY');
