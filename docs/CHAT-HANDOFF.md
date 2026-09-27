@@ -717,12 +717,32 @@ Pre-Live-Hardening:
 - alle bisherigen Review-Threads resolved;
 - kein `CHANGES_REQUESTED`.
 
+Finale H15-Live-Evidence vom 2026-09-27:
+- Runtime `0.15.0-h15`;
+- Suite `h15-upgrade-compound`: **PASSED / ALL_STEPS_PASSED**;
+- alle fünf Schritte PASSED: Preflight, Planning, Real Action, Stability, Cleanup;
+- Character `My_Merchant` / merchant;
+- reale Aktion: `gloves +0 → +1`;
+- Scroll `scroll0`;
+- Itemwert-at-risk `3.400 Gold`;
+- Consumable-Kosten `1.000 Gold`;
+- Outcome `UPGRADE_SUCCEEDED`;
+- Evidence `INVENTORY_LEVEL_DELTA`;
+- genau ein Versuch;
+- `upgradeUnknown=0`, `compoundUnknown=0`;
+- keine Suspension;
+- Cleanup ohne Pending/Request, Suite-Cleanup `ok=true`;
+- Runtime war vorher STOPPED, wurde automatisch gestartet und danach wieder STOPPED;
+- Scheduler danach `totalResources=0`.
+
+H15 Live-Gate ist bestanden.
+
 Noch offen:
-- nach diesen finalen Evidence-Dokucommits neuen Exact-Head-CI abwarten;
-- vollständiges Pre-Live-Gate frisch prüfen;
-- danach Nutzer genau einmal `Test starten` drücken lassen;
-- Diagnose vollständig auswerten;
-- bei PASS finale Evidence anhängen und erst danach PR #16 mergen.
+- nach diesen Evidence-Dokucommits neuen Exact-Head-CI abwarten;
+- vollständigen Merge-Gate frisch prüfen;
+- PR #16 nur mit Methode `merge` und exakt aktuellem `expected_head_sha` mergen;
+- Merge auf `main` verifizieren;
+- danach H16 – Bank & Exchange Autonomie frisch vom neuen `main` starten.
 
 ## H2 Architekturregel für spätere Module
 
@@ -817,4 +837,4 @@ Bei Fehler:
 
 ## Nächster Schritt
 
-H15 steht unmittelbar vor dem Live-Test. Nach dem neuen Exact-Head-CI der finalen Evidence-Dokucommits den vollständigen Pre-Live-Gate prüfen. Nur bei komplett grünem Gate den Build `chatgpt/h15-upgrade-compound/dist/al-bot.js` für genau einen echten `h15-upgrade-compound`-Ein-Klick-Test freigeben. H15 erst nach bestandenem Live-Test, finaler Evidence und erneut grünem Merge-Gate mergen.
+H15-Live-Gate ist bestanden. Jetzt den neuen Exact-Head-CI der Evidence-Dokucommits abwarten, danach das vollständige Merge-Gate frisch prüfen und PR #16 nur bei komplett grünem Gate mit Methode `merge` und exakt aktuellem `expected_head_sha` mergen. Anschließend Merge auf `main` verifizieren und H16 frisch vom neuen `main` starten.
