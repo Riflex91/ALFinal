@@ -633,6 +633,50 @@ test('H19 separate-window lifecycle uses fresh CM peer instead of runner-active 
   assert.equal(controller.status().metrics.crossWindowDispatches, 2);
 });
 
+test('H19 prefers direct child control when a runner-active target also has a CM heartbeat', async () => {
+  const { controller, state } = fixture({
+    onlineNames: ['My_Ranger', 'My_Merchant'],
+    runnerActiveNames: ['My_Ranger', 'My_Merchant'],
+    crossWindowPeers: [
+      { name: 'My_Merchant', sessionId: 'merchant-window-session', running: true, runEpoch: 5 }
+    ]
+  });
+
+  assert.equal(controller.queueStop('My_Merchant').accepted, true);
+  assert.equal(controller.tick().state, 'DISPATCHED');
+  assert.deepEqual(state.dispatches[0], { name: 'stop_character', args: ['My_Merchant'] });
+  assert.equal(state.crossWindowDispatches.length, 0);
+  await flush();
+  assert.equal(controller.tick().state, 'CONFIRMED');
+});
+
+test('H19 setPolicy preserves and restores desired cross-window runtime targets', () => {
+  const { controller } = fixture({
+    onlineNames: ['My_Ranger', 'My_Merchant'],
+    runnerActiveNames: ['My_Ranger'],
+    crossWindowPeers: [
+      { name: 'My_Merchant', sessionId: 'merchant-window-session', running: true, runEpoch: 5 }
+    ]
+  });
+
+  assert.equal(controller.setPolicy({
+    desiredActiveNames: ['My_Ranger', 'My_Merchant'],
+    desiredRuntimeRunningNames: ['My_Merchant']
+  }).accepted, true);
+  assert.deepEqual(controller.status().policy.desiredRuntimeRunningNames, ['My_Merchant']);
+
+  assert.equal(controller.setPolicy({
+    desiredActiveNames: ['My_Ranger']
+  }).accepted, true);
+  assert.deepEqual(controller.status().policy.desiredRuntimeRunningNames, []);
+
+  const invalid = controller.setPolicy({
+    desiredRuntimeRunningNames: ['My_Merchant']
+  });
+  assert.equal(invalid.accepted, false);
+  assert.equal(invalid.reason, 'H19_RUNTIME_TARGET_NOT_DESIRED_ACTIVE');
+});
+
 test('H19 does not fall back to child start when a desired separate-window runtime loses fresh peer authority', () => {
   const setup = fixture({
     onlineNames: ['My_Ranger', 'My_Merchant'],
@@ -700,7 +744,7 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(runtime, /id: 'h19-character-lifecycle'/);
   assert.match(runtime, /id: 'h19-remote-recovery'/);
   assert.match(runtime, /_registerH19RemoteRecoveryLiveTest\(\)/);
-  assert.match(runtime, /const runnerActive = runnerActiveSet\(roster\)/);
+  assert.match(runtime, /const runnerActive = runnerActiveSet\(liveRoster\)/);
   assert.match(runtime, /online\.has\(row\.name\)/);
   assert.match(runtime, /runnerActive\.has\(row\.name\)/);
   assert.match(runtime, /H19_REMOTE_CONTROLLABLE_TARGET_UNAVAILABLE/);
