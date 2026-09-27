@@ -801,6 +801,16 @@ H16 Live-Test v5:
 - Cleanup + Runtime Auto-Restore;
 - fehlt weiterhin ein sicherer Pfad, fail-closed ohne weitere Mutation.
 
+PR #19 / v5 Diagnose-Hardening – technischer Gate-Stand 2026-09-27:
+- technischer Head `c923147b9d3eda0d132b63d441c25c29aea525d7`;
+- Exact-Head-CI Run #393: **216/216 PASS, 0 FAIL, 0 SKIP**;
+- frischer Codex-Review auf exakt `c923147b9d`: **keine major issues**;
+- alle Review-Threads resolved;
+- `NO_DISJOINT_EXCHANGE_CANDIDATE` wird für lokal READY, aber nicht paarbare Crafts als Near-Match sichtbar;
+- `MATERIAL_ACQUISITION_REQUIRES_MERCHANT` und `MATERIAL_ACQUISITION_TRADE_SUSPENDED` erklären einen gar nicht betretbaren Material-Fallback;
+- keine Safety-Lockerung und kein neuer Mutation-Pfad;
+- nach den Dokucommits erneut Exact-Head-CI + vollständiger Merge-Gate; erst nach Merge genau einen neuen echten H16-v5-Live-Test anfordern.
+
 Live-Versuch 1 am 2026-09-27:
 - Suite `h16-exchange-craft` auf Runtime `0.16.0-h16`;
 - FAIL bereits im Preflight mit `H16_NEEDS_LOW_RISK_CRAFT_AND_EXCHANGE_CANDIDATES`;
