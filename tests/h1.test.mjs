@@ -42,7 +42,7 @@ test('H1 bundle loads and exposes ALBot API', () => {
   assert.equal(ctx.ALBot.status().running, false);
   assert.equal(typeof ctx.ALBot.farming.status, 'function');
   assert.equal(typeof ctx.ALBot.farming.plan, 'function');
-  assert.equal(ctx.ALBot.liveTests.status().recommendedId, 'h16-exchange-craft');
+  assert.equal(ctx.ALBot.liveTests.status().recommendedId, 'h17-economy-autonomy');
 });
 
 test('dynamic roster discovers active farmers without hardcoded names', () => {
