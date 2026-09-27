@@ -1223,14 +1223,17 @@ ${items.length ? items.slice(0, 24).map(row => '<div class="albot-small">#'+esc(
       const crafts = plan && Array.isArray(plan.craftCandidates) ? plan.craftCandidates : [];
       const safeExchanges = exchanges.filter(row => row.safe);
       const safeCrafts = crafts.filter(row => row.safe);
+      const questOptInReason = 'H16_QUEST_EVENT_REQUIRES_EXPLICIT_OPT_IN';
+      const selectableExchanges = exchanges.filter(row => row.safe || row.reason === questOptInReason);
+      const selectableCrafts = crafts.filter(row => row.safe || row.reason === questOptInReason);
       const resultText = this.exchangeCraftResult ? JSON.stringify(this.exchangeCraftResult, null, 2) : 'Noch keine manuelle H16-Aktion.';
 
-      const exchangeOptions = safeExchanges.length
-        ? safeExchanges.map(row => '<option value="'+esc(row.inventorySlot)+'">'+esc(row.itemName)+' · '+esc(row.requiredQuantity)+' Stück · Risiko '+esc(row.valueAtRisk)+'</option>').join('')
-        : '<option value="">kein sicherer Exchange-Kandidat</option>';
-      const craftOptions = safeCrafts.length
-        ? safeCrafts.map(row => '<option value="'+esc(row.itemName)+'">'+esc(row.itemName)+' · Gold '+esc(row.cost)+' · Input-Risiko '+esc(row.inputValueAtRisk)+'</option>').join('')
-        : '<option value="">kein sicherer Craft-Kandidat</option>';
+      const exchangeOptions = selectableExchanges.length
+        ? selectableExchanges.map(row => '<option value="'+esc(row.inventorySlot)+'">'+esc(row.itemName)+' · '+esc(row.requiredQuantity)+' Stück · Risiko '+esc(row.valueAtRisk)+(row.safe ? '' : ' · QUEST/EVENT OPT-IN')+'</option>').join('')
+        : '<option value="">kein sicherer oder explizit freigebbarer Exchange-Kandidat</option>';
+      const craftOptions = selectableCrafts.length
+        ? selectableCrafts.map(row => '<option value="'+esc(row.itemName)+'">'+esc(row.itemName)+' · Gold '+esc(row.cost)+' · Input-Risiko '+esc(row.inputValueAtRisk)+(row.safe ? '' : ' · QUEST/EVENT OPT-IN')+'</option>').join('')
+        : '<option value="">kein sicherer oder explizit freigebbarer Craft-Kandidat</option>';
 
       panel.innerHTML = `<div class="albot-card"><b>H16 Exchange & Craft</b>
 <div class="albot-small">Live Exchange-Mengen, Craft-Rezepte aus G.craft, Produktionsgraph, Materialquellen und konservative Risiko-/Kostenbudgets. Quest-/Event-Rezepte und -Exchanges sind standardmäßig blockiert.</div>
