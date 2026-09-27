@@ -54,6 +54,7 @@
       this.gear = options.gear || null;
       this.upgrade = options.upgrade || null;
       this.exchangeCraft = options.exchangeCraft || null;
+      this.partyLogistics = options.partyLogistics || null;
       this.canAct = typeof options.canAct === 'function' ? options.canAct : null;
 
       this.moduleActive = false;
@@ -224,7 +225,8 @@
         { name: 'trade', controller: this.trade },
         { name: 'gear', controller: this.gear },
         { name: 'upgrade', controller: this.upgrade },
-        { name: 'exchangeCraft', controller: this.exchangeCraft }
+        { name: 'exchangeCraft', controller: this.exchangeCraft },
+        { name: 'partyLogistics', controller: this.partyLogistics }
       ];
     }
 
@@ -235,7 +237,15 @@
     }
 
     _childBusy(child) {
-      return !!(child && (child.pending || child.request || child.delivery || child.pendingLoot));
+      return !!(child && (
+        child.pending
+        || child.request
+        || child.delivery
+        || child.pendingLoot
+        || child.currentAction
+        || child.autonomyEnabled
+        || Array.isArray(child.queue) && child.queue.length
+      ));
     }
 
     _proposal(kind, module, details = {}) {
