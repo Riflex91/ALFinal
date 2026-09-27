@@ -4451,6 +4451,127 @@
       };
 
       this.liveTests.register({
+        id: 'h19-cross-window-readiness',
+        title: 'H19 – Cross-Window Readiness',
+        description: 'Nicht mutierender Vorabtest fuer getrennte Browserfenster: Runtime, CM-Transport, Build-Version, Heartbeats und mindestens ein sicheres Cross-Window-Ziel pruefen.',
+        version: '1',
+        recommended: false,
+        autoStartRuntime: false,
+        restoreRuntimeState: false,
+        steps: [
+          {
+            id: 'readiness',
+            title: 'Cross-Window-Heartbeats und sicheren Remote-Peer pruefen',
+            timeoutMs: 12000,
+            run: async ({ runtime, assert, waitFor, note }) => {
+              assert(runtime.running === true, 'H19_READINESS_RUNTIME_NOT_RUNNING');
+
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(game.character.rip !== true, 'H19_READINESS_LOCAL_CHARACTER_DEAD');
+
+              const module = runtime.modules.describe('character-lifecycle');
+              assert(module && module.state === 'ACTIVE', 'H19_READINESS_LIFECYCLE_MODULE_NOT_ACTIVE');
+
+              const transport = runtime.lifecycleTransport;
+              assert(transport && transport.status().installed === true, 'H19_READINESS_CROSS_WINDOW_TRANSPORT_UNAVAILABLE');
+
+              const localName = String(game.character.name || '');
+              const party = runtime.party.snapshot();
+              const leader = party && party.leader ? String(party.leader) : null;
+
+              const snapshot = await waitFor(() => {
+                const roster = runtime.roster.refresh();
+                if (!roster || roster.accountStateAvailable !== true || roster.onlineStateAvailable !== true) return null;
+
+                const online = onlineSet(roster);
+                const runnerActive = runnerActiveSet(roster);
+                const peers = transport.freshPeers();
+                const peerMap = new Map(peers.map(peer => [String(peer.name), peer]));
+                const remoteOnlineNames = (roster.accountCharacters || [])
+                  .filter(row => row && row.name)
+                  .map(row => String(row.name))
+                  .filter(name => name !== localName && online.has(name))
+                  .sort((a, b) => a.localeCompare(b));
+
+                const separateWindowNames = remoteOnlineNames.filter(name => !runnerActive.has(name));
+                const missingHeartbeats = separateWindowNames.filter(name => !peerMap.has(name));
+                const versionMismatches = peers
+                  .filter(peer => !peer || !peer.version || String(peer.version) !== String(runtime.version))
+                  .map(peer => ({
+                    name: peer && peer.name ? String(peer.name) : null,
+                    version: peer && peer.version ? String(peer.version) : null,
+                    expectedVersion: String(runtime.version)
+                  }));
+                const emergencyPeers = peers
+                  .filter(peer => peer && peer.emergencyStopLatched === true)
+                  .map(peer => String(peer.name));
+
+                const candidates = separateWindowNames
+                  .map(name => {
+                    const peer = peerMap.get(name) || null;
+                    return peer ? { name, peer } : null;
+                  })
+                  .filter(Boolean)
+                  .filter(row => row.name !== leader)
+                  .filter(row => row.peer.running === true)
+                  .filter(row => row.peer.emergencyStopLatched !== true)
+                  .filter(row => !row.peer.version || String(row.peer.version) === String(runtime.version))
+                  .sort((a, b) => a.name.localeCompare(b.name));
+
+                return {
+                  roster,
+                  peers,
+                  remoteOnlineNames,
+                  separateWindowNames,
+                  missingHeartbeats,
+                  versionMismatches,
+                  emergencyPeers,
+                  candidates
+                };
+              }, {
+                timeoutMs: 8000,
+                pollMs: 250,
+                label: 'h19-cross-window-readiness'
+              });
+
+              assert(snapshot, 'H19_READINESS_ROSTER_UNAVAILABLE');
+              assert(snapshot.missingHeartbeats.length === 0, 'H19_READINESS_MISSING_REMOTE_HEARTBEAT');
+              assert(snapshot.versionMismatches.length === 0, 'H19_READINESS_VERSION_MISMATCH');
+              assert(snapshot.emergencyPeers.length === 0, 'H19_READINESS_REMOTE_EMERGENCY_STOP_LATCHED');
+              assert(snapshot.candidates.length > 0, 'H19_READINESS_CROSS_WINDOW_TARGET_UNAVAILABLE');
+
+              const candidate = snapshot.candidates[0];
+              note({
+                local: localName,
+                version: runtime.version,
+                partyLeader: leader,
+                remoteOnlineNames: snapshot.remoteOnlineNames,
+                separateWindowNames: snapshot.separateWindowNames,
+                missingHeartbeats: snapshot.missingHeartbeats,
+                freshPeers: snapshot.peers,
+                selectedTarget: candidate.name,
+                selectedSessionId: candidate.peer.sessionId
+              });
+
+              return {
+                local: localName,
+                version: runtime.version,
+                selectedTarget: candidate.name,
+                selectedSessionId: candidate.peer.sessionId,
+                selectedRunEpoch: candidate.peer.runEpoch,
+                selectedRunning: candidate.peer.running,
+                remoteOnlineNames: snapshot.remoteOnlineNames,
+                separateWindowNames: snapshot.separateWindowNames,
+                missingHeartbeats: snapshot.missingHeartbeats,
+                freshPeerNames: snapshot.peers.map(peer => String(peer.name)).sort((a, b) => a.localeCompare(b))
+              };
+            }
+          }
+        ]
+      });
+
+      this.liveTests.register({
         id: 'h19-remote-recovery',
         title: 'H19 – Remote Start/Stop & Restart Recovery',
         description: 'Bounded Live-Test: einen sicheren eigenen Remote-Bot stoppen und über denselben bestätigten Lifecycle-Pfad genau einmal via Desired Active wieder starten; getrennte Browserfenster nutzen H19-CM, Child-Runner die native Character-API.',
