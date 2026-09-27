@@ -1,6 +1,6 @@
 # AL Bot – Entwicklungsroadmap und Live-Test-Häppchen
 
-Stand: 2026-09-26
+Stand: 2026-09-27
 
 ## Legende
 
@@ -470,7 +470,7 @@ Merge-Commit: `5238d4af8bfb99e6f6fe04d13029b80f77a9f420`.
 
 ## H14 – Gear
 
-**🟦 IMPLEMENTIERT · PRE-LIVE CI GRÜN · LIVE-TEST OFFEN**
+**🟩 BESTANDEN – 2026-09-27**
 
 **BAU**
 - Live-Equipment-Snapshot aus Character-/Player-Slots
@@ -503,17 +503,20 @@ Merge-Commit: `5238d4af8bfb99e6f6fe04d13029b80f77a9f420`.
 - `dist/al-bot.js` source-synchron auf `0.14.0-h14`
 - nach diesem Dokucommit erneut Exact-Head-CI erforderlich
 
-**🟧 LIVE-TEST NOCH AUSSTEHEND**
-- reversibler echter Gear-Swap
-- bevorzugt echte Verbesserung; sonst kompatibler Roundtrip-Kandidat
-- Kandidat ausrüsten und Live-Deltas bestätigen
-- ursprüngliches Gear exakt zurückrüsten
-- Gear Goal und Farmer-vor-Merchant-Planung prüfen
-- 5-Sekunden-Stabilität ohne H14-UNKNOWN
-- Cleanup + Auto-Restore
-- Nutzer klickt nur **Test starten**
+**🟩 LIVE-TEST BESTANDEN**
+- Suite `h14-gear`: **PASSED / ALL_STEPS_PASSED**
+- Runtime `0.14.0-h14`
+- Merchant `My_Merchant`, Zielslot `shoes`
+- echte Verbesserung: `wshoes +5` → `shoes1 +3`, Score-Delta `+14.73`
+- Equip real bestätigt und Original danach exakt zurückgerüstet
+- `equipsConfirmed=2`
+- Farmer-Priorität `100` vor Merchant-Priorität `10`
+- Equip-/Unequip-/Delivery-UNKNOWN jeweils `0`
+- keine Suspension
+- Cleanup ohne Pending/Request; vorherige Goals restauriert
+- Runtime wieder STOPPED, Scheduler `totalResources=0`
 
-H14 wird erst nach `completed/success` Exact-Head-CI, sauberem Review-Gate und echtem Adventure-Land-Live-PASS gemergt.
+H14 ist live bestanden. Vor Merge bleiben nur neuer Exact-Head-CI und der vollständige frische Merge-Gate-Check.
 
 ---
 
