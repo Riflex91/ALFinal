@@ -2951,6 +2951,16 @@
                   craftCost: recipe ? Number(recipe.cost || 0) : null
                 });
               };
+              const recordLocalCraftReject = (craft, reason, details = {}, distance = 3) => {
+                bump(localCraftRejects, reason);
+                nearMatches.push({
+                  ...details,
+                  itemName: craft && craft.itemName || null,
+                  reason,
+                  distance,
+                  craftCost: craft ? Number(craft.cost || 0) : null
+                });
+              };
               const buildPreflightDiagnostics = () => {
                 nearMatches.sort((a, b) =>
                   Number(a.distance) - Number(b.distance)
@@ -3013,7 +3023,14 @@
                 for (const craft of crafts) {
                   const sourceNames = new Set((craft.recipe && craft.recipe.items || []).map(row => String(row.name)));
                   const exchange = exchanges.find(row => !sourceNames.has(String(row.itemName)));
-                  if (!exchange) continue;
+                  if (!exchange) {
+                    recordLocalCraftReject(craft, 'NO_DISJOINT_EXCHANGE_CANDIDATE', {
+                      inputRisk: Number(craft.inputValueAtRisk || 0),
+                      sourceItems: Array.from(sourceNames).slice(0, 5),
+                      availableExchangeCandidates: exchanges.length
+                    }, 3);
+                    continue;
+                  }
                   selectedCraft = craft;
                   selectedExchange = {
                     itemName: exchange.itemName,
@@ -3030,9 +3047,17 @@
                 }
               }
 
-              if (!selectedCraft
-                  && String(game.character.ctype || '').toLowerCase() === 'merchant'
-                  && !(runtime.trade.status() && runtime.trade.status().suspended)) {
+              const tradeStatus = runtime.trade.status();
+              const isMerchant = String(game.character.ctype || '').toLowerCase() === 'merchant';
+              if (!selectedCraft && !isMerchant) {
+                recordFallbackReject(null, 'MATERIAL_ACQUISITION_REQUIRES_MERCHANT', {
+                  characterType: game.character.ctype || null
+                }, 0);
+              } else if (!selectedCraft && tradeStatus && tradeStatus.suspended) {
+                recordFallbackReject(null, 'MATERIAL_ACQUISITION_TRADE_SUSPENDED', {
+                  tradeReason: tradeStatus.reason || null
+                }, 0);
+              } else if (!selectedCraft) {
                 const acquisitionCandidates = [];
                 const catalog = runtime.game.craftCatalog();
                 for (const recipe of catalog || []) {
