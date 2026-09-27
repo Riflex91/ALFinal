@@ -622,7 +622,7 @@ H15-Live-Gate ist bestanden. Nach den Evidence-Dokucommits ist nur noch der neue
 - bei Bedarf höchstens zwei fehlende Level-0-Leaf-Materialien via H16 → H13
 - Materialbeschaffung insgesamt maximal 10.000 Gold
 - Bank im Live-Test-Fallback explizit deaktiviert (`allowBank:false`)
-- niedrige temporäre Risiko-/Kostenbudgets
+- temporäre Live-Test-Grenzen: Exchange-Risiko ≤ 2.000.000 Gold, Craft-Input-Risiko ≤ 2.000.000 Gold, Craft-Kosten ≤ 1.000.000 Gold
 - keine Quest-/Event-Aktion im automatischen Live-Test
 - Craft und Exchange jeweils über Live-Deltas bestätigen
 - Exchange-, Craft- und Material-Trade-UNKNOWN-Deltas 0
