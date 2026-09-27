@@ -549,6 +549,8 @@
         else this.metrics.safetyBlocks += 1;
         return { accepted: false, reason: candidate.reason };
       }
+      const destination = this.game && this.game.npcLocation ? this.game.npcLocation('exchange') : null;
+      if (!destination) return { accepted: false, reason: 'H16_EXCHANGE_NPC_LOCATION_UNAVAILABLE' };
       return this._queue({
         kind: 'EXCHANGE',
         inventorySlot: candidate.inventorySlot,
@@ -559,7 +561,7 @@
         valueAtRisk: candidate.valueAtRisk,
         questEvent: candidate.questEvent,
         allowQuestEvent: options.allowQuestEvent === true,
-        destination: 'exchange'
+        destination: clone(destination)
       });
     }
 
@@ -575,6 +577,8 @@
         else this.metrics.safetyBlocks += 1;
         return { accepted: false, reason: source.reason, details: clone(source) };
       }
+      const destination = this.game && this.game.npcLocation ? this.game.npcLocation('craftsman') : null;
+      if (!destination) return { accepted: false, reason: 'H16_CRAFT_NPC_LOCATION_UNAVAILABLE' };
       return this._queue({
         kind: 'CRAFT',
         itemName: name,
@@ -584,7 +588,7 @@
         inputValueAtRisk: source.inputValueAtRisk,
         questEvent: !!recipe.quest,
         allowQuestEvent: options.allowQuestEvent === true,
-        destination: 'craftsman'
+        destination: clone(destination)
       });
     }
 
@@ -651,28 +655,41 @@
       let movement = null;
       try { movement = this.movement && this.movement.status ? this.movement.status() : null; } catch (_) {}
       if (movement && movement.activeOrder) {
-        if (String(movement.activeOrder.owner || '') === 'exchange-craft-h16') return { ready: false, waiting: true };
+        if (String(movement.activeOrder.owner || '') === 'exchange-craft-h16'
+            && (!request.travelOrderId || String(movement.activeOrder.id) === String(request.travelOrderId))) {
+          return { ready: false, waiting: true };
+        }
         this.metrics.movementBlocks += 1;
         return { ready: false, waiting: true, reason: 'H16_MOVEMENT_OWNED_BY_OTHER' };
       }
       if (request.travelRequested) {
+        const last = movement && movement.lastOrder || null;
+        if (last && String(last.id || '') === String(request.travelOrderId || '')
+            && String(last.owner || '') === 'exchange-craft-h16') {
+          if (last.state === 'COMPLETED') return { ready: true };
+          if (['CANCELLED', 'STUCK', 'UNKNOWN', 'FAILED_SAFE'].includes(String(last.state || ''))) {
+            return this._suspend(request.kind, 'H16_MOVEMENT_' + String(last.state || 'UNKNOWN'));
+          }
+        }
         if (Date.now() - request.travelStartedAtMs > this.config.movementTimeoutMs) {
           return this._suspend(request.kind, 'H16_MOVEMENT_TIMEOUT');
         }
-        return { ready: true };
+        return { ready: false, waiting: true, reason: 'H16_WAITING_FOR_ARRIVAL_EVIDENCE' };
       }
+      if (!request.destination) return this._suspend(request.kind, 'H16_DESTINATION_UNAVAILABLE');
       if (!this.movement || typeof this.movement.smartMove !== 'function') {
         return this._suspend(request.kind, 'H16_MOVEMENT_UNAVAILABLE');
       }
       const moved = this.movement.smartMove(request.destination, { owner: 'exchange-craft-h16' });
-      if (!moved || moved.accepted !== true) {
+      if (!moved || moved.accepted !== true || !moved.order || !moved.order.id) {
         this.metrics.movementBlocks += 1;
         return this._suspend(request.kind, moved && moved.reason || 'H16_MOVEMENT_REJECTED');
       }
       request.travelRequested = true;
       request.travelStartedAtMs = Date.now();
+      request.travelOrderId = moved.order.id;
       this.metrics.movementRequests += 1;
-      this.lastAction = { at: nowIso(), type: request.kind + '_MOVE_REQUESTED', destination: request.destination };
+      this.lastAction = { at: nowIso(), type: request.kind + '_MOVE_REQUESTED', destination: request.destination, orderId: request.travelOrderId };
       return { ready: false, waiting: true };
     }
 
