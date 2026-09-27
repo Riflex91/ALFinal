@@ -26,7 +26,9 @@
     trade_buy: Object.freeze({ publicName: 'trade_buy', family: 'player-trade' }),
     trade_sell: Object.freeze({ publicName: 'trade_sell', family: 'player-trade' }),
     equip: Object.freeze({ publicName: 'equip', family: 'gear' }),
-    unequip: Object.freeze({ publicName: 'unequip', family: 'gear' })
+    unequip: Object.freeze({ publicName: 'unequip', family: 'gear' }),
+    upgrade: Object.freeze({ publicName: 'upgrade', family: 'upgrade-compound' }),
+    compound: Object.freeze({ publicName: 'compound', family: 'upgrade-compound' })
   });
 
   function errorDetails(error) {
