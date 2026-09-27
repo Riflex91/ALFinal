@@ -848,7 +848,7 @@
         return this._knownReject(pending, pending.response.reason || 'H16_ACTION_REJECTED');
       }
       if (pending.settlement === 'REJECTED') {
-        return this._knownReject(pending, pending.error || 'H16_ACTION_REJECTED');
+        return this._suspend(pending.kind, pending.error || 'H16_ACTION_REJECTED_WITHOUT_LIVE_OUTCOME');
       }
       if (Date.now() >= pending.deadlineAtMs) return this._suspend(pending.kind, 'H16_' + pending.kind + '_UNVERIFIED_TIMEOUT');
       return false;
