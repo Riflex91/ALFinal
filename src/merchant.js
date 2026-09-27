@@ -31,6 +31,7 @@
       this.roster = options.roster || null;
       this.movement = options.movement || null;
       this.inventory = options.inventory || null;
+      this.partyLogistics = options.partyLogistics || null;
       this.moduleActive = false;
       this.scope = null;
       this.suspendedReason = null;
@@ -669,6 +670,13 @@
       if (this.pending) return { state: 'PENDING', pending: clone(this.pending), plan };
       if (this.backoffUntilMs && Date.now() < this.backoffUntilMs) {
         return { state: 'BACKOFF', untilMs: this.backoffUntilMs, plan };
+      }
+      let logistics = null;
+      try { logistics = this.partyLogistics && typeof this.partyLogistics.status === 'function' ? this.partyLogistics.status() : null; } catch (_) {}
+      if (logistics && (logistics.autonomyEnabled || logistics.currentAction
+          || Array.isArray(logistics.queue) && logistics.queue.length)) {
+        this.metrics.ownershipBlocks += 1;
+        return { state: 'WAITING', reason: 'H11_PARTY_LOGISTICS_OWNERSHIP', plan };
       }
 
       if (plan.pressure.state === 'CRITICAL') this.metrics.pressureCritical += 1;
