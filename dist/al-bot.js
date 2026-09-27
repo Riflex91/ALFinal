@@ -12444,9 +12444,11 @@
         return false;
       }
 
+      const settlementFinished = pending.settlement !== 'PENDING';
+
       if (pending.kind === 'EXCHANGE') {
         const after = this._quantity(inventory, pending.itemName, pending.level || 0);
-        if (after != null && pending.beforeSourceQuantity != null && after <= pending.beforeSourceQuantity - pending.requiredQuantity) {
+        if (settlementFinished && after != null && pending.beforeSourceQuantity != null && after <= pending.beforeSourceQuantity - pending.requiredQuantity) {
           return this._confirmed(pending, {
             itemName: pending.itemName,
             evidence: 'EXCHANGE_SOURCE_QUANTITY_DELTA',
@@ -12466,7 +12468,7 @@
         const gold = snap && snap.character ? finite(snap.character.gold) : null;
         const goldOk = Number(pending.cost || 0) <= 0
           || (gold != null && pending.beforeGold != null && gold <= pending.beforeGold - Number(pending.cost || 0));
-        if (outputIncreased && ingredientsConsumed && goldOk) {
+        if (settlementFinished && outputIncreased && ingredientsConsumed && goldOk) {
           return this._confirmed(pending, { itemName: pending.itemName, evidence: 'CRAFT_OUTPUT_AND_INPUT_DELTAS' });
         }
       }
