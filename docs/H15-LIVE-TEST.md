@@ -197,3 +197,30 @@ PASS:
 - bei ursprünglich gestoppter Runtime: Runtime wieder STOPPED und Scheduler `totalResources=0`.
 
 H15 darf erst nach grünem Exact-Head-CI, sauberem Review-Gate und echtem Adventure-Land-Live-PASS gemergt werden.
+
+
+## Pre-Live CI / Review Evidence
+
+H15-Hardening vor dem echten Adventure-Land-Live-Test:
+
+- PR: `#16 – H15: Upgrade & Compound`
+- technischer Head vor dieser Evidence-Dokumentation: `a515dc27e9de1f140f399caf0393b2cd42b7da30`
+- Exact-Head-CI Run `#323`: **completed / success**
+- `npm test`: **194/194 PASS, 0 FAIL, 0 SKIP**
+- `dist/al-bot.js` enthält exakt den aktuellen `src/upgrade.js`-Block
+- Bundle-Banner: `AL Bot 0.15.0-h15`
+- Build-Pipeline enthält `src/upgrade.js`
+- alle bisherigen PR-Review-Threads resolved
+- kein `CHANGES_REQUESTED`
+
+Im Review gefundene und behobene Punkte:
+
+1. H15-Bundle fehlte im frühen PR-Stand – Bundle vollständig regeneriert/synchronisiert.
+2. `offeringFromLevel=0` wurde durch einen falschen Fallback auf `7` überschrieben – Nullwert bleibt jetzt gültig.
+3. Quest-/Cash-Items konnten definition-level noch in automatische Kandidaten gelangen – jetzt fail-closed ausgeschlossen und vor Dispatch erneut geschützt.
+4. Compound-Risikobudget bewertete nur eines der drei Quellitems – jetzt werden alle drei identischen Inputs gemeinsam als Value-at-Risk gezählt.
+5. ältere H1–H14 Wiring-/Versions-/Scheduler-Regressionen erwarteten noch H14 – auf H15 und die neue Scheduler-Baseline aktualisiert.
+
+Zusätzliche Regressionen decken die Safety-Fixes ab.
+
+Nach diesem Evidence-Commit ist erneut ein Exact-Head-CI erforderlich. Erst wenn auch dieser neue Head `completed/success`, `behind_by=0`, review-clean und mergeable ist, darf der echte H15-Live-Test freigegeben werden.
