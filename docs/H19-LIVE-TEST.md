@@ -245,3 +245,37 @@ Technischer grüner Zwischenstand vor der finalen UI-/Doku-/Workflow-Bereinigung
 - `dist/al-bot.js` enthielt auf diesem Head bereits `desiredPartyMemberNames` und die idempotente `unknownRecorded`-Safety.
 
 Der endgültige Merge-Gate wird erst nach Wiederherstellung des read-only Test-Workflows auf dem dann aktuellen Head gewertet.
+
+
+## Live-Versuch 1 – Respawn-Cooldown erkannt
+
+Stand: 2026-09-27
+
+Der erste echte H19-Live-Lauf auf `My_Warrior` lief mit Runtime `0.19.0-h19` und bestätigte den Preflight korrekt, scheiterte aber im Schritt `death-recovery`.
+
+Beobachtete Evidence:
+
+- lokaler Character: Warrior, `rip=true`;
+- Preflight: PASS;
+- genau 1 Respawn-Dispatch;
+- Adventure Land antwortete mit `cant_respawn`;
+- 0 Respawn-Confirmations;
+- Character blieb `rip=true`;
+- der damalige H19-Stand klassifizierte die abgelehnte Promise fälschlich als `H19_DISPATCH_REJECTED_WITHOUT_LIVE_OUTCOME` und erhöhte damit `actionsUnknown` auf 1;
+- Stability/Cleanup-Schritte wurden nach dem Fail nicht mehr ausgeführt; der LiveTestRunner stellte die Runtime anschließend automatisch zurück.
+
+Root Cause:
+
+Adventure Land besitzt einen serverseitigen **12-Sekunden-Respawn-Cooldown**. Der erste H19-Live-Test dispatchte deutlich früher und erhielt deshalb den bekannten temporären Server-Reject `cant_respawn`.
+
+Hotfix-Verhalten:
+
+- H19 wartet vor dem ersten `respawn()` mindestens 13 Sekunden ab der ersten lokal beobachteten `rip=true`-Evidence;
+- während dieser Grace wird **kein** Game-Write erzeugt;
+- der Queue-/Auto-Recovery-Auftrag bleibt bounded erhalten und wird erst nach Readiness dispatcht;
+- `cant_respawn` wird zusätzlich fail-closed als **bekannter Reject** behandelt;
+- dieser Reject erhöht `actionsRejected` / `respawnCooldownRejects`, aber **nicht** `actionsUnknown`;
+- nach `cant_respawn` stoppt die Autonomie und H19 führt keinen Blind-Retry aus;
+- der Live-Test meldet einen erneuten `cant_respawn` direkt als `H19_RESPAWN_COOLDOWN_REJECTED` statt in einen Timeout/UNKNOWN zu laufen.
+
+Dieser Lauf ist **keine H19-PASS-Evidence**. Nach Merge des Hotfixes ist ein neuer echter Death→Respawn-Live-Test erforderlich.
