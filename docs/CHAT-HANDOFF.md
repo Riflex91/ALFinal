@@ -1476,3 +1476,29 @@ Nächster Entwicklungs-/Gate-Schritt:
 - bounded H19-v2-Live-Suite für Remote Character Start/Stop + Desired-Active Disconnect/Restart-Recovery entwickeln;
 - danach separaten bounded Party-Recovery-Gate vorbereiten;
 - erst nach erfolgreicher Evidence aller erforderlichen H19-Pfade H19 abschließen und zu H20 wechseln.
+
+
+## H19 v2 – Remote Start/Stop & Restart Recovery vorbereitet
+
+Stand: 2026-09-27
+
+Nach dem erfolgreichen Death→Respawn-Live-Gate ist der nächste H19-Live-Test `h19-remote-recovery`.
+
+Aktueller Scope:
+
+- eigener nichtlokaler aktiver Character wird dynamisch gewählt;
+- aktueller Party-Leader ist als Stop-Ziel ausgeschlossen;
+- Nicht-Party-Character wird bevorzugt;
+- Desired Active wird vor dem Stop erfasst;
+- `remote-stop`: genau 1 Stop-Dispatch und 1 bestätigter Live-Roster-Abgang;
+- `restart-recovery`: genau 1 automatischer Start über Desired Active und bestätigte erneute Live-Roster-Präsenz;
+- kumuliert erwartet: 2 Dispatches / 2 Confirms / 1 Stop / 1 Start / 0 Reject / 0 UNKNOWN;
+- `stability`: fünf Sekunden ohne weiteren Start/Stop;
+- `cleanup`: ursprüngliche H19-Policy wiederherstellen und Ziel aktiv hinterlassen.
+
+Cleanup-Safety:
+
+- genau ein erster Restore-Start ist nur erlaubt, wenn ein bestätigter Stop vorliegt und noch kein Start dispatcht wurde;
+- nach bereits dispatchtem Start, Reject, UNKNOWN oder Suspension kein Blind-Retry.
+
+Bei PASS dieser Suite gelten Remote Start/Stop sowie Disconnect-/Restart-Recovery als live bestätigt. Danach bleibt Party-Recovery als letzter gezielter H19-Live-Gate offen.
