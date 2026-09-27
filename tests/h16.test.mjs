@@ -401,6 +401,21 @@ test('H16 material acquisition can explicitly bypass mounted bank for live-test 
   assert.equal(state.tradeCalls.length, 1);
 });
 
+test('H16 production plan exposes mounted bank rows while includeBank false keeps them as acquisition needs', () => {
+  const bank = {
+    available: true,
+    packs: [{ name: 'items0', map: 'bank', items: [{ pack: 'items0', slot: 2, name: 'spidersilk', level: 0, quantity: 1000 }] }]
+  };
+  const { controller } = fixture({ rows: [], bank });
+  const plan = controller.productionPlan('cocoon', 1, { includeBank: false });
+  assert.equal(plan.state, 'NEEDS_MATERIALS');
+  assert.equal(plan.missing.length, 1);
+  assert.equal(plan.missing[0].itemName, 'spidersilk');
+  assert.equal(plan.missing[0].bankRows.length, 1);
+  assert.equal(plan.missing[0].bankRows[0].pack, 'items0');
+  assert.equal(plan.missing[0].bankRows[0].quantity, 1000);
+});
+
 test('H16 production plan exposes NPC and market acquisition sources for missing leaves', () => {
   const { controller } = fixture({
     rows: [],
@@ -514,11 +529,15 @@ test('H16 runtime, API, UI, build, adapter and ActionBoundary are wired', () => 
   assert.match(runtime, /id: 'h16-exchange-craft'/);
   assert.match(runtime, /H16_NEEDS_LOW_RISK_CRAFT_OR_ACQUIRABLE_MATERIALS/);
   assert.match(runtime, /ACQUIRE_CRAFT_AND_EXCHANGE_COVERAGE/);
-  assert.match(runtime, /allowBank: false/);
+  assert.match(runtime, /allowBank: bankExpected/);
   assert.match(runtime, /maxExchangeValueAtRisk: 2000000/);
   assert.match(runtime, /maxCraftGoldCost: 1000000/);
   assert.match(runtime, /maxCraftInputValueAtRisk: 2000000/);
-  assert.match(runtime, /version: '5'/);
+  assert.match(runtime, /version: '6'/);
+  assert.match(runtime, /id: 'bank-discovery'/);
+  assert.match(runtime, /runtime\.bank\.queueMount\(\)/);
+  assert.match(runtime, /H16_BANK_DISCOVERY_WRITE_DETECTED/);
+  assert.ok(runtime.indexOf("id: 'bank-discovery'") < runtime.indexOf("id: 'preflight'"));
   assert.match(runtime, /localCraftRejects/);
   assert.match(runtime, /fallbackRejects/);
   assert.match(runtime, /topNearMatches: nearMatches\.slice\(0, 5\)/);
@@ -541,7 +560,10 @@ test('H16 runtime, API, UI, build, adapter and ActionBoundary are wired', () => 
   assert.match(runtime, /NESTED_OR_MULTI_STAGE_RECIPE/);
   assert.match(runtime, /TOO_MANY_MISSING_LEAVES/);
   assert.match(runtime, /MISSING_LEAF_LEVEL_NONZERO/);
-  assert.match(runtime, /MISSING_LEAF_NO_NPC_OR_MARKET_SOURCE/);
+  assert.match(runtime, /MISSING_LEAF_NO_BANK_NPC_OR_MARKET_SOURCE/);
+  assert.match(runtime, /source: 'BANK'/);
+  assert.match(runtime, /expectedSource: chosen\.source/);
+  assert.match(runtime, /queued\.delegatedTo === \(bankExpected \? 'bank' : 'trade'\)/);
   assert.match(runtime, /MATERIAL_ACQUISITION_OVER_CAP/);
   assert.match(runtime, /GOLD_RESERVE_AFTER_ACQUISITION_AND_CRAFT/);
   assert.match(runtime, /MATERIAL_ACQUISITION_REQUIRES_MERCHANT/);
