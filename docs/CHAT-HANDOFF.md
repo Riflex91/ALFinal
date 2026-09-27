@@ -566,7 +566,7 @@ Finale Live-Evidence:
 - Cleanup vollständig
 - Runtime wieder STOPPED, Scheduler 0 Ressourcen
 
-## H12 – Bank – implementiert, Live-Test offen
+## H12 – Bank – live bestanden, finaler Merge-Gate offen
 
 Aktiver Branch:
 `chatgpt/h12-bank`
@@ -574,44 +574,38 @@ Aktiver Branch:
 PR:
 `#12 – H12: Bank`
 
-Basis:
-`main` bei H11-Merge-Commit `0b8b45089ae47ea352e05115074142a427d7ff79`
-
 Version:
 `0.12.0-h12`
 
-Implementiert:
-- `src/bank.js` / `BankController`
-- Live-`character.bank` Snapshot mit Packs und Pack→Map-Wahrheit
-- `bank_store`, `bank_retrieve`, `bank_deposit`, `bank_withdraw` nur via ActionBoundary
-- automatische Deposits ausschließlich für H10-Disposition `BANK`
-- Pack-Suche, Workspace, Reservierungen
-- Inventory/Bank Reconciliation
-- Bestätigung nur über beobachtete Live-Deltas
-- unavailable Snapshot ist niemals Erfolg
-- bounded UNKNOWN + Suspension ohne Blind-Retry
-- H4-Bankfahrt mit Owner `bank-h12`
-- unbekannte/falsche Pack→Bank-Map fail-closed blockiert
-- Bank-Control-Center-Tab und `ALBot.bank.*`
-- `dist/al-bot.js` auf H12 source-synchron
-- Ein-Klick-Suite `h12-bank`
-- `docs/H12-LIVE-TEST.md`
+Finale Live-Evidence vom 2026-09-27:
+- Suite `h12-bank`: **PASSED / ALL_STEPS_PASSED**
+- Merchant `My_Merchant`
+- sicheres H10-BANK-Item `slice_honey`
+- Menge `155`
+- ursprünglicher Inventarslot `3`
+- automatische Bankfahrt: `movementRequests=1`
+- Deposit nach `items0/0` bestätigt
+- Withdraw aus exakt `items0/0` zurück in Slot 3 bestätigt
+- `depositsConfirmed=1`
+- `withdrawalsConfirmed=1`
+- `depositsUnknown=0`
+- `withdrawalsUnknown=0`
+- `movementUnknown=0`
+- `reconciliationEntries=43`
+- `reconciliationFailures=0`
+- `itemRestored=true`
+- Cleanup PASSED: `pending=false`, `request=false`, `movementActive=false`
+- Runtime danach wieder STOPPED
+- Scheduler danach `totalResources=0`
 
-Pre-Live CI:
-- Run #235: 144/144 Tests PASS
-- nach Pack→Map-Härtung, Bundle und Dokumentation erneut Exact-Head-CI erforderlich.
+Nächster verbindlicher H12-Ablauf:
+1. neuen exakten Head nach diesen Evidence-Commits bestimmen;
+2. dessen CI bis completed/success abwarten;
+3. frisch prüfen: `behind_by=0`, keine pending/failing Runs oder Checks, keine offenen Review-Threads, kein `CHANGES_REQUESTED`, `mergeable=true`;
+4. PR #12 ausschließlich mit Methode `merge` und exaktem `expected_head_sha` mergen;
+5. Merge auf `main` verifizieren.
 
-H12-Live-Test:
-1. sicheres `BANK`-Item im Merchant-Inventar wählen;
-2. bei Bedarf automatisch zur Bank fahren;
-3. Stack in verifizierten leeren Workspace-Slot einlagern;
-4. exakt denselben Pack/Slot in den ursprünglichen Inventarslot zurückholen;
-5. ursprüngliche Menge und Position bestätigen;
-6. fünf Sekunden Reconciliation ohne Deposit-/Withdraw-/Movement-UNKNOWN;
-7. Cleanup ohne Pending/Request/H12-Movement;
-8. vorherigen Runtime-Zustand automatisch wiederherstellen.
-
-H12 darf erst nach echtem Adventure-Land-Live-PASS gemergt werden.
+H13 ist bereits vorbereitet, darf aber erst nach H12-Merge sauber auf den neuen `main` gebracht und danach live getestet werden.
 
 ## H2 Architekturregel für spätere Module
 
