@@ -20,7 +20,11 @@
     bank_store: Object.freeze({ publicName: 'bank_store', family: 'bank' }),
     bank_retrieve: Object.freeze({ publicName: 'bank_retrieve', family: 'bank' }),
     bank_deposit: Object.freeze({ publicName: 'bank_deposit', family: 'bank-gold' }),
-    bank_withdraw: Object.freeze({ publicName: 'bank_withdraw', family: 'bank-gold' })
+    bank_withdraw: Object.freeze({ publicName: 'bank_withdraw', family: 'bank-gold' }),
+    buy_with_gold: Object.freeze({ publicName: 'buy_with_gold', family: 'npc-trade' }),
+    sell: Object.freeze({ publicName: 'sell', family: 'npc-trade' }),
+    trade_buy: Object.freeze({ publicName: 'trade_buy', family: 'player-trade' }),
+    trade_sell: Object.freeze({ publicName: 'trade_sell', family: 'player-trade' })
   });
 
   function errorDetails(error) {
