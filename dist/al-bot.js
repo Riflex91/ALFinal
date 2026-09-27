@@ -13661,3 +13661,3480 @@
 
   ns.TradeController = TradeController;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
+
+
+(function (root) {
+  'use strict';
+
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns) throw new Error('ALBOT_INTERNALS_MISSING');
+
+  const clone = ns.helpers.clone;
+  const cleanText = ns.helpers.cleanText;
+
+  const GEAR_SLOTS = Object.freeze([
+    'helmet', 'coat', 'pants', 'gloves', 'shoes', 'cape', 'belt',
+    'amulet', 'orb', 'ring1', 'ring2', 'earring1', 'earring2',
+    'mainhand', 'offhand'
+  ]);
+
+  const PRIMARY_STAT = Object.freeze({
+    warrior: 'str',
+    paladin: 'str',
+    ranger: 'dex',
+    rogue: 'dex',
+    mage: 'int',
+    priest: 'int',
+    merchant: 'int'
+  });
+
+  function finite(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function nowIso() {
+    return new Date().toISOString();
+  }
+
+  function stableProperty(value) {
+    if (value == null) return '';
+    try {
+      if (typeof value !== 'object') return String(value);
+      const keys = Object.keys(value).sort();
+      const ordered = {};
+      for (const key of keys) ordered[key] = value[key];
+      return JSON.stringify(ordered);
+    } catch (_) {
+      return String(value);
+    }
+  }
+
+  class GearController {
+    constructor(options = {}) {
+      this.root = options.root || root;
+      this.logger = options.logger || null;
+      this.game = options.game || null;
+      this.actions = options.actions || null;
+      this.inventory = options.inventory || null;
+      this.roster = options.roster || null;
+      this.combat = options.combat || null;
+      this.moduleActive = false;
+      this.scope = null;
+      this.pending = null;
+      this.request = null;
+      this.suspendedReason = null;
+      this.lastPlan = null;
+      this.lastAction = null;
+      this.sequence = 0;
+      this.goals = [];
+      this.config = {
+        tickMs: Math.max(250, Math.min(5000, Number(options.tickMs) || 750)),
+        outcomeTimeoutMs: Math.max(1000, Math.min(60000, Number(options.outcomeTimeoutMs) || 6000)),
+        improvementEpsilon: Math.max(0, Number(options.improvementEpsilon) || 0.01)
+      };
+      this.metrics = {
+        ticks: 0,
+        plans: 0,
+        localImprovements: 0,
+        groupProposals: 0,
+        equipsDispatched: 0,
+        equipsConfirmed: 0,
+        equipsRejected: 0,
+        equipsUnknown: 0,
+        unequipsDispatched: 0,
+        unequipsConfirmed: 0,
+        unequipsRejected: 0,
+        unequipsUnknown: 0,
+        deliveriesDispatched: 0,
+        deliveriesConfirmed: 0,
+        deliveriesRejected: 0,
+        deliveriesUnknown: 0,
+        safetyBlocks: 0,
+        twoHandBlocks: 0,
+        combatBlocks: 0,
+        goalEvaluations: 0
+      };
+    }
+
+    start(context = {}) {
+      if (this.moduleActive) return { started: false, reason: 'H14_ALREADY_ACTIVE' };
+      this.moduleActive = true;
+      this.scope = context.scope || null;
+      this.suspendedReason = null;
+      if (this.scope && typeof this.scope.interval === 'function') {
+        this.scope.interval('gear-tick', () => this.tick(), this.config.tickMs, { immediate: true });
+      }
+      return { started: true };
+    }
+
+    stop(reason = 'H14_MODULE_STOP') {
+      this.moduleActive = false;
+      this.scope = null;
+      this.pending = null;
+      this.request = null;
+      this.lastAction = { at: nowIso(), type: 'STOP', reason: cleanText(reason, 240) };
+      return { stopped: true };
+    }
+
+    resetSafety(reason = 'H14_EXPLICIT_RESET') {
+      this.pending = null;
+      this.request = null;
+      this.suspendedReason = null;
+      this.lastAction = { at: nowIso(), type: 'RESET', reason: cleanText(reason, 240) };
+      return this.status();
+    }
+
+    cancelRequest(reason = 'H14_REQUEST_CANCELLED') {
+      this.pending = null;
+      this.request = null;
+      this.lastAction = { at: nowIso(), type: 'REQUEST_CANCELLED', reason: cleanText(reason, 240) };
+      return this.status();
+    }
+
+    setGoals(rows = []) {
+      if (!Array.isArray(rows)) throw new Error('H14_GOALS_MUST_BE_ARRAY');
+      const next = [];
+      for (const raw of rows) {
+        if (!raw || typeof raw !== 'object') continue;
+        const targetName = cleanText(raw.targetName || raw.characterName || '', 120);
+        const slot = cleanText(raw.slot || '', 40);
+        const itemName = cleanText(raw.itemName || raw.name || '', 160);
+        const minLevel = Math.max(0, Math.floor(finite(raw.minLevel) || 0));
+        const priority = Math.max(0, Math.floor(finite(raw.priority) || 0));
+        if (!targetName || !GEAR_SLOTS.includes(slot)) continue;
+        if (!itemName && minLevel <= 0) continue;
+        next.push({
+          id: cleanText(raw.id || ('gear-goal-' + (next.length + 1)), 120),
+          targetName,
+          slot,
+          itemName: itemName || null,
+          minLevel,
+          priority
+        });
+      }
+      this.goals = next;
+      return clone(this.goals);
+    }
+
+    goalSnapshot() {
+      return clone(this.goals);
+    }
+
+    _snapshot() {
+      return this.game && typeof this.game.snapshot === 'function' ? this.game.snapshot() : null;
+    }
+
+    _inventorySnapshot() {
+      try { return this.game && this.game.inventorySnapshot ? this.game.inventorySnapshot() : null; }
+      catch (_) { return null; }
+    }
+
+    _equipmentSnapshot(name = null) {
+      try { return this.game && this.game.equipmentSnapshot ? this.game.equipmentSnapshot(name) : null; }
+      catch (_) { return null; }
+    }
+
+    _roster() {
+      try {
+        if (!this.roster) return null;
+        if (typeof this.roster.refresh === 'function') return this.roster.refresh();
+        if (typeof this.roster.status === 'function') return this.roster.status();
+      } catch (_) {}
+      return null;
+    }
+
+    _combatActive() {
+      try {
+        const status = this.combat && typeof this.combat.status === 'function' ? this.combat.status() : null;
+        return !!(status && (status.active || status.state && !['IDLE', 'STOPPED'].includes(String(status.state))));
+      } catch (_) {
+        return false;
+      }
+    }
+
+    _equipmentDefinition(name) {
+      try { return this.game && this.game.equipmentDefinition ? this.game.equipmentDefinition(name) : null; }
+      catch (_) { return null; }
+    }
+
+    _classProfile(ctype) {
+      try { return this.game && this.game.classEquipmentProfile ? this.game.classEquipmentProfile(ctype) : null; }
+      catch (_) { return null; }
+    }
+
+    _normalizedItem(row) {
+      if (!row || !row.name) return null;
+      const definition = this._equipmentDefinition(row.name);
+      if (!definition) return null;
+      return { ...row, definition };
+    }
+
+    _fingerprint(row) {
+      if (!row || !row.name) return null;
+      return [
+        String(row.name),
+        String(Math.max(0, Number(row.level) || 0)),
+        cleanText(row.statType != null ? row.statType : row.stat_type || '', 80),
+        stableProperty(row.property != null ? row.property : row.p)
+      ].join('|');
+    }
+
+    _quantity(snapshot, fingerprint) {
+      if (!snapshot || snapshot.available === false || !fingerprint) return null;
+      return (snapshot.items || []).reduce((sum, row) =>
+        sum + (this._fingerprint(row) === fingerprint ? Math.max(1, Math.floor(Number(row.quantity) || 1)) : 0), 0);
+    }
+
+    _primary(ctype) {
+      return PRIMARY_STAT[String(ctype || '').toLowerCase()] || null;
+    }
+
+    score(row, ctype) {
+      const item = this._normalizedItem(row);
+      if (!item || !item.definition) return Number.NEGATIVE_INFINITY;
+      const definition = item.definition;
+      const level = Math.max(0, Number(item.level) || 0);
+      const primary = this._primary(ctype);
+      const weights = {
+        attack: 8,
+        armor: 2,
+        resistance: 2,
+        hp: 1.2,
+        mp: 1,
+        speed: 1.5,
+        range: 2,
+        str: primary === 'str' ? 6 : 1,
+        dex: primary === 'dex' ? 6 : 1,
+        int: primary === 'int' ? 6 : 1,
+        vit: 2,
+        stat: 6
+      };
+      let score = 0;
+      for (const [stat, weight] of Object.entries(weights)) {
+        const base = finite(definition.stats && definition.stats[stat]) || 0;
+        const growth = finite(definition.upgradeGrowth && definition.upgradeGrowth[stat]) || 0;
+        score += (base + growth * level) * weight;
+      }
+      if (primary && cleanText(item.statType || '', 80).toLowerCase() === primary) score += 25;
+      score += level * 0.01;
+      return Number(score.toFixed(4));
+    }
+
+    _canEquip(row, slot, ctype) {
+      const item = this._normalizedItem(row);
+      if (!item || !item.definition || !GEAR_SLOTS.includes(slot)) return { ok: false, reason: 'H14_NOT_EQUIPMENT' };
+      const def = item.definition;
+      const type = String(def.type || '').toLowerCase();
+      const profile = this._classProfile(ctype);
+      if ((def.classes || []).length && !def.classes.includes(String(ctype || '').toLowerCase())) {
+        return { ok: false, reason: 'H14_CLASS_RESTRICTED' };
+      }
+
+      if (type === 'ring') return { ok: slot === 'ring1' || slot === 'ring2', reason: 'H14_RING_SLOT' };
+      if (type === 'earring') return { ok: slot === 'earring1' || slot === 'earring2', reason: 'H14_EARRING_SLOT' };
+
+      if (['shield', 'source', 'quiver', 'misc_offhand'].includes(type)) {
+        const ok = slot === 'offhand' && !!(profile && profile.offhand && profile.offhand.includes(type));
+        return { ok, reason: ok ? null : 'H14_OFFHAND_NOT_ALLOWED', handMode: 'offhand' };
+      }
+
+      if (['weapon', 'tool'].includes(type)) {
+        const wtype = String(def.wtype || type).toLowerCase();
+        if (slot === 'offhand') {
+          const ok = !!(profile && profile.offhand && profile.offhand.includes(wtype));
+          return { ok, reason: ok ? null : 'H14_OFFHAND_WEAPON_NOT_ALLOWED', handMode: 'offhand' };
+        }
+        if (slot !== 'mainhand') return { ok: false, reason: 'H14_WEAPON_REQUIRES_HAND' };
+        const doublehand = !!(profile && profile.doublehand && profile.doublehand.includes(wtype));
+        const mainhand = !!(profile && profile.mainhand && profile.mainhand.includes(wtype));
+        return {
+          ok: doublehand || mainhand,
+          reason: doublehand || mainhand ? null : 'H14_MAINHAND_WEAPON_NOT_ALLOWED',
+          handMode: doublehand ? 'doublehand' : 'mainhand'
+        };
+      }
+
+      return { ok: type === slot, reason: type === slot ? null : 'H14_SLOT_TYPE_MISMATCH' };
+    }
+
+    _handConflict(row, slot, equipment, ctype) {
+      const allowed = this._canEquip(row, slot, ctype);
+      if (!allowed.ok) return { blocked: true, reason: allowed.reason };
+      if (slot === 'mainhand' && allowed.handMode === 'doublehand' && equipment && equipment.slots && equipment.slots.offhand) {
+        return { blocked: true, reason: 'H14_TWO_HAND_WOULD_DISPLACE_OFFHAND' };
+      }
+      if (slot === 'offhand' && equipment && equipment.slots && equipment.slots.mainhand) {
+        const main = equipment.slots.mainhand;
+        const mainAllowed = this._canEquip(main, 'mainhand', ctype);
+        if (mainAllowed.ok && mainAllowed.handMode === 'doublehand') {
+          return { blocked: true, reason: 'H14_OFFHAND_BLOCKED_BY_TWO_HAND' };
+        }
+      }
+      return { blocked: false, reason: null };
+    }
+
+    _inventoryGear() {
+      const inventory = this._inventorySnapshot();
+      if (!inventory || inventory.available === false) return [];
+      return (inventory.items || [])
+        .filter(row => row && row.locked !== true && row.giveaway !== true && row.gift !== true && !row.expiresAt)
+        .map(row => this._normalizedItem(row))
+        .filter(Boolean);
+    }
+
+    _slotPlan(slot, ctype, equipment, inventoryRows, usedInventorySlots = null) {
+      const current = equipment && equipment.slots ? equipment.slots[slot] || null : null;
+      const currentScore = current ? this.score(current, ctype) : Number.NEGATIVE_INFINITY;
+      const candidates = [];
+      for (const row of inventoryRows) {
+        if (usedInventorySlots && usedInventorySlots.has(Number(row.slot))) continue;
+        const allowed = this._canEquip(row, slot, ctype);
+        if (!allowed.ok) continue;
+        const score = this.score(row, ctype);
+        if (!Number.isFinite(score)) continue;
+        candidates.push({
+          inventorySlot: Number(row.slot),
+          item: clone(row),
+          score,
+          fingerprint: this._fingerprint(row),
+          handMode: allowed.handMode || null
+        });
+      }
+      candidates.sort((a, b) => b.score - a.score || a.inventorySlot - b.inventorySlot);
+      const best = candidates[0] || null;
+      const delta = best
+        ? (current == null ? best.score : best.score - currentScore)
+        : null;
+      const conflict = best ? this._handConflict(best.item, slot, equipment, ctype) : { blocked: false, reason: null };
+      return {
+        slot,
+        current: current ? clone(current) : null,
+        currentScore: Number.isFinite(currentScore) ? currentScore : null,
+        bestInventory: best ? clone(best) : null,
+        improvement: !!(best && (current == null || delta > this.config.improvementEpsilon)),
+        delta: best && Number.isFinite(delta) ? Number(delta.toFixed(4)) : null,
+        safeSwitch: !!(best && !conflict.blocked),
+        blockReason: conflict.blocked ? conflict.reason : null,
+        candidates: candidates.map(row => ({
+          inventorySlot: row.inventorySlot,
+          item: clone(row.item),
+          score: row.score,
+          fingerprint: row.fingerprint,
+          handMode: row.handMode
+        }))
+      };
+    }
+
+    _localPlan(inventoryRows) {
+      const snap = this._snapshot();
+      const local = snap && snap.character;
+      const equipment = local && local.name ? this._equipmentSnapshot(local.name) : null;
+      if (!local || !equipment || equipment.available === false) {
+        return {
+          state: 'BLOCKED',
+          reason: 'H14_LOCAL_EQUIPMENT_UNAVAILABLE',
+          character: local ? clone(local) : null,
+          equipment: equipment ? clone(equipment) : null,
+          slots: [],
+          improvements: [],
+          replacements: [],
+          upgradeCandidates: []
+        };
+      }
+      const ctype = local.ctype;
+      const slots = GEAR_SLOTS.map(slot => this._slotPlan(slot, ctype, equipment, inventoryRows));
+      const improvements = slots
+        .filter(row => row.improvement && row.safeSwitch)
+        .sort((a, b) => (b.delta || 0) - (a.delta || 0));
+      const replacements = slots.map(row => ({
+        slot: row.slot,
+        current: clone(row.current),
+        currentScore: row.currentScore,
+        bestInventory: clone(row.bestInventory),
+        bestInventoryScore: row.bestInventory ? row.bestInventory.score : null,
+        delta: row.delta,
+        improvement: row.improvement,
+        safeSwitch: row.safeSwitch,
+        blockReason: row.blockReason
+      }));
+      const upgradeCandidates = [];
+      const pushUpgrade = (row, source, slot) => {
+        const item = this._normalizedItem(row);
+        if (!item || !item.definition) return;
+        if (!item.definition.upgradeable && !item.definition.compoundable) return;
+        upgradeCandidates.push({
+          source,
+          slot: slot == null ? null : slot,
+          inventorySlot: source === 'inventory' ? Number(item.slot) : null,
+          item: clone(item),
+          score: this.score(item, ctype),
+          level: Math.max(0, Number(item.level) || 0),
+          upgradeable: !!item.definition.upgradeable,
+          compoundable: !!item.definition.compoundable
+        });
+      };
+      for (const row of inventoryRows) pushUpgrade(row, 'inventory', null);
+      for (const [slot, row] of Object.entries(equipment.slots || {})) pushUpgrade(row, 'equipped', slot);
+      upgradeCandidates.sort((a, b) => b.score - a.score || b.level - a.level);
+      return {
+        state: 'READY',
+        reason: 'H14_LOCAL_GEAR_READY',
+        character: clone(local),
+        equipment: clone(equipment),
+        slots,
+        improvements,
+        replacements,
+        upgradeCandidates
+      };
+    }
+
+    _priorityTargets(roster) {
+      if (!roster) return [];
+      const rows = [];
+      for (const farmer of roster.farmers || []) {
+        rows.push({ name: farmer.name, ctype: farmer.ctype, role: 'FARMER', priority: 100 });
+      }
+      if (roster.merchant) {
+        rows.push({ name: roster.merchant.name, ctype: roster.merchant.ctype, role: 'MERCHANT', priority: 10 });
+      }
+      rows.sort((a, b) => b.priority - a.priority || String(a.name).localeCompare(String(b.name)));
+      return rows;
+    }
+
+    _groupPlan(inventoryRows, roster, localName, localCtype) {
+      const targets = this._priorityTargets(roster);
+      const usedInventorySlots = new Set();
+      const proposals = [];
+      const targetRows = [];
+      for (const target of targets) {
+        const equipment = this._equipmentSnapshot(target.name);
+        const visible = !!(equipment && equipment.available !== false);
+        targetRows.push({ ...target, visible, equipment: visible ? clone(equipment) : null });
+        if (!visible || target.name === localName || String(localCtype || '').toLowerCase() !== 'merchant') continue;
+
+        const transferRows = inventoryRows.filter(row =>
+          !row.locked && !row.giveaway && !row.gift && !row.expiresAt);
+        const slotPlans = GEAR_SLOTS.map(slot =>
+          this._slotPlan(slot, target.ctype, equipment, transferRows, usedInventorySlots));
+        const assignedTargetSlots = new Set();
+
+        while (true) {
+          let bestChoice = null;
+          for (const slotPlan of slotPlans) {
+            if (assignedTargetSlots.has(slotPlan.slot)) continue;
+            let choice = null;
+            for (const candidate of slotPlan.candidates || []) {
+              if (usedInventorySlots.has(candidate.inventorySlot)) continue;
+              const conflict = this._handConflict(candidate.item, slotPlan.slot, equipment, target.ctype);
+              if (conflict.blocked) continue;
+              const delta = slotPlan.current == null
+                ? candidate.score
+                : candidate.score - Number(slotPlan.currentScore || 0);
+              if (slotPlan.current != null && delta <= this.config.improvementEpsilon) continue;
+              choice = {
+                targetName: target.name,
+                targetCtype: target.ctype,
+                role: target.role,
+                priority: target.priority,
+                slot: slotPlan.slot,
+                inventorySlot: candidate.inventorySlot,
+                item: clone(candidate.item),
+                fingerprint: candidate.fingerprint,
+                score: candidate.score,
+                currentScore: slotPlan.currentScore,
+                delta: Number(delta.toFixed(4))
+              };
+              break;
+            }
+            if (!choice) continue;
+            if (!bestChoice
+              || choice.delta > bestChoice.delta
+              || (choice.delta === bestChoice.delta && choice.inventorySlot < bestChoice.inventorySlot)) {
+              bestChoice = choice;
+            }
+          }
+          if (!bestChoice) break;
+          assignedTargetSlots.add(bestChoice.slot);
+          usedInventorySlots.add(bestChoice.inventorySlot);
+          proposals.push(bestChoice);
+        }
+      }
+      proposals.sort((a, b) => b.priority - a.priority || (b.delta || 0) - (a.delta || 0));
+      return { targets: targetRows, proposals };
+    }
+
+    _goalPlan(roster, inventoryRows) {
+      const results = [];
+      const local = this._snapshot();
+      const localName = local && local.character && local.character.name;
+      for (const goal of this.goals) {
+        this.metrics.goalEvaluations += 1;
+        const target = (this._priorityTargets(roster)).find(row => row.name === goal.targetName) || null;
+        const equipment = this._equipmentSnapshot(goal.targetName);
+        const equipped = equipment && equipment.available !== false ? equipment.slots[goal.slot] || null : null;
+        const achieved = !!(equipped
+          && (!goal.itemName || String(equipped.name) === String(goal.itemName))
+          && Math.max(0, Number(equipped.level) || 0) >= goal.minLevel);
+        let inventoryMatch = null;
+        if (!achieved) {
+          const targetCtype = target && target.ctype || equipment && equipment.character && equipment.character.ctype;
+          inventoryMatch = inventoryRows.find(row =>
+            (!goal.itemName || String(row.name) === String(goal.itemName))
+            && Math.max(0, Number(row.level) || 0) >= goal.minLevel
+            && this._canEquip(row, goal.slot, targetCtype).ok) || null;
+        }
+        const localCtype = local && local.character && local.character.ctype;
+        const readyToEquip = !!(inventoryMatch && goal.targetName === localName);
+        const readyToDeliver = !!(inventoryMatch
+          && goal.targetName !== localName
+          && String(localCtype || '').toLowerCase() === 'merchant'
+          && target && target.role === 'FARMER'
+          && equipment && equipment.available !== false
+          && !inventoryMatch.locked && !inventoryMatch.giveaway && !inventoryMatch.gift && !inventoryMatch.expiresAt);
+        results.push({
+          ...clone(goal),
+          role: target && target.role || null,
+          targetPriority: target && target.priority || 0,
+          visible: !!(equipment && equipment.available !== false),
+          equipped: equipped ? clone(equipped) : null,
+          achieved,
+          localInventoryMatch: inventoryMatch ? clone(inventoryMatch) : null,
+          state: achieved ? 'ACHIEVED' : readyToEquip ? 'READY_TO_EQUIP' : readyToDeliver ? 'READY_TO_DELIVER' : 'NEEDS_ACQUISITION'
+        });
+      }
+      results.sort((a, b) => b.targetPriority - a.targetPriority || b.priority - a.priority || String(a.id).localeCompare(String(b.id)));
+      return results;
+    }
+
+    plan() {
+      this.metrics.plans += 1;
+      const snap = this._snapshot();
+      const inventory = this._inventorySnapshot();
+      const roster = this._roster();
+      if (!snap || !snap.available || !snap.character) {
+        const blocked = { state: 'BLOCKED', reason: 'CHARACTER_UNAVAILABLE' };
+        this.lastPlan = blocked;
+        return clone(blocked);
+      }
+      if (!inventory || inventory.available === false) {
+        const blocked = { state: 'BLOCKED', reason: 'H14_INVENTORY_UNAVAILABLE' };
+        this.lastPlan = blocked;
+        return clone(blocked);
+      }
+      const inventoryRows = this._inventoryGear();
+      const local = this._localPlan(inventoryRows);
+      const group = this._groupPlan(inventoryRows, roster, snap.character.name, snap.character.ctype);
+      const goals = this._goalPlan(roster, inventoryRows);
+      this.metrics.localImprovements = local.improvements ? local.improvements.length : 0;
+      this.metrics.groupProposals = group.proposals.length;
+      const plan = {
+        state: local.state === 'READY' ? 'READY' : local.state,
+        reason: local.state === 'READY' ? 'H14_GEAR_READY' : local.reason,
+        local,
+        group,
+        goals,
+        farmerPriority: 100,
+        merchantPriority: 10
+      };
+      this.lastPlan = clone(plan);
+      return clone(plan);
+    }
+
+    _localWriteAllowed() {
+      if (this._combatActive()) {
+        this.metrics.combatBlocks += 1;
+        return { ok: false, reason: 'H14_COMBAT_ACTIVE' };
+      }
+      const snap = this._snapshot();
+      if (!snap || !snap.available || !snap.character || snap.character.rip) {
+        return { ok: false, reason: 'H14_CHARACTER_UNAVAILABLE_OR_DEAD' };
+      }
+      return { ok: true };
+    }
+
+    queueEquip(inventorySlot, targetSlot) {
+      if (this.suspendedReason) return { accepted: false, reason: this.suspendedReason };
+      if (this.request || this.pending) return { accepted: false, reason: 'H14_BUSY' };
+      const gate = this._localWriteAllowed();
+      if (!gate.ok) return { accepted: false, reason: gate.reason };
+      const slot = Number(inventorySlot);
+      const target = cleanText(targetSlot || '', 40);
+      if (!Number.isInteger(slot) || slot < 0 || !GEAR_SLOTS.includes(target)) {
+        return { accepted: false, reason: 'H14_EQUIP_ARGUMENT_INVALID' };
+      }
+      const snap = this._snapshot();
+      const inventory = this._inventorySnapshot();
+      const equipment = this._equipmentSnapshot(snap.character.name);
+      const row = inventory && (inventory.items || []).find(item => Number(item.slot) === slot);
+      if (!row) return { accepted: false, reason: 'H14_EQUIP_ITEM_NOT_FOUND' };
+      if (row.locked === true || row.giveaway === true || row.gift === true || row.expiresAt) {
+        this.metrics.safetyBlocks += 1;
+        return { accepted: false, reason: 'H14_EQUIP_ITEM_NOT_AUTOMATION_SAFE' };
+      }
+      const normalized = this._normalizedItem(row);
+      const allowed = this._canEquip(normalized, target, snap.character.ctype);
+      if (!allowed.ok) {
+        this.metrics.safetyBlocks += 1;
+        return { accepted: false, reason: allowed.reason };
+      }
+      const conflict = this._handConflict(normalized, target, equipment, snap.character.ctype);
+      if (conflict.blocked) {
+        if (String(conflict.reason).includes('TWO_HAND')) this.metrics.twoHandBlocks += 1;
+        this.metrics.safetyBlocks += 1;
+        return { accepted: false, reason: conflict.reason };
+      }
+      const current = equipment && equipment.slots ? equipment.slots[target] || null : null;
+      const candidateFingerprint = this._fingerprint(normalized);
+      if (current && this._fingerprint(current) === candidateFingerprint) {
+        return { accepted: false, reason: 'H14_ALREADY_EQUIPPED' };
+      }
+      this.request = {
+        id: 'gear-request-' + (++this.sequence),
+        kind: 'EQUIP',
+        inventorySlot: slot,
+        targetSlot: target,
+        candidateFingerprint,
+        candidate: clone(normalized),
+        currentFingerprint: this._fingerprint(current),
+        current: current ? clone(current) : null,
+        createdAt: nowIso()
+      };
+      return { accepted: true, request: clone(this.request) };
+    }
+
+    queueBestLocal(slot = null) {
+      const plan = this.plan();
+      if (plan.state !== 'READY') return { accepted: false, reason: plan.reason };
+      const wanted = slot == null ? null : cleanText(slot, 40);
+      const proposal = (plan.local.improvements || []).find(row => !wanted || row.slot === wanted);
+      if (!proposal || !proposal.bestInventory) return { accepted: false, reason: 'H14_NO_SAFE_LOCAL_IMPROVEMENT' };
+      return this.queueEquip(proposal.bestInventory.inventorySlot, proposal.slot);
+    }
+
+    queueUnequip(targetSlot) {
+      if (this.suspendedReason) return { accepted: false, reason: this.suspendedReason };
+      if (this.request || this.pending) return { accepted: false, reason: 'H14_BUSY' };
+      const gate = this._localWriteAllowed();
+      if (!gate.ok) return { accepted: false, reason: gate.reason };
+      const target = cleanText(targetSlot || '', 40);
+      if (!GEAR_SLOTS.includes(target)) return { accepted: false, reason: 'H14_UNEQUIP_ARGUMENT_INVALID' };
+      const snap = this._snapshot();
+      const equipment = this._equipmentSnapshot(snap.character.name);
+      const inventory = this._inventorySnapshot();
+      const current = equipment && equipment.slots ? equipment.slots[target] || null : null;
+      if (!current) return { accepted: false, reason: 'H14_SLOT_ALREADY_EMPTY' };
+      if (!inventory || inventory.available === false || Number(inventory.freeSlots) <= 0) {
+        return { accepted: false, reason: 'H14_UNEQUIP_NEEDS_FREE_SLOT' };
+      }
+      this.request = {
+        id: 'gear-request-' + (++this.sequence),
+        kind: 'UNEQUIP',
+        targetSlot: target,
+        currentFingerprint: this._fingerprint(current),
+        current: clone(current),
+        createdAt: nowIso()
+      };
+      return { accepted: true, request: clone(this.request) };
+    }
+
+    queueDelivery(targetName, inventorySlot) {
+      if (this.suspendedReason) return { accepted: false, reason: this.suspendedReason };
+      if (this.request || this.pending) return { accepted: false, reason: 'H14_BUSY' };
+      const snap = this._snapshot();
+      if (!snap || !snap.character || String(snap.character.ctype || '').toLowerCase() !== 'merchant') {
+        return { accepted: false, reason: 'H14_DELIVERY_REQUIRES_MERCHANT' };
+      }
+      const target = cleanText(targetName || '', 120);
+      const slot = Number(inventorySlot);
+      if (!target || !Number.isInteger(slot) || slot < 0) return { accepted: false, reason: 'H14_DELIVERY_ARGUMENT_INVALID' };
+      const roster = this._roster();
+      const farmer = roster && (roster.farmers || []).find(row => String(row.name) === target);
+      if (!farmer) {
+        this.metrics.safetyBlocks += 1;
+        return { accepted: false, reason: 'H14_DELIVERY_TARGET_NOT_OWN_FARMER' };
+      }
+      const targetEquipment = this._equipmentSnapshot(target);
+      if (!targetEquipment || targetEquipment.available === false) return { accepted: false, reason: 'H14_DELIVERY_TARGET_NOT_VISIBLE' };
+      const inventory = this._inventorySnapshot();
+      const row = inventory && (inventory.items || []).find(item => Number(item.slot) === slot);
+      if (!row) return { accepted: false, reason: 'H14_DELIVERY_ITEM_NOT_FOUND' };
+      if (row.locked || row.giveaway || row.gift || row.expiresAt) {
+        this.metrics.safetyBlocks += 1;
+        return { accepted: false, reason: 'H14_DELIVERY_ITEM_NOT_TRANSFER_SAFE' };
+      }
+      const normalized = this._normalizedItem(row);
+      if (!normalized) return { accepted: false, reason: 'H14_DELIVERY_ITEM_NOT_GEAR' };
+
+      let best = null;
+      for (const gearSlot of GEAR_SLOTS) {
+        const allowed = this._canEquip(normalized, gearSlot, farmer.ctype);
+        if (!allowed.ok) continue;
+        const current = targetEquipment.slots && targetEquipment.slots[gearSlot] || null;
+        const currentScore = current ? this.score(current, farmer.ctype) : Number.NEGATIVE_INFINITY;
+        const score = this.score(normalized, farmer.ctype);
+        const delta = score - currentScore;
+        if (!(current == null || delta > this.config.improvementEpsilon)) continue;
+        if (!best || delta > best.delta) best = { slot: gearSlot, current, currentScore, score, delta };
+      }
+      if (!best) return { accepted: false, reason: 'H14_DELIVERY_NOT_AN_IMPROVEMENT' };
+      this.request = {
+        id: 'gear-request-' + (++this.sequence),
+        kind: 'DELIVERY',
+        targetName: target,
+        targetCtype: farmer.ctype,
+        inventorySlot: slot,
+        candidateFingerprint: this._fingerprint(normalized),
+        candidate: clone(normalized),
+        targetSlot: best.slot,
+        scoreDelta: Number(best.delta.toFixed(4)),
+        createdAt: nowIso()
+      };
+      return { accepted: true, request: clone(this.request) };
+    }
+
+    _metric(kind, suffix) {
+      const prefix = { EQUIP: 'equips', UNEQUIP: 'unequips', DELIVERY: 'deliveries' }[kind];
+      const key = prefix ? prefix + suffix : null;
+      if (key && Object.prototype.hasOwnProperty.call(this.metrics, key)) this.metrics[key] += 1;
+    }
+
+    _suspend(kind, reason) {
+      this._metric(kind, 'Unknown');
+      this.pending = null;
+      this.request = null;
+      this.suspendedReason = cleanText(reason || 'H14_UNKNOWN', 240) || 'H14_UNKNOWN';
+      this.lastAction = { at: nowIso(), type: kind + '_UNKNOWN', reason: this.suspendedReason };
+      return { state: 'SUSPENDED', reason: this.suspendedReason };
+    }
+
+    _watch(value, pending) {
+      if (!value || typeof value.then !== 'function') {
+        pending.settlement = 'RETURNED';
+        pending.response = value == null ? null : clone(value);
+        return;
+      }
+      Promise.resolve(value).then(response => {
+        if (!this.pending || this.pending.id !== pending.id) return;
+        this.pending.settlement = 'RESOLVED';
+        this.pending.response = response == null ? null : clone(response);
+      }, error => {
+        if (!this.pending || this.pending.id !== pending.id) return;
+        this.pending.settlement = 'REJECTED';
+        this.pending.error = cleanText(error && (error.reason || error.message) || error || 'H14_ACTION_REJECTED', 500);
+      }).catch(() => {});
+    }
+
+    _dispatch(action, args, pendingBase) {
+      if (!this.actions || typeof this.actions.dispatch !== 'function') {
+        return { accepted: false, reason: 'H14_ACTION_BOUNDARY_UNAVAILABLE' };
+      }
+      let result;
+      try { result = this.actions.dispatch(action, args); }
+      catch (error) { return { accepted: false, reason: cleanText(error && error.message || error, 300) }; }
+      if (!result || result.state !== 'DISPATCHED') {
+        if (result && result.state === 'UNKNOWN') return this._suspend(pendingBase.kind, result.error && result.error.message || 'H14_DISPATCH_UNKNOWN');
+        this._metric(pendingBase.kind, 'Rejected');
+        this.request = null;
+        return { accepted: false, reason: result && result.state || 'H14_ACTION_REJECTED' };
+      }
+      const now = Date.now();
+      const pending = {
+        id: 'gear-pending-' + (++this.sequence),
+        ...pendingBase,
+        dispatchedAt: nowIso(),
+        dispatchedAtMs: now,
+        deadlineAtMs: now + this.config.outcomeTimeoutMs,
+        settlement: 'PENDING',
+        response: null,
+        error: null
+      };
+      this.pending = pending;
+      this._metric(pending.kind, 'Dispatched');
+      this.lastAction = { at: pending.dispatchedAt, type: pending.kind + '_DISPATCHED' };
+      this._watch(result.value, pending);
+      return { accepted: true, state: 'DISPATCHED', pending: clone(pending) };
+    }
+
+    _observed(pending) {
+      const inventory = this._inventorySnapshot();
+      if (!inventory || inventory.available === false) return false;
+      const snap = this._snapshot();
+      const localName = snap && snap.character && snap.character.name;
+      const equipment = localName ? this._equipmentSnapshot(localName) : null;
+
+      if (pending.kind === 'EQUIP') {
+        if (!equipment || equipment.available === false) return false;
+        const equipped = equipment.slots && equipment.slots[pending.targetSlot] || null;
+        if (!equipped || this._fingerprint(equipped) !== pending.candidateFingerprint) return false;
+        const candidateAfter = this._quantity(inventory, pending.candidateFingerprint);
+        if (candidateAfter == null || candidateAfter > pending.beforeCandidateQuantity - 1) return false;
+        if (pending.currentFingerprint) {
+          const oldAfter = this._quantity(inventory, pending.currentFingerprint);
+          if (oldAfter == null || oldAfter < pending.beforeCurrentQuantity + 1) return false;
+        }
+        return true;
+      }
+
+      if (pending.kind === 'UNEQUIP') {
+        if (!equipment || equipment.available === false) return false;
+        const equipped = equipment.slots && equipment.slots[pending.targetSlot] || null;
+        if (equipped) return false;
+        const after = this._quantity(inventory, pending.currentFingerprint);
+        return after != null && after >= pending.beforeCurrentQuantity + 1;
+      }
+
+      if (pending.kind === 'DELIVERY') {
+        const after = this._quantity(inventory, pending.candidateFingerprint);
+        return after != null && after <= pending.beforeCandidateQuantity - 1;
+      }
+      return false;
+    }
+
+    _observePending() {
+      const pending = this.pending;
+      if (!pending) return false;
+      if (pending.settlement === 'REJECTED') return this._suspend(pending.kind, pending.error || 'H14_ACTION_REJECTED');
+      if (pending.response && pending.response.failed === true) {
+        this.pending = null;
+        this.request = null;
+        this._metric(pending.kind, 'Rejected');
+        this.lastAction = {
+          at: nowIso(),
+          type: pending.kind + '_REJECTED',
+          reason: cleanText(pending.response.reason || 'H14_ACTION_REJECTED', 240)
+        };
+        return true;
+      }
+      if (this._observed(pending)) {
+        this.pending = null;
+        this.request = null;
+        this._metric(pending.kind, 'Confirmed');
+        this.lastAction = {
+          at: nowIso(),
+          type: pending.kind + '_CONFIRMED',
+          targetSlot: pending.targetSlot || null,
+          targetName: pending.targetName || null,
+          fingerprint: pending.candidateFingerprint || pending.currentFingerprint || null
+        };
+        return true;
+      }
+      if (Date.now() >= pending.deadlineAtMs) return this._suspend(pending.kind, 'H14_' + pending.kind + '_UNVERIFIED_TIMEOUT');
+      return false;
+    }
+
+    _revalidateDelivery(request, inventory) {
+      const snap = this._snapshot();
+      if (!snap || !snap.character || String(snap.character.ctype || '').toLowerCase() !== 'merchant') {
+        return { ok: false, reason: 'H14_DELIVERY_REQUIRES_MERCHANT' };
+      }
+      const roster = this._roster();
+      const farmer = roster && (roster.farmers || []).find(row => String(row.name) === String(request.targetName));
+      if (!farmer) return { ok: false, reason: 'H14_DELIVERY_TARGET_NOT_OWN_FARMER' };
+      const row = (inventory.items || []).find(item => Number(item.slot) === Number(request.inventorySlot));
+      if (!row || this._fingerprint(row) !== request.candidateFingerprint) return { ok: false, reason: 'H14_DELIVERY_SOURCE_CHANGED' };
+      if (row.locked || row.giveaway || row.gift || row.expiresAt) return { ok: false, reason: 'H14_DELIVERY_ITEM_NOT_TRANSFER_SAFE' };
+      const targetEquipment = this._equipmentSnapshot(request.targetName);
+      if (!targetEquipment || targetEquipment.available === false) return { ok: false, reason: 'H14_DELIVERY_TARGET_NOT_VISIBLE' };
+      const current = targetEquipment.slots && targetEquipment.slots[request.targetSlot] || null;
+      const currentScore = current ? this.score(current, farmer.ctype) : Number.NEGATIVE_INFINITY;
+      const candidateScore = this.score(row, farmer.ctype);
+      if (!(current == null || candidateScore - currentScore > this.config.improvementEpsilon)) {
+        return { ok: false, reason: 'H14_DELIVERY_NO_LONGER_IMPROVEMENT' };
+      }
+      return { ok: true, row, farmer };
+    }
+
+    tick() {
+      this.metrics.ticks += 1;
+      if (!this.moduleActive) return { state: 'STOPPED', reason: 'H14_MODULE_NOT_ACTIVE' };
+      if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason };
+
+      if (this.pending) {
+        this._observePending();
+        if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason };
+        return this.pending ? { state: 'PENDING', pending: clone(this.pending) } : { state: 'READY' };
+      }
+
+      const request = this.request;
+      if (!request) return this.plan();
+
+      const inventory = this._inventorySnapshot();
+      if (!inventory || inventory.available === false) return { state: 'BLOCKED', reason: 'H14_INVENTORY_UNAVAILABLE' };
+
+      if (request.kind === 'EQUIP') {
+        const gate = this._localWriteAllowed();
+        if (!gate.ok) {
+          this.request = null;
+          return { state: 'BLOCKED', reason: gate.reason };
+        }
+        const snap = this._snapshot();
+        const equipment = this._equipmentSnapshot(snap.character.name);
+        const row = (inventory.items || []).find(item => Number(item.slot) === Number(request.inventorySlot));
+        if (!row || this._fingerprint(row) !== request.candidateFingerprint) {
+          this.request = null;
+          return { state: 'BLOCKED', reason: 'H14_EQUIP_SOURCE_CHANGED' };
+        }
+        if (row.locked === true || row.giveaway === true || row.gift === true || row.expiresAt) {
+          this.request = null;
+          this.metrics.safetyBlocks += 1;
+          return { state: 'BLOCKED', reason: 'H14_EQUIP_ITEM_NOT_AUTOMATION_SAFE' };
+        }
+        const allowed = this._canEquip(row, request.targetSlot, snap.character.ctype);
+        const conflict = this._handConflict(row, request.targetSlot, equipment, snap.character.ctype);
+        if (!allowed.ok || conflict.blocked) {
+          this.request = null;
+          this.metrics.safetyBlocks += 1;
+          if (conflict.blocked && String(conflict.reason).includes('TWO_HAND')) this.metrics.twoHandBlocks += 1;
+          return { state: 'BLOCKED', reason: conflict.blocked ? conflict.reason : allowed.reason };
+        }
+        const current = equipment.slots && equipment.slots[request.targetSlot] || null;
+        if (this._fingerprint(current) !== request.currentFingerprint) {
+          this.request = null;
+          this.metrics.safetyBlocks += 1;
+          return { state: 'BLOCKED', reason: 'H14_EQUIP_TARGET_CHANGED' };
+        }
+        const beforeCandidateQuantity = this._quantity(inventory, request.candidateFingerprint);
+        const beforeCurrentQuantity = request.currentFingerprint ? this._quantity(inventory, request.currentFingerprint) : 0;
+        return this._dispatch('equip', [request.inventorySlot, request.targetSlot], {
+          kind: request.kind,
+          targetSlot: request.targetSlot,
+          candidateFingerprint: request.candidateFingerprint,
+          currentFingerprint: this._fingerprint(current),
+          beforeCandidateQuantity,
+          beforeCurrentQuantity: beforeCurrentQuantity == null ? 0 : beforeCurrentQuantity
+        });
+      }
+
+      if (request.kind === 'UNEQUIP') {
+        const gate = this._localWriteAllowed();
+        if (!gate.ok) {
+          this.request = null;
+          return { state: 'BLOCKED', reason: gate.reason };
+        }
+        const snap = this._snapshot();
+        const equipment = this._equipmentSnapshot(snap.character.name);
+        const current = equipment.slots && equipment.slots[request.targetSlot] || null;
+        if (!current || this._fingerprint(current) !== request.currentFingerprint) {
+          this.request = null;
+          return { state: 'BLOCKED', reason: 'H14_UNEQUIP_SOURCE_CHANGED' };
+        }
+        if (Number(inventory.freeSlots) <= 0) {
+          this.request = null;
+          return { state: 'BLOCKED', reason: 'H14_UNEQUIP_NEEDS_FREE_SLOT' };
+        }
+        const beforeCurrentQuantity = this._quantity(inventory, request.currentFingerprint);
+        return this._dispatch('unequip', [request.targetSlot], {
+          kind: request.kind,
+          targetSlot: request.targetSlot,
+          currentFingerprint: request.currentFingerprint,
+          beforeCurrentQuantity: beforeCurrentQuantity == null ? 0 : beforeCurrentQuantity
+        });
+      }
+
+      if (request.kind === 'DELIVERY') {
+        const valid = this._revalidateDelivery(request, inventory);
+        if (!valid.ok) {
+          this.request = null;
+          this.metrics.safetyBlocks += 1;
+          return { state: 'BLOCKED', reason: valid.reason };
+        }
+        const beforeCandidateQuantity = this._quantity(inventory, request.candidateFingerprint);
+        return this._dispatch('send_item', [request.targetName, request.inventorySlot, 1], {
+          kind: request.kind,
+          targetName: request.targetName,
+          targetSlot: request.targetSlot,
+          candidateFingerprint: request.candidateFingerprint,
+          beforeCandidateQuantity
+        });
+      }
+
+      this.request = null;
+      return { state: 'BLOCKED', reason: 'H14_REQUEST_UNKNOWN' };
+    }
+
+    status() {
+      return {
+        schemaVersion: 1,
+        moduleActive: this.moduleActive,
+        suspended: !!this.suspendedReason,
+        suspendedReason: this.suspendedReason,
+        pending: clone(this.pending),
+        request: clone(this.request),
+        goals: clone(this.goals),
+        lastPlan: clone(this.lastPlan),
+        lastAction: clone(this.lastAction),
+        config: clone(this.config),
+        metrics: clone(this.metrics)
+      };
+    }
+  }
+
+  ns.GearController = GearController;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+
+(function (root) {
+  'use strict';
+
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns) throw new Error('ALBOT_INTERNALS_MISSING');
+
+  const clone = ns.helpers.clone;
+  const cleanText = ns.helpers.cleanText;
+
+  function finite(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function nowIso() {
+    return new Date().toISOString();
+  }
+
+  function stableProperty(value) {
+    if (value == null) return '';
+    try {
+      if (typeof value !== 'object') return String(value);
+      const ordered = {};
+      for (const key of Object.keys(value).sort()) ordered[key] = value[key];
+      return JSON.stringify(ordered);
+    } catch (_) {
+      return String(value);
+    }
+  }
+
+  class UpgradeCompoundController {
+    constructor(options = {}) {
+      this.root = options.root || root;
+      this.logger = options.logger || null;
+      this.game = options.game || null;
+      this.actions = options.actions || null;
+      this.combat = options.combat || null;
+      this.moduleActive = false;
+      this.scope = null;
+      this.pending = null;
+      this.request = null;
+      this.suspendedReason = null;
+      this.lastPlan = null;
+      this.lastAction = null;
+      this.sequence = 0;
+      this.attemptsThisSession = 0;
+      this.config = {
+        tickMs: Math.max(250, Math.min(5000, Number(options.tickMs) || 750)),
+        outcomeTimeoutMs: Math.max(1000, Math.min(60000, Number(options.outcomeTimeoutMs) || 8000)),
+        settleGraceMs: Math.max(100, Math.min(3000, Number(options.settleGraceMs) || 500)),
+        maxAttemptsPerSession: Math.max(1, Math.min(100, finite(options.maxAttemptsPerSession) == null ? 12 : finite(options.maxAttemptsPerSession))),
+        maxUpgradeLevel: Math.max(0, Math.min(20, finite(options.maxUpgradeLevel) == null ? 8 : finite(options.maxUpgradeLevel))),
+        maxCompoundLevel: Math.max(0, Math.min(20, finite(options.maxCompoundLevel) == null ? 4 : finite(options.maxCompoundLevel))),
+        maxItemValueAtRisk: Math.max(0, finite(options.maxItemValueAtRisk) == null ? 250000 : finite(options.maxItemValueAtRisk)),
+        maxConsumableCost: Math.max(0, finite(options.maxConsumableCost) == null ? 250000 : finite(options.maxConsumableCost)),
+        offeringMode: ['DISABLED', 'OPTIONAL', 'REQUIRED'].includes(String(options.offeringMode || '').toUpperCase())
+          ? String(options.offeringMode).toUpperCase() : 'DISABLED',
+        offeringFromLevel: Math.max(0, Math.min(20, finite(options.offeringFromLevel) == null ? 7 : finite(options.offeringFromLevel))),
+        offeringNames: Array.isArray(options.offeringNames) && options.offeringNames.length
+          ? options.offeringNames.map(value => cleanText(value, 80)).filter(Boolean)
+          : ['offeringp', 'offering']
+      };
+      this.metrics = {
+        ticks: 0,
+        plans: 0,
+        upgradeCandidates: 0,
+        compoundCandidates: 0,
+        upgradesDispatched: 0,
+        upgradesSucceeded: 0,
+        upgradesFailed: 0,
+        upgradesRejected: 0,
+        upgradesUnknown: 0,
+        compoundsDispatched: 0,
+        compoundsSucceeded: 0,
+        compoundsFailed: 0,
+        compoundsRejected: 0,
+        compoundsUnknown: 0,
+        budgetBlocks: 0,
+        safetyBlocks: 0
+      };
+    }
+
+    start(context = {}) {
+      if (this.moduleActive) return { started: false, reason: 'H15_ALREADY_ACTIVE' };
+      this.moduleActive = true;
+      this.scope = context.scope || null;
+      this.suspendedReason = null;
+      this.attemptsThisSession = 0;
+      if (this.scope && typeof this.scope.interval === 'function') {
+        this.scope.interval('upgrade-compound-tick', () => this.tick(), this.config.tickMs, { immediate: true });
+      }
+      return { started: true };
+    }
+
+    stop(reason = 'H15_MODULE_STOP') {
+      this.moduleActive = false;
+      this.scope = null;
+      this.pending = null;
+      this.request = null;
+      this.lastAction = { at: nowIso(), type: 'STOP', reason: cleanText(reason, 240) };
+      return { stopped: true };
+    }
+
+    resetSafety(reason = 'H15_EXPLICIT_RESET') {
+      this.pending = null;
+      this.request = null;
+      this.suspendedReason = null;
+      this.attemptsThisSession = 0;
+      this.lastAction = { at: nowIso(), type: 'RESET', reason: cleanText(reason, 240) };
+      return this.status();
+    }
+
+    cancelRequest(reason = 'H15_REQUEST_CANCELLED') {
+      this.pending = null;
+      this.request = null;
+      this.lastAction = { at: nowIso(), type: 'REQUEST_CANCELLED', reason: cleanText(reason, 240) };
+      return this.status();
+    }
+
+    policy(value = null) {
+      if (value == null) return clone(this.config);
+      if (!value || typeof value !== 'object') throw new Error('H15_POLICY_MUST_BE_OBJECT');
+      if (value.maxAttemptsPerSession != null) this.config.maxAttemptsPerSession = Math.max(1, Math.min(100, Math.floor(Number(value.maxAttemptsPerSession) || 1)));
+      if (value.maxUpgradeLevel != null) this.config.maxUpgradeLevel = Math.max(0, Math.min(20, Math.floor(Number(value.maxUpgradeLevel) || 0)));
+      if (value.maxCompoundLevel != null) this.config.maxCompoundLevel = Math.max(0, Math.min(20, Math.floor(Number(value.maxCompoundLevel) || 0)));
+      if (value.maxItemValueAtRisk != null) this.config.maxItemValueAtRisk = Math.max(0, Number(value.maxItemValueAtRisk) || 0);
+      if (value.maxConsumableCost != null) this.config.maxConsumableCost = Math.max(0, Number(value.maxConsumableCost) || 0);
+      if (value.offeringFromLevel != null) this.config.offeringFromLevel = Math.max(0, Math.min(20, Math.floor(Number(value.offeringFromLevel) || 0)));
+      if (value.offeringMode != null) {
+        const mode = String(value.offeringMode).toUpperCase();
+        if (!['DISABLED', 'OPTIONAL', 'REQUIRED'].includes(mode)) throw new Error('H15_OFFERING_MODE_INVALID');
+        this.config.offeringMode = mode;
+      }
+      if (Array.isArray(value.offeringNames)) {
+        const names = value.offeringNames.map(row => cleanText(row, 80)).filter(Boolean);
+        if (!names.length) throw new Error('H15_OFFERING_NAMES_EMPTY');
+        this.config.offeringNames = names;
+      }
+      return clone(this.config);
+    }
+
+    _snapshot() {
+      try { return this.game && this.game.snapshot ? this.game.snapshot() : null; }
+      catch (_) { return null; }
+    }
+
+    _inventory() {
+      try { return this.game && this.game.inventorySnapshot ? this.game.inventorySnapshot() : null; }
+      catch (_) { return null; }
+    }
+
+    _definition(name) {
+      try {
+        if (this.game && this.game.equipmentDefinition) {
+          const equipment = this.game.equipmentDefinition(name);
+          if (equipment) return equipment;
+        }
+        return this.game && this.game.itemDefinition ? this.game.itemDefinition(name) : null;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    _combatActive() {
+      try {
+        const status = this.combat && typeof this.combat.status === 'function' ? this.combat.status() : null;
+        return !!(status && (status.active || status.state && !['IDLE', 'STOPPED'].includes(String(status.state))));
+      } catch (_) {
+        return false;
+      }
+    }
+
+    _safeItem(row) {
+      return !!(row && row.name && row.locked !== true && row.giveaway !== true && row.gift !== true && !row.expiresAt);
+    }
+
+    _safeDefinition(definition) {
+      return !!(definition && definition.quest !== true && definition.cash !== true);
+    }
+
+    _propertyKey(row) {
+      return [
+        cleanText(row && row.name || '', 160),
+        cleanText(row && (row.statType != null ? row.statType : row.stat_type) || '', 80),
+        stableProperty(row && (row.property != null ? row.property : row.p))
+      ].join('|');
+    }
+
+    _fingerprint(row) {
+      if (!row || !row.name) return null;
+      return this._propertyKey(row) + '|' + Math.max(0, Number(row.level) || 0);
+    }
+
+    _quantityByName(inventory, name) {
+      if (!inventory || inventory.available === false) return null;
+      return (inventory.items || []).reduce((sum, row) =>
+        String(row.name) === String(name) ? sum + Math.max(1, Number(row.quantity) || 1) : sum, 0);
+    }
+
+    _countIdentityAtLevel(inventory, identityKey, level) {
+      if (!inventory || inventory.available === false) return null;
+      return (inventory.items || []).reduce((sum, row) => {
+        if (this._propertyKey(row) !== identityKey) return sum;
+        if (Math.max(0, Number(row.level) || 0) !== Math.max(0, Number(level) || 0)) return sum;
+        return sum + Math.max(1, Number(row.quantity) || 1);
+      }, 0);
+    }
+
+    _rowAt(inventory, slot) {
+      return inventory && (inventory.items || []).find(row => Number(row.slot) === Number(slot)) || null;
+    }
+
+    _grade(definition, level) {
+      const grades = definition && Array.isArray(definition.grades) ? definition.grades : null;
+      if (!grades || !grades.length) return 0;
+      const current = Math.max(0, Number(level) || 0);
+      if (grades.length >= 2) {
+        if (current < Number(grades[0])) return 0;
+        if (current < Number(grades[1])) return 1;
+        return 2;
+      }
+      return current < Number(grades[0]) ? 0 : 1;
+    }
+
+    _scrollName(kind, grade) {
+      const safeGrade = Math.max(0, Math.min(2, Number(grade) || 0));
+      return (kind === 'COMPOUND' ? 'cscroll' : 'scroll') + safeGrade;
+    }
+
+    _findConsumable(inventory, name, excluded = new Set()) {
+      return (inventory.items || []).find(row =>
+        !excluded.has(Number(row.slot))
+        && String(row.name) === String(name)
+        && this._safeItem(row)
+        && Math.max(1, Number(row.quantity) || 1) >= 1) || null;
+    }
+
+    _offeringFor(inventory, level, excluded = new Set(), force = null) {
+      const shouldUse = force === true
+        || (force == null && this.config.offeringMode !== 'DISABLED' && Number(level) >= this.config.offeringFromLevel);
+      if (!shouldUse) return { required: false, row: null };
+      for (const name of this.config.offeringNames) {
+        const row = this._findConsumable(inventory, name, excluded);
+        if (row) return { required: this.config.offeringMode === 'REQUIRED' || force === true, row };
+      }
+      return { required: this.config.offeringMode === 'REQUIRED' || force === true, row: null };
+    }
+
+    _estimatedItemValue(row, definition) {
+      const base = Math.max(0, finite(definition && definition.g) || 0);
+      const level = Math.max(0, Number(row && row.level) || 0);
+      return Math.round(base * Math.pow(1.75, level));
+    }
+
+    _budget(row, definition, scroll, offering, targetLevel, kind = 'UPGRADE', itemCount = 1) {
+      const itemValueAtRisk = this._estimatedItemValue(row, definition) * Math.max(1, Math.floor(Number(itemCount) || 1));
+      const scrollDef = scroll ? this._definition(scroll.name) : null;
+      const offeringDef = offering ? this._definition(offering.name) : null;
+      const consumableCost = Math.max(0, finite(scrollDef && scrollDef.g) || 0)
+        + Math.max(0, finite(offeringDef && offeringDef.g) || 0);
+      const maxLevel = kind === 'COMPOUND' ? this.config.maxCompoundLevel : this.config.maxUpgradeLevel;
+      if (Number(targetLevel) > maxLevel) return { ok: false, reason: 'H15_TARGET_LEVEL_OVER_BUDGET', itemValueAtRisk, consumableCost };
+      if (itemValueAtRisk > this.config.maxItemValueAtRisk) return { ok: false, reason: 'H15_ITEM_VALUE_OVER_BUDGET', itemValueAtRisk, consumableCost };
+      if (consumableCost > this.config.maxConsumableCost) return { ok: false, reason: 'H15_CONSUMABLE_COST_OVER_BUDGET', itemValueAtRisk, consumableCost };
+      return { ok: true, itemValueAtRisk, consumableCost };
+    }
+
+    _upgradeCandidate(row, inventory, options = {}) {
+      if (!this._safeItem(row)) return { ok: false, reason: 'H15_ITEM_NOT_AUTOMATION_SAFE' };
+      const definition = this._definition(row.name);
+      if (!definition || definition.upgradeable !== true) return { ok: false, reason: 'H15_ITEM_NOT_UPGRADEABLE' };
+      if (!this._safeDefinition(definition)) return { ok: false, reason: 'H15_ITEM_DEFINITION_PROTECTED' };
+      const level = Math.max(0, Number(row.level) || 0);
+      const targetLevel = level + 1;
+      const grade = this._grade(definition, level);
+      const excluded = new Set([Number(row.slot)]);
+      const scrollName = this._scrollName('UPGRADE', grade);
+      const scroll = this._findConsumable(inventory, scrollName, excluded);
+      if (!scroll) return { ok: false, reason: 'H15_UPGRADE_SCROLL_MISSING', scrollName, grade };
+      excluded.add(Number(scroll.slot));
+      const offering = this._offeringFor(inventory, level, excluded, options.useOffering == null ? null : options.useOffering === true);
+      if (offering.required && !offering.row) return { ok: false, reason: 'H15_REQUIRED_OFFERING_MISSING', scrollName, grade };
+      const budget = this._budget(row, definition, scroll, offering.row, targetLevel, 'UPGRADE', 1);
+      if (!budget.ok) return { ok: false, reason: budget.reason, budget, scrollName, grade };
+      return {
+        ok: true,
+        kind: 'UPGRADE',
+        item: clone(row),
+        itemSlot: Number(row.slot),
+        fingerprint: this._fingerprint(row),
+        identityKey: this._propertyKey(row),
+        definition: clone(definition),
+        fromLevel: level,
+        targetLevel,
+        grade,
+        scroll: clone(scroll),
+        scrollName,
+        offering: offering.row ? clone(offering.row) : null,
+        budget
+      };
+    }
+
+    _compoundCandidate(rows, inventory, options = {}) {
+      if (!Array.isArray(rows) || rows.length !== 3) return { ok: false, reason: 'H15_COMPOUND_NEEDS_THREE_ITEMS' };
+      if (rows.some(row => !this._safeItem(row))) return { ok: false, reason: 'H15_ITEM_NOT_AUTOMATION_SAFE' };
+      const fingerprints = rows.map(row => this._fingerprint(row));
+      if (!fingerprints[0] || !fingerprints.every(value => value === fingerprints[0])) {
+        return { ok: false, reason: 'H15_COMPOUND_ITEMS_NOT_IDENTICAL' };
+      }
+      const definition = this._definition(rows[0].name);
+      if (!definition || definition.compoundable !== true) return { ok: false, reason: 'H15_ITEM_NOT_COMPOUNDABLE' };
+      if (!this._safeDefinition(definition)) return { ok: false, reason: 'H15_ITEM_DEFINITION_PROTECTED' };
+      const level = Math.max(0, Number(rows[0].level) || 0);
+      const targetLevel = level + 1;
+      const grade = this._grade(definition, level);
+      const sourceSlots = rows.map(row => Number(row.slot)).sort((a, b) => a - b);
+      const excluded = new Set(sourceSlots);
+      const scrollName = this._scrollName('COMPOUND', grade);
+      const scroll = this._findConsumable(inventory, scrollName, excluded);
+      if (!scroll) return { ok: false, reason: 'H15_COMPOUND_SCROLL_MISSING', scrollName, grade };
+      excluded.add(Number(scroll.slot));
+      const offering = this._offeringFor(inventory, level, excluded, options.useOffering == null ? null : options.useOffering === true);
+      if (offering.required && !offering.row) return { ok: false, reason: 'H15_REQUIRED_OFFERING_MISSING', scrollName, grade };
+      const budget = this._budget(rows[0], definition, scroll, offering.row, targetLevel, 'COMPOUND', 3);
+      if (!budget.ok) return { ok: false, reason: budget.reason, budget, scrollName, grade };
+      return {
+        ok: true,
+        kind: 'COMPOUND',
+        items: clone(rows),
+        itemSlots: sourceSlots,
+        fingerprint: fingerprints[0],
+        identityKey: this._propertyKey(rows[0]),
+        definition: clone(definition),
+        fromLevel: level,
+        targetLevel,
+        grade,
+        scroll: clone(scroll),
+        scrollName,
+        offering: offering.row ? clone(offering.row) : null,
+        budget
+      };
+    }
+
+    plan() {
+      this.metrics.plans += 1;
+      const inventory = this._inventory();
+      if (!inventory || inventory.available === false) {
+        this.lastPlan = { state: 'BLOCKED', reason: 'H15_INVENTORY_UNAVAILABLE' };
+        return clone(this.lastPlan);
+      }
+      const rows = inventory.items || [];
+      const upgradeCandidates = [];
+      for (const row of rows) {
+        const candidate = this._upgradeCandidate(row, inventory);
+        if (candidate.ok) upgradeCandidates.push(candidate);
+      }
+
+      const groups = new Map();
+      for (const row of rows) {
+        if (!this._safeItem(row)) continue;
+        const definition = this._definition(row.name);
+        if (!definition || definition.compoundable !== true) continue;
+        const key = this._fingerprint(row);
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(row);
+      }
+      const compoundCandidates = [];
+      for (const rowsForKey of groups.values()) {
+        const sorted = rowsForKey.slice().sort((a, b) => Number(a.slot) - Number(b.slot));
+        for (let offset = 0; offset + 2 < sorted.length; offset += 3) {
+          const candidate = this._compoundCandidate(sorted.slice(offset, offset + 3), inventory);
+          if (candidate.ok) compoundCandidates.push(candidate);
+        }
+      }
+
+      upgradeCandidates.sort((a, b) => a.budget.itemValueAtRisk - b.budget.itemValueAtRisk || a.fromLevel - b.fromLevel || a.itemSlot - b.itemSlot);
+      compoundCandidates.sort((a, b) => a.budget.itemValueAtRisk - b.budget.itemValueAtRisk || a.fromLevel - b.fromLevel || a.itemSlots[0] - b.itemSlots[0]);
+
+      this.metrics.upgradeCandidates = upgradeCandidates.length;
+      this.metrics.compoundCandidates = compoundCandidates.length;
+      const reserved = new Set();
+      if (this.request) {
+        for (const slot of this.request.itemSlots || [this.request.itemSlot]) if (slot != null) reserved.add(Number(slot));
+        if (this.request.scrollSlot != null) reserved.add(Number(this.request.scrollSlot));
+        if (this.request.offeringSlot != null) reserved.add(Number(this.request.offeringSlot));
+      }
+      if (this.pending) {
+        for (const slot of this.pending.itemSlots || [this.pending.itemSlot]) if (slot != null) reserved.add(Number(slot));
+        if (this.pending.scrollSlot != null) reserved.add(Number(this.pending.scrollSlot));
+        if (this.pending.offeringSlot != null) reserved.add(Number(this.pending.offeringSlot));
+      }
+
+      this.lastPlan = {
+        state: 'READY',
+        reason: 'H15_PLAN_READY',
+        inventory: {
+          capacity: inventory.capacity,
+          usedSlots: inventory.usedSlots,
+          freeSlots: inventory.freeSlots
+        },
+        workspace: {
+          reservedSlots: Array.from(reserved).sort((a, b) => a - b),
+          requestActive: !!this.request,
+          pendingActive: !!this.pending
+        },
+        policy: clone(this.config),
+        upgradeCandidates: clone(upgradeCandidates),
+        compoundCandidates: clone(compoundCandidates)
+      };
+      return clone(this.lastPlan);
+    }
+
+    _queue(candidate, options = {}) {
+      if (!candidate || candidate.ok !== true) return { accepted: false, reason: candidate && candidate.reason || 'H15_CANDIDATE_INVALID' };
+      if (this.suspendedReason) return { accepted: false, reason: this.suspendedReason };
+      if (this.pending || this.request) return { accepted: false, reason: 'H15_BUSY' };
+      if (this.attemptsThisSession >= this.config.maxAttemptsPerSession) {
+        this.metrics.budgetBlocks += 1;
+        return { accepted: false, reason: 'H15_SESSION_ATTEMPT_BUDGET_EXHAUSTED' };
+      }
+      this.request = {
+        id: 'h15-request-' + (++this.sequence),
+        kind: candidate.kind,
+        itemSlot: candidate.itemSlot == null ? null : Number(candidate.itemSlot),
+        itemSlots: candidate.itemSlots ? candidate.itemSlots.map(Number) : null,
+        fingerprint: candidate.fingerprint,
+        identityKey: candidate.identityKey,
+        fromLevel: candidate.fromLevel,
+        targetLevel: candidate.targetLevel,
+        scrollSlot: Number(candidate.scroll.slot),
+        scrollName: candidate.scrollName,
+        offeringSlot: candidate.offering ? Number(candidate.offering.slot) : null,
+        offeringName: candidate.offering ? candidate.offering.name : null,
+        budget: clone(candidate.budget),
+        queuedAt: nowIso(),
+        useOffering: options.useOffering === true
+      };
+      this.lastAction = { at: nowIso(), type: candidate.kind + '_QUEUED', requestId: this.request.id };
+      return { accepted: true, request: clone(this.request) };
+    }
+
+    queueUpgrade(itemSlot, options = {}) {
+      const inventory = this._inventory();
+      if (!inventory || inventory.available === false) return { accepted: false, reason: 'H15_INVENTORY_UNAVAILABLE' };
+      const row = this._rowAt(inventory, itemSlot);
+      if (!row) return { accepted: false, reason: 'H15_UPGRADE_SOURCE_MISSING' };
+      const candidate = this._upgradeCandidate(row, inventory, options);
+      if (!candidate.ok && String(candidate.reason || '').includes('BUDGET')) this.metrics.budgetBlocks += 1;
+      if (!candidate.ok && !String(candidate.reason || '').includes('SCROLL') && !String(candidate.reason || '').includes('OFFERING')) this.metrics.safetyBlocks += 1;
+      return this._queue(candidate, options);
+    }
+
+    queueCompound(itemSlots, options = {}) {
+      if (!Array.isArray(itemSlots) || itemSlots.length !== 3) return { accepted: false, reason: 'H15_COMPOUND_NEEDS_THREE_ITEMS' };
+      const slots = itemSlots.map(Number);
+      if (new Set(slots).size !== 3) return { accepted: false, reason: 'H15_COMPOUND_SLOTS_MUST_BE_UNIQUE' };
+      const inventory = this._inventory();
+      if (!inventory || inventory.available === false) return { accepted: false, reason: 'H15_INVENTORY_UNAVAILABLE' };
+      const rows = slots.map(slot => this._rowAt(inventory, slot));
+      if (rows.some(row => !row)) return { accepted: false, reason: 'H15_COMPOUND_SOURCE_MISSING' };
+      const candidate = this._compoundCandidate(rows, inventory, options);
+      if (!candidate.ok && String(candidate.reason || '').includes('BUDGET')) this.metrics.budgetBlocks += 1;
+      if (!candidate.ok && !String(candidate.reason || '').includes('SCROLL') && !String(candidate.reason || '').includes('OFFERING')) this.metrics.safetyBlocks += 1;
+      return this._queue(candidate, options);
+    }
+
+    queueBest(kind = null) {
+      const plan = this.plan();
+      if (!plan || plan.state !== 'READY') return { accepted: false, reason: plan && plan.reason || 'H15_PLAN_UNAVAILABLE' };
+      const wanted = kind == null ? null : String(kind).toUpperCase();
+      if (wanted === 'COMPOUND') {
+        const candidate = plan.compoundCandidates[0];
+        return candidate ? this.queueCompound(candidate.itemSlots) : { accepted: false, reason: 'H15_NO_COMPOUND_CANDIDATE' };
+      }
+      if (wanted === 'UPGRADE') {
+        const candidate = plan.upgradeCandidates[0];
+        return candidate ? this.queueUpgrade(candidate.itemSlot) : { accepted: false, reason: 'H15_NO_UPGRADE_CANDIDATE' };
+      }
+      const choices = [];
+      if (plan.upgradeCandidates[0]) choices.push(plan.upgradeCandidates[0]);
+      if (plan.compoundCandidates[0]) choices.push(plan.compoundCandidates[0]);
+      choices.sort((a, b) => a.budget.itemValueAtRisk - b.budget.itemValueAtRisk);
+      const candidate = choices[0];
+      if (!candidate) return { accepted: false, reason: 'H15_NO_SAFE_CANDIDATE' };
+      return candidate.kind === 'UPGRADE' ? this.queueUpgrade(candidate.itemSlot) : this.queueCompound(candidate.itemSlots);
+    }
+
+    _writeAllowed() {
+      const snap = this._snapshot();
+      if (!snap || !snap.available || !snap.character) return { ok: false, reason: 'H15_CHARACTER_UNAVAILABLE' };
+      if (snap.character.rip === true) return { ok: false, reason: 'H15_CHARACTER_DEAD' };
+      if (this._combatActive()) {
+        this.metrics.safetyBlocks += 1;
+        return { ok: false, reason: 'H15_COMBAT_ACTIVE' };
+      }
+      return { ok: true, snapshot: snap };
+    }
+
+    _metric(kind, suffix) {
+      const prefix = kind === 'COMPOUND' ? 'compounds' : 'upgrades';
+      const key = prefix + suffix;
+      if (Object.prototype.hasOwnProperty.call(this.metrics, key)) this.metrics[key] += 1;
+    }
+
+    _suspend(kind, reason) {
+      this._metric(kind, 'Unknown');
+      this.suspendedReason = cleanText(reason || ('H15_' + kind + '_UNKNOWN'), 300);
+      this.pending = null;
+      this.request = null;
+      this.lastAction = { at: nowIso(), type: kind + '_UNKNOWN', reason: this.suspendedReason };
+      return { state: 'SUSPENDED', reason: this.suspendedReason };
+    }
+
+    _watch(value, pending) {
+      if (!value || typeof value.then !== 'function') {
+        pending.settlement = 'RETURNED';
+        pending.response = value == null ? null : clone(value);
+        return;
+      }
+      Promise.resolve(value).then(response => {
+        if (!this.pending || this.pending.id !== pending.id) return;
+        this.pending.settlement = 'RESOLVED';
+        this.pending.response = response == null ? null : clone(response);
+      }, error => {
+        if (!this.pending || this.pending.id !== pending.id) return;
+        this.pending.settlement = 'REJECTED';
+        this.pending.error = cleanText(error && (error.reason || error.message) || error || 'H15_ACTION_REJECTED', 500);
+      }).catch(() => {});
+    }
+
+    _dispatch(request, inventory) {
+      if (!this.actions || typeof this.actions.dispatch !== 'function') return { accepted: false, reason: 'H15_ACTION_BOUNDARY_UNAVAILABLE' };
+      const beforeScrollQuantity = this._quantityByName(inventory, request.scrollName);
+      const beforeOfferingQuantity = request.offeringName ? this._quantityByName(inventory, request.offeringName) : null;
+      const beforeSameLevel = this._countIdentityAtLevel(inventory, request.identityKey, request.fromLevel);
+      const beforeNextLevel = this._countIdentityAtLevel(inventory, request.identityKey, request.targetLevel);
+      const args = request.kind === 'COMPOUND'
+        ? request.itemSlots.concat([request.scrollSlot, request.offeringSlot])
+        : [request.itemSlot, request.scrollSlot, request.offeringSlot];
+      let result;
+      try { result = this.actions.dispatch(request.kind === 'COMPOUND' ? 'compound' : 'upgrade', args); }
+      catch (error) { return { accepted: false, reason: cleanText(error && error.message || error, 300) }; }
+      if (!result || result.state !== 'DISPATCHED') {
+        if (result && result.state === 'UNKNOWN') return this._suspend(request.kind, result.error && result.error.message || 'H15_DISPATCH_UNKNOWN');
+        this._metric(request.kind, 'Rejected');
+        this.request = null;
+        return { accepted: false, reason: result && result.state || 'H15_ACTION_REJECTED' };
+      }
+      const now = Date.now();
+      const pending = {
+        id: 'h15-pending-' + (++this.sequence),
+        ...request,
+        dispatchedAt: nowIso(),
+        dispatchedAtMs: now,
+        deadlineAtMs: now + this.config.outcomeTimeoutMs,
+        evidenceAtMs: null,
+        settlement: 'PENDING',
+        response: null,
+        error: null,
+        beforeScrollQuantity,
+        beforeOfferingQuantity,
+        beforeSameLevel,
+        beforeNextLevel
+      };
+      this.pending = pending;
+      this.attemptsThisSession += 1;
+      this._metric(request.kind, 'Dispatched');
+      this.lastAction = { at: pending.dispatchedAt, type: request.kind + '_DISPATCHED', requestId: request.id };
+      this._watch(result.value, pending);
+      return { accepted: true, state: 'DISPATCHED', pending: clone(pending) };
+    }
+
+    _complete(pending, outcome, details = {}) {
+      this.pending = null;
+      this.request = null;
+      this._metric(pending.kind, outcome === 'SUCCEEDED' ? 'Succeeded' : 'Failed');
+      this.lastAction = {
+        at: nowIso(),
+        type: pending.kind + '_' + outcome,
+        fromLevel: pending.fromLevel,
+        targetLevel: pending.targetLevel,
+        ...clone(details)
+      };
+      return true;
+    }
+
+    _observePending() {
+      const pending = this.pending;
+      if (!pending) return false;
+      const inventory = this._inventory();
+      if (!inventory || inventory.available === false) {
+        if (Date.now() >= pending.deadlineAtMs) return this._suspend(pending.kind, 'H15_INVENTORY_UNAVAILABLE_DURING_OUTCOME');
+        return false;
+      }
+      const afterScroll = this._quantityByName(inventory, pending.scrollName);
+      const scrollConsumed = afterScroll != null && pending.beforeScrollQuantity != null && afterScroll <= pending.beforeScrollQuantity - 1;
+      const afterOffering = pending.offeringName ? this._quantityByName(inventory, pending.offeringName) : null;
+      const offeringConsumed = !pending.offeringName
+        || (afterOffering != null && pending.beforeOfferingQuantity != null && afterOffering <= pending.beforeOfferingQuantity - 1);
+      const afterNextLevel = this._countIdentityAtLevel(inventory, pending.identityKey, pending.targetLevel);
+      const successObserved = afterNextLevel != null && pending.beforeNextLevel != null && afterNextLevel >= pending.beforeNextLevel + 1;
+
+      if (successObserved && scrollConsumed && offeringConsumed) {
+        return this._complete(pending, 'SUCCEEDED', { evidence: 'INVENTORY_LEVEL_DELTA' });
+      }
+
+      if (scrollConsumed && offeringConsumed) {
+        if (pending.evidenceAtMs == null) pending.evidenceAtMs = Date.now();
+        if (Date.now() - pending.evidenceAtMs >= this.config.settleGraceMs) {
+          return this._complete(pending, 'FAILED', {
+            evidence: 'CONSUMABLE_DELTA_WITHOUT_LEVEL_GAIN',
+            afterSameLevel: this._countIdentityAtLevel(inventory, pending.identityKey, pending.fromLevel)
+          });
+        }
+      }
+
+      if (pending.settlement === 'REJECTED') {
+        return this._suspend(pending.kind, pending.error || 'H15_ACTION_REJECTED_WITHOUT_LIVE_OUTCOME');
+      }
+      if (Date.now() >= pending.deadlineAtMs) {
+        return this._suspend(pending.kind, 'H15_' + pending.kind + '_UNVERIFIED_TIMEOUT');
+      }
+      return false;
+    }
+
+    _revalidate(request, inventory) {
+      const gate = this._writeAllowed();
+      if (!gate.ok) return gate;
+      if (this.attemptsThisSession >= this.config.maxAttemptsPerSession) return { ok: false, reason: 'H15_SESSION_ATTEMPT_BUDGET_EXHAUSTED' };
+
+      const itemSlots = request.kind === 'COMPOUND' ? request.itemSlots : [request.itemSlot];
+      const rows = itemSlots.map(slot => this._rowAt(inventory, slot));
+      if (rows.some(row => !row)) return { ok: false, reason: 'H15_SOURCE_CHANGED' };
+      if (rows.some(row => this._fingerprint(row) !== request.fingerprint)) return { ok: false, reason: 'H15_SOURCE_CHANGED' };
+      if (rows.some(row => !this._safeItem(row))) return { ok: false, reason: 'H15_ITEM_NOT_AUTOMATION_SAFE' };
+
+      const scroll = this._rowAt(inventory, request.scrollSlot);
+      if (!scroll || String(scroll.name) !== String(request.scrollName) || !this._safeItem(scroll)) {
+        return { ok: false, reason: 'H15_SCROLL_SOURCE_CHANGED' };
+      }
+      if (request.offeringSlot != null) {
+        const offering = this._rowAt(inventory, request.offeringSlot);
+        if (!offering || String(offering.name) !== String(request.offeringName) || !this._safeItem(offering)) {
+          return { ok: false, reason: 'H15_OFFERING_SOURCE_CHANGED' };
+        }
+      }
+
+      const definition = this._definition(rows[0].name);
+      if (!this._safeDefinition(definition)) return { ok: false, reason: 'H15_ITEM_DEFINITION_PROTECTED' };
+      const budget = this._budget(rows[0], definition, scroll,
+        request.offeringSlot == null ? null : this._rowAt(inventory, request.offeringSlot),
+        request.targetLevel, request.kind, request.kind === 'COMPOUND' ? 3 : 1);
+      if (!budget.ok) return { ok: false, reason: budget.reason };
+      return { ok: true };
+    }
+
+    tick() {
+      this.metrics.ticks += 1;
+      if (!this.moduleActive) return { state: 'STOPPED', reason: 'H15_MODULE_NOT_ACTIVE' };
+      if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason };
+
+      if (this.pending) {
+        this._observePending();
+        if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason };
+        return this.pending ? { state: 'PENDING', pending: clone(this.pending) } : { state: 'READY' };
+      }
+
+      const request = this.request;
+      if (!request) return this.plan();
+      const inventory = this._inventory();
+      if (!inventory || inventory.available === false) return { state: 'BLOCKED', reason: 'H15_INVENTORY_UNAVAILABLE' };
+      const valid = this._revalidate(request, inventory);
+      if (!valid.ok) {
+        this.request = null;
+        if (String(valid.reason || '').includes('BUDGET')) this.metrics.budgetBlocks += 1;
+        else this.metrics.safetyBlocks += 1;
+        this.lastAction = { at: nowIso(), type: request.kind + '_BLOCKED', reason: valid.reason };
+        return { state: 'BLOCKED', reason: valid.reason };
+      }
+      return this._dispatch(request, inventory);
+    }
+
+    status() {
+      return {
+        schemaVersion: 1,
+        moduleActive: this.moduleActive,
+        suspended: !!this.suspendedReason,
+        suspendedReason: this.suspendedReason,
+        attemptsThisSession: this.attemptsThisSession,
+        pending: clone(this.pending),
+        request: clone(this.request),
+        lastPlan: clone(this.lastPlan),
+        lastAction: clone(this.lastAction),
+        config: clone(this.config),
+        metrics: clone(this.metrics)
+      };
+    }
+  }
+
+  ns.UpgradeCompoundController = UpgradeCompoundController;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+
+(function (root) {
+  'use strict';
+
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns) throw new Error('ALBOT_INTERNALS_MISSING');
+
+  const clone = ns.helpers.clone;
+  const cleanText = ns.helpers.cleanText;
+
+  function finite(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function nowIso() {
+    return new Date().toISOString();
+  }
+
+  function stableProperty(value) {
+    if (value == null) return '';
+    try {
+      if (typeof value !== 'object') return String(value);
+      const ordered = {};
+      for (const key of Object.keys(value).sort()) ordered[key] = value[key];
+      return JSON.stringify(ordered);
+    } catch (_) {
+      return String(value);
+    }
+  }
+
+  class ExchangeCraftController {
+    constructor(options = {}) {
+      this.root = options.root || root;
+      this.logger = options.logger || null;
+      this.game = options.game || null;
+      this.actions = options.actions || null;
+      this.movement = options.movement || null;
+      this.inventory = options.inventory || null;
+      this.bank = options.bank || null;
+      this.trade = options.trade || null;
+      this.combat = options.combat || null;
+      this.moduleActive = false;
+      this.scope = null;
+      this.pending = null;
+      this.request = null;
+      this.suspendedReason = null;
+      this.lastPlan = null;
+      this.lastAction = null;
+      this.sequence = 0;
+      this.attemptsThisSession = 0;
+      this.config = {
+        tickMs: Math.max(250, Math.min(5000, finite(options.tickMs) == null ? 750 : finite(options.tickMs))),
+        outcomeTimeoutMs: Math.max(1500, Math.min(60000, finite(options.outcomeTimeoutMs) == null ? 15000 : finite(options.outcomeTimeoutMs))),
+        movementTimeoutMs: Math.max(3000, Math.min(120000, finite(options.movementTimeoutMs) == null ? 60000 : finite(options.movementTimeoutMs))),
+        maxAttemptsPerSession: Math.max(1, Math.min(100, Math.floor(finite(options.maxAttemptsPerSession) == null ? 12 : finite(options.maxAttemptsPerSession)))),
+        maxExchangeValueAtRisk: Math.max(0, finite(options.maxExchangeValueAtRisk) == null ? 100000 : finite(options.maxExchangeValueAtRisk)),
+        maxCraftGoldCost: Math.max(0, finite(options.maxCraftGoldCost) == null ? 250000 : finite(options.maxCraftGoldCost)),
+        maxCraftInputValueAtRisk: Math.max(0, finite(options.maxCraftInputValueAtRisk) == null ? 250000 : finite(options.maxCraftInputValueAtRisk)),
+        goldReserve: Math.max(0, Math.floor(finite(options.goldReserve) == null ? 10000 : finite(options.goldReserve))),
+        maxProductionDepth: Math.max(1, Math.min(12, Math.floor(finite(options.maxProductionDepth) == null ? 6 : finite(options.maxProductionDepth)))),
+        allowQuestEvent: options.allowQuestEvent === true
+      };
+      this.metrics = {
+        ticks: 0,
+        plans: 0,
+        productionPlans: 0,
+        exchangeCandidates: 0,
+        craftCandidates: 0,
+        exchangesDispatched: 0,
+        exchangesConfirmed: 0,
+        exchangesRejected: 0,
+        exchangesUnknown: 0,
+        craftsDispatched: 0,
+        craftsConfirmed: 0,
+        craftsRejected: 0,
+        craftsUnknown: 0,
+        movementRequests: 0,
+        movementBlocks: 0,
+        budgetBlocks: 0,
+        safetyBlocks: 0,
+        materialDelegations: 0
+      };
+    }
+
+    start(context = {}) {
+      if (this.moduleActive) return { started: false, reason: 'H16_ALREADY_ACTIVE' };
+      this.moduleActive = true;
+      this.scope = context.scope || null;
+      this.suspendedReason = null;
+      this.attemptsThisSession = 0;
+      if (this.scope && typeof this.scope.interval === 'function') {
+        this.scope.interval('exchange-craft-tick', () => this.tick(), this.config.tickMs, { immediate: true });
+      }
+      return { started: true };
+    }
+
+    stop(reason = 'H16_MODULE_STOP') {
+      this.moduleActive = false;
+      this.scope = null;
+      this.pending = null;
+      this.request = null;
+      this._cancelOwnedMovement(reason);
+      this.lastAction = { at: nowIso(), type: 'STOP', reason: cleanText(reason, 240) };
+      return { stopped: true };
+    }
+
+    resetSafety(reason = 'H16_EXPLICIT_RESET') {
+      this.pending = null;
+      this.request = null;
+      this.suspendedReason = null;
+      this.attemptsThisSession = 0;
+      this._cancelOwnedMovement(reason);
+      this.lastAction = { at: nowIso(), type: 'RESET', reason: cleanText(reason, 240) };
+      return this.status();
+    }
+
+    cancelRequest(reason = 'H16_REQUEST_CANCELLED') {
+      this.pending = null;
+      this.request = null;
+      this._cancelOwnedMovement(reason);
+      this.lastAction = { at: nowIso(), type: 'REQUEST_CANCELLED', reason: cleanText(reason, 240) };
+      return this.status();
+    }
+
+    policy(value = null) {
+      if (value == null) return clone(this.config);
+      if (!value || typeof value !== 'object') throw new Error('H16_POLICY_MUST_BE_OBJECT');
+      const number = (key, min, max, integer = false) => {
+        if (value[key] == null) return;
+        const parsed = finite(value[key]);
+        if (parsed == null) throw new Error('H16_POLICY_' + key.toUpperCase() + '_INVALID');
+        this.config[key] = Math.max(min, Math.min(max, integer ? Math.floor(parsed) : parsed));
+      };
+      number('maxAttemptsPerSession', 1, 100, true);
+      number('maxExchangeValueAtRisk', 0, Number.MAX_SAFE_INTEGER);
+      number('maxCraftGoldCost', 0, Number.MAX_SAFE_INTEGER);
+      number('maxCraftInputValueAtRisk', 0, Number.MAX_SAFE_INTEGER);
+      number('goldReserve', 0, Number.MAX_SAFE_INTEGER, true);
+      number('maxProductionDepth', 1, 12, true);
+      if (value.allowQuestEvent != null) this.config.allowQuestEvent = value.allowQuestEvent === true;
+      return clone(this.config);
+    }
+
+    _snapshot() {
+      try { return this.game && this.game.snapshot ? this.game.snapshot() : null; }
+      catch (_) { return null; }
+    }
+
+    _inventory() {
+      try { return this.game && this.game.inventorySnapshot ? this.game.inventorySnapshot() : null; }
+      catch (_) { return null; }
+    }
+
+    _bankSnapshot() {
+      try { return this.game && this.game.bankSnapshot ? this.game.bankSnapshot() : null; }
+      catch (_) { return null; }
+    }
+
+    _definition(name) {
+      try { return this.game && this.game.itemDefinition ? this.game.itemDefinition(name) : null; }
+      catch (_) { return null; }
+    }
+
+    _recipe(name) {
+      try { return this.game && this.game.craftDefinition ? this.game.craftDefinition(name) : null; }
+      catch (_) { return null; }
+    }
+
+    _recipes() {
+      try { return this.game && this.game.craftCatalog ? this.game.craftCatalog() : []; }
+      catch (_) { return []; }
+    }
+
+    _combatActive() {
+      try {
+        const status = this.combat && this.combat.status ? this.combat.status() : null;
+        return !!(status && (status.active || status.state && !['IDLE', 'STOPPED'].includes(String(status.state))));
+      } catch (_) {
+        return false;
+      }
+    }
+
+    _localReady() {
+      const snap = this._snapshot();
+      if (!snap || !snap.available || !snap.character) return { ok: false, reason: 'H16_CHARACTER_UNAVAILABLE' };
+      if (snap.character.rip === true) return { ok: false, reason: 'H16_CHARACTER_DEAD' };
+      if (this._combatActive()) return { ok: false, reason: 'H16_COMBAT_ACTIVE' };
+      return { ok: true, snapshot: snap };
+    }
+
+    _safeItem(row) {
+      return !!(row && row.name && row.locked !== true && row.giveaway !== true && row.gift !== true && !row.expiresAt);
+    }
+
+    _fingerprint(row) {
+      if (!row || !row.name) return null;
+      return [
+        String(row.name),
+        String(Math.max(0, Number(row.level) || 0)),
+        cleanText(row.statType != null ? row.statType : row.stat_type || '', 80),
+        stableProperty(row.property != null ? row.property : row.p)
+      ].join('|');
+    }
+
+    _quantity(inventory, name, level = 0) {
+      if (!inventory || inventory.available === false) return null;
+      return (inventory.items || []).reduce((sum, row) =>
+        String(row.name) === String(name) && Math.max(0, Number(row.level) || 0) === Math.max(0, Number(level) || 0)
+          ? sum + Math.max(1, Math.floor(Number(row.quantity) || 1))
+          : sum, 0);
+    }
+
+    _bankQuantity(bank, name, level = 0) {
+      if (!bank || bank.available === false) return 0;
+      let total = 0;
+      for (const pack of bank.packs || []) {
+        for (const row of pack.items || []) {
+          if (String(row.name) === String(name) && Math.max(0, Number(row.level) || 0) === Math.max(0, Number(level) || 0)) {
+            total += Math.max(1, Math.floor(Number(row.quantity) || 1));
+          }
+        }
+      }
+      return total;
+    }
+
+    _rowAt(inventory, slot) {
+      return inventory && (inventory.items || []).find(row => Number(row.slot) === Number(slot)) || null;
+    }
+
+    _itemValue(name, level = 0) {
+      const definition = this._definition(name);
+      const base = definition && finite(definition.g);
+      if (base == null) return null;
+      return Math.round(Math.max(0, base) * Math.pow(1.75, Math.max(0, Number(level) || 0)));
+    }
+
+    _questEvent(definition, recipe = null) {
+      return !!(definition && definition.quest === true || recipe && recipe.quest);
+    }
+
+    exchangeCandidates(options = {}) {
+      const inventory = this._inventory();
+      if (!inventory || inventory.available === false) return [];
+      const allowQuestEvent = options.allowQuestEvent === true || this.config.allowQuestEvent;
+      const out = [];
+      for (const row of inventory.items || []) {
+        if (!this._safeItem(row)) continue;
+        const definition = this._definition(row.name);
+        const required = definition && finite(definition.e);
+        if (!definition || required == null || required <= 0 || !Number.isInteger(required)) continue;
+        if (definition.cash === true) continue;
+        const quantity = Math.max(1, Math.floor(Number(row.quantity) || 1));
+        if (quantity < required) continue;
+        const unitValue = this._itemValue(row.name, row.level);
+        const valueAtRisk = unitValue == null ? null : unitValue * required;
+        const questEvent = this._questEvent(definition);
+        const budgetOk = valueAtRisk != null && valueAtRisk <= this.config.maxExchangeValueAtRisk;
+        out.push({
+          kind: 'EXCHANGE',
+          item: clone(row),
+          inventorySlot: Number(row.slot),
+          itemName: row.name,
+          level: Math.max(0, Number(row.level) || 0),
+          fingerprint: this._fingerprint(row),
+          requiredQuantity: required,
+          availableQuantity: quantity,
+          valueAtRisk,
+          questEvent,
+          requiresExplicitQuestEvent: questEvent && !allowQuestEvent,
+          safe: budgetOk && (!questEvent || allowQuestEvent),
+          reason: valueAtRisk == null
+            ? 'H16_EXCHANGE_VALUE_UNAVAILABLE'
+            : !budgetOk
+              ? 'H16_EXCHANGE_VALUE_OVER_BUDGET'
+              : questEvent && !allowQuestEvent
+                ? 'H16_QUEST_EVENT_REQUIRES_EXPLICIT_OPT_IN'
+                : 'H16_EXCHANGE_READY'
+        });
+      }
+      out.sort((a, b) =>
+        (a.safe === b.safe ? 0 : a.safe ? -1 : 1)
+        || Number(a.valueAtRisk == null ? Number.MAX_SAFE_INTEGER : a.valueAtRisk)
+          - Number(b.valueAtRisk == null ? Number.MAX_SAFE_INTEGER : b.valueAtRisk)
+        || a.inventorySlot - b.inventorySlot);
+      return out;
+    }
+
+    _craftSource(recipe, inventory, options = {}) {
+      if (!recipe || !Array.isArray(recipe.items) || !recipe.items.length) return { ok: false, reason: 'H16_CRAFT_RECIPE_INVALID' };
+      const allowQuestEvent = options.allowQuestEvent === true || this.config.allowQuestEvent;
+      if (recipe.quest && !allowQuestEvent) return { ok: false, reason: 'H16_QUEST_EVENT_REQUIRES_EXPLICIT_OPT_IN' };
+      const sources = [];
+      let inputValueAtRisk = 0;
+      for (const ingredient of recipe.items) {
+        const required = Math.max(1, Math.floor(Number(ingredient.quantity) || 1));
+        const level = Math.max(0, Number(ingredient.level) || 0);
+        const matching = (inventory.items || [])
+          .filter(row => String(row.name) === String(ingredient.name)
+            && Math.max(0, Number(row.level) || 0) === level
+            && Math.max(1, Math.floor(Number(row.quantity) || 1)) >= required)
+          .sort((a, b) => Number(a.slot) - Number(b.slot));
+        const first = matching[0];
+        if (!first) return { ok: false, reason: 'H16_CRAFT_MATERIAL_MISSING', ingredient: clone(ingredient) };
+        if (!this._safeItem(first)) return { ok: false, reason: 'H16_CRAFT_AUTO_SOURCE_PROTECTED', ingredient: clone(ingredient), slot: first.slot };
+        const unitValue = this._itemValue(ingredient.name, level);
+        if (unitValue == null) return { ok: false, reason: 'H16_CRAFT_INPUT_VALUE_UNAVAILABLE', ingredient: clone(ingredient) };
+        inputValueAtRisk += unitValue * required;
+        sources.push({
+          slot: Number(first.slot),
+          name: first.name,
+          level,
+          requiredQuantity: required,
+          fingerprint: this._fingerprint(first)
+        });
+      }
+      const cost = Math.max(0, finite(recipe.cost) || 0);
+      if (cost > this.config.maxCraftGoldCost) return { ok: false, reason: 'H16_CRAFT_GOLD_COST_OVER_BUDGET', cost, inputValueAtRisk };
+      if (inputValueAtRisk > this.config.maxCraftInputValueAtRisk) {
+        return { ok: false, reason: 'H16_CRAFT_INPUT_VALUE_OVER_BUDGET', cost, inputValueAtRisk };
+      }
+      const snap = this._snapshot();
+      const gold = snap && snap.character && finite(snap.character.gold);
+      if (gold == null || gold - cost < this.config.goldReserve) {
+        return { ok: false, reason: 'H16_CRAFT_GOLD_RESERVE_BLOCKED', cost, gold, reserve: this.config.goldReserve };
+      }
+      return { ok: true, sources, cost, inputValueAtRisk };
+    }
+
+    craftCandidates(options = {}) {
+      const inventory = this._inventory();
+      if (!inventory || inventory.available === false) return [];
+      const out = [];
+      for (const recipe of this._recipes()) {
+        const source = this._craftSource(recipe, inventory, options);
+        const definition = this._definition(recipe.name);
+        out.push({
+          kind: 'CRAFT',
+          itemName: recipe.name,
+          recipe: clone(recipe),
+          definition: clone(definition),
+          questEvent: !!recipe.quest,
+          safe: source.ok === true,
+          reason: source.reason || 'H16_CRAFT_READY',
+          sources: source.sources || [],
+          cost: source.cost == null ? Math.max(0, finite(recipe.cost) || 0) : source.cost,
+          inputValueAtRisk: source.inputValueAtRisk == null ? null : source.inputValueAtRisk,
+          exchangeableOutput: !!(definition && finite(definition.e) != null && finite(definition.e) > 0)
+        });
+      }
+      out.sort((a, b) =>
+        (a.safe === b.safe ? 0 : a.safe ? -1 : 1)
+        || Number(a.cost || 0) - Number(b.cost || 0)
+        || String(a.itemName).localeCompare(String(b.itemName)));
+      return out;
+    }
+
+    _stockMap(options = {}) {
+      const map = new Map();
+      const add = (name, level, quantity) => {
+        const key = String(name) + '|' + Math.max(0, Number(level) || 0);
+        map.set(key, (map.get(key) || 0) + Math.max(0, Math.floor(Number(quantity) || 0)));
+      };
+      const inventory = this._inventory();
+      if (inventory && inventory.available !== false) {
+        for (const row of inventory.items || []) add(row.name, row.level, Math.max(1, Number(row.quantity) || 1));
+      }
+      if (options.includeBank !== false) {
+        const bank = this._bankSnapshot();
+        if (bank && bank.available !== false) {
+          for (const pack of bank.packs || []) {
+            for (const row of pack.items || []) add(row.name, row.level, Math.max(1, Number(row.quantity) || 1));
+          }
+        }
+      }
+      return map;
+    }
+
+    _bankMaterialRows(name, level = 0) {
+      const bank = this._bankSnapshot();
+      if (!bank || bank.available === false) return [];
+      let reservations = {};
+      try {
+        const status = this.bank && typeof this.bank.status === 'function' ? this.bank.status() : null;
+        reservations = status && status.reservations && typeof status.reservations === 'object'
+          ? status.reservations
+          : {};
+      } catch (_) {}
+      const wantedLevel = Math.max(0, Number(level) || 0);
+      const rows = [];
+      for (const pack of bank.packs || []) {
+        for (const row of pack.items || []) {
+          if (String(row.name) !== String(name)
+              || Math.max(0, Number(row.level) || 0) !== wantedLevel) continue;
+          rows.push({
+            pack: pack.name,
+            map: pack.map || null,
+            slot: row.slot,
+            quantity: Math.max(1, Number(row.quantity) || 1),
+            fingerprint: this._fingerprint(row),
+            safe: this._safeItem(row),
+            locked: row.locked === true,
+            giveaway: row.giveaway === true,
+            gift: row.gift === true,
+            expiresAt: row.expiresAt == null ? null : row.expiresAt
+          });
+        }
+      }
+      const reservedQuantity = Math.max(0, Math.floor(Number(reservations[name]) || 0));
+      const totals = new Map();
+      for (const row of rows) {
+        const key = String(row.fingerprint || '');
+        totals.set(key, (totals.get(key) || 0) + row.quantity);
+      }
+      return rows.map(row => {
+        const fingerprintQuantity = totals.get(String(row.fingerprint || '')) || 0;
+        const remainingAfterWholeStack = Math.max(0, fingerprintQuantity - row.quantity);
+        const mountedMapMatch = !!(row.map && bank.map && String(row.map) === String(bank.map));
+        return {
+          ...row,
+          reservedQuantity,
+          fingerprintQuantity,
+          remainingAfterWholeStack,
+          mountedMapMatch,
+          withdrawable: row.safe === true
+            && mountedMapMatch
+            && remainingAfterWholeStack >= reservedQuantity
+        };
+      });
+    }
+
+    _materialSource(name, level, quantity) {
+      const bankRows = this._bankMaterialRows(name, level);
+      let npcSources = [];
+      try { npcSources = this.game && this.game.npcShopSources ? this.game.npcShopSources(name) || [] : []; } catch (_) {}
+      let market = null;
+      try { market = this.trade && this.trade.marketAnalysis ? this.trade.marketAnalysis(name, { level }) : null; } catch (_) {}
+      return {
+        itemName: name,
+        level,
+        quantity,
+        bankRows: clone(bankRows),
+        npcSources: clone(npcSources),
+        npcPrice: finite(this._definition(name) && this._definition(name).g),
+        bestMarketAsk: market && market.bestAsk ? clone(market.bestAsk) : null
+      };
+    }
+
+    productionPlan(itemName, quantity = 1, options = {}) {
+      this.metrics.productionPlans += 1;
+      const targetName = cleanText(itemName || '', 160);
+      const targetQuantity = Math.max(1, Math.floor(Number(quantity) || 1));
+      if (!targetName) return { state: 'BLOCKED', reason: 'H16_PRODUCTION_TARGET_REQUIRED' };
+      const stock = this._stockMap(options);
+      const stages = [];
+      const missing = new Map();
+      const protectedRecipes = [];
+      let totalCraftGold = 0;
+      const maxDepth = this.config.maxProductionDepth;
+      const allowQuestEvent = options.allowQuestEvent === true || this.config.allowQuestEvent;
+
+      const consume = (name, level, needed) => {
+        const key = String(name) + '|' + Math.max(0, Number(level) || 0);
+        const available = stock.get(key) || 0;
+        const used = Math.min(available, needed);
+        if (used > 0) stock.set(key, available - used);
+        return needed - used;
+      };
+
+      const ensure = (name, level, needed, depth, path, allowStock = true) => {
+        let remaining = allowStock ? consume(name, level, needed) : needed;
+        if (remaining <= 0) return;
+        if (depth > maxDepth || path.includes(name) || level > 0) {
+          const key = String(name) + '|' + Math.max(0, Number(level) || 0);
+          missing.set(key, (missing.get(key) || 0) + remaining);
+          return;
+        }
+        const recipe = this._recipe(name);
+        if (!recipe) {
+          const key = String(name) + '|' + Math.max(0, Number(level) || 0);
+          missing.set(key, (missing.get(key) || 0) + remaining);
+          return;
+        }
+        if (recipe.quest && !allowQuestEvent) {
+          protectedRecipes.push({ name, quest: recipe.quest, quantity: remaining });
+          return;
+        }
+        const runs = remaining;
+        for (const ingredient of recipe.items || []) {
+          ensure(
+            ingredient.name,
+            Math.max(0, Number(ingredient.level) || 0),
+            Math.max(1, Math.floor(Number(ingredient.quantity) || 1)) * runs,
+            depth + 1,
+            path.concat([name]),
+            true
+          );
+        }
+        const cost = Math.max(0, finite(recipe.cost) || 0) * runs;
+        totalCraftGold += cost;
+        stages.push({
+          itemName: name,
+          runs,
+          cost,
+          quest: recipe.quest || null,
+          ingredients: clone(recipe.items || [])
+        });
+      };
+
+      ensure(targetName, 0, targetQuantity, 0, [], false);
+      const missingRows = Array.from(missing.entries()).map(([key, q]) => {
+        const split = key.lastIndexOf('|');
+        const name = key.slice(0, split);
+        const level = Number(key.slice(split + 1)) || 0;
+        return this._materialSource(name, level, q);
+      });
+
+      const snapshot = this._snapshot();
+      const liveGold = snapshot && snapshot.character ? finite(snapshot.character.gold) : null;
+      const craftCostOverBudget = totalCraftGold > this.config.maxCraftGoldCost * Math.max(1, targetQuantity);
+      const goldUnavailable = liveGold == null;
+      const goldReserveBlocked = liveGold != null && liveGold - totalCraftGold < this.config.goldReserve;
+      const state = protectedRecipes.length
+        ? 'BLOCKED'
+        : missingRows.length
+          ? 'NEEDS_MATERIALS'
+          : craftCostOverBudget || goldUnavailable || goldReserveBlocked
+            ? 'BLOCKED'
+            : 'READY';
+      const reason = protectedRecipes.length
+        ? 'H16_PRODUCTION_QUEST_EVENT_REQUIRES_EXPLICIT_OPT_IN'
+        : missingRows.length
+          ? 'H16_PRODUCTION_NEEDS_MATERIALS'
+          : craftCostOverBudget
+            ? 'H16_PRODUCTION_COST_OVER_BUDGET'
+            : goldUnavailable
+              ? 'H16_PRODUCTION_GOLD_UNAVAILABLE'
+              : goldReserveBlocked
+                ? 'H16_PRODUCTION_GOLD_RESERVE_BLOCKED'
+                : 'H16_PRODUCTION_READY';
+
+      return {
+        state,
+        reason,
+        target: { itemName: targetName, quantity: targetQuantity },
+        includeBank: options.includeBank !== false,
+        allowQuestEvent,
+        maxDepth,
+        stages,
+        missing: missingRows,
+        protectedRecipes,
+        totalCraftGold,
+        gold: liveGold,
+        goldReserve: this.config.goldReserve
+      };
+    }
+
+    plan() {
+      this.metrics.plans += 1;
+      const exchangeCandidates = this.exchangeCandidates();
+      const craftCandidates = this.craftCandidates();
+      this.metrics.exchangeCandidates = exchangeCandidates.length;
+      this.metrics.craftCandidates = craftCandidates.length;
+      this.lastPlan = {
+        state: 'READY',
+        reason: 'H16_PLAN_READY',
+        exchangeCandidates,
+        craftCandidates,
+        requestActive: !!this.request,
+        pendingActive: !!this.pending,
+        policy: clone(this.config)
+      };
+      return clone(this.lastPlan);
+    }
+
+    _queue(request) {
+      if (this.suspendedReason) return { accepted: false, reason: this.suspendedReason };
+      if (this.request || this.pending) return { accepted: false, reason: 'H16_BUSY' };
+      if (this.attemptsThisSession >= this.config.maxAttemptsPerSession) {
+        this.metrics.budgetBlocks += 1;
+        return { accepted: false, reason: 'H16_SESSION_ATTEMPT_BUDGET_EXHAUSTED' };
+      }
+      this.request = {
+        id: 'h16-request-' + (++this.sequence),
+        createdAt: nowIso(),
+        travelRequested: false,
+        travelStartedAtMs: null,
+        ...clone(request)
+      };
+      this.lastAction = { at: nowIso(), type: request.kind + '_QUEUED', requestId: this.request.id };
+      return { accepted: true, request: clone(this.request) };
+    }
+
+    queueExchange(inventorySlot, options = {}) {
+      const inventory = this._inventory();
+      if (!inventory || inventory.available === false) return { accepted: false, reason: 'H16_INVENTORY_UNAVAILABLE' };
+      const slot = finite(inventorySlot);
+      if (slot == null) return { accepted: false, reason: 'H16_EXCHANGE_SLOT_REQUIRED' };
+      const candidate = this.exchangeCandidates({ allowQuestEvent: options.allowQuestEvent === true })
+        .find(row => Number(row.inventorySlot) === Number(slot));
+      if (!candidate) return { accepted: false, reason: 'H16_EXCHANGE_CANDIDATE_UNAVAILABLE' };
+      if (!candidate.safe) {
+        if (String(candidate.reason).includes('BUDGET') || String(candidate.reason).includes('VALUE')) this.metrics.budgetBlocks += 1;
+        else this.metrics.safetyBlocks += 1;
+        return { accepted: false, reason: candidate.reason };
+      }
+      const destination = this.game && this.game.npcLocation ? this.game.npcLocation('exchange') : null;
+      if (!destination) return { accepted: false, reason: 'H16_EXCHANGE_NPC_LOCATION_UNAVAILABLE' };
+      return this._queue({
+        kind: 'EXCHANGE',
+        inventorySlot: candidate.inventorySlot,
+        itemName: candidate.itemName,
+        level: candidate.level,
+        fingerprint: candidate.fingerprint,
+        requiredQuantity: candidate.requiredQuantity,
+        valueAtRisk: candidate.valueAtRisk,
+        questEvent: candidate.questEvent,
+        allowQuestEvent: options.allowQuestEvent === true,
+        destination: clone(destination)
+      });
+    }
+
+    queueCraft(itemName, options = {}) {
+      const name = cleanText(itemName || '', 160);
+      const inventory = this._inventory();
+      if (!name || !inventory || inventory.available === false) return { accepted: false, reason: 'H16_CRAFT_TARGET_UNAVAILABLE' };
+      const recipe = this._recipe(name);
+      if (!recipe) return { accepted: false, reason: 'H16_CRAFT_RECIPE_UNAVAILABLE' };
+      const source = this._craftSource(recipe, inventory, { allowQuestEvent: options.allowQuestEvent === true });
+      if (!source.ok) {
+        if (String(source.reason).includes('BUDGET') || String(source.reason).includes('VALUE') || String(source.reason).includes('GOLD')) this.metrics.budgetBlocks += 1;
+        else this.metrics.safetyBlocks += 1;
+        return { accepted: false, reason: source.reason, details: clone(source) };
+      }
+      const destination = this.game && this.game.npcLocation ? this.game.npcLocation('craftsman') : null;
+      if (!destination) return { accepted: false, reason: 'H16_CRAFT_NPC_LOCATION_UNAVAILABLE' };
+      return this._queue({
+        kind: 'CRAFT',
+        itemName: name,
+        recipe: clone(recipe),
+        sources: clone(source.sources),
+        cost: source.cost,
+        inputValueAtRisk: source.inputValueAtRisk,
+        questEvent: !!recipe.quest,
+        allowQuestEvent: options.allowQuestEvent === true,
+        destination: clone(destination)
+      });
+    }
+
+    queueBest(kind = null) {
+      const plan = this.plan();
+      const wanted = kind == null ? null : String(kind).toUpperCase();
+      if (wanted === 'EXCHANGE') {
+        const candidate = (plan.exchangeCandidates || []).find(row => row.safe);
+        return candidate ? this.queueExchange(candidate.inventorySlot) : { accepted: false, reason: 'H16_NO_SAFE_EXCHANGE_CANDIDATE' };
+      }
+      if (wanted === 'CRAFT') {
+        const candidate = (plan.craftCandidates || []).find(row => row.safe);
+        return candidate ? this.queueCraft(candidate.itemName) : { accepted: false, reason: 'H16_NO_SAFE_CRAFT_CANDIDATE' };
+      }
+      const craft = (plan.craftCandidates || []).find(row => row.safe);
+      if (craft) return this.queueCraft(craft.itemName);
+      const exchange = (plan.exchangeCandidates || []).find(row => row.safe);
+      return exchange ? this.queueExchange(exchange.inventorySlot) : { accepted: false, reason: 'H16_NO_SAFE_CANDIDATE' };
+    }
+
+    queueMaterialAcquire(itemName, quantity = 1, options = {}) {
+      const name = cleanText(itemName || '', 160);
+      const rawQuantity = finite(quantity);
+      if (!name) return { accepted: false, reason: 'H16_MATERIAL_NAME_REQUIRED' };
+      if (rawQuantity == null || rawQuantity <= 0 || !Number.isInteger(rawQuantity)) {
+        return { accepted: false, reason: 'H16_MATERIAL_QUANTITY_INVALID' };
+      }
+      const q = rawQuantity;
+
+      let lastRecoverableBankReject = null;
+      if (options.allowBank !== false && this.bank && typeof this.bank.queueWithdraw === 'function') {
+        const recoverableBankReasons = new Set([
+          'H12_WITHDRAW_WRONG_OR_UNKNOWN_BANK_MAP',
+          'H12_BANK_RESERVATION_BLOCKED',
+          'H12_WITHDRAW_ITEM_NOT_FOUND'
+        ]);
+        const minBankStackQuantity = Math.max(
+          q,
+          Math.floor(finite(options.minBankStackQuantity) == null ? q : finite(options.minBankStackQuantity))
+        );
+        const bankRows = this._bankMaterialRows(name, options.level || 0)
+          .filter(row => row.withdrawable === true && row.quantity >= minBankStackQuantity);
+        for (const row of bankRows) {
+          const result = this.bank.queueWithdraw(row.pack, row.slot);
+          if (result && result.accepted) {
+            this.metrics.materialDelegations += 1;
+            return {
+              ...clone(result),
+              delegatedTo: 'bank',
+              source: { pack: row.pack, map: row.map || null, slot: row.slot }
+            };
+          }
+          const reason = result && result.reason || 'H16_BANK_WITHDRAW_REJECTED';
+          if (!recoverableBankReasons.has(String(reason))) {
+            return {
+              ...clone(result || { accepted: false, reason }),
+              delegatedTo: 'bank',
+              source: { pack: row.pack, map: row.map || null, slot: row.slot }
+            };
+          }
+          lastRecoverableBankReject = {
+            ...clone(result || { accepted: false, reason }),
+            delegatedTo: 'bank',
+            source: { pack: row.pack, map: row.map || null, slot: row.slot }
+          };
+        }
+      }
+
+      if (this.trade && typeof this.trade.queueAcquire === 'function') {
+        const maxUnitPrice = finite(options.maxUnitPrice);
+        if (maxUnitPrice == null || maxUnitPrice <= 0) {
+          return { accepted: false, reason: 'H16_MAX_UNIT_PRICE_REQUIRED_FOR_TRADE_ACQUISITION' };
+        }
+        const result = this.trade.queueAcquire(name, q, { maxUnitPrice, level: options.level || 0 });
+        if (result && result.accepted) this.metrics.materialDelegations += 1;
+        return { ...clone(result), delegatedTo: 'trade' };
+      }
+
+      if (lastRecoverableBankReject) return lastRecoverableBankReject;
+      return { accepted: false, reason: 'H16_MATERIAL_ACQUISITION_UNAVAILABLE' };
+    }
+
+    _cancelOwnedMovement(reason) {
+      try {
+        const movement = this.movement && this.movement.status ? this.movement.status() : null;
+        if (movement && movement.activeOrder && String(movement.activeOrder.owner || '') === 'exchange-craft-h16') {
+          this.movement.cancel(cleanText(reason, 180) || 'H16_CANCEL');
+        }
+      } catch (_) {}
+    }
+
+    _ensureTravel(request) {
+      let movement = null;
+      try { movement = this.movement && this.movement.status ? this.movement.status() : null; } catch (_) {}
+      if (movement && movement.activeOrder) {
+        if (String(movement.activeOrder.owner || '') === 'exchange-craft-h16'
+            && (!request.travelOrderId || String(movement.activeOrder.id) === String(request.travelOrderId))) {
+          return { ready: false, waiting: true };
+        }
+        this.metrics.movementBlocks += 1;
+        return { ready: false, waiting: true, reason: 'H16_MOVEMENT_OWNED_BY_OTHER' };
+      }
+      if (request.travelRequested) {
+        const last = movement && movement.lastOrder || null;
+        if (last && String(last.id || '') === String(request.travelOrderId || '')
+            && String(last.owner || '') === 'exchange-craft-h16') {
+          if (last.state === 'COMPLETED') return { ready: true };
+          if (['CANCELLED', 'STUCK', 'UNKNOWN', 'FAILED_SAFE'].includes(String(last.state || ''))) {
+            return this._suspend(request.kind, 'H16_MOVEMENT_' + String(last.state || 'UNKNOWN'));
+          }
+        }
+        if (Date.now() - request.travelStartedAtMs > this.config.movementTimeoutMs) {
+          return this._suspend(request.kind, 'H16_MOVEMENT_TIMEOUT');
+        }
+        return { ready: false, waiting: true, reason: 'H16_WAITING_FOR_ARRIVAL_EVIDENCE' };
+      }
+      if (!request.destination) return this._suspend(request.kind, 'H16_DESTINATION_UNAVAILABLE');
+      if (!this.movement || typeof this.movement.smartMove !== 'function') {
+        return this._suspend(request.kind, 'H16_MOVEMENT_UNAVAILABLE');
+      }
+      const moved = this.movement.smartMove(request.destination, { owner: 'exchange-craft-h16' });
+      if (!moved || moved.accepted !== true || !moved.order || !moved.order.id) {
+        this.metrics.movementBlocks += 1;
+        return this._suspend(request.kind, moved && moved.reason || 'H16_MOVEMENT_REJECTED');
+      }
+      request.travelRequested = true;
+      request.travelStartedAtMs = Date.now();
+      request.travelOrderId = moved.order.id;
+      this.metrics.movementRequests += 1;
+      this.lastAction = { at: nowIso(), type: request.kind + '_MOVE_REQUESTED', destination: request.destination, orderId: request.travelOrderId };
+      return { ready: false, waiting: true };
+    }
+
+    _metric(kind, suffix) {
+      const prefix = kind === 'CRAFT' ? 'crafts' : 'exchanges';
+      const key = prefix + suffix;
+      if (Object.prototype.hasOwnProperty.call(this.metrics, key)) this.metrics[key] += 1;
+    }
+
+    _suspend(kind, reason) {
+      this._metric(kind, 'Unknown');
+      this.suspendedReason = cleanText(reason || ('H16_' + kind + '_UNKNOWN'), 300);
+      this.pending = null;
+      this.request = null;
+      this._cancelOwnedMovement(this.suspendedReason);
+      this.lastAction = { at: nowIso(), type: kind + '_UNKNOWN', reason: this.suspendedReason };
+      return { state: 'SUSPENDED', reason: this.suspendedReason };
+    }
+
+    _watch(value, pending) {
+      if (!value || typeof value.then !== 'function') {
+        pending.settlement = 'RETURNED';
+        pending.response = value == null ? null : clone(value);
+        return;
+      }
+      Promise.resolve(value).then(response => {
+        if (!this.pending || this.pending.id !== pending.id) return;
+        this.pending.settlement = 'RESOLVED';
+        this.pending.response = response == null ? null : clone(response);
+      }, error => {
+        if (!this.pending || this.pending.id !== pending.id) return;
+        this.pending.settlement = 'REJECTED';
+        this.pending.error = cleanText(error && (error.reason || error.message) || error || 'H16_ACTION_REJECTED', 500);
+      }).catch(() => {});
+    }
+
+    _dispatch(request, inventory) {
+      if (!this.actions || typeof this.actions.dispatch !== 'function') return { accepted: false, reason: 'H16_ACTION_BOUNDARY_UNAVAILABLE' };
+      let action = null;
+      let args = null;
+      const beforeGold = this._snapshot() && this._snapshot().character ? finite(this._snapshot().character.gold) : null;
+      const pendingBase = {
+        kind: request.kind,
+        itemName: request.itemName,
+        beforeGold
+      };
+      if (request.kind === 'EXCHANGE') {
+        action = 'exchange';
+        args = [request.inventorySlot];
+        pendingBase.inventorySlot = request.inventorySlot;
+        pendingBase.level = request.level;
+        pendingBase.requiredQuantity = request.requiredQuantity;
+        pendingBase.beforeSourceQuantity = this._quantity(inventory, request.itemName, request.level);
+        pendingBase.valueAtRisk = request.valueAtRisk;
+      } else if (request.kind === 'CRAFT') {
+        action = 'auto_craft';
+        args = [request.itemName];
+        pendingBase.recipe = clone(request.recipe);
+        pendingBase.sources = clone(request.sources);
+        pendingBase.cost = request.cost;
+        pendingBase.inputValueAtRisk = request.inputValueAtRisk;
+        pendingBase.beforeOutputQuantity = this._quantity(inventory, request.itemName, 0);
+        pendingBase.beforeIngredients = (request.recipe.items || []).map(ingredient => ({
+          name: ingredient.name,
+          level: Math.max(0, Number(ingredient.level) || 0),
+          requiredQuantity: Math.max(1, Math.floor(Number(ingredient.quantity) || 1)),
+          quantity: this._quantity(inventory, ingredient.name, ingredient.level || 0)
+        }));
+      } else {
+        return { accepted: false, reason: 'H16_REQUEST_KIND_INVALID' };
+      }
+
+      let result;
+      try { result = this.actions.dispatch(action, args); }
+      catch (error) { return { accepted: false, reason: cleanText(error && error.message || error, 300) }; }
+      if (!result || result.state !== 'DISPATCHED') {
+        if (result && result.state === 'UNKNOWN') return this._suspend(request.kind, result.error && result.error.message || 'H16_DISPATCH_UNKNOWN');
+        this._metric(request.kind, 'Rejected');
+        this.request = null;
+        return { accepted: false, reason: result && result.state || 'H16_ACTION_REJECTED' };
+      }
+
+      const now = Date.now();
+      const pending = {
+        id: 'h16-pending-' + (++this.sequence),
+        ...pendingBase,
+        requestId: request.id,
+        dispatchedAt: nowIso(),
+        dispatchedAtMs: now,
+        deadlineAtMs: now + this.config.outcomeTimeoutMs,
+        settlement: 'PENDING',
+        response: null,
+        error: null
+      };
+      this.pending = pending;
+      this.attemptsThisSession += 1;
+      this._metric(request.kind, 'Dispatched');
+      this.lastAction = { at: pending.dispatchedAt, type: request.kind + '_DISPATCHED', requestId: request.id };
+      this._watch(result.value, pending);
+      return { accepted: true, state: 'DISPATCHED', pending: clone(pending) };
+    }
+
+    _knownReject(pending, reason) {
+      this.pending = null;
+      this.request = null;
+      this._metric(pending.kind, 'Rejected');
+      this.lastAction = { at: nowIso(), type: pending.kind + '_REJECTED', reason: cleanText(reason || 'H16_ACTION_REJECTED', 300) };
+      return true;
+    }
+
+    _confirmed(pending, details = {}) {
+      this.pending = null;
+      this.request = null;
+      this._metric(pending.kind, 'Confirmed');
+      this.lastAction = { at: nowIso(), type: pending.kind + '_CONFIRMED', ...clone(details) };
+      return true;
+    }
+
+    _observePending() {
+      const pending = this.pending;
+      if (!pending) return false;
+      const inventory = this._inventory();
+      if (!inventory || inventory.available === false) {
+        if (Date.now() >= pending.deadlineAtMs) return this._suspend(pending.kind, 'H16_INVENTORY_UNAVAILABLE_DURING_OUTCOME');
+        return false;
+      }
+
+      const settlementFinished = pending.settlement !== 'PENDING';
+
+      if (pending.kind === 'EXCHANGE') {
+        const after = this._quantity(inventory, pending.itemName, pending.level || 0);
+        if (settlementFinished && after != null && pending.beforeSourceQuantity != null && after <= pending.beforeSourceQuantity - pending.requiredQuantity) {
+          return this._confirmed(pending, {
+            itemName: pending.itemName,
+            evidence: 'EXCHANGE_SOURCE_QUANTITY_DELTA',
+            reward: pending.response && pending.response.reward || null
+          });
+        }
+      }
+
+      if (pending.kind === 'CRAFT') {
+        const output = this._quantity(inventory, pending.itemName, 0);
+        const outputIncreased = output != null && pending.beforeOutputQuantity != null && output >= pending.beforeOutputQuantity + 1;
+        const ingredientsConsumed = (pending.beforeIngredients || []).every(before => {
+          const after = this._quantity(inventory, before.name, before.level);
+          return after != null && before.quantity != null && after <= before.quantity - before.requiredQuantity;
+        });
+        const snap = this._snapshot();
+        const gold = snap && snap.character ? finite(snap.character.gold) : null;
+        const goldOk = Number(pending.cost || 0) <= 0
+          || (gold != null && pending.beforeGold != null && gold <= pending.beforeGold - Number(pending.cost || 0));
+        if (settlementFinished && outputIncreased && ingredientsConsumed && goldOk) {
+          return this._confirmed(pending, { itemName: pending.itemName, evidence: 'CRAFT_OUTPUT_AND_INPUT_DELTAS' });
+        }
+      }
+
+      if (pending.response && (pending.response.failed === true || pending.response.success === false)) {
+        return this._knownReject(pending, pending.response.reason || 'H16_ACTION_REJECTED');
+      }
+      if (pending.settlement === 'REJECTED') {
+        return this._suspend(pending.kind, pending.error || 'H16_ACTION_REJECTED_WITHOUT_LIVE_OUTCOME');
+      }
+      if (Date.now() >= pending.deadlineAtMs) return this._suspend(pending.kind, 'H16_' + pending.kind + '_UNVERIFIED_TIMEOUT');
+      return false;
+    }
+
+    _revalidateExchange(request, inventory) {
+      const row = this._rowAt(inventory, request.inventorySlot);
+      if (!row || this._fingerprint(row) !== request.fingerprint) return { ok: false, reason: 'H16_EXCHANGE_SOURCE_CHANGED' };
+      if (!this._safeItem(row)) return { ok: false, reason: 'H16_EXCHANGE_SOURCE_PROTECTED' };
+      const definition = this._definition(row.name);
+      const required = definition && finite(definition.e);
+      if (required == null || required !== request.requiredQuantity) return { ok: false, reason: 'H16_EXCHANGE_DEFINITION_CHANGED' };
+      if (Math.max(1, Number(row.quantity) || 1) < required) return { ok: false, reason: 'H16_EXCHANGE_QUANTITY_CHANGED' };
+      if (definition.cash === true) return { ok: false, reason: 'H16_EXCHANGE_CASH_ITEM_BLOCKED' };
+      if (this._questEvent(definition) && !(request.allowQuestEvent || this.config.allowQuestEvent)) {
+        return { ok: false, reason: 'H16_QUEST_EVENT_REQUIRES_EXPLICIT_OPT_IN' };
+      }
+      const value = this._itemValue(row.name, row.level);
+      const risk = value == null ? null : value * required;
+      if (risk == null || risk > this.config.maxExchangeValueAtRisk) return { ok: false, reason: 'H16_EXCHANGE_VALUE_OVER_BUDGET' };
+      return { ok: true };
+    }
+
+    _revalidateCraft(request, inventory) {
+      const recipe = this._recipe(request.itemName);
+      if (!recipe || JSON.stringify(recipe.items || []) !== JSON.stringify(request.recipe.items || [])) {
+        return { ok: false, reason: 'H16_CRAFT_RECIPE_CHANGED' };
+      }
+      const source = this._craftSource(recipe, inventory, { allowQuestEvent: request.allowQuestEvent === true });
+      if (!source.ok) return { ok: false, reason: source.reason };
+      const expected = (request.sources || []).map(row => row.slot).join(',');
+      const current = (source.sources || []).map(row => row.slot).join(',');
+      if (expected !== current) return { ok: false, reason: 'H16_CRAFT_AUTO_SOURCE_CHANGED' };
+      return { ok: true };
+    }
+
+    tick() {
+      this.metrics.ticks += 1;
+      if (!this.moduleActive) return { state: 'STOPPED', reason: 'H16_MODULE_NOT_ACTIVE' };
+      if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason };
+
+      if (this.pending) {
+        this._observePending();
+        if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason };
+        return this.pending ? { state: 'PENDING', pending: clone(this.pending) } : { state: 'READY' };
+      }
+
+      const request = this.request;
+      if (!request) return this.plan();
+
+      const gate = this._localReady();
+      if (!gate.ok) {
+        this.request = null;
+        this._cancelOwnedMovement(gate.reason || 'H16_SAFETY_GATE_BLOCKED');
+        this.metrics.safetyBlocks += 1;
+        return { state: 'BLOCKED', reason: gate.reason };
+      }
+      if (this.attemptsThisSession >= this.config.maxAttemptsPerSession) {
+        this.request = null;
+        this.metrics.budgetBlocks += 1;
+        return { state: 'BLOCKED', reason: 'H16_SESSION_ATTEMPT_BUDGET_EXHAUSTED' };
+      }
+
+      const travel = this._ensureTravel(request);
+      if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason };
+      if (!travel || travel.ready !== true) return { state: 'WAITING_TRAVEL', reason: travel && travel.reason || 'H16_TRAVEL' };
+
+      const inventory = this._inventory();
+      if (!inventory || inventory.available === false) return { state: 'BLOCKED', reason: 'H16_INVENTORY_UNAVAILABLE' };
+      const valid = request.kind === 'EXCHANGE'
+        ? this._revalidateExchange(request, inventory)
+        : request.kind === 'CRAFT'
+          ? this._revalidateCraft(request, inventory)
+          : { ok: false, reason: 'H16_REQUEST_KIND_INVALID' };
+      if (!valid.ok) {
+        this.request = null;
+        this.metrics.safetyBlocks += 1;
+        this.lastAction = { at: nowIso(), type: request.kind + '_BLOCKED', reason: valid.reason };
+        return { state: 'BLOCKED', reason: valid.reason };
+      }
+      return this._dispatch(request, inventory);
+    }
+
+    status() {
+      return {
+        schemaVersion: 1,
+        moduleActive: this.moduleActive,
+        suspended: !!this.suspendedReason,
+        suspendedReason: this.suspendedReason,
+        attemptsThisSession: this.attemptsThisSession,
+        pending: clone(this.pending),
+        request: clone(this.request),
+        lastPlan: clone(this.lastPlan),
+        lastAction: clone(this.lastAction),
+        config: clone(this.config),
+        metrics: clone(this.metrics)
+      };
+    }
+  }
+
+  ns.ExchangeCraftController = ExchangeCraftController;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+
+(function (root) {
+  'use strict';
+
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns) throw new Error('ALBOT_INTERNALS_MISSING');
+
+  const clone = ns.helpers.clone;
+  const cleanText = ns.helpers.cleanText;
+
+  function finite(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function nowIso() {
+    return new Date().toISOString();
+  }
+
+  const DEFAULT_PRIORITIES = Object.freeze({
+    BANK_MOUNT: 110,
+    BANK_DEPOSIT: 100,
+    GEAR_EQUIP: 90,
+    MARKET_SELL: 75,
+    EXCHANGE: 70,
+    CRAFT: 65,
+    UPGRADE: 55,
+    COMPOUND: 50,
+    NPC_SELL: 40
+  });
+
+  const DEFAULT_KINDS = Object.freeze({
+    BANK_MOUNT: true,
+    BANK_DEPOSIT: true,
+    GEAR_EQUIP: true,
+    MARKET_SELL: true,
+    EXCHANGE: true,
+    CRAFT: true,
+    UPGRADE: true,
+    COMPOUND: true,
+    NPC_SELL: true
+  });
+
+  class EconomyController {
+    constructor(options = {}) {
+      this.root = options.root || root;
+      this.logger = options.logger || null;
+      this.game = options.game || null;
+      this.movement = options.movement || null;
+      this.combat = options.combat || null;
+      this.inventory = options.inventory || null;
+      this.merchant = options.merchant || null;
+      this.bank = options.bank || null;
+      this.trade = options.trade || null;
+      this.gear = options.gear || null;
+      this.upgrade = options.upgrade || null;
+      this.exchangeCraft = options.exchangeCraft || null;
+      this.partyLogistics = options.partyLogistics || null;
+      this.canAct = typeof options.canAct === 'function' ? options.canAct : null;
+
+      this.moduleActive = false;
+      this.autonomyEnabled = false;
+      this.scope = null;
+      this.suspendedReason = null;
+      this.currentAction = null;
+      this.lastPlan = null;
+      this.lastAction = null;
+      this.sequence = 0;
+      this.actionsThisSession = 0;
+      this.cooldownUntilMs = null;
+      this.rejectionBackoff = new Map();
+
+      this.config = {
+        tickMs: Math.max(250, Math.min(5000, Number(options.tickMs) || 1000)),
+        actionCooldownMs: Math.max(0, Math.min(60000, Number(options.actionCooldownMs) || 1500)),
+        rejectionBackoffMs: Math.max(1000, Math.min(300000, Number(options.rejectionBackoffMs) || 15000)),
+        actionTimeoutMs: Math.max(5000, Math.min(300000, Number(options.actionTimeoutMs) || 120000)),
+        maxActionsPerSession: Math.max(1, Math.min(100, Math.floor(Number(options.maxActionsPerSession) || 12))),
+        minMarketPremiumRatio: Math.max(1, Math.min(10, finite(options.minMarketPremiumRatio) == null ? 1 : finite(options.minMarketPremiumRatio))),
+        priorities: { ...DEFAULT_PRIORITIES, ...(options.priorities || {}) },
+        allowKinds: { ...DEFAULT_KINDS, ...(options.allowKinds || {}) }
+      };
+
+      this.metrics = {
+        ticks: 0,
+        plans: 0,
+        proposals: 0,
+        conflictBlocks: 0,
+        combatBlocks: 0,
+        movementBlocks: 0,
+        actionsQueued: 0,
+        actionsConfirmed: 0,
+        actionsRejected: 0,
+        actionsUnknown: 0,
+        rejectionBackoffs: 0,
+        sessionBudgetBlocks: 0,
+        byKind: {}
+      };
+    }
+
+    start(context = {}) {
+      if (this.moduleActive) return { started: false, reason: 'H17_ALREADY_ACTIVE' };
+      this.moduleActive = true;
+      this.scope = context.scope || null;
+      this.suspendedReason = null;
+      this.autonomyEnabled = false;
+      this.currentAction = null;
+      this.actionsThisSession = 0;
+      this.cooldownUntilMs = null;
+      this.rejectionBackoff.clear();
+      if (this.scope && typeof this.scope.interval === 'function') {
+        this.scope.interval('economy-tick', () => this.tick(), this.config.tickMs, { immediate: true });
+      }
+      return { started: true };
+    }
+
+    stop(reason = 'H17_MODULE_STOP') {
+      this.moduleActive = false;
+      this.autonomyEnabled = false;
+      this.scope = null;
+      this.currentAction = null;
+      this.cooldownUntilMs = null;
+      this.rejectionBackoff.clear();
+      this.lastAction = { at: nowIso(), type: 'STOP', reason: cleanText(reason, 240) };
+      return { stopped: true };
+    }
+
+    startAutonomy(options = {}) {
+      if (!this.moduleActive) return { accepted: false, reason: 'H17_MODULE_NOT_ACTIVE' };
+      if (this.suspendedReason) return { accepted: false, reason: this.suspendedReason };
+      if (this.currentAction) return { accepted: false, reason: 'H17_ACTION_ACTIVE' };
+      if (this.canAct && this.canAct('economy') !== true) return { accepted: false, reason: 'H17_RUNTIME_ACTION_BLOCKED' };
+      if (options.maxActions != null) {
+        this.config.maxActionsPerSession = Math.max(1, Math.min(100, Math.floor(Number(options.maxActions) || 1)));
+      }
+      this.actionsThisSession = 0;
+      this.cooldownUntilMs = null;
+      this.autonomyEnabled = true;
+      this.lastAction = { at: nowIso(), type: 'AUTONOMY_STARTED', maxActions: this.config.maxActionsPerSession };
+      return { accepted: true, status: this.status() };
+    }
+
+    stopAutonomy(reason = 'H17_AUTONOMY_STOP') {
+      this.autonomyEnabled = false;
+      this.lastAction = { at: nowIso(), type: 'AUTONOMY_STOPPED', reason: cleanText(reason, 240) };
+      return this.status();
+    }
+
+    resetSafety(reason = 'H17_EXPLICIT_RESET') {
+      if (this.currentAction) {
+        this.lastAction = { at: nowIso(), type: 'RESET_BLOCKED', reason: 'H17_ACTION_ACTIVE' };
+        return { ...this.status(), reset: false, reason: 'H17_ACTION_ACTIVE' };
+      }
+      this.suspendedReason = null;
+      this.autonomyEnabled = false;
+      this.actionsThisSession = 0;
+      this.cooldownUntilMs = null;
+      this.rejectionBackoff.clear();
+      this.lastAction = { at: nowIso(), type: 'RESET', reason: cleanText(reason, 240) };
+      return this.status();
+    }
+
+    policy(value = null) {
+      if (value == null) return clone(this.config);
+      if (!value || typeof value !== 'object') throw new Error('H17_POLICY_MUST_BE_OBJECT');
+      if (value.maxActionsPerSession != null) this.config.maxActionsPerSession = Math.max(1, Math.min(100, Math.floor(Number(value.maxActionsPerSession) || 1)));
+      if (value.actionCooldownMs != null) this.config.actionCooldownMs = Math.max(0, Math.min(60000, Math.floor(Number(value.actionCooldownMs) || 0)));
+      if (value.rejectionBackoffMs != null) this.config.rejectionBackoffMs = Math.max(1000, Math.min(300000, Math.floor(Number(value.rejectionBackoffMs) || 1000)));
+      if (value.actionTimeoutMs != null) this.config.actionTimeoutMs = Math.max(5000, Math.min(300000, Math.floor(Number(value.actionTimeoutMs) || 5000)));
+      if (value.minMarketPremiumRatio != null) this.config.minMarketPremiumRatio = Math.max(1, Math.min(10, Number(value.minMarketPremiumRatio) || 1));
+      if (value.priorities && typeof value.priorities === 'object') {
+        for (const [kind, priority] of Object.entries(value.priorities)) {
+          if (!Object.prototype.hasOwnProperty.call(DEFAULT_PRIORITIES, kind)) continue;
+          this.config.priorities[kind] = Math.max(0, Math.min(1000, Math.floor(Number(priority) || 0)));
+        }
+      }
+      if (value.allowKinds && typeof value.allowKinds === 'object') {
+        for (const [kind, allowed] of Object.entries(value.allowKinds)) {
+          if (!Object.prototype.hasOwnProperty.call(DEFAULT_KINDS, kind)) continue;
+          this.config.allowKinds[kind] = allowed === true;
+        }
+      }
+      return clone(this.config);
+    }
+
+    _snapshot() {
+      try { return this.game && this.game.snapshot ? this.game.snapshot() : null; }
+      catch (_) { return null; }
+    }
+
+    _movementStatus() {
+      try { return this.movement && typeof this.movement.status === 'function' ? this.movement.status() : null; }
+      catch (_) { return null; }
+    }
+
+    _combatActive() {
+      try {
+        const status = this.combat && typeof this.combat.status === 'function' ? this.combat.status() : null;
+        return !!(status && (status.active || (status.state && !['IDLE', 'STOPPED'].includes(String(status.state)))));
+      } catch (_) {
+        return false;
+      }
+    }
+
+    _callPlan(controller) {
+      try { return controller && typeof controller.plan === 'function' ? controller.plan() : null; }
+      catch (error) { return { state: 'BLOCKED', reason: cleanText(error && error.message || error, 240) }; }
+    }
+
+    _status(controller) {
+      try { return controller && typeof controller.status === 'function' ? controller.status() : null; }
+      catch (_) { return null; }
+    }
+
+    _lastActionSignature(status) {
+      const row = status && status.lastAction;
+      if (!row) return null;
+      return [row.at || '', row.type || '', row.reason || ''].join('|');
+    }
+
+    _childRows() {
+      return [
+        { name: 'inventory', controller: this.inventory },
+        { name: 'merchant', controller: this.merchant },
+        { name: 'bank', controller: this.bank },
+        { name: 'trade', controller: this.trade },
+        { name: 'gear', controller: this.gear },
+        { name: 'upgrade', controller: this.upgrade },
+        { name: 'exchangeCraft', controller: this.exchangeCraft },
+        { name: 'partyLogistics', controller: this.partyLogistics }
+      ];
+    }
+
+    _childSnapshot() {
+      const output = {};
+      for (const row of this._childRows()) output[row.name] = this._status(row.controller);
+      return output;
+    }
+
+    _childBusy(child) {
+      return !!(child && (
+        child.pending
+        || child.request
+        || child.delivery
+        || child.pendingLoot
+        || child.currentAction
+        || child.autonomyEnabled
+        || Array.isArray(child.queue) && child.queue.length
+      ));
+    }
+
+    _proposal(kind, module, details = {}) {
+      if (this.config.allowKinds[kind] !== true) return null;
+      const id = 'h17-proposal-' + kind + '-' + cleanText(details.key || details.itemName || details.slot || '', 120);
+      const blockedUntil = Number(this.rejectionBackoff.get(id) || 0);
+      if (blockedUntil > Date.now()) return null;
+      if (blockedUntil) this.rejectionBackoff.delete(id);
+      return {
+        id,
+        kind,
+        module,
+        priority: Number(this.config.priorities[kind] || 0),
+        risk: Math.max(0, finite(details.risk) || 0),
+        ...clone(details)
+      };
+    }
+
+    _marketSellProposal(row) {
+      if (!row || !row.name || !this.trade || typeof this.trade.marketAnalysis !== 'function') return null;
+      let analysis = null;
+      try { analysis = this.trade.marketAnalysis(row.name, { level: Math.max(0, Number(row.level) || 0) }); } catch (_) {}
+      const bid = analysis && analysis.bestBid || null;
+      const price = finite(bid && bid.price);
+      const definition = this.game && typeof this.game.itemDefinition === 'function' ? this.game.itemDefinition(row.name) : null;
+      const npcPrice = finite(definition && definition.g);
+      if (!bid || !bid.rid || price == null || price <= 0 || npcPrice == null || npcPrice < 0) return null;
+      const minimum = npcPrice * this.config.minMarketPremiumRatio;
+      if (price < minimum) return null;
+      const quantity = Math.min(
+        Math.max(1, Math.floor(Number(row.quantity) || 1)),
+        Math.max(1, Math.floor(Number(bid.quantity) || 1))
+      );
+      return this._proposal('MARKET_SELL', 'trade', {
+        key: row.name + ':' + row.slot,
+        itemName: row.name,
+        inventorySlot: Number(row.slot),
+        quantity,
+        playerName: bid.playerName,
+        tradeSlot: bid.slot,
+        minUnitPrice: minimum,
+        unitPrice: price,
+        risk: 0
+      });
+    }
+
+    _npcSellProposal(row) {
+      if (!row || !row.name) return null;
+      let location = null;
+      try { location = this.game && typeof this.game.npcLocation === 'function' ? this.game.npcLocation('fancypots') : null; } catch (_) {}
+      if (!location) return null;
+      return this._proposal('NPC_SELL', 'trade', {
+        key: row.name + ':' + row.slot,
+        itemName: row.name,
+        inventorySlot: Number(row.slot),
+        quantity: Math.max(1, Math.floor(Number(row.quantity) || 1)),
+        risk: 0
+      });
+    }
+
+    plan() {
+      this.metrics.plans += 1;
+      const snap = this._snapshot();
+      const children = this._childSnapshot();
+      const movement = this._movementStatus();
+      const proposals = [];
+      const blockers = [];
+
+      if (this.suspendedReason) {
+        const plan = { state: 'SUSPENDED', reason: this.suspendedReason, selected: null, proposals, blockers, children };
+        this.lastPlan = clone(plan);
+        return clone(plan);
+      }
+      if (!snap || !snap.available || !snap.character) {
+        const plan = { state: 'BLOCKED', reason: 'H17_CHARACTER_UNAVAILABLE', selected: null, proposals, blockers, children };
+        this.lastPlan = clone(plan);
+        return clone(plan);
+      }
+      if (snap.character.rip === true) {
+        const plan = { state: 'BLOCKED', reason: 'H17_CHARACTER_DEAD', selected: null, proposals, blockers, children };
+        this.lastPlan = clone(plan);
+        return clone(plan);
+      }
+      if (String(snap.character.ctype || '').toLowerCase() !== 'merchant') {
+        const plan = { state: 'BLOCKED', reason: 'H17_REQUIRES_MERCHANT', selected: null, proposals, blockers, children };
+        this.lastPlan = clone(plan);
+        return clone(plan);
+      }
+      if (this.canAct && this.canAct('economy') !== true) {
+        const plan = { state: 'BLOCKED', reason: 'H17_RUNTIME_ACTION_BLOCKED', selected: null, proposals, blockers, children };
+        this.lastPlan = clone(plan);
+        return clone(plan);
+      }
+      if (this._combatActive()) {
+        this.metrics.combatBlocks += 1;
+        const plan = { state: 'BLOCKED', reason: 'H17_COMBAT_ACTIVE', selected: null, proposals, blockers, children };
+        this.lastPlan = clone(plan);
+        return clone(plan);
+      }
+
+      for (const [name, status] of Object.entries(children)) {
+        if (status && status.suspended) blockers.push({ module: name, reason: status.suspendedReason || status.reason || 'SUSPENDED' });
+      }
+      if (blockers.length) {
+        const plan = { state: 'BLOCKED', reason: 'H17_CHILD_SUSPENDED', selected: null, proposals, blockers, children };
+        this.lastPlan = clone(plan);
+        return clone(plan);
+      }
+
+      if (!this.currentAction && movement && movement.activeOrder) {
+        this.metrics.movementBlocks += 1;
+        const plan = {
+          state: 'WAITING',
+          reason: 'H17_MOVEMENT_OWNED',
+          selected: null,
+          proposals,
+          blockers: [{ module: 'movement', reason: 'ACTIVE_ORDER', owner: movement.activeOrder.owner || null }],
+          children
+        };
+        this.lastPlan = clone(plan);
+        return clone(plan);
+      }
+
+      const busyChildren = Object.entries(children)
+        .filter(([, status]) => this._childBusy(status))
+        .map(([module, status]) => ({ module, reason: 'BUSY', lastAction: status && status.lastAction || null }));
+      if (!this.currentAction && busyChildren.length) {
+        this.metrics.conflictBlocks += 1;
+        const plan = { state: 'WAITING', reason: 'H17_CHILD_BUSY', selected: null, proposals, blockers: busyChildren, children };
+        this.lastPlan = clone(plan);
+        return clone(plan);
+      }
+
+      const merchantPlan = this._callPlan(this.merchant);
+      const bankPlan = this._callPlan(this.bank);
+      const tradePlan = this._callPlan(this.trade);
+      const gearPlan = this._callPlan(this.gear);
+      const upgradePlan = this._callPlan(this.upgrade);
+      const exchangePlan = this._callPlan(this.exchangeCraft);
+
+      const pressure = merchantPlan && merchantPlan.pressure && merchantPlan.pressure.state || 'NORMAL';
+      const bankRows = bankPlan && bankPlan.safeDepositRows || [];
+      if (['HIGH', 'CRITICAL'].includes(String(pressure)) && bankRows.length) {
+        if (bankPlan && bankPlan.state === 'NEEDS_BANK') {
+          const proposal = this._proposal('BANK_MOUNT', 'bank', { key: 'bank', pressure, risk: 0 });
+          if (proposal) proposals.push(proposal);
+        } else if (bankPlan && bankPlan.state === 'READY') {
+          const row = bankRows[0];
+          const proposal = this._proposal('BANK_DEPOSIT', 'bank', {
+            key: row.name + ':' + row.slot,
+            itemName: row.name,
+            inventorySlot: Number(row.slot),
+            quantity: Math.max(1, Math.floor(Number(row.quantity) || 1)),
+            pressure,
+            risk: 0
+          });
+          if (proposal) proposals.push(proposal);
+        }
+      }
+
+      const improvement = gearPlan && gearPlan.local && (gearPlan.local.improvements || [])[0] || null;
+      if (improvement && improvement.bestInventory) {
+        const proposal = this._proposal('GEAR_EQUIP', 'gear', {
+          key: improvement.slot,
+          slot: improvement.slot,
+          inventorySlot: Number(improvement.bestInventory.inventorySlot),
+          itemName: improvement.bestInventory.item && improvement.bestInventory.item.name || null,
+          delta: finite(improvement.delta) || 0,
+          risk: Math.max(0, finite(improvement.bestInventory.item && improvement.bestInventory.item.definition && improvement.bestInventory.item.definition.g) || 0)
+        });
+        if (proposal) proposals.push(proposal);
+      }
+
+      const safeExchange = exchangePlan && (exchangePlan.exchangeCandidates || []).find(row => row && row.safe === true) || null;
+      if (safeExchange) {
+        const proposal = this._proposal('EXCHANGE', 'exchangeCraft', {
+          key: safeExchange.itemName + ':' + safeExchange.inventorySlot,
+          itemName: safeExchange.itemName,
+          inventorySlot: Number(safeExchange.inventorySlot),
+          quantity: Math.max(1, Math.floor(Number(safeExchange.requiredQuantity) || 1)),
+          risk: Math.max(0, finite(safeExchange.valueAtRisk) || 0)
+        });
+        if (proposal) proposals.push(proposal);
+      }
+
+      const safeCraft = exchangePlan && (exchangePlan.craftCandidates || []).find(row => row && row.safe === true) || null;
+      if (safeCraft) {
+        const proposal = this._proposal('CRAFT', 'exchangeCraft', {
+          key: safeCraft.itemName,
+          itemName: safeCraft.itemName,
+          risk: Math.max(0, finite(safeCraft.inputValueAtRisk) || 0),
+          goldCost: Math.max(0, finite(safeCraft.cost) || 0)
+        });
+        if (proposal) proposals.push(proposal);
+      }
+
+      const upgradeCandidate = upgradePlan && (upgradePlan.upgradeCandidates || [])[0] || null;
+      if (upgradeCandidate) {
+        const proposal = this._proposal('UPGRADE', 'upgrade', {
+          key: String(upgradeCandidate.itemSlot),
+          inventorySlot: Number(upgradeCandidate.itemSlot),
+          itemName: upgradeCandidate.itemName || upgradeCandidate.name || null,
+          fromLevel: Number(upgradeCandidate.fromLevel || 0),
+          risk: Math.max(0, finite(upgradeCandidate.budget && upgradeCandidate.budget.itemValueAtRisk) || 0)
+        });
+        if (proposal) proposals.push(proposal);
+      }
+
+      const compoundCandidate = upgradePlan && (upgradePlan.compoundCandidates || [])[0] || null;
+      if (compoundCandidate) {
+        const proposal = this._proposal('COMPOUND', 'upgrade', {
+          key: (compoundCandidate.itemSlots || []).join(','),
+          inventorySlots: clone(compoundCandidate.itemSlots || []),
+          itemName: compoundCandidate.itemName || compoundCandidate.name || null,
+          fromLevel: Number(compoundCandidate.fromLevel || 0),
+          risk: Math.max(0, finite(compoundCandidate.budget && compoundCandidate.budget.itemValueAtRisk) || 0)
+        });
+        if (proposal) proposals.push(proposal);
+      }
+
+      const sellRow = tradePlan && (tradePlan.safeSellRows || [])[0] || null;
+      if (sellRow) {
+        const market = this._marketSellProposal(sellRow);
+        const npc = this._npcSellProposal(sellRow);
+        if (market) proposals.push(market);
+        else if (npc) proposals.push(npc);
+      }
+
+      proposals.sort((a, b) =>
+        Number(b.priority || 0) - Number(a.priority || 0)
+        || Number(a.risk || 0) - Number(b.risk || 0)
+        || String(a.kind).localeCompare(String(b.kind))
+        || String(a.id).localeCompare(String(b.id)));
+
+      this.metrics.proposals += proposals.length;
+      const selected = proposals[0] || null;
+      const plan = {
+        state: selected ? 'READY' : 'IDLE',
+        reason: selected ? 'H17_PLAN_READY' : 'H17_NO_SAFE_ECONOMY_ACTION',
+        character: {
+          name: snap.character.name,
+          ctype: snap.character.ctype,
+          map: snap.character.map,
+          gold: snap.character.gold
+        },
+        autonomyEnabled: this.autonomyEnabled,
+        actionsThisSession: this.actionsThisSession,
+        maxActionsPerSession: this.config.maxActionsPerSession,
+        pressure,
+        selected: selected ? clone(selected) : null,
+        proposals: clone(proposals),
+        blockers: clone(blockers),
+        children: clone(children)
+      };
+      this.lastPlan = clone(plan);
+      return clone(plan);
+    }
+
+    _childController(module) {
+      return {
+        bank: this.bank,
+        trade: this.trade,
+        gear: this.gear,
+        upgrade: this.upgrade,
+        exchangeCraft: this.exchangeCraft
+      }[module] || null;
+    }
+
+    _queueProposal(proposal) {
+      if (!proposal) return { accepted: false, reason: 'H17_PROPOSAL_REQUIRED' };
+      let result = null;
+      if (proposal.kind === 'BANK_MOUNT') result = this.bank && this.bank.queueMount ? this.bank.queueMount() : null;
+      else if (proposal.kind === 'BANK_DEPOSIT') result = this.bank && this.bank.queueDeposit
+        ? this.bank.queueDeposit(proposal.itemName, { inventorySlot: proposal.inventorySlot }) : null;
+      else if (proposal.kind === 'GEAR_EQUIP') result = this.gear && this.gear.queueEquip
+        ? this.gear.queueEquip(proposal.inventorySlot, proposal.slot) : null;
+      else if (proposal.kind === 'MARKET_SELL') result = this.trade && this.trade.queueMarketSell
+        ? this.trade.queueMarketSell(proposal.playerName, proposal.tradeSlot, proposal.quantity, { minUnitPrice: proposal.minUnitPrice }) : null;
+      else if (proposal.kind === 'NPC_SELL') result = this.trade && this.trade.queueNpcSell
+        ? this.trade.queueNpcSell(proposal.inventorySlot, proposal.quantity) : null;
+      else if (proposal.kind === 'UPGRADE') result = this.upgrade && this.upgrade.queueUpgrade
+        ? this.upgrade.queueUpgrade(proposal.inventorySlot) : null;
+      else if (proposal.kind === 'COMPOUND') result = this.upgrade && this.upgrade.queueCompound
+        ? this.upgrade.queueCompound(proposal.inventorySlots) : null;
+      else if (proposal.kind === 'EXCHANGE') result = this.exchangeCraft && this.exchangeCraft.queueExchange
+        ? this.exchangeCraft.queueExchange(proposal.inventorySlot) : null;
+      else if (proposal.kind === 'CRAFT') result = this.exchangeCraft && this.exchangeCraft.queueCraft
+        ? this.exchangeCraft.queueCraft(proposal.itemName) : null;
+      else return { accepted: false, reason: 'H17_PROPOSAL_KIND_UNSUPPORTED' };
+
+      if (!result) return { accepted: false, reason: 'H17_CHILD_QUEUE_UNAVAILABLE' };
+      if (result.accepted !== true) return clone(result);
+
+      if (proposal.kind === 'BANK_MOUNT' && result.alreadyMounted === true) {
+        this.actionsThisSession += 1;
+        this.metrics.actionsQueued += 1;
+        this.metrics.actionsConfirmed += 1;
+        this.metrics.byKind[proposal.kind] = Number(this.metrics.byKind[proposal.kind] || 0) + 1;
+        this.cooldownUntilMs = Date.now() + this.config.actionCooldownMs;
+        this.lastAction = {
+          at: nowIso(),
+          type: 'ACTION_CONFIRMED',
+          action: {
+            id: 'h17-action-' + (++this.sequence),
+            kind: proposal.kind,
+            module: proposal.module,
+            proposal: clone(proposal)
+          },
+          details: { immediate: true, child: clone(result) }
+        };
+        return { accepted: true, immediate: true, result: clone(this.lastAction) };
+      }
+
+      const child = this._status(this._childController(proposal.module));
+      const now = Date.now();
+      this.currentAction = {
+        id: 'h17-action-' + (++this.sequence),
+        kind: proposal.kind,
+        module: proposal.module,
+        proposal: clone(proposal),
+        queuedAt: nowIso(),
+        queuedAtMs: now,
+        deadlineAtMs: now + this.config.actionTimeoutMs,
+        beforeLastAction: this._lastActionSignature(child)
+      };
+      this.actionsThisSession += 1;
+      this.metrics.actionsQueued += 1;
+      this.metrics.byKind[proposal.kind] = Number(this.metrics.byKind[proposal.kind] || 0) + 1;
+      this.lastAction = { at: nowIso(), type: 'ACTION_QUEUED', action: clone(this.currentAction) };
+      return { accepted: true, action: clone(this.currentAction), child: clone(result) };
+    }
+
+    queueSelected() {
+      if (!this.moduleActive) return { accepted: false, reason: 'H17_MODULE_NOT_ACTIVE' };
+      if (this.suspendedReason) return { accepted: false, reason: this.suspendedReason };
+      if (this.currentAction) return { accepted: false, reason: 'H17_ACTION_ACTIVE' };
+      if (this.canAct && this.canAct('economy') !== true) return { accepted: false, reason: 'H17_RUNTIME_ACTION_BLOCKED' };
+      if (this.actionsThisSession >= this.config.maxActionsPerSession) {
+        this.metrics.sessionBudgetBlocks += 1;
+        return { accepted: false, reason: 'H17_SESSION_ACTION_BUDGET_EXHAUSTED' };
+      }
+      const plan = this.plan();
+      if (!plan || plan.state !== 'READY' || !plan.selected) {
+        return { accepted: false, reason: plan && plan.reason || 'H17_PLAN_UNAVAILABLE' };
+      }
+      return this._queueProposal(plan.selected);
+    }
+
+    _finishCurrent(outcome, details = {}) {
+      const current = this.currentAction;
+      this.currentAction = null;
+      this.cooldownUntilMs = Date.now() + this.config.actionCooldownMs;
+      if (outcome === 'CONFIRMED') this.metrics.actionsConfirmed += 1;
+      else if (outcome === 'REJECTED') this.metrics.actionsRejected += 1;
+      else this.metrics.actionsUnknown += 1;
+      this.lastAction = {
+        at: nowIso(),
+        type: 'ACTION_' + outcome,
+        action: current ? clone(current) : null,
+        details: clone(details)
+      };
+      return clone(this.lastAction);
+    }
+
+    _observeCurrent() {
+      const current = this.currentAction;
+      if (!current) return { state: 'IDLE' };
+      const child = this._status(this._childController(current.module));
+      if (!child) {
+        this.suspendedReason = 'H17_CHILD_STATUS_UNAVAILABLE';
+        this._finishCurrent('UNKNOWN', { module: current.module });
+        return { state: 'SUSPENDED', reason: this.suspendedReason };
+      }
+      if (child.suspended) {
+        this.suspendedReason = 'H17_CHILD_SUSPENDED:' + cleanText(child.suspendedReason || current.module, 160);
+        this._finishCurrent('UNKNOWN', { module: current.module, reason: child.suspendedReason || null });
+        return { state: 'SUSPENDED', reason: this.suspendedReason };
+      }
+      if (this._childBusy(child)) return { state: 'WAITING', action: clone(current) };
+
+      const after = this._lastActionSignature(child);
+      if (after && after !== current.beforeLastAction) {
+        const type = String(child.lastAction && child.lastAction.type || '');
+        if (type.includes('UNKNOWN')) {
+          this.suspendedReason = 'H17_CHILD_UNKNOWN:' + current.module;
+          this._finishCurrent('UNKNOWN', { childLastAction: clone(child.lastAction) });
+          return { state: 'SUSPENDED', reason: this.suspendedReason };
+        }
+        if (type.includes('CONFIRMED') || type.includes('SUCCEEDED') || type === 'BANK_ALREADY_MOUNTED' || type === 'BANK_MOUNTED') {
+          return { state: 'CONFIRMED', result: this._finishCurrent('CONFIRMED', { childLastAction: clone(child.lastAction) }) };
+        }
+        if (type.includes('REJECTED') || type.includes('FAILED') || type.includes('CANCELLED') || type.includes('BLOCKED')) {
+          return { state: 'REJECTED', result: this._finishCurrent('REJECTED', { childLastAction: clone(child.lastAction) }) };
+        }
+      }
+
+      if (Date.now() >= current.deadlineAtMs) {
+        this.suspendedReason = 'H17_CHILD_COMPLETION_UNOBSERVABLE';
+        this._finishCurrent('UNKNOWN', { module: current.module });
+        return { state: 'SUSPENDED', reason: this.suspendedReason };
+      }
+      return { state: 'WAITING', action: clone(current) };
+    }
+
+    tick() {
+      this.metrics.ticks += 1;
+      if (!this.moduleActive) return { state: 'IDLE', reason: 'H17_MODULE_INACTIVE' };
+      if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason };
+
+      if (this.currentAction) {
+        const observed = this._observeCurrent();
+        if (observed.state !== 'IDLE') return observed;
+      }
+
+      const plan = this.plan();
+      if (!this.autonomyEnabled) return { state: 'OBSERVE', plan };
+      if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason, plan };
+      if (this.cooldownUntilMs && Date.now() < this.cooldownUntilMs) {
+        return { state: 'COOLDOWN', untilMs: this.cooldownUntilMs, plan };
+      }
+      if (this.actionsThisSession >= this.config.maxActionsPerSession) {
+        this.metrics.sessionBudgetBlocks += 1;
+        this.autonomyEnabled = false;
+        this.lastAction = { at: nowIso(), type: 'SESSION_BUDGET_REACHED', actions: this.actionsThisSession };
+        return { state: 'COMPLETE', reason: 'H17_SESSION_ACTION_BUDGET_REACHED', plan };
+      }
+      if (!plan || plan.state !== 'READY' || !plan.selected) {
+        return { state: plan && plan.state || 'IDLE', reason: plan && plan.reason || 'H17_NO_SAFE_ECONOMY_ACTION', plan };
+      }
+      const queued = this._queueProposal(plan.selected);
+      if (!queued || queued.accepted !== true) {
+        this.metrics.actionsRejected += 1;
+        this.metrics.rejectionBackoffs += 1;
+        this.cooldownUntilMs = Date.now() + this.config.actionCooldownMs;
+        this.rejectionBackoff.set(plan.selected.id, Date.now() + this.config.rejectionBackoffMs);
+        this.lastAction = {
+          at: nowIso(),
+          type: 'ACTION_QUEUE_REJECTED',
+          proposal: clone(plan.selected),
+          reason: queued && queued.reason || 'H17_CHILD_QUEUE_REJECTED'
+        };
+        return {
+          state: 'REJECTED',
+          reason: this.lastAction.reason,
+          cooldownUntilMs: this.cooldownUntilMs,
+          plan,
+          result: clone(queued)
+        };
+      }
+      return { state: 'QUEUED', plan, result: queued };
+    }
+
+    status() {
+      return {
+        schemaVersion: 1,
+        moduleActive: this.moduleActive,
+        autonomyEnabled: this.autonomyEnabled,
+        suspended: !!this.suspendedReason,
+        suspendedReason: this.suspendedReason,
+        currentAction: clone(this.currentAction),
+        actionsThisSession: this.actionsThisSession,
+        cooldownUntilMs: this.cooldownUntilMs,
+        rejectionBackoff: Array.from(this.rejectionBackoff.entries()).map(([proposalId, untilMs]) => ({ proposalId, untilMs })),
+        lastPlan: clone(this.lastPlan),
+        lastAction: clone(this.lastAction),
+        config: clone(this.config),
+        metrics: clone(this.metrics)
+      };
+    }
+  }
+
+  ns.EconomyController = EconomyController;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
