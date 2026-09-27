@@ -156,13 +156,13 @@ test('H5 combat API, module and explicit H5 live suite remain available under H6
   assert.equal(typeof ctx.ALBot.combat.stop, 'function');
   assert.equal(typeof ctx.ALBot.combat.candidates, 'function');
   assert.ok(ctx.ALBot.liveTests.list().some(row => row.id === 'h5-combat'));
-  assert.equal(ctx.ALBot.liveTests.status().recommendedId, 'h16-exchange-craft');
+  assert.equal(ctx.ALBot.liveTests.status().recommendedId, 'h17-economy-autonomy');
 
   await ctx.ALBot.start();
   const module = ctx.ALBot.modules.list().find(row => row.id === 'combat');
   assert.equal(module.state, 'ACTIVE');
   assert.equal(module.resources, 1);
-  assert.equal(ctx.ALBot.scheduler.status().totalResources, 12);
+  assert.equal(ctx.ALBot.scheduler.status().totalResources, 13);
   await ctx.ALBot.stop('DONE');
 });
 
