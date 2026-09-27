@@ -168,3 +168,79 @@ Nach sauberem Merge von PR #22 nach `main`:
 5. bei FAIL nicht blind erneut starten, sondern den vollständigen Bericht senden.
 
 Der Live-Bericht entscheidet, ob H17 abgeschlossen ist oder ein gezielter H17-Fix folgt.
+
+
+## Finale Live-Evidence – H17 abgeschlossen
+
+Stand: 2026-09-27
+
+### Live-Versuch 1 – gezielter Fail
+
+Der erste echte `h17-economy-autonomy`-Lauf hat einen reproduzierbaren Ownership-/Settlement-Race sichtbar gemacht:
+
+- Preflight PASS;
+- erste Exchange-Aktion wurde über Live-Inventardelta bestätigt;
+- der zugrunde liegende Adventure-Land-Exchange-Call war zu diesem Zeitpunkt noch `in_progress`;
+- H17 gab dadurch die Child-Ownership zu früh frei;
+- ein zweiter Exchange wurde gestartet und mit `in_progress` abgewiesen;
+- H16/H17 gingen fail-safe in Suspension;
+- kein Blind-Retry.
+
+Der gezielte Post-Merge-Fix lief über PR #23 `H17: Hold exchange ownership until dispatch settles`.
+
+Fix:
+
+- H16 gibt Exchange-/Craft-Ownership erst nach sichtbarer Live-Evidence **und** beendeter Dispatch-Settlement frei;
+- Regressionstest deckt sichtbares Inventardelta bei noch offenem Dispatch-Promise ab;
+- Source und `dist/al-bot.js` wurden synchron gehalten;
+- Exact-Head-CI #470: PASS;
+- PR #23 per `merge` gemergt;
+- Merge-Commit: `e8baa9f0719c752625333deb53efc6bf9431e8a1`.
+
+### Live-Versuch 2 – finaler PASS
+
+Suite:
+
+```text
+h17-economy-autonomy
+```
+
+Runtime:
+
+```text
+0.17.0-h17
+```
+
+Ergebnis:
+
+```text
+PASSED / ALL_STEPS_PASSED
+```
+
+Bestätigte Evidence:
+
+- `preflight`: PASS;
+- Planner `READY / H17_PLAN_READY`;
+- 2 sichere Vorschläge im Preflight: `EXCHANGE anniversarygift` und `CRAFT cake`;
+- ausgewählt: `EXCHANGE anniversarygift`;
+- `bounded-autonomy`: PASS;
+- 3 Aktionen queued;
+- 3 Aktionen confirmed;
+- 0 rejected;
+- 0 H17 UNKNOWN;
+- `byKind.EXCHANGE = 3`;
+- H16 Exchange: 3 dispatched / 3 confirmed / 0 rejected / 0 UNKNOWN;
+- 3 Movement-Requests / 0 Movement-Blocks;
+- `stability`: PASS;
+- Child-UNKNOWN-Delta 0;
+- `cleanup`: PASS;
+- Autonomie danach AUS;
+- `currentAction = null`;
+- H17 nicht suspended;
+- Runtime Auto-Restore erfolgreich.
+
+Damit ist der zuvor beobachtete `in_progress`-Race im echten Adventure-Land-Lauf nicht mehr reproduziert worden.
+
+**H17 – Economy Autonomy ist abgeschlossen.**
+
+Nächster Entwicklungsblock: **H18 – Party-Logistik**.
