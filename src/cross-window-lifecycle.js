@@ -437,25 +437,41 @@
       const replyTo = cleanText(envelope.replyTo || '', 240);
       const pending = replyTo && this.pending.get(replyTo);
       if (!pending || pending.target !== envelope.senderCharacterName) return false;
-      if (pending.targetSessionId !== cleanText(envelope.targetSessionId || envelope.senderSessionId || '', 240)) {
+
+      const observedSessionId = cleanText(envelope.targetSessionId || envelope.senderSessionId || '', 240);
+      const expectedSessionId = cleanText(pending.targetSessionId || '', 240);
+      const sessionMatches = !!observedSessionId && observedSessionId === expectedSessionId;
+      const reason = cleanText(envelope.reason || '', 300) || null;
+      const terminalSessionMismatch = !sessionMatches
+        && envelope.success === false
+        && reason === 'H19_CROSS_WINDOW_TARGET_SESSION_MISMATCH';
+
+      if (!sessionMatches && !terminalSessionMismatch) {
         this.metrics.rejectedSessionMismatch += 1;
         return false;
       }
+
       const state = asObject(envelope.state) || {};
-      this._updatePeer(envelope.senderCharacterName, {
-        ...state,
-        sessionId: envelope.targetSessionId || envelope.senderSessionId
-      }, this.now());
+      if (observedSessionId) {
+        this._updatePeer(envelope.senderCharacterName, {
+          ...state,
+          sessionId: observedSessionId
+        }, this.now());
+      }
+
       this.metrics.settlementsReceived += 1;
       if (envelope.success === true) this.metrics.settlementsSucceeded += 1;
       else this.metrics.settlementsFailed += 1;
+      if (terminalSessionMismatch) this.metrics.rejectedSessionMismatch += 1;
+
       return this._finishPending(replyTo, {
         success: envelope.success === true,
-        reason: cleanText(envelope.reason || '', 300) || null,
+        reason,
         commandType: envelope.commandType || null,
         messageId: replyTo,
         target: envelope.senderCharacterName,
-        targetSessionId: pending.targetSessionId,
+        targetSessionId: expectedSessionId,
+        observedTargetSessionId: observedSessionId || null,
         state: clone(state)
       });
     }
