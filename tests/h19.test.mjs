@@ -32,6 +32,12 @@ function fixture(options = {}) {
       { name: 'My_Warrior', ctype: 'warrior', online: true }
     ],
     active: new Set(options.activeNames || ['My_Ranger', 'My_Priest']),
+    party: {
+      partyId: options.partyId || (Array.isArray(options.partyMembers) && options.partyMembers.length ? 'party-1' : null),
+      leader: options.partyLeader || (Array.isArray(options.partyMembers) && options.partyMembers.length ? options.partyMembers[0] : null),
+      members: new Set(options.partyMembers || []),
+      foreignMemberNames: clone(options.foreignPartyNames || [])
+    },
     dispatches: []
   };
   const storage = options.storage || createMemoryStorage();
@@ -58,6 +64,29 @@ function fixture(options = {}) {
     status() { return this.refresh(); }
   };
 
+  const party = {
+    snapshot: () => ({
+      schemaVersion: 1,
+      available: !!state.party.partyId,
+      partyId: state.party.partyId,
+      leader: state.party.leader,
+      memberNames: [...state.party.members],
+      members: [...state.party.members].map(name => ({
+        name,
+        local: name === state.character.name,
+        owned: state.account.some(row => row.name === name),
+        visible: state.active.has(name),
+        rip: name === state.character.name ? !!state.character.rip : false
+      })),
+      ownedMemberNames: [...state.party.members].filter(name => state.account.some(row => row.name === name)),
+      ownedMembers: [...state.party.members]
+        .filter(name => state.account.some(row => row.name === name))
+        .map(name => ({ name, local: name === state.character.name, owned: true, visible: state.active.has(name), rip: false })),
+      foreignMemberNames: clone(state.party.foreignMemberNames),
+      coordinationEnabled: state.party.members.size >= 2 && state.party.foreignMemberNames.length === 0
+    })
+  };
+
   let resolvePending = null;
   let rejectPending = null;
   const actions = {
@@ -68,6 +97,14 @@ function fixture(options = {}) {
       if (name === 'start_character' && options.noMutation !== true) state.active.add(String(args[0]));
       if (name === 'stop_character' && options.noMutation !== true) state.active.delete(String(args[0]));
       if (name === 'respawn' && options.noMutation !== true) state.character.rip = false;
+      if (options.noMutation !== true && ['send_party_invite', 'send_party_request', 'accept_party_invite', 'accept_party_request'].includes(name)) {
+        const target = String(args[0]);
+        state.party.partyId = state.party.partyId || 'party-recovered';
+        state.party.members.add(state.character.name);
+        state.party.members.add(target);
+        if (name === 'send_party_invite' || name === 'accept_party_request') state.party.leader = state.character.name;
+        if (name === 'send_party_request' || name === 'accept_party_invite') state.party.leader = target;
+      }
 
       if (options.neverSettle) return { id: 'act-' + state.dispatches.length, state: 'DISPATCHED', value: new Promise(() => {}) };
       if (options.manualSettlement) {
@@ -76,6 +113,9 @@ function fixture(options = {}) {
       }
       if (options.rejectPromise) {
         return { id: 'act-' + state.dispatches.length, state: 'DISPATCHED', value: Promise.reject(new Error('PROMISE_REJECTED')) };
+      }
+      if (options.serverReject) {
+        return { id: 'act-' + state.dispatches.length, state: 'DISPATCHED', value: Promise.resolve({ success: false, reason: 'SERVER_REJECTED_TEST' }) };
       }
       return { id: 'act-' + state.dispatches.length, state: 'DISPATCHED', value: Promise.resolve({ success: true }) };
     }
@@ -99,6 +139,7 @@ function fixture(options = {}) {
     game,
     actions,
     roster,
+    party,
     storage,
     canAct: () => options.actionBlocked !== true,
     outcomeTimeoutMs: options.outcomeTimeoutMs == null ? 5000 : options.outcomeTimeoutMs,
@@ -110,6 +151,7 @@ function fixture(options = {}) {
     controller,
     state,
     storage,
+    ctx,
     resolve: value => resolvePending && resolvePending(value == null ? { success: true } : value),
     reject: error => rejectPending && rejectPending(error || new Error('PROMISE_REJECTED')),
     recreate: extra => fixture({ ...options, ...(extra || {}), state, storage })
@@ -229,6 +271,97 @@ test('H19 captureDesiredActive drives bounded missing-character recovery', async
   const done = controller.tick();
   assert.equal(done.state, 'COMPLETE');
   assert.equal(controller.status().autonomyEnabled, false);
+  assert.equal(state.dispatches.length, 1);
+});
+
+test('H19 captures the owned live party leader with the desired active set', () => {
+  const { controller } = fixture({
+    activeNames: ['My_Ranger', 'My_Priest', 'My_Merchant'],
+    partyMembers: ['My_Ranger', 'My_Priest'],
+    partyLeader: 'My_Ranger'
+  });
+  const captured = controller.captureDesiredActive();
+  assert.equal(captured.accepted, true);
+  assert.equal(captured.desiredPartyLeader, 'My_Ranger');
+  assert.deepEqual(captured.desiredActiveNames, ['My_Merchant', 'My_Priest', 'My_Ranger']);
+});
+
+test('H19 party leader invites a missing active desired member and confirms from party snapshot', async () => {
+  const { controller, state } = fixture({
+    activeNames: ['My_Ranger', 'My_Priest', 'My_Merchant'],
+    partyMembers: ['My_Ranger', 'My_Priest'],
+    partyLeader: 'My_Ranger'
+  });
+  assert.equal(controller.captureDesiredActive().accepted, true);
+  assert.equal(controller.startAutonomy({ maxActions: 1 }).accepted, true);
+  const dispatched = controller.tick();
+  assert.equal(dispatched.state, 'DISPATCHED');
+  assert.deepEqual(state.dispatches[0], { name: 'send_party_invite', args: ['My_Merchant'] });
+  await flush();
+  const confirmed = controller.tick();
+  assert.equal(confirmed.state, 'CONFIRMED');
+  assert.equal(confirmed.details.evidence, 'PARTY_SNAPSHOT_MEMBERSHIP');
+  assert.equal(controller.status().metrics.partyInvitesConfirmed, 1);
+});
+
+test('H19 nonleader requests the captured desired leader after party loss', async () => {
+  const { controller, state } = fixture({
+    activeNames: ['My_Ranger', 'My_Priest']
+  });
+  assert.equal(controller.setPolicy({
+    desiredActiveNames: ['My_Ranger', 'My_Priest'],
+    desiredPartyLeader: 'My_Priest'
+  }).accepted, true);
+  assert.equal(controller.startAutonomy({ maxActions: 1 }).accepted, true);
+  assert.equal(controller.tick().state, 'DISPATCHED');
+  assert.deepEqual(state.dispatches[0], { name: 'send_party_request', args: ['My_Priest'] });
+  await flush();
+  assert.equal(controller.tick().state, 'CONFIRMED');
+  assert.equal(controller.status().metrics.partyRequestsConfirmed, 1);
+  assert.equal(state.party.leader, 'My_Priest');
+});
+
+test('H19 accepts an observed invite only from the desired owned leader', async () => {
+  const { controller, state, ctx } = fixture({
+    activeNames: ['My_Ranger', 'My_Priest']
+  });
+  assert.equal(controller.setPolicy({
+    desiredActiveNames: ['My_Ranger', 'My_Priest'],
+    desiredPartyLeader: 'My_Priest'
+  }).accepted, true);
+  assert.equal(controller.startAutonomy({ maxActions: 1 }).accepted, true);
+
+  ctx.on_party_invite('Not_Mine');
+  assert.equal(controller.status().partySignals.length, 0);
+
+  ctx.on_party_invite('My_Priest');
+  assert.equal(controller.status().partySignals.length, 1);
+  assert.equal(controller.tick().state, 'DISPATCHED');
+  assert.deepEqual(state.dispatches[0], { name: 'accept_party_invite', args: ['My_Priest'] });
+  await flush();
+  assert.equal(controller.tick().state, 'CONFIRMED');
+  assert.equal(controller.status().metrics.partyAcceptsConfirmed, 1);
+  assert.equal(controller.status().partySignals.length, 0);
+});
+
+test('H19 automatic known reject stops autonomy and does not immediately retry', async () => {
+  const { controller, state } = fixture({
+    activeNames: ['My_Ranger', 'My_Priest'],
+    serverReject: true,
+    noMutation: true
+  });
+  assert.equal(controller.setPolicy({
+    desiredActiveNames: ['My_Ranger', 'My_Priest', 'My_Merchant']
+  }).accepted, true);
+  assert.equal(controller.startAutonomy({ maxActions: 3 }).accepted, true);
+  assert.equal(controller.tick().state, 'DISPATCHED');
+  await flush();
+  const rejected = controller.tick();
+  assert.equal(rejected.state, 'REJECTED');
+  assert.equal(rejected.autonomyStopped, true);
+  assert.equal(controller.status().autonomyEnabled, false);
+  assert.equal(state.dispatches.length, 1);
+  controller.tick();
   assert.equal(state.dispatches.length, 1);
 });
 
