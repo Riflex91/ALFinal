@@ -50,7 +50,12 @@
         visibleAcquireDistance: Math.max(150, Math.min(900, Number(options.visibleAcquireDistance) || 500)),
         densityTarget: Math.max(2, Math.min(20, Number(options.densityTarget) || 6)),
         depletionGraceMs: Math.max(1000, Math.min(30000, Number(options.depletionGraceMs) || 5000)),
-        minExpectedHitChance: Math.max(0.05, Math.min(0.95, Number(options.minExpectedHitChance) || 0.25))
+        minExpectedHitChance: Math.max(0.05, Math.min(0.95, Number(options.minExpectedHitChance) || 0.25)),
+        groupRegroupTriggerDistance: Math.max(90, Math.min(250, Number(options.groupRegroupTriggerDistance) || 120)),
+        groupRegroupStopDistance: Math.max(35, Math.min(100, Number(options.groupRegroupStopDistance) || 60)),
+        groupHardRegroupDistance: Math.max(150, Math.min(350, Number(options.groupHardRegroupDistance) || 195)),
+        groupRetargetDistance: Math.max(20, Math.min(100, Number(options.groupRetargetDistance) || 35)),
+        groupRetargetMs: Math.max(700, Math.min(5000, Number(options.groupRetargetMs) || 1400))
       };
 
       this.moduleActive = false;
@@ -58,12 +63,19 @@
       this.heartbeat = null;
       this.session = null;
       this.sequence = 0;
+      this.groupPolicy = {
+        leaderName: this.session.groupLeaderName,
+        memberNames: this.session.groupMemberNames.slice()
+      };
+      this.groupMove = null;
       this.currentSelection = null;
       this.lastPlan = null;
       this.lastAction = null;
       this.history = [];
       this.observations = new Map();
       this.suspendedReason = null;
+      this.groupPolicy = { leaderName: null, memberNames: [] };
+      this.groupMove = null;
       this.metrics = {
         sessions: 0,
         decisions: 0,
@@ -79,7 +91,13 @@
         ownershipBlocks: 0,
         foreignPartyBlocks: 0,
         unsafeBlocks: 0,
-        movementUnknown: 0
+        movementUnknown: 0,
+        groupLeaderPlans: 0,
+        groupFollowerHolds: 0,
+        groupRegroups: 0,
+        groupRetargets: 0,
+        groupHardRegroups: 0,
+        combatUnknownSuspensions: 0
       };
     }
 
@@ -131,6 +149,9 @@
           ? options.excludedTypes.map(value => cleanText(value, 120)).filter(Boolean)
           : [],
         allowTravel: options.allowTravel !== false,
+        groupLeaderName: cleanText(options.groupLeaderName || this.groupPolicy.leaderName || '', 120) || null,
+        groupMemberNames: [...new Set((Array.isArray(options.groupMemberNames) ? options.groupMemberNames : this.groupPolicy.memberNames)
+          .map(value => cleanText(value, 120)).filter(Boolean))].sort(),
         startedAt: new Date().toISOString(),
         stoppedAt: null,
         reason: null
@@ -156,8 +177,36 @@
       const ended = clone(session);
       this.session = null;
       this.currentSelection = null;
+      this.groupMove = null;
       this.suspendedReason = null;
       return { stopped: true, session: ended };
+    }
+
+    configureGroup(options = {}) {
+      const leaderName = cleanText(options.groupLeaderName || '', 120) || null;
+      const memberNames = [...new Set((Array.isArray(options.groupMemberNames) ? options.groupMemberNames : [])
+        .map(value => cleanText(value, 120)).filter(Boolean))].sort();
+      this.groupPolicy = { leaderName, memberNames };
+      if (this.session && this.session.enabled) {
+        this.session.groupLeaderName = leaderName;
+        this.session.groupMemberNames = memberNames.slice();
+      }
+      return clone(this.groupPolicy);
+    }
+
+    suspendFromCombatUnknown(reason = 'ATTACK_OUTCOME_UNCONFIRMED', details = null) {
+      if (!this.session || !this.session.enabled) return { suspended: false, reason: 'H9_AUTONOMY_NOT_ACTIVE' };
+      this.suspendedReason = 'H9_COMBAT_UNKNOWN';
+      this.metrics.combatUnknownSuspensions += 1;
+      this._stopOwnedMovement('H9_COMBAT_UNKNOWN');
+      this.lastAction = {
+        at: new Date().toISOString(),
+        type: 'SUSPEND',
+        reason: this.suspendedReason,
+        combatReason: cleanText(reason, 240),
+        details: details == null ? null : clone(details)
+      };
+      return { suspended: true, reason: this.suspendedReason };
     }
 
     _partyOwnedNames(characterName) {
@@ -560,7 +609,7 @@
 
     _ownedMovement(status = this._movementStatus()) {
       const order = status && status.activeOrder;
-      return !!(order && String(order.owner || '') === 'farm-intelligence-h9');
+      return !!(order && String(order.owner || '').startsWith('farm-intelligence-h9'));
     }
 
     _delegatedCombatMovement(status = this._movementStatus(), farmStatus = this._farmingStatus()) {
@@ -628,6 +677,142 @@
         if (this.history.length > 12) this.history.shift();
       }
       return changed;
+    }
+
+    _groupContext(character) {
+      if (!this.session || !this.session.enabled || !character || !character.name) return { enabled: false };
+      const leaderName = cleanText(this.session.groupLeaderName || '', 120) || null;
+      const memberNames = Array.isArray(this.session.groupMemberNames) ? this.session.groupMemberNames.map(String) : [];
+      const localName = String(character.name);
+      if (!leaderName || memberNames.length < 2 || !memberNames.includes(localName) || !memberNames.includes(leaderName)) {
+        return { enabled: false };
+      }
+      let status = null;
+      try { status = this.party && typeof this.party.status === 'function' ? this.party.status() : null; } catch (_) {}
+      const party = status && status.party || null;
+      const members = party && Array.isArray(party.ownedMembers) ? party.ownedMembers : [];
+      const local = members.find(row => row && String(row.name) === localName) || null;
+      const leader = members.find(row => row && String(row.name) === leaderName) || null;
+      const d = local && leader ? distance(local, leader) : null;
+      return {
+        enabled: true,
+        localName,
+        leaderName,
+        memberNames,
+        isLeader: localName === leaderName,
+        local,
+        leader,
+        distance: d,
+        sameMap: !!(local && leader && (!local.map || !leader.map || String(local.map) === String(leader.map))),
+        focusTargetId: this.party && typeof this.party.preferredTargetId === 'function' ? this.party.preferredTargetId() : null
+      };
+    }
+
+    _ensureFollowerFarm(group) {
+      const farm = this._farmingStatus();
+      if (this._ownedFarming(farm)) return { state: 'FARMING', reason: 'H9_GROUP_FOLLOWER_FARM_ACTIVE' };
+      if (farm && farm.active) {
+        this.metrics.ownershipBlocks += 1;
+        return this._suspend('H9_FOREIGN_FARMING_OWNERSHIP');
+      }
+      const started = this.farming.startSession({
+        owner: 'farm-intelligence-h9',
+        monsterType: null,
+        partyAssist: true,
+        leaderOwnedPulls: true,
+        groupLeaderName: group.leaderName,
+        groupMemberNames: group.memberNames,
+        maxAcquireDistance: this.config.visibleAcquireDistance
+      });
+      if (!started || started.accepted !== true) {
+        return { state: 'WAITING', reason: started && started.reason || 'H9_GROUP_FOLLOWER_FARM_START_REJECTED' };
+      }
+      this.metrics.farmingStarts += 1;
+      this.lastAction = {
+        at: new Date().toISOString(),
+        type: 'GROUP_FOLLOWER_FARM_START',
+        leaderName: group.leaderName,
+        groupMemberNames: group.memberNames.slice()
+      };
+      return { state: 'FARMING', reason: 'H9_GROUP_FOLLOWER_FARM_STARTED' };
+    }
+
+    _tickGroupFollower(character, group) {
+      const movement = this._movementStatus();
+      if (movement && movement.lastOrder
+        && String(movement.lastOrder.owner || '').startsWith('farm-intelligence-h9')
+        && ['UNKNOWN', 'FAILED_SAFE'].includes(String(movement.lastOrder.state || ''))) {
+        this.metrics.movementUnknown += 1;
+        return this._suspend('H9_MOVEMENT_' + String(movement.lastOrder.state));
+      }
+      if (!group.local || !group.leader || !group.sameMap || group.distance == null) {
+        this._stopOwnedFarming('H9_GROUP_LEADER_POSITION_UNAVAILABLE');
+        return { state: 'WAITING', reason: 'H9_GROUP_LEADER_POSITION_UNAVAILABLE', leaderName: group.leaderName };
+      }
+
+      const farm = this._farmingStatus();
+      const combat = this.combat && typeof this.combat.status === 'function' ? this.combat.status() : null;
+      const activeEncounter = !!(this._ownedFarming(farm) && combat && combat.active);
+      const d = Number(group.distance);
+
+      if (activeEncounter && d <= this.config.groupHardRegroupDistance) {
+        this.metrics.groupFollowerHolds += 1;
+        return {
+          state: 'FARMING',
+          reason: 'H9_GROUP_FORMATION_HOLD',
+          leaderName: group.leaderName,
+          distance: d,
+          hardRegroupDistance: this.config.groupHardRegroupDistance
+        };
+      }
+
+      const activeOwnMove = this._ownedMovement(movement);
+      if (activeOwnMove) {
+        const destination = movement.activeOrder && movement.activeOrder.destination || null;
+        const shifted = destination && group.leader ? distance(destination, group.leader) : null;
+        const moveAge = this.groupMove ? this.now() - Number(this.groupMove.atMs || 0) : 0;
+        if (shifted != null && shifted >= this.config.groupRetargetDistance && moveAge >= this.config.groupRetargetMs) {
+          const target = { map: group.leader.map || character.map, x: group.leader.x, y: group.leader.y };
+          const retarget = this.movement.retarget(target, {
+            owner: 'farm-intelligence-h9-group-regroup',
+            arrivalRadius: this.config.groupRegroupStopDistance
+          });
+          if (retarget && retarget.accepted) {
+            this.groupMove = { atMs: this.now(), destination: clone(target) };
+            this.metrics.groupRetargets += 1;
+          }
+        }
+        if (d <= this.config.groupRegroupStopDistance) {
+          try { this.movement.cancel('H9_GROUP_REJOINED_FORMATION'); } catch (_) {}
+          this.groupMove = null;
+        } else {
+          return { state: 'TRAVELLING', reason: 'H9_GROUP_REGROUP_IN_PROGRESS', leaderName: group.leaderName, distance: d };
+        }
+      }
+
+      if (d >= this.config.groupRegroupTriggerDistance || activeEncounter && d > this.config.groupHardRegroupDistance) {
+        if (activeEncounter && d > this.config.groupHardRegroupDistance) this.metrics.groupHardRegroups += 1;
+        this._stopOwnedFarming('H9_GROUP_REGROUP');
+        const afterStopMovement = this._movementStatus();
+        if (afterStopMovement && afterStopMovement.activeOrder && !this._ownedMovement(afterStopMovement)) {
+          this.metrics.ownershipBlocks += 1;
+          return { state: 'WAITING', reason: 'H9_GROUP_REGROUP_MOVEMENT_BUSY', distance: d };
+        }
+        const destination = { map: group.leader.map || character.map, x: group.leader.x, y: group.leader.y };
+        const move = this.movement.smartMove(destination, {
+          owner: 'farm-intelligence-h9-group-regroup',
+          arrivalRadius: this.config.groupRegroupStopDistance
+        });
+        if (!move || move.accepted !== true) {
+          return { state: 'WAITING', reason: move && move.reason || 'H9_GROUP_REGROUP_REJECTED', distance: d };
+        }
+        this.groupMove = { atMs: this.now(), destination: clone(destination) };
+        this.metrics.groupRegroups += 1;
+        this.lastAction = { at: new Date().toISOString(), type: 'GROUP_REGROUP', leaderName: group.leaderName, destination, distance: d };
+        return { state: 'TRAVELLING', reason: 'H9_GROUP_REGROUP_STARTED', leaderName: group.leaderName, distance: d, destination };
+      }
+
+      return this._ensureFollowerFarm(group);
     }
 
     _apply(plan) {
@@ -710,10 +895,15 @@
         this._stopOwnedFarming('H9_SWITCH_FARM_TARGET');
       }
 
+      const group = this._groupContext(character);
+      if (group.enabled && group.isLeader) this.metrics.groupLeaderPlans += 1;
       const start = this.farming.startSession({
         owner: 'farm-intelligence-h9',
         monsterType: candidate.mtype,
         partyAssist: true,
+        leaderOwnedPulls: group.enabled,
+        groupLeaderName: group.enabled ? group.leaderName : null,
+        groupMemberNames: group.enabled ? group.memberNames : [],
         maxAcquireDistance: this.config.visibleAcquireDistance
       });
       if (!start || start.accepted !== true) {
@@ -736,6 +926,12 @@
         } catch (_) {}
       }
       if (!this.moduleActive || !this.session || !this.session.enabled) return { state: 'IDLE' };
+      if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason };
+      const game = this.game && typeof this.game.snapshot === 'function' ? this.game.snapshot() : null;
+      const character = game && game.character;
+      if (!game || !game.available || !character) return this._suspend('CHARACTER_UNAVAILABLE');
+      const group = this._groupContext(character);
+      if (group.enabled && !group.isLeader) return this._tickGroupFollower(character, group);
       const plan = this.plan();
       return this._apply(plan);
     }
