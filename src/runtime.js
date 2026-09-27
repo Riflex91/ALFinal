@@ -170,6 +170,24 @@
         economy: this.economy,
         canAct: action => this.actionAllowed(action)
       });
+      this.lifecycleTransport = new ns.H19CrossWindowLifecycleTransport({
+        root: this.root,
+        logger: this.logger,
+        roster: this.roster,
+        getLocalState: () => {
+          let game = null;
+          try { game = this.game.snapshot(); } catch (_) {}
+          return {
+            localName: game && game.character ? game.character.name : null,
+            running: this.running,
+            runEpoch: this.runEpoch,
+            emergencyStopLatched: this.stopLatch.status().latched,
+            version: this.version
+          };
+        },
+        startRuntime: () => this.start(),
+        stopRuntime: reason => this.stop(reason)
+      });
       this.lifecycle = new ns.CharacterLifecycleController({
         root: this.root,
         logger: this.logger,
@@ -178,6 +196,7 @@
         roster: this.roster,
         party: this.party,
         storage: this.storage,
+        crossWindow: this.lifecycleTransport,
         canAct: action => this.actionAllowed(action)
       });
       this.inventory.partyLogistics = this.partyLogistics;
@@ -204,6 +223,7 @@
       this._registerH19LiveTest();
       this._registerH19RemoteRecoveryLiveTest();
       this._installErrorCapture();
+      this.lifecycleTransport.install();
       this.logger.info('AL Bot Runtime erstellt', {
         version: this.version,
         bootCount: this.bootCount,
@@ -4929,6 +4949,7 @@
         exchangeCraft: this.exchangeCraft.status(),
         economy: this.economy.status(),
         partyLogistics: this.partyLogistics.status(),
+        lifecycleTransport: this.lifecycleTransport.status(),
         lifecycle: this.lifecycle.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
@@ -4963,6 +4984,7 @@
         exchangeCraft: this.exchangeCraft.status(),
         economy: this.economy.status(),
         partyLogistics: this.partyLogistics.status(),
+        lifecycleTransport: this.lifecycleTransport.status(),
         lifecycle: this.lifecycle.status(),
         liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
@@ -4996,6 +5018,10 @@
       push('exchange-craft-controller', !!this.exchangeCraft.status() && typeof this.exchangeCraft.plan === 'function' && typeof this.exchangeCraft.productionPlan === 'function', this.exchangeCraft.status());
       push('economy-controller', !!this.economy.status() && typeof this.economy.plan === 'function' && typeof this.economy.startAutonomy === 'function', this.economy.status());
       push('party-logistics-controller', !!this.partyLogistics.status() && typeof this.partyLogistics.plan === 'function' && typeof this.partyLogistics.queueSupply === 'function', this.partyLogistics.status());
+      push('h19-cross-window-lifecycle-transport', !!this.lifecycleTransport.status()
+        && this.lifecycleTransport.status().protocol === 'albot-h19-cross-window-v1'
+        && typeof this.lifecycleTransport.freshPeer === 'function'
+        && typeof this.lifecycleTransport.requestRuntimeState === 'function', this.lifecycleTransport.status());
       push('character-lifecycle-controller', !!this.lifecycle.status() && typeof this.lifecycle.plan === 'function' && typeof this.lifecycle.queueStart === 'function' && typeof this.lifecycle.queueRespawn === 'function', this.lifecycle.status());
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
@@ -5072,6 +5098,7 @@
       if (this._destroyed) return;
       this.running = false;
       try { this.liveTests.cancel(reason); } catch (_) {}
+      try { if (this.lifecycleTransport) this.lifecycleTransport.destroy(reason); } catch (_) {}
 
       // Zuerst alle zentral verwalteten Ressourcen synchron stoppen. Dadurch kann
       // ein neu geladenes Bundle niemals alte Timer/Listener weiterlaufen lassen.
