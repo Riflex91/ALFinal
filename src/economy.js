@@ -121,6 +121,7 @@
     startAutonomy(options = {}) {
       if (!this.moduleActive) return { accepted: false, reason: 'H17_MODULE_NOT_ACTIVE' };
       if (this.suspendedReason) return { accepted: false, reason: this.suspendedReason };
+      if (this.currentAction) return { accepted: false, reason: 'H17_ACTION_ACTIVE' };
       if (this.canAct && this.canAct('economy') !== true) return { accepted: false, reason: 'H17_RUNTIME_ACTION_BLOCKED' };
       if (options.maxActions != null) {
         this.config.maxActionsPerSession = Math.max(1, Math.min(100, Math.floor(Number(options.maxActions) || 1)));
@@ -139,8 +140,11 @@
     }
 
     resetSafety(reason = 'H17_EXPLICIT_RESET') {
+      if (this.currentAction) {
+        this.lastAction = { at: nowIso(), type: 'RESET_BLOCKED', reason: 'H17_ACTION_ACTIVE' };
+        return { ...this.status(), reset: false, reason: 'H17_ACTION_ACTIVE' };
+      }
       this.suspendedReason = null;
-      this.currentAction = null;
       this.autonomyEnabled = false;
       this.actionsThisSession = 0;
       this.cooldownUntilMs = null;
@@ -513,6 +517,26 @@
       if (!result) return { accepted: false, reason: 'H17_CHILD_QUEUE_UNAVAILABLE' };
       if (result.accepted !== true) return clone(result);
 
+      if (proposal.kind === 'BANK_MOUNT' && result.alreadyMounted === true) {
+        this.actionsThisSession += 1;
+        this.metrics.actionsQueued += 1;
+        this.metrics.actionsConfirmed += 1;
+        this.metrics.byKind[proposal.kind] = Number(this.metrics.byKind[proposal.kind] || 0) + 1;
+        this.cooldownUntilMs = Date.now() + this.config.actionCooldownMs;
+        this.lastAction = {
+          at: nowIso(),
+          type: 'ACTION_CONFIRMED',
+          action: {
+            id: 'h17-action-' + (++this.sequence),
+            kind: proposal.kind,
+            module: proposal.module,
+            proposal: clone(proposal)
+          },
+          details: { immediate: true, child: clone(result) }
+        };
+        return { accepted: true, immediate: true, result: clone(this.lastAction) };
+      }
+
       const child = this._status(this._childController(proposal.module));
       const now = Date.now();
       this.currentAction = {
@@ -631,13 +655,20 @@
       const queued = this._queueProposal(plan.selected);
       if (!queued || queued.accepted !== true) {
         this.metrics.actionsRejected += 1;
+        this.cooldownUntilMs = Date.now() + this.config.actionCooldownMs;
         this.lastAction = {
           at: nowIso(),
           type: 'ACTION_QUEUE_REJECTED',
           proposal: clone(plan.selected),
           reason: queued && queued.reason || 'H17_CHILD_QUEUE_REJECTED'
         };
-        return { state: 'REJECTED', reason: this.lastAction.reason, plan, result: clone(queued) };
+        return {
+          state: 'REJECTED',
+          reason: this.lastAction.reason,
+          cooldownUntilMs: this.cooldownUntilMs,
+          plan,
+          result: clone(queued)
+        };
       }
       return { state: 'QUEUED', plan, result: queued };
     }
