@@ -374,7 +374,7 @@ H11 wurde nach bestandenem Live-Test und sauberem Exact-Head-Gate als PR #11 gem
 
 ## H12 – Bank
 
-**🟦 IMPLEMENTIERT · PRE-LIVE CI GRÜN · LIVE-TEST OFFEN**
+**🟩 BESTANDEN – 2026-09-27**
 
 **BAU**
 - Live-Bank-Snapshot aus `character.bank`
@@ -400,17 +400,19 @@ H11 wurde nach bestandenem Live-Test und sauberem Exact-Head-Gate als PR #11 gem
 - `dist/al-bot.js` source-synchron auf `0.12.0-h12`
 - nach finalen Bundle-/Dokumentationscommits erneut Exact-Head-CI
 
-**🟧 LIVE-TEST NOCH AUSSTEHEND**
-- auf dem eigenen Merchant ausführen
-- mindestens ein sicheres H10-`BANK`-Item im Inventar
-- automatische Bankfahrt bei Bedarf
-- reversibler Deposit→Withdraw-Roundtrip
-- Item muss mit ursprünglicher Menge im ursprünglichen Inventarslot zurückkehren
-- 5-Sekunden-Reconciliation ohne UNKNOWN
-- Cleanup + Auto-Restore
-- Nutzer klickt nur **Test starten**
+**🟩 LIVE-TEST BESTANDEN**
+- Suite `h12-bank`: `PASSED / ALL_STEPS_PASSED`
+- Merchant `My_Merchant`
+- `slice_honey` x155 aus Inventarslot 3 in `items0/0` eingelagert
+- derselbe Stack vollständig zurück in Slot 3 geholt
+- `depositsConfirmed=1`, `withdrawalsConfirmed=1`
+- `depositsUnknown=0`, `withdrawalsUnknown=0`, `movementUnknown=0`
+- `reconciliationEntries=43`, `reconciliationFailures=0`, `itemRestored=true`
+- Cleanup ohne Pending/Request/H12-Movement
+- Runtime wieder STOPPED, Scheduler `totalResources=0`
+- finale Evidence in `docs/H12-LIVE-TEST.md`
 
-H12 wird erst nach bestandenem echten Adventure-Land-Live-Test gemergt.
+Vor Merge: neuen Exact-Head-CI und vollständigen Merge-Gate erneut prüfen.
 ---
 
 ## H13 – Handel
