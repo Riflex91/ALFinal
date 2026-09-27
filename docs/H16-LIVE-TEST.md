@@ -87,9 +87,9 @@ Die Suite startet eine zuvor gestoppte Runtime automatisch und stellt den vorher
 ### Temporäre Live-Test-Policy
 
 - maximal 2 echte H16-Aktionen (Craft + Exchange);
-- Exchange-Value-at-Risk maximal 20.000 Gold;
-- Craft-Goldkosten maximal 10.000 Gold;
-- Craft-Input-Value-at-Risk maximal 20.000 Gold;
+- Exchange-Value-at-Risk maximal 2.000.000 Gold;
+- Craft-Goldkosten maximal 1.000.000 Gold;
+- Craft-Input-Value-at-Risk maximal 2.000.000 Gold;
 - Goldreserve 10.000 Gold;
 - fehlende direkte Craft-Materialien dürfen nur beschafft werden, wenn höchstens 2 Leaf-Materialien fehlen;
 - Materialbeschaffung maximal 10.000 Gold gesamt;
@@ -122,7 +122,7 @@ Dafür gilt zusätzlich:
 - nur Level 0;
 - jedes fehlende Material braucht eine live sichtbare NPC-Quelle oder einen ausreichend großen sichtbaren Market-Ask;
 - Materialbeschaffung zusammen höchstens 10.000 Gold;
-- Craft-Input-Risiko weiterhin höchstens 20.000 Gold;
+- Craft-Input-Risiko weiterhin höchstens 2.000.000 Gold;
 - Materialkäufe laufen über H16 → H13 mit explizitem Max-Unit-Price;
 - H13-UNKNOWN bleibt ein harter FAIL.
 
