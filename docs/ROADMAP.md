@@ -470,7 +470,7 @@ Merge-Commit: `5238d4af8bfb99e6f6fe04d13029b80f77a9f420`.
 
 ## H14 – Gear
 
-**🟦 IMPLEMENTIERT · PRE-LIVE TESTS GRÜN · FINALER EXACT-HEAD-CI LÄUFT/NOCH OFFEN**
+**🟦 IMPLEMENTIERT · PRE-LIVE CI GRÜN · LIVE-TEST OFFEN**
 
 **BAU**
 - Live-Equipment-Snapshot aus Character-/Player-Slots
@@ -494,12 +494,14 @@ Merge-Commit: `5238d4af8bfb99e6f6fe04d13029b80f77a9f420`.
 - H14-Ein-Klick-Suite `h14-gear`
 - `docs/H14-LIVE-TEST.md`
 
-**🟩 PRE-LIVE TESTS**
+**🟩 PRE-LIVE CI**
 - Run #276: 179 Tests, 178 PASS, 1 echter Safety-Fund
 - Fund behoben: locked Gear wird nicht mehr automatisch geplant/ausgerüstet
-- Run #279: `npm test` 180/180 PASS, 0 FAIL, 0 SKIP
-- Workflow #279 wurde nach erfolgreichem Testjob von GitHub als `cancelled` markiert und zählt deshalb nicht als finaler Gate-Lauf
+- Review P2 behoben: eindeutige Inventarzuweisung über austauschbare Slots wie `ring1/ring2`
+- Run #287: 181/181 PASS, 0 FAIL, 0 SKIP, Workflow completed/success
+- beide Review-Threads resolved
 - `dist/al-bot.js` source-synchron auf `0.14.0-h14`
+- nach diesem Dokucommit erneut Exact-Head-CI erforderlich
 
 **🟧 LIVE-TEST NOCH AUSSTEHEND**
 - reversibler echter Gear-Swap
