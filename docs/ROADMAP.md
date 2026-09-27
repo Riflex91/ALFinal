@@ -1099,3 +1099,51 @@ Stand 2026-09-27:
 **H18 – Party-Logistik: abgeschlossen.**
 
 Nächster Entwicklungsblock: **H19 – Character Lifecycle & Recovery**.
+
+
+### H19 – Character Lifecycle & Recovery technischer Pre-Live-Gate
+
+Stand 2026-09-27, PR #28 `H19: Add bounded character lifecycle recovery`.
+
+Implementiert:
+
+- eigener `CharacterLifecycleController`;
+- Account-Ownership über live `get_characters`;
+- aktiver Character-Status über live `get_active_characters` + Local Character;
+- Start/Stop/Respawn ausschließlich über ActionBoundary;
+- persistente Pending-Ownership vor irreversiblem Dispatch;
+- Reload-/Restart-Reconciliation ohne Blind-Redispatch;
+- Desired-Active-Set für Disconnect-/Restart-Recovery;
+- bounded Start fehlender eigener Desired-Characters;
+- eigener gespeicherter Desired-Party-Leader;
+- Leader-Invite / Non-Leader-Request / Accept nur über eindeutige eigene Desired-Topologie;
+- `on_party_invite` / `on_party_request` sind reine Beobachtungshooks; Dispatch erfolgt erst im H19-Tick;
+- Foreign-Party- und abweichender-Leader-Block fail-closed;
+- kein automatisches `leave_party`;
+- Death-Recovery über genau einen lokalen Respawn;
+- Sync-UNKNOWN und unbestätigte Promise-/Timeout-Zustände suspendieren ohne Blind-Retry;
+- bekannte automatische Rejects stoppen die Recovery-Session;
+- Session-Budget;
+- H19 Headless-API und eigener Lifecycle-Tab;
+- Runtime/Bundle `0.19.0-h19`, Package `0.19.0`;
+- Live-Suite `h19-character-lifecycle` v1 für echten Death→Respawn-Pfad.
+
+Technischer Code-Head vor finaler Doku-/Bundle-Finalisierung:
+
+- `9d35c98966a627595ab872e1322b5b8f1e8bdd54`;
+- Exact-Head-CI #522: **272/272 PASS, 0 FAIL, 0 CANCELLED, 0 SKIP**;
+- erster H19-CI #505 hatte ausschließlich stale H8–H17-Wiring-Erwartungen auf H18; keine H19-Funktionsregression;
+- Party-Recovery-Safety danach zusätzlich auf eindeutigen gespeicherten Leader gehärtet;
+- `docs/H19-LIVE-TEST.md` beschreibt Safety und den ersten bounded Live-Gate.
+
+Nächster Gate-Schritt:
+
+- finalen source-synchronen `dist/al-bot.js` erzeugen;
+- normalen read-only Workflow wiederherstellen;
+- finalen Doku-/Bundle-Head durch Exact-Head-CI laufen lassen;
+- `behind_by=0`, keine pending/failing Checks, keine offenen Review-Threads, kein `CHANGES_REQUESTED`, `mergeable=true` frisch prüfen;
+- PR #28 ausschließlich per `merge` mit exaktem aktuellem `expected_head_sha` mergen;
+- `main` danach verifizieren;
+- erst dann den echten H19-Live-Test durchführen.
+
+**H19 bleibt bis zur erforderlichen echten Adventure-Land-Live-Evidence offen.**
