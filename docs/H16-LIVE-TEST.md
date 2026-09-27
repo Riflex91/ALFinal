@@ -171,3 +171,34 @@ Dann erfolgt **keine Mutation**.
 - bei zuvor gestoppter Runtime anschließend wieder STOPPED und Scheduler `totalResources=0`.
 
 H16 darf erst nach grünem Exact-Head-CI, sauberem Review-Gate und echtem Adventure-Land-Live-PASS gemergt werden.
+
+
+## Pre-Live CI / Review Evidence
+
+H16-Hardening vor dem echten Adventure-Land-Live-Test:
+
+- PR: `#17 – H16: Exchange & Craft`
+- technischer Head vor dieser Evidence-Dokumentation: `a8384e031efbbf0441234928f8e7ddc704ff3031`
+- Exact-Head-CI Run `#342`: **completed / success**
+- `npm test`: **209/209 PASS, 0 FAIL, 0 SKIP**
+- `dist/al-bot.js` enthält exakt den aktuellen `src/exchange-craft.js`-Block
+- `dist/al-bot.js` enthält exakt den aktuellen `src/ui.js`-Block
+- Bundle-Banner: `AL Bot 0.16.0-h16`
+- Build-Pipeline enthält `src/exchange-craft.js`
+- alle bisherigen PR-Review-Threads resolved
+- kein `CHANGES_REQUESTED`
+- Branch `behind_by=0`
+- PR `mergeable=true`
+
+Im Review und eigenen Safety-Review gefunden und behoben:
+
+1. ein erfolgreich dispatchter Write mit anschließend abgelehntem Promise durfte nicht als bekannte Ablehnung behandelt werden – wird jetzt als UNKNOWN suspendiert, solange keine autoritative Live-Evidence vorliegt;
+2. Movement muss vor Exchange/Craft als eigener H16-Order **COMPLETED / ARRIVAL_VERIFIED** sein – CANCELLED/STUCK/UNKNOWN/FAILED_SAFE führt nicht zum Dispatch;
+3. Exchange-Outcome-Evidence bewahrt den tatsächlichen Item-Level statt implizit Level 0 anzunehmen;
+4. Quest-/Event-Kandidaten sind im Control Center sichtbar, aber weiterhin nur nach explizitem Opt-in ausführbar;
+5. der Cross-Realm-Regressionstest wurde auf wertbasierte Serialisierung umgestellt;
+6. der Combat-Test bestätigt nun korrekt, dass der Block bereits vor jedem Movement-Start erfolgt.
+
+Zusätzliche Regressionen decken Promise-UNKNOWN, Movement-Terminalzustände, leveled Exchange-Evidence und die vollständige H16-Wiring-Kette ab.
+
+Nach diesem Evidence-Commit ist erneut ein Exact-Head-CI erforderlich. Erst wenn auch dieser neue Head `completed/success`, `behind_by=0`, review-clean und mergeable ist, darf der echte H16-Live-Test freigegeben werden.
