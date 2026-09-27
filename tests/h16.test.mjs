@@ -94,16 +94,33 @@ function fixture(options = {}) {
     itemDefinition: name => definitions[name] ? clone(definitions[name]) : null,
     craftDefinition: name => recipes[name] ? clone(recipes[name]) : null,
     craftCatalog: () => Object.values(recipes).map(clone),
-    npcShopSources: name => options.npcSources && options.npcSources[name] ? clone(options.npcSources[name]) : []
+    npcShopSources: name => options.npcSources && options.npcSources[name] ? clone(options.npcSources[name]) : [],
+    npcLocation: npcId => ({
+      npcId,
+      map: 'main',
+      x: npcId === 'craftsman' ? 100 : 200,
+      y: npcId === 'craftsman' ? 50 : 75
+    })
   };
 
+  state.movement = { active: false, activeOrder: null, lastOrder: null };
+  let movementSequence = 0;
   const movement = {
-    status: () => state.movement ? clone(state.movement) : { active: false, activeOrder: null },
+    status: () => clone(state.movement),
     smartMove: (destination, opts) => {
-      state.movement = { active: true, activeOrder: { owner: opts && opts.owner, destination } };
-      return { accepted: true };
+      const order = { id: 'move-' + (++movementSequence), owner: opts && opts.owner, destination: clone(destination), state: 'ACTIVE' };
+      state.movement = { active: true, activeOrder: order, lastOrder: state.movement.lastOrder || null };
+      return { accepted: true, order: clone(order) };
     },
-    cancel: () => { state.movement = null; return { cancelled: true }; }
+    cancel: reason => {
+      const active = state.movement.activeOrder;
+      state.movement = {
+        active: false,
+        activeOrder: null,
+        lastOrder: active ? { ...clone(active), state: 'CANCELLED', reason: reason || 'CANCELLED' } : state.movement.lastOrder
+      };
+      return { cancelled: !!active };
+    }
   };
 
   const actions = {
@@ -171,7 +188,15 @@ function fixture(options = {}) {
 
   return {
     controller, state, game,
-    arrive: () => { state.movement = null; }
+    arrive: () => {
+      const active = state.movement.activeOrder;
+      assert.ok(active);
+      state.movement = {
+        active: false,
+        activeOrder: null,
+        lastOrder: { ...clone(active), state: 'COMPLETED', reason: 'ARRIVAL_VERIFIED' }
+      };
+    }
   };
 }
 
@@ -308,6 +333,23 @@ test('H16 blocks dispatch while combat is active', () => {
   assert.equal(tick.reason, 'H16_COMBAT_ACTIVE');
   assert.equal(state.dispatches.length, 0);
   arrive();
+});
+
+test('H16 refuses to dispatch after owned movement is cancelled instead of verified complete', () => {
+  const { controller, state } = fixture();
+  assert.equal(controller.queueExchange(0).accepted, true);
+  assert.equal(controller.tick().state, 'WAITING_TRAVEL');
+  const active = state.movement.activeOrder;
+  assert.ok(active);
+  state.movement = {
+    active: false,
+    activeOrder: null,
+    lastOrder: { ...clone(active), state: 'CANCELLED', reason: 'MANUAL_CANCEL' }
+  };
+  const tick = controller.tick();
+  assert.equal(tick.state, 'SUSPENDED');
+  assert.equal(tick.reason, 'H16_MOVEMENT_CANCELLED');
+  assert.equal(state.dispatches.length, 0);
 });
 
 test('H16 suspends on synchronous unknown and does not blind retry', () => {
