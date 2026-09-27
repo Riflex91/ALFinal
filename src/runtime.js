@@ -4383,9 +4383,9 @@
       let targetName = null;
       let originalPolicy = null;
 
-      const activeSet = roster => new Set(
-        roster && Array.isArray(roster.activeCharacterNames)
-          ? roster.activeCharacterNames.map(String)
+      const onlineSet = roster => new Set(
+        roster && Array.isArray(roster.onlineCharacterNames)
+          ? roster.onlineCharacterNames.map(String)
           : []
       );
 
@@ -4464,11 +4464,11 @@
 
             if (targetName && baseline) {
               let roster = runtime.roster.refresh();
-              if (!roster || roster.activeStateAvailable !== true) {
+              if (!roster || roster.onlineStateAvailable !== true) {
                 throw new Error('H19_REMOTE_CLEANUP_ROSTER_UNAVAILABLE');
               }
 
-              let targetActive = activeSet(roster).has(String(targetName));
+              let targetActive = onlineSet(roster).has(String(targetName));
               if (!targetActive) {
                 const dispatchedDelta = Number(status.metrics.actionsDispatched || 0) - baseline.actionsDispatched;
                 const rejectedDelta = Number(status.metrics.actionsRejected || 0) - baseline.actionsRejected;
@@ -4505,8 +4505,8 @@
                   return Number(current.metrics.startsConfirmed || 0) > baseline.startsConfirmed
                     && current.currentAction == null
                     && liveRoster
-                    && liveRoster.activeStateAvailable === true
-                    && activeSet(liveRoster).has(String(targetName))
+                    && liveRoster.onlineStateAvailable === true
+                    && onlineSet(liveRoster).has(String(targetName))
                     ? true
                     : false;
                 }, {
@@ -4518,8 +4518,8 @@
                 status = runtime.lifecycle.status();
                 roster = runtime.roster.refresh();
                 targetActive = roster
-                  && roster.activeStateAvailable === true
-                  && activeSet(roster).has(String(targetName));
+                  && roster.onlineStateAvailable === true
+                  && onlineSet(roster).has(String(targetName));
                 if (!targetActive) throw new Error('H19_REMOTE_CLEANUP_TARGET_STILL_OFFLINE');
               }
             }
@@ -4562,7 +4562,7 @@
 
               const roster = runtime.roster.refresh();
               assert(roster && roster.accountStateAvailable === true, 'H19_REMOTE_ACCOUNT_ROSTER_UNAVAILABLE');
-              assert(roster.activeStateAvailable === true, 'H19_REMOTE_ACTIVE_ROSTER_UNAVAILABLE');
+              assert(roster.onlineStateAvailable === true, 'H19_REMOTE_ACTIVE_ROSTER_UNAVAILABLE');
               assert(runtime.actions.available('stop_character'), 'H19_REMOTE_STOP_API_UNAVAILABLE');
               assert(runtime.actions.available('start_character'), 'H19_REMOTE_START_API_UNAVAILABLE');
 
@@ -4572,7 +4572,7 @@
               assert(status.queue.length === 0, 'H19_REMOTE_QUEUE_NOT_EMPTY');
 
               const localName = String(game.character.name || '');
-              const active = activeSet(roster);
+              const online = onlineSet(roster);
               const party = runtime.party.snapshot();
               const leader = party && party.leader ? String(party.leader) : null;
               const partyMembers = new Set(party && Array.isArray(party.memberNames) ? party.memberNames.map(String) : []);
@@ -4580,7 +4580,7 @@
               const candidates = (roster.accountCharacters || [])
                 .filter(row => row && row.name)
                 .map(row => ({ name: String(row.name), ctype: row.ctype || null }))
-                .filter(row => row.name !== localName && row.name !== leader && active.has(row.name))
+                .filter(row => row.name !== localName && row.name !== leader && online.has(row.name))
                 .sort((a, b) => {
                   const aParty = partyMembers.has(a.name) ? 1 : 0;
                   const bParty = partyMembers.has(b.name) ? 1 : 0;
@@ -4611,7 +4611,8 @@
                 targetCtype: candidates[0].ctype,
                 targetWasPartyMember: partyMembers.has(targetName),
                 partyLeader: leader,
-                activeCharacterNames: roster.activeCharacterNames
+                onlineCharacterNames: roster.onlineCharacterNames,
+                runnerActiveCharacterNames: roster.activeCharacterNames
               };
             }
           },
@@ -4633,8 +4634,8 @@
                 return Number(status.metrics.stopsConfirmed || 0) > baseline.stopsConfirmed
                   && status.currentAction == null
                   && roster
-                  && roster.activeStateAvailable === true
-                  && !activeSet(roster).has(String(targetName))
+                  && roster.onlineStateAvailable === true
+                  && !onlineSet(roster).has(String(targetName))
                   ? { status, roster }
                   : null;
               }, { timeoutMs: 25000, pollMs: 250, label: 'h19-remote-stop' });
@@ -4647,7 +4648,7 @@
               assert(dispatched === 1, 'H19_REMOTE_STOP_DISPATCH_COUNT_INVALID');
               assert(confirmed === 1, 'H19_REMOTE_STOP_CONFIRM_COUNT_INVALID');
               assert(stopped === 1, 'H19_REMOTE_STOP_CONFIRMATION_MISSING');
-              assert(!activeSet(roster).has(String(targetName)), 'H19_REMOTE_TARGET_STILL_ACTIVE');
+              assert(!onlineSet(roster).has(String(targetName)), 'H19_REMOTE_TARGET_STILL_ACTIVE');
               return { target: targetName, dispatched, confirmed, stopsConfirmed: stopped };
             }
           },
@@ -4669,8 +4670,8 @@
                 return Number(status.metrics.startsConfirmed || 0) > baseline.startsConfirmed
                   && status.currentAction == null
                   && roster
-                  && roster.activeStateAvailable === true
-                  && activeSet(roster).has(String(targetName))
+                  && roster.onlineStateAvailable === true
+                  && onlineSet(roster).has(String(targetName))
                   ? { status, roster }
                   : null;
               }, { timeoutMs: 35000, pollMs: 250, label: 'h19-remote-restart' });
@@ -4691,7 +4692,7 @@
               assert(startedCount === 1, 'H19_REMOTE_START_CONFIRM_COUNT_INVALID');
               assert(rejected === 0, 'H19_REMOTE_REJECTED');
               assert(unknown === 0, 'H19_REMOTE_UNKNOWN');
-              assert(activeSet(roster).has(String(targetName)), 'H19_REMOTE_TARGET_NOT_ACTIVE_AFTER_RECOVERY');
+              assert(onlineSet(roster).has(String(targetName)), 'H19_REMOTE_TARGET_NOT_ACTIVE_AFTER_RECOVERY');
 
               return {
                 target: targetName,
@@ -4720,7 +4721,7 @@
               assert(Number(after.metrics.actionsDispatched || 0) === beforeDispatch, 'H19_REMOTE_RETRY_AFTER_RECOVERY');
               assert(Number(after.metrics.actionsUnknown || 0) === baseline.actionsUnknown, 'H19_REMOTE_UNKNOWN_DURING_STABILITY');
               assert(Number(after.metrics.actionsRejected || 0) === baseline.actionsRejected, 'H19_REMOTE_REJECT_DURING_STABILITY');
-              assert(roster && roster.activeStateAvailable === true && activeSet(roster).has(String(targetName)), 'H19_REMOTE_TARGET_LOST_DURING_STABILITY');
+              assert(roster && roster.onlineStateAvailable === true && onlineSet(roster).has(String(targetName)), 'H19_REMOTE_TARGET_LOST_DURING_STABILITY');
               return {
                 target: targetName,
                 actionsDispatched: Number(after.metrics.actionsDispatched || 0) - baseline.actionsDispatched,
@@ -4744,7 +4745,7 @@
               assert(status.currentAction == null, 'H19_REMOTE_CURRENT_ACTION_REMAINS');
               assert(status.queue.length === 0, 'H19_REMOTE_QUEUE_REMAINS');
               assert(status.suspended === false, status.suspendedReason || 'H19_REMOTE_SUSPENDED_AT_CLEANUP');
-              assert(roster && roster.activeStateAvailable === true && activeSet(roster).has(String(targetName)), 'H19_REMOTE_TARGET_NOT_RESTORED');
+              assert(roster && roster.onlineStateAvailable === true && onlineSet(roster).has(String(targetName)), 'H19_REMOTE_TARGET_NOT_RESTORED');
               return {
                 target: targetName,
                 autonomyEnabled: status.autonomyEnabled,
