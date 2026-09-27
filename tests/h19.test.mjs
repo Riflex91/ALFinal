@@ -226,7 +226,7 @@ test('H19 rejected lifecycle Promise suspends without blind retry', async () => 
 });
 
 
-test('H19 synchronous UNKNOWN preserves ownership and suspends without retry', () => {
+test('H19 synchronous UNKNOWN preserves ownership, removes queued duplicate and counts once', () => {
   const { controller, state } = fixture({ syncUnknown: true, noMutation: true });
   assert.equal(controller.queueStart('My_Merchant').accepted, true);
   const result = controller.tick();
@@ -234,8 +234,13 @@ test('H19 synchronous UNKNOWN preserves ownership and suspends without retry', (
   assert.match(result.reason, /H19_DISPATCH_SYNC_UNKNOWN/);
   assert.equal(controller.status().suspended, true);
   assert.ok(controller.status().currentAction);
+  assert.equal(controller.status().queue.length, 0);
+  assert.equal(controller.status().metrics.actionsUnknown, 1);
   assert.equal(state.dispatches.length, 1);
+
+  controller.currentAction.deadlineAtMs = Date.now() - 1;
   controller.tick();
+  assert.equal(controller.status().metrics.actionsUnknown, 1);
   assert.equal(state.dispatches.length, 1);
 });
 
@@ -284,15 +289,18 @@ test('H19 captures the owned live party leader with the desired active set', () 
   assert.equal(captured.accepted, true);
   assert.equal(captured.desiredPartyLeader, 'My_Ranger');
   assert.deepEqual(captured.desiredActiveNames, ['My_Merchant', 'My_Priest', 'My_Ranger']);
+  assert.deepEqual(captured.desiredPartyMemberNames, ['My_Priest', 'My_Ranger']);
 });
 
-test('H19 party leader invites a missing active desired member and confirms from party snapshot', async () => {
+test('H19 party leader restores only a previously captured party member', async () => {
   const { controller, state } = fixture({
     activeNames: ['My_Ranger', 'My_Priest', 'My_Merchant'],
-    partyMembers: ['My_Ranger', 'My_Priest'],
+    partyMembers: ['My_Ranger', 'My_Priest', 'My_Merchant'],
     partyLeader: 'My_Ranger'
   });
   assert.equal(controller.captureDesiredActive().accepted, true);
+  state.party.members.delete('My_Merchant');
+
   assert.equal(controller.startAutonomy({ maxActions: 1 }).accepted, true);
   const dispatched = controller.tick();
   assert.equal(dispatched.state, 'DISPATCHED');
@@ -304,12 +312,28 @@ test('H19 party leader invites a missing active desired member and confirms from
   assert.equal(controller.status().metrics.partyInvitesConfirmed, 1);
 });
 
+test('H19 does not pull active owned characters into party unless they were captured as party members', () => {
+  const { controller, state } = fixture({
+    activeNames: ['My_Ranger', 'My_Priest', 'My_Merchant'],
+    partyMembers: ['My_Ranger', 'My_Priest'],
+    partyLeader: 'My_Ranger'
+  });
+  assert.equal(controller.captureDesiredActive().accepted, true);
+  assert.deepEqual(controller.status().policy.desiredPartyMemberNames, ['My_Priest', 'My_Ranger']);
+  assert.equal(controller.startAutonomy({ maxActions: 2 }).accepted, true);
+  const plan = controller.plan();
+  assert.equal(plan.state, 'IDLE');
+  assert.equal(plan.reason, 'H19_DESIRED_ACTIVE_AND_PARTY_SET_HEALTHY');
+  assert.equal(state.dispatches.length, 0);
+});
+
 test('H19 nonleader requests the captured desired leader after party loss', async () => {
   const { controller, state } = fixture({
     activeNames: ['My_Ranger', 'My_Priest']
   });
   assert.equal(controller.setPolicy({
     desiredActiveNames: ['My_Ranger', 'My_Priest'],
+    desiredPartyMemberNames: ['My_Ranger', 'My_Priest'],
     desiredPartyLeader: 'My_Priest'
   }).accepted, true);
   assert.equal(controller.startAutonomy({ maxActions: 1 }).accepted, true);
@@ -327,6 +351,7 @@ test('H19 accepts an observed invite only from the desired owned leader', async 
   });
   assert.equal(controller.setPolicy({
     desiredActiveNames: ['My_Ranger', 'My_Priest'],
+    desiredPartyMemberNames: ['My_Ranger', 'My_Priest'],
     desiredPartyLeader: 'My_Priest'
   }).accepted, true);
   assert.equal(controller.startAutonomy({ maxActions: 1 }).accepted, true);
@@ -358,6 +383,7 @@ test('H19 party recovery ignores signals without captured leader and blocks fore
   });
   assert.equal(foreign.controller.setPolicy({
     desiredActiveNames: ['My_Ranger', 'My_Priest'],
+    desiredPartyMemberNames: ['My_Ranger', 'My_Priest'],
     desiredPartyLeader: 'My_Priest'
   }).accepted, true);
   assert.equal(foreign.controller.startAutonomy({ maxActions: 1 }).accepted, true);
