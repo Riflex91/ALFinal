@@ -36,6 +36,16 @@ const equipmentDefinitions = {
     id: 'expensive', name: 'Expensive', type: 'weapon', wtype: 'sword', classes: ['warrior'],
     stats: { attack: 30 }, upgradeGrowth: { attack: 4 }, upgradeable: true, compoundable: false,
     grades: [2, 4], g: 500000, cash: false, quest: false
+  },
+  quest_sword: {
+    id: 'quest_sword', name: 'Quest Sword', type: 'weapon', wtype: 'sword', classes: ['warrior'],
+    stats: { attack: 1 }, upgradeGrowth: { attack: 1 }, upgradeable: true, compoundable: false,
+    grades: [2, 4], g: 10, cash: false, quest: true
+  },
+  cash_ring: {
+    id: 'cash_ring', name: 'Cash Ring', type: 'ring', wtype: null, classes: [],
+    stats: { int: 1 }, upgradeGrowth: {}, upgradeable: false, compoundable: true,
+    grades: [1, 3], g: 0, cash: true, quest: false
   }
 };
 
@@ -306,4 +316,39 @@ test('H15 offering policy requires and consumes an offering when configured', ()
   controller.tick();
   assert.equal(controller.status().metrics.upgradesSucceeded, 1);
   assert.equal(state.rows.find(item => item.slot === 6).quantity, 1);
+});
+
+
+test('H15 excludes quest and cash definitions from automatic mutation', () => {
+  const rows = [
+    row({ slot: 0, name: 'quest_sword', level: 0 }),
+    row({ slot: 1, name: 'scroll0', quantity: 2 }),
+    row({ slot: 2, name: 'cash_ring', level: 0 }),
+    row({ slot: 3, name: 'cash_ring', level: 0 }),
+    row({ slot: 4, name: 'cash_ring', level: 0 }),
+    row({ slot: 5, name: 'cscroll0', quantity: 2 })
+  ];
+  const { controller } = fixture({ rows });
+  const plan = controller.plan();
+  assert.equal(plan.upgradeCandidates.length, 0);
+  assert.equal(plan.compoundCandidates.length, 0);
+  const upgrade = controller.queueUpgrade(0);
+  assert.equal(upgrade.accepted, false);
+  assert.equal(upgrade.reason, 'H15_ITEM_DEFINITION_PROTECTED');
+  const compound = controller.queueCompound([2, 3, 4]);
+  assert.equal(compound.accepted, false);
+  assert.equal(compound.reason, 'H15_ITEM_DEFINITION_PROTECTED');
+});
+
+test('H15 compound risk budget counts all three source items', () => {
+  const rows = [
+    row({ slot: 0, name: 'ring', level: 0 }),
+    row({ slot: 1, name: 'ring', level: 0 }),
+    row({ slot: 2, name: 'ring', level: 0 }),
+    row({ slot: 3, name: 'cscroll0', quantity: 2 })
+  ];
+  const { controller } = fixture({ rows, maxItemValueAtRisk: 1000 });
+  const result = controller.queueCompound([0, 1, 2]);
+  assert.equal(result.accepted, false);
+  assert.equal(result.reason, 'H15_ITEM_VALUE_OVER_BUDGET');
 });
