@@ -317,6 +317,35 @@ test('H16 material acquisition prefers mounted bank before trade', () => {
   assert.equal(state.tradeCalls.length, 0);
 });
 
+test('H16 material acquisition can explicitly bypass mounted bank for live-test trade evidence', () => {
+  const bank = {
+    available: true,
+    packs: [{ name: 'items0', items: [{ pack: 'items0', slot: 2, name: 'spidersilk', level: 0, quantity: 1000 }] }]
+  };
+  const { controller, state } = fixture({ bank });
+  const result = controller.queueMaterialAcquire('spidersilk', 100, { maxUnitPrice: 50, allowBank: false });
+  assert.equal(result.accepted, true);
+  assert.equal(result.delegatedTo, 'trade');
+  assert.equal(state.bankCalls.length, 0);
+  assert.equal(state.tradeCalls.length, 1);
+});
+
+test('H16 production plan exposes NPC and market acquisition sources for missing leaves', () => {
+  const { controller } = fixture({
+    rows: [],
+    npcSources: {
+      spidersilk: [{ npcId: 'materials', name: 'Materials', location: { map: 'main', x: 10, y: 20 } }]
+    },
+    bestAsk: { playerName: 'Seller', slot: 'trade1', name: 'spidersilk', level: 0, quantity: 1000, price: 7 }
+  });
+  const plan = controller.productionPlan('cocoon', 1, { includeBank: false });
+  assert.equal(plan.state, 'NEEDS_MATERIALS');
+  assert.equal(plan.missing.length, 1);
+  assert.equal(plan.missing[0].itemName, 'spidersilk');
+  assert.equal(plan.missing[0].npcSources.length, 1);
+  assert.equal(plan.missing[0].bestMarketAsk.price, 7);
+});
+
 test('H16 material acquisition delegates to H13 trade with explicit price ceiling', () => {
   const { controller, state } = fixture();
   const result = controller.queueMaterialAcquire('spidersilk', 100, { maxUnitPrice: 50 });
@@ -396,7 +425,9 @@ test('H16 runtime, API, UI, build, adapter and ActionBoundary are wired', () => 
   assert.match(runtime, /new ns\.ExchangeCraftController/);
   assert.match(runtime, /id: 'exchange-craft'/);
   assert.match(runtime, /id: 'h16-exchange-craft'/);
-  assert.match(runtime, /H16_NEEDS_LOW_RISK_CRAFT_AND_EXCHANGE_CANDIDATES/);
+  assert.match(runtime, /H16_NEEDS_LOW_RISK_CRAFT_OR_ACQUIRABLE_MATERIALS/);
+  assert.match(runtime, /ACQUIRE_CRAFT_AND_EXCHANGE_COVERAGE/);
+  assert.match(runtime, /allowBank: false/);
   assert.match(entry, /0\.16\.0-h16/);
   assert.match(entry, /exchangeCraft:/);
   assert.match(entry, /runtime\.exchangeCraft\.productionPlan/);
