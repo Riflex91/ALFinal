@@ -723,6 +723,7 @@
         action = 'exchange';
         args = [request.inventorySlot];
         pendingBase.inventorySlot = request.inventorySlot;
+        pendingBase.level = request.level;
         pendingBase.requiredQuantity = request.requiredQuantity;
         pendingBase.beforeSourceQuantity = this._quantity(inventory, request.itemName, request.level);
         pendingBase.valueAtRisk = request.valueAtRisk;
@@ -800,7 +801,7 @@
       }
 
       if (pending.kind === 'EXCHANGE') {
-        const after = this._quantity(inventory, pending.itemName, 0);
+        const after = this._quantity(inventory, pending.itemName, pending.level || 0);
         if (after != null && pending.beforeSourceQuantity != null && after <= pending.beforeSourceQuantity - pending.requiredQuantity) {
           return this._confirmed(pending, {
             itemName: pending.itemName,
