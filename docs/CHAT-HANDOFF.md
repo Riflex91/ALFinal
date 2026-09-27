@@ -1025,3 +1025,35 @@ Für PR #20 bleiben als Merge-Gates verpflichtend:
 - danach `main` frisch verifizieren.
 
 Nach erfolgreichem Merge genau einen echten `h16-exchange-craft`-v6-Live-Test auf Adventure Land anfordern und dessen vollständigen Bericht auswerten.
+
+## H16 abgeschlossen – v6 echter Live-PASS
+
+Stand 2026-09-27 nach dem auf `main` gemergten PR #20.
+
+Der echte Adventure-Land-Lauf `h16-exchange-craft` Suite v6 ist vollständig bestanden:
+
+- `PASSED / ALL_STEPS_PASSED`;
+- Bank-Discovery: PASS, Bank `bank`, 2 Packs, 26 belegte Slots, 1 Movement-Request;
+- Preflight-Modus: `ACQUIRE_CRAFT_AND_EXCHANGE_COVERAGE`;
+- Craft: `cake`, Kosten 5, Input-Risk 50;
+- Exchange: `anniversarygift`, Menge 1, Value-at-Risk 100;
+- Material: 10× `whiteegg` aus BANK, Pack `items0`, Slot 5, Stack 79;
+- H16 → H12: `WITHDRAW_CONFIRMED`, Ziel Inventory-Slot 7;
+- Produktionsgraph danach `READY / H16_PRODUCTION_READY`;
+- Craft 1 dispatched / 1 confirmed;
+- Exchange 1 dispatched / 1 confirmed;
+- Exchange/Craft/Trade UNKNOWN jeweils 0;
+- H16/H13 nicht suspended;
+- Cleanup PASS, keine Requests/Pendings übrig;
+- Runtime Auto-Restore erfolgreich;
+- keine Safety-Lockerung.
+
+Damit ist **H16 – Exchange & Craft abgeschlossen**.
+
+Ab jetzt ist der nächste Entwicklungsblock **H17 – Economy Autonomy**:
+- gemeinsamer Planner für Bank, Markt, Gear, Upgrade, Compound, Exchange und Craft;
+- Konflikt-/Prioritätsauflösung;
+- weiterhin STOP > Safety > Ownership/Movement > Economy;
+- Writes ausschließlich über bestehende sichere Modulpfade/ActionBoundary;
+- Supabase weiterhin nur READ-ONLY;
+- Codex-Review ist nicht mehr verpflichtendes Merge-Gate.
