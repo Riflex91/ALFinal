@@ -54,7 +54,8 @@ function fixture(options = {}) {
     dispatches: [],
     bank: clone(options.bank || null),
     tradeCalls: [],
-    bankCalls: []
+    bankCalls: [],
+    combatActive: !!options.combatActive
   };
 
   const inventorySnapshot = () => ({
@@ -163,7 +164,7 @@ function fixture(options = {}) {
       return { accepted: true, request: { kind: 'NPC_BUY' } };
     }
   };
-  const combat = { status: () => ({ active: !!options.combatActive, state: options.combatActive ? 'FIGHTING' : 'IDLE' }) };
+  const combat = { status: () => ({ active: !!state.combatActive, state: state.combatActive ? 'FIGHTING' : 'IDLE' }) };
 
   const ctx = {
     console, Date, Math, JSON, Map, Set, Promise, Object, Array, String, Number, Boolean, Error, setTimeout,
@@ -293,6 +294,20 @@ test('H16 production graph expands nested recipes and reports missing leaves', (
   assert.equal(plan.totalCraftGold, 5000);
 });
 
+test('H16 production READY requires craft cost plus configured gold reserve', () => {
+  const rows = [row({ slot: 0, name: 'spidersilk', quantity: 1000 })];
+  const blocked = fixture({ rows, gold: 1000, goldReserve: 1000 }).controller.productionPlan('cocoon', 1, { includeBank: false });
+  assert.equal(blocked.state, 'BLOCKED');
+  assert.equal(blocked.reason, 'H16_PRODUCTION_GOLD_RESERVE_BLOCKED');
+  assert.equal(blocked.totalCraftGold, 2500);
+  assert.equal(blocked.gold, 1000);
+  assert.equal(blocked.goldReserve, 1000);
+
+  const funded = fixture({ rows, gold: 3500, goldReserve: 1000 }).controller.productionPlan('cocoon', 1, { includeBank: false });
+  assert.equal(funded.state, 'READY');
+  assert.equal(funded.reason, 'H16_PRODUCTION_READY');
+});
+
 test('H16 production graph consumes mounted bank stock before declaring missing material', () => {
   const bank = {
     available: true,
@@ -303,6 +318,21 @@ test('H16 production graph consumes mounted bank stock before declaring missing 
   assert.equal(plan.state, 'READY');
   assert.equal(plan.missing.length, 0);
   assert.equal(plan.stages[0].itemName, 'cocoon');
+});
+
+test('H16 rejects invalid material acquisition quantities without bank or trade writes', () => {
+  const bank = {
+    available: true,
+    packs: [{ name: 'items0', items: [{ pack: 'items0', slot: 1, name: 'spidersilk', level: 0, quantity: 1000 }] }]
+  };
+  const { controller, state } = fixture({ bank });
+  for (const quantity of [0, -1, 1.5, 'not-a-number']) {
+    const result = controller.queueMaterialAcquire('spidersilk', quantity, { maxUnitPrice: 50 });
+    assert.equal(result.accepted, false);
+    assert.equal(result.reason, 'H16_MATERIAL_QUANTITY_INVALID');
+  }
+  assert.equal(state.bankCalls.length, 0);
+  assert.equal(state.tradeCalls.length, 0);
 });
 
 test('H16 material acquisition skips a recoverably unusable bank stack and uses a later valid stack', () => {
@@ -406,6 +436,22 @@ test('H16 blocks dispatch while combat is active', () => {
   assert.equal(state.movement.active, false);
 });
 
+test('H16 cancels owned travel when combat starts after movement was launched', () => {
+  const { controller, state } = fixture();
+  assert.equal(controller.queueExchange(0).accepted, true);
+  assert.equal(controller.tick().state, 'WAITING_TRAVEL');
+  assert.equal(state.movement.active, true);
+  assert.equal(state.movement.activeOrder.owner, 'exchange-craft-h16');
+
+  state.combatActive = true;
+  const tick = controller.tick();
+  assert.equal(tick.state, 'BLOCKED');
+  assert.equal(tick.reason, 'H16_COMBAT_ACTIVE');
+  assert.equal(state.dispatches.length, 0);
+  assert.equal(state.movement.active, false);
+  assert.equal(state.movement.lastOrder.state, 'CANCELLED');
+});
+
 test('H16 refuses to dispatch after owned movement is cancelled instead of verified complete', () => {
   const { controller, state } = fixture();
   assert.equal(controller.queueExchange(0).accepted, true);
@@ -473,6 +519,9 @@ test('H16 runtime, API, UI, build, adapter and ActionBoundary are wired', () => 
   assert.match(runtime, /if \(!current\.suspended\) runtime\.exchangeCraft\.resetSafety/);
   assert.match(runtime, /currentGold - totalEstimatedGold < 10000/);
   assert.match(runtime, /requiredGoldWithReserve/);
+  assert.match(source, /H16_MATERIAL_QUANTITY_INVALID/);
+  assert.match(source, /H16_PRODUCTION_GOLD_RESERVE_BLOCKED/);
+  assert.match(source, /_cancelOwnedMovement\(gate\.reason/);
   assert.match(entry, /0\.16\.0-h16/);
   assert.match(entry, /exchangeCraft:/);
   assert.match(entry, /runtime\.exchangeCraft\.productionPlan/);
