@@ -390,8 +390,11 @@
       const preferred = preferredId == null
         ? null
         : candidates.find(candidate => String(candidate.id) === String(preferredId)) || null;
+      const preferredSharedAggro = preferred && preferred.targetId && groupNames.has(String(preferred.targetId))
+        ? preferred
+        : null;
       const sharedAggro = candidates.find(candidate => candidate.targetId && groupNames.has(String(candidate.targetId))) || null;
-      const target = followerMirrorOnly ? (preferred || sharedAggro) : (preferred || candidates[0]);
+      const target = followerMirrorOnly ? (preferredSharedAggro || sharedAggro) : (preferred || candidates[0]);
       if (!target) {
         this.session.state = 'WAITING_GROUP_TARGET';
         this.session.lastDecision = {
@@ -669,17 +672,26 @@
       return direction;
     }
 
-    _segmentSafe(a, b, target, minimumDistance) {
+    _segmentSafe(a, b, target, minimumDistance, options = {}) {
       const ax = finite(a && a.x), ay = finite(a && a.y);
       const bx = finite(b && b.x), by = finite(b && b.y);
       const tx = finite(target && target.x), ty = finite(target && target.y);
       if ([ax, ay, bx, by, tx, ty].some(value => value == null)) return false;
+      const startDistance = Math.hypot(ax - tx, ay - ty);
+      let previousDistance = startDistance;
+      const escapingFromInside = options.allowStartInside === true && startDistance < minimumDistance;
       for (const t of [0.25, 0.5, 0.75, 1]) {
         const x = ax + (bx - ax) * t;
         const y = ay + (by - ay) * t;
-        if (Math.hypot(x - tx, y - ty) < minimumDistance) return false;
+        const d = Math.hypot(x - tx, y - ty);
+        if (escapingFromInside) {
+          if (d <= previousDistance + 0.5) return false;
+          previousDistance = d;
+          continue;
+        }
+        if (d < minimumDistance) return false;
       }
-      return true;
+      return escapingFromInside ? previousDistance > startDistance + 2 : true;
     }
 
     _groupTetherAllows(character, destination) {
@@ -688,14 +700,19 @@
       let status = null;
       try { status = this.party && typeof this.party.status === 'function' ? this.party.status() : null; } catch (_) {}
       const party = status && status.party || null;
+      const expectedNames = policy.groupMemberNames.map(String).filter(name => name !== String(character.name || ''));
       const members = party && Array.isArray(party.ownedMembers)
-        ? party.ownedMembers.filter(row => row && policy.groupMemberNames.includes(String(row.name)) && !row.local)
+        ? party.ownedMembers.filter(row => row && expectedNames.includes(String(row.name)))
         : [];
-      if (!members.length) return true;
+      if (members.length !== expectedNames.length) return false;
+      for (const name of expectedNames) {
+        const row = members.find(member => String(member.name) === name);
+        if (!row || finite(row.x) == null || finite(row.y) == null) return false;
+        if (row.map && character.map && String(row.map) !== String(character.map)) return false;
+      }
       const currentMax = Math.max(0, ...members.map(row => {
-        if (row.map && character.map && String(row.map) !== String(character.map)) return Number.POSITIVE_INFINITY;
         const x = finite(row.x), y = finite(row.y);
-        return x == null || y == null ? Number.POSITIVE_INFINITY : Math.hypot(Number(character.x) - x, Number(character.y) - y);
+        return Math.hypot(Number(character.x) - x, Number(character.y) - y);
       }));
       const proposedMax = Math.max(0, ...members.map(row => {
         if (row.map && character.map && String(row.map) !== String(character.map)) return Number.POSITIVE_INFINITY;
@@ -741,7 +758,7 @@
           const y = cy + Math.sin(angle) * step;
           const afterDistance = Math.hypot(x - tx, y - ty);
           if (!canMove(x, y) || afterDistance <= currentDistance + 2 || afterDistance > maxRangeDistance) continue;
-          if (!this._segmentSafe(character, { x, y }, target, hardSafeDistance)) continue;
+          if (!this._segmentSafe(character, { x, y }, target, hardSafeDistance, { allowStartInside: true })) continue;
           candidates.push({ x, y, afterDistance, direction: offsetDeg === 0 ? preferred : Math.sign(offsetDeg), escape: true, score: Math.abs(desiredDistance - afterDistance) + Math.abs(offsetDeg) * 0.02 });
         }
       } else {
@@ -914,6 +931,17 @@
       }
 
       let target = this._freshTarget();
+      const localName = String(character.name || '');
+      const groupNames = new Set((this.session.policy.groupMemberNames || []).map(String));
+      const followerMirrorOnly = this.session.policy.leaderOwnedPulls === true
+        && this.session.policy.groupLeaderName
+        && localName !== String(this.session.policy.groupLeaderName);
+      if (target && followerMirrorOnly
+        && !(target.targetId && groupNames.has(String(target.targetId)))) {
+        this._clearGameTarget('GROUP_FOLLOWER_STALE_FOCUS');
+        target = null;
+        this.session.state = 'ACQUIRING';
+      }
       if (!target) {
         if (this.session.targetId) {
           this._clearGameTarget('TARGET_LOST');
