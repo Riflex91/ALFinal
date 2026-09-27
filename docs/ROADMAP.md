@@ -1,6 +1,6 @@
 # AL Bot – Entwicklungsroadmap und Live-Test-Häppchen
 
-Stand: 2026-09-26
+Stand: 2026-09-27
 
 ## Legende
 
@@ -464,22 +464,59 @@ H13 basiert nach bestandenem und gemergtem H12 direkt auf dem aktuellen `main`.
 - Post-Live Hardening: globaler Spread nur bei gleichem Item+Level; Goldreserve vor Buy-Dispatch erneut geprüft; NPC-/Market-Sell-Safety und exakte Bid-Variante unmittelbar vor Dispatch erneut geprüft
 - finale Evidence in `docs/H13-LIVE-TEST.md`
 
-Vor Merge: neuen Exact-Head-CI und vollständigen Merge-Gate erneut prüfen.
+H13 wurde nach bestandenem Live-Test, Post-Live-Hardening und sauberem Exact-Head-Gate als PR #14 gemergt.
+Merge-Commit: `5238d4af8bfb99e6f6fe04d13029b80f77a9f420`.
 ---
 
 ## H14 – Gear
 
-**🟦 BAU**
-- beste Ausrüstung pro Charakter
-- Gruppenprioritäten
-- Gear Goals
-- Farmer vor Merchant
-- Swaps
-- Replacement-/Upgrade-Planung
+**🟩 BESTANDEN – 2026-09-27**
 
-**🟧 LIVE-TEST**
-- Bot erkennt bessere Ausrüstung
-- verteilt/switcht Gear korrekt
+**BAU**
+- Live-Equipment-Snapshot aus Character-/Player-Slots
+- Equipment-Definitionen und Klassenprofile aus Live-`G`
+- klassenabhängiges Gear-Ranking
+- sichere lokale Equip-/Unequip-Swaps via ActionBoundary
+- Zielslot-Revalidation unmittelbar vor Equip
+- Combat-Block
+- Zwei-Hand-/Offhand-Konflikte fail-closed
+- locked/gift/giveaway/expiring Gear aus Automation ausgeschlossen
+- Farmer-vor-Merchant-Gruppenpriorität
+- Merchant-only Remote-Proposals mit transfer-sicherem Gear
+- Gear Goals: `ACHIEVED`, `READY_TO_EQUIP`, `READY_TO_DELIVER`, `NEEDS_ACQUISITION`
+- explizite Merchant→eigener-Farmer-Gear-Delivery
+- Replacement-Planung
+- Upgrade-/Compound-Kandidaten read-only für H15
+- beobachtete Equipment-/Inventar-Deltas als Bestätigung
+- bounded UNKNOWN + Suspension, kein Blind-Retry
+- Headless API `ALBot.gear.*`
+- Control-Center-Tab **Gear**
+- H14-Ein-Klick-Suite `h14-gear`
+- `docs/H14-LIVE-TEST.md`
+
+**🟩 PRE-LIVE CI**
+- Run #276: 179 Tests, 178 PASS, 1 echter Safety-Fund
+- Fund behoben: locked Gear wird nicht mehr automatisch geplant/ausgerüstet
+- Review P2 behoben: eindeutige Inventarzuweisung über austauschbare Slots wie `ring1/ring2`
+- Run #287: 181/181 PASS, 0 FAIL, 0 SKIP, Workflow completed/success
+- beide Review-Threads resolved
+- `dist/al-bot.js` source-synchron auf `0.14.0-h14`
+- nach diesem Dokucommit erneut Exact-Head-CI erforderlich
+
+**🟩 LIVE-TEST BESTANDEN**
+- Suite `h14-gear`: **PASSED / ALL_STEPS_PASSED**
+- Runtime `0.14.0-h14`
+- Merchant `My_Merchant`, Zielslot `shoes`
+- echte Verbesserung: `wshoes +5` → `shoes1 +3`, Score-Delta `+14.73`
+- Equip real bestätigt und Original danach exakt zurückgerüstet
+- `equipsConfirmed=2`
+- Farmer-Priorität `100` vor Merchant-Priorität `10`
+- Equip-/Unequip-/Delivery-UNKNOWN jeweils `0`
+- keine Suspension
+- Cleanup ohne Pending/Request; vorherige Goals restauriert
+- Runtime wieder STOPPED, Scheduler `totalResources=0`
+
+H14 ist live bestanden. Vor Merge bleiben nur neuer Exact-Head-CI und der vollständige frische Merge-Gate-Check.
 
 ---
 

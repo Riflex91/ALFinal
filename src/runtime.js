@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.13.0-h13';
+      this.version = options.version || '0.14.0-h14';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -110,6 +110,15 @@
         movement: this.movement,
         inventory: this.inventory
       });
+      this.gear = new ns.GearController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        inventory: this.inventory,
+        roster: this.roster,
+        combat: this.combat
+      });
       this.liveTests = new ns.LiveTestRunner({
         runtime: this,
         logger: this.logger,
@@ -123,6 +132,7 @@
       this._registerH11LiveTest();
       this._registerH12LiveTest();
       this._registerH13LiveTest();
+      this._registerH14LiveTest();
       this._installErrorCapture();
       this.logger.info('AL Bot Runtime erstellt', {
         version: this.version,
@@ -243,6 +253,15 @@
         start: context => this.trade.start(context),
         stop: reason => this.trade.stop(reason),
         status: () => this.trade.status()
+      });
+
+      this.modules.register({
+        id: 'gear',
+        title: 'Gear',
+        version: '0.14.0',
+        start: context => this.gear.start(context),
+        stop: reason => this.gear.stop(reason),
+        status: () => this.gear.status()
       });
     }
 
@@ -2253,6 +2272,298 @@
       });
     }
 
+    _registerH14LiveTest() {
+      let baseline = null;
+      let testPlan = null;
+      let previousGoals = [];
+
+      const fingerprint = (runtime, row) => runtime.gear._fingerprint(row);
+
+      const tryRestore = async runtime => {
+        if (!testPlan || !testPlan.originalFingerprint || !testPlan.targetSlot) return;
+        const status = runtime.gear.status();
+        if (status.pending || status.suspended) return;
+        const equipment = runtime.game.equipmentSnapshot();
+        const current = equipment && equipment.slots && equipment.slots[testPlan.targetSlot] || null;
+        if (fingerprint(runtime, current) === testPlan.originalFingerprint) return;
+        const inventory = runtime.game.inventorySnapshot();
+        const original = inventory && (inventory.items || []).find(row =>
+          fingerprint(runtime, row) === testPlan.originalFingerprint);
+        if (!original) return;
+        const queued = runtime.gear.queueEquip(original.slot, testPlan.targetSlot);
+        if (!queued || queued.accepted !== true) return;
+        for (let i = 0; i < 40; i += 1) {
+          runtime.gear.tick();
+          const now = runtime.game.equipmentSnapshot();
+          const equipped = now && now.slots && now.slots[testPlan.targetSlot] || null;
+          if (fingerprint(runtime, equipped) === testPlan.originalFingerprint) return;
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+      };
+
+      this.liveTests.register({
+        id: 'h14-gear',
+        title: 'H14 – Gear',
+        description: 'Ein-Klick-Live-Test für Gear-Ranking, Gear Goals, Farmer-Priorität und einen reversiblen echten Equipment-Swap.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.gear.resetSafety('H14_LIVE_TEST_RESET'); } catch (_) {}
+          try { runtime.gear.cancelRequest('H14_LIVE_TEST_RESET'); } catch (_) {}
+          previousGoals = runtime.gear.goalSnapshot();
+          runtime.gear.setGoals([]);
+          const metrics = runtime.gear.status().metrics;
+          baseline = {
+            equipsConfirmed: metrics.equipsConfirmed,
+            equipsUnknown: metrics.equipsUnknown,
+            unequipsUnknown: metrics.unequipsUnknown,
+            deliveriesUnknown: metrics.deliveriesUnknown
+          };
+          testPlan = null;
+        },
+        cleanup: async ({ runtime }) => {
+          try { await tryRestore(runtime); } catch (_) {}
+          try { runtime.gear.cancelRequest('H14_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try { runtime.gear.setGoals(previousGoals); } catch (_) {}
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Live-Equipment, Gear-Ranking und reversiblen Swap-Kandidaten prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(game.character.rip !== true, 'CHARACTER_DEAD');
+              const module = runtime.modules.describe('gear');
+              assert(module && module.state === 'ACTIVE', 'H14_MODULE_NOT_ACTIVE');
+              assert(runtime.actions.available('equip'), 'EQUIP_API_UNAVAILABLE');
+              assert(runtime.actions.available('unequip'), 'UNEQUIP_API_UNAVAILABLE');
+
+              const equipment = runtime.game.equipmentSnapshot(game.character.name);
+              assert(equipment && equipment.available !== false, 'H14_EQUIPMENT_SNAPSHOT_UNAVAILABLE');
+              const plan = runtime.gear.plan();
+              assert(plan && plan.state === 'READY', plan && plan.reason || 'H14_PLAN_UNAVAILABLE');
+              assert(plan.farmerPriority > plan.merchantPriority, 'H14_FARMER_PRIORITY_NOT_ABOVE_MERCHANT');
+
+              const occupiedSafeImprovement = (plan.local.improvements || []).find(row =>
+                row.current && row.bestInventory && row.safeSwitch);
+              const fallback = (plan.local.slots || []).find(row =>
+                row.current && row.bestInventory && row.safeSwitch
+                && fingerprint(runtime, row.current) !== row.bestInventory.fingerprint);
+              const selected = occupiedSafeImprovement || fallback;
+              assert(selected && selected.current && selected.bestInventory,
+                'H14_NEEDS_REVERSIBLE_COMPATIBLE_INVENTORY_GEAR');
+
+              const originalFingerprint = fingerprint(runtime, selected.current);
+              const candidateFingerprint = selected.bestInventory.fingerprint;
+              assert(originalFingerprint && candidateFingerprint && originalFingerprint !== candidateFingerprint,
+                'H14_SWAP_FINGERPRINT_INVALID');
+
+              testPlan = {
+                targetSlot: selected.slot,
+                candidateInventorySlot: selected.bestInventory.inventorySlot,
+                candidateFingerprint,
+                candidateName: selected.bestInventory.item.name,
+                candidateLevel: Number(selected.bestInventory.item.level) || 0,
+                candidateScore: selected.bestInventory.score,
+                originalFingerprint,
+                originalName: selected.current.name,
+                originalLevel: Number(selected.current.level) || 0,
+                originalScore: selected.currentScore,
+                delta: selected.delta,
+                mode: occupiedSafeImprovement ? 'IMPROVEMENT' : 'REVERSIBLE_COMPARISON'
+              };
+
+              runtime.gear.setGoals([{
+                id: 'h14-live-goal',
+                targetName: game.character.name,
+                slot: testPlan.targetSlot,
+                itemName: testPlan.candidateName,
+                minLevel: testPlan.candidateLevel,
+                priority: 1000
+              }]);
+
+              return {
+                character: game.character.name,
+                ctype: game.character.ctype,
+                slot: testPlan.targetSlot,
+                mode: testPlan.mode,
+                original: {
+                  name: testPlan.originalName,
+                  level: testPlan.originalLevel,
+                  score: testPlan.originalScore
+                },
+                candidate: {
+                  inventorySlot: testPlan.candidateInventorySlot,
+                  name: testPlan.candidateName,
+                  level: testPlan.candidateLevel,
+                  score: testPlan.candidateScore
+                },
+                delta: testPlan.delta,
+                farmerPriority: plan.farmerPriority,
+                merchantPriority: plan.merchantPriority,
+                groupTargets: (plan.group && plan.group.targets || []).map(row => ({
+                  name: row.name,
+                  ctype: row.ctype,
+                  role: row.role,
+                  priority: row.priority,
+                  visible: row.visible
+                }))
+              };
+            }
+          },
+          {
+            id: 'planning',
+            title: 'Gear Goal, Klassenkompatibilität und Farmer-vor-Merchant-Planung prüfen',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              assert(testPlan, 'H14_LIVE_TEST_PLAN_MISSING');
+              const plan = runtime.gear.plan();
+              assert(plan && plan.state === 'READY', plan && plan.reason || 'H14_PLAN_UNAVAILABLE');
+              const goal = (plan.goals || []).find(row => row.id === 'h14-live-goal');
+              assert(goal, 'H14_LIVE_GOAL_MISSING');
+              assert(['READY_TO_EQUIP', 'ACHIEVED'].includes(goal.state), 'H14_LIVE_GOAL_NOT_ACTIONABLE');
+              const slot = (plan.local.slots || []).find(row => row.slot === testPlan.targetSlot);
+              assert(slot && slot.bestInventory, 'H14_TARGET_SLOT_PLAN_MISSING');
+              if (testPlan.mode === 'IMPROVEMENT') {
+                assert(slot.improvement === true && Number(slot.delta) > 0, 'H14_BETTER_GEAR_NOT_DETECTED');
+              }
+              const targetOrder = (plan.group && plan.group.targets || []).map(row => row.role);
+              const firstMerchant = targetOrder.indexOf('MERCHANT');
+              const lastFarmer = targetOrder.lastIndexOf('FARMER');
+              if (firstMerchant >= 0 && lastFarmer >= 0) {
+                assert(lastFarmer < firstMerchant, 'H14_GROUP_PRIORITY_ORDER_INVALID');
+              }
+              return {
+                goalState: goal.state,
+                slot: testPlan.targetSlot,
+                improvement: slot.improvement,
+                delta: slot.delta,
+                groupTargetOrder: targetOrder,
+                groupProposals: plan.group && plan.group.proposals ? plan.group.proposals.length : 0,
+                upgradeCandidates: plan.local.upgradeCandidates.length
+              };
+            }
+          },
+          {
+            id: 'equip-swap',
+            title: 'Gear-Kandidaten echt ausrüsten und Live-Deltas bestätigen',
+            timeoutMs: 12000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(testPlan, 'H14_LIVE_TEST_PLAN_MISSING');
+              const queued = runtime.gear.queueEquip(testPlan.candidateInventorySlot, testPlan.targetSlot);
+              assert(queued && queued.accepted === true, queued && queued.reason || 'H14_EQUIP_QUEUE_FAILED');
+              const confirmed = await waitFor(() => {
+                const status = runtime.gear.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H14_SUSPENDED');
+                if (status.metrics.equipsUnknown > baseline.equipsUnknown) throw new Error('H14_EQUIP_UNKNOWN');
+                return status.metrics.equipsConfirmed > baseline.equipsConfirmed ? status : null;
+              }, { timeoutMs: 10000, pollMs: 100, label: 'h14-equip-confirmed' });
+
+              const equipment = runtime.game.equipmentSnapshot();
+              const current = equipment && equipment.slots && equipment.slots[testPlan.targetSlot] || null;
+              assert(fingerprint(runtime, current) === testPlan.candidateFingerprint,
+                'H14_EQUIP_TARGET_NOT_OBSERVED');
+
+              const inventory = runtime.game.inventorySnapshot();
+              const original = inventory && (inventory.items || []).find(row =>
+                fingerprint(runtime, row) === testPlan.originalFingerprint);
+              assert(original, 'H14_ORIGINAL_GEAR_NOT_RETURNED_TO_INVENTORY');
+              testPlan.restoreInventorySlot = Number(original.slot);
+
+              return {
+                slot: testPlan.targetSlot,
+                equipped: { name: current.name, level: current.level },
+                originalInventorySlot: testPlan.restoreInventorySlot,
+                equipsConfirmed: confirmed.metrics.equipsConfirmed - baseline.equipsConfirmed
+              };
+            }
+          },
+          {
+            id: 'restore',
+            title: 'Ursprüngliches Gear exakt zurückrüsten und Zustand wiederherstellen',
+            timeoutMs: 12000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(testPlan && Number.isInteger(testPlan.restoreInventorySlot), 'H14_RESTORE_SLOT_MISSING');
+              const queued = runtime.gear.queueEquip(testPlan.restoreInventorySlot, testPlan.targetSlot);
+              assert(queued && queued.accepted === true, queued && queued.reason || 'H14_RESTORE_QUEUE_FAILED');
+              const restored = await waitFor(() => {
+                const status = runtime.gear.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H14_SUSPENDED');
+                if (status.metrics.equipsUnknown > baseline.equipsUnknown) throw new Error('H14_EQUIP_UNKNOWN');
+                return status.metrics.equipsConfirmed >= baseline.equipsConfirmed + 2 ? status : null;
+              }, { timeoutMs: 10000, pollMs: 100, label: 'h14-restore-confirmed' });
+
+              const equipment = runtime.game.equipmentSnapshot();
+              const current = equipment && equipment.slots && equipment.slots[testPlan.targetSlot] || null;
+              assert(fingerprint(runtime, current) === testPlan.originalFingerprint,
+                'H14_ORIGINAL_GEAR_NOT_RESTORED');
+
+              const inventory = runtime.game.inventorySnapshot();
+              const candidate = inventory && (inventory.items || []).find(row =>
+                fingerprint(runtime, row) === testPlan.candidateFingerprint);
+              assert(candidate, 'H14_CANDIDATE_NOT_RETURNED_TO_INVENTORY');
+
+              return {
+                slot: testPlan.targetSlot,
+                restored: { name: current.name, level: current.level },
+                candidateInventorySlot: candidate.slot,
+                equipsConfirmed: restored.metrics.equipsConfirmed - baseline.equipsConfirmed
+              };
+            }
+          },
+          {
+            id: 'stability',
+            title: 'Fünf Sekunden ohne Gear-UNKNOWN oder unerwarteten Zustand beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              await sleep(5000);
+              const status = runtime.gear.status();
+              assert(status.suspended === false, status.suspendedReason || 'H14_SUSPENDED');
+              assert(status.metrics.equipsUnknown === baseline.equipsUnknown, 'H14_EQUIP_UNKNOWN_DURING_STABILITY');
+              assert(status.metrics.unequipsUnknown === baseline.unequipsUnknown, 'H14_UNEQUIP_UNKNOWN_DURING_STABILITY');
+              assert(status.metrics.deliveriesUnknown === baseline.deliveriesUnknown, 'H14_DELIVERY_UNKNOWN_DURING_STABILITY');
+              const equipment = runtime.game.equipmentSnapshot();
+              const current = equipment && equipment.slots && equipment.slots[testPlan.targetSlot] || null;
+              assert(fingerprint(runtime, current) === testPlan.originalFingerprint,
+                'H14_RESTORED_GEAR_DRIFTED');
+              return {
+                equipUnknown: status.metrics.equipsUnknown - baseline.equipsUnknown,
+                unequipUnknown: status.metrics.unequipsUnknown - baseline.unequipsUnknown,
+                deliveryUnknown: status.metrics.deliveriesUnknown - baseline.deliveriesUnknown,
+                originalRestored: true
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'H14 Pending/Request/Goal vollständig freigeben',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.gear.cancelRequest('H14_LIVE_TEST_COMPLETE');
+              runtime.gear.setGoals(previousGoals);
+              const gear = runtime.gear.status();
+              assert(gear.pending == null, 'H14_PENDING_REMAINS');
+              assert(gear.request == null, 'H14_REQUEST_REMAINS');
+              const equipment = runtime.game.equipmentSnapshot();
+              const current = equipment && equipment.slots && equipment.slots[testPlan.targetSlot] || null;
+              assert(fingerprint(runtime, current) === testPlan.originalFingerprint,
+                'H14_CLEANUP_ORIGINAL_GEAR_NOT_RESTORED');
+              return {
+                pending: !!gear.pending,
+                request: !!gear.request,
+                originalRestored: true,
+                goalsRestored: gear.goals.length === previousGoals.length
+              };
+            }
+          }
+        ]
+      });
+    }
+
     _installErrorCapture() {
       if (!this.root || typeof this.root.addEventListener !== 'function') return;
       this._errorHandler = event => {
@@ -2403,6 +2714,7 @@
         merchant: this.merchant.status(),
         bank: this.bank.status(),
         trade: this.trade.status(),
+        gear: this.gear.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
         roster,
@@ -2431,6 +2743,7 @@
         merchant: this.merchant.status(),
         bank: this.bank.status(),
         trade: this.trade.status(),
+        gear: this.gear.status(),
         liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
         logs: this.logger.list(160),
@@ -2458,6 +2771,7 @@
       push('merchant-controller', !!this.merchant.status() && typeof this.merchant.plan === 'function', this.merchant.status());
       push('bank-controller', !!this.bank.status() && typeof this.bank.plan === 'function' && typeof this.bank.reconcile === 'function', this.bank.status());
       push('trade-controller', !!this.trade.status() && typeof this.trade.marketAnalysis === 'function' && typeof this.trade.queueAcquire === 'function', this.trade.status());
+      push('gear-controller', !!this.gear.status() && typeof this.gear.plan === 'function' && typeof this.gear.queueBestLocal === 'function', this.gear.status());
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
       push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);
