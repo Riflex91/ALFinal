@@ -1625,3 +1625,29 @@ Erwartung fuer den Cross-Window-Live-PASS:
 - Desired Active startet dieselbe Ziel-Session wieder auf `running=true`;
 - insgesamt 2 Dispatch / 2 Confirm / 1 STOP / 1 START / 0 Reject / 0 UNKNOWN;
 - danach 5 Sekunden stabil ohne Retry.
+
+
+## H19 v2 – Cross-Window Remote-Recovery PASS
+
+Stand: 2026-09-27
+
+Neuer Live-Stand:
+
+- Test-Runner: `My_Priest`;
+- Remote-Ziel: `My_Merchant`;
+- Control Mode: `cross-window-runtime`;
+- Suite `h19-remote-recovery` v2: `PASSED / ALL_STEPS_PASSED`;
+- Preflight sah `My_Merchant`, `My_Ranger1` und `My_Warrior` als frische getrennte H19-Peers;
+- Runner-Active enthielt nur den lokalen `My_Priest`;
+- alle Cross-Window-Peers waren `running=true`, Version `0.19.0-h19`, Emergency-Stop aus;
+- Remote STOP: 1 Dispatch / 1 Confirm / 1 Stop;
+- Recovery START: kumulativ 2 Dispatch / 2 Confirm / 1 Stop / 1 Start;
+- 0 Reject / 0 UNKNOWN;
+- CM: 2 Commands / 2 ACKs / 2 erfolgreiche Settlements / 0 Transportfehler;
+- Stability 5 Sekunden ohne Retry;
+- Cleanup PASS, Ziel aktiv, Autonomie aus, keine aktive Aktion, Queue leer, keine Suspension;
+- Lifecycle-Policy nach Cleanup vollstaendig wiederhergestellt.
+
+Kein weiterer Remote-Recovery-Rerun erforderlich.
+
+Naechster H19-Schritt: **Party-Recovery als letzter dedizierter Live-Gate**. H20 darf erst nach dessen PASS freigegeben werden.
