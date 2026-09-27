@@ -103,7 +103,34 @@ test('account progression identifies the weaker combat character for catch-up tr
   assert.ok(plan.ranking[0].catchUp > 0);
 });
 
-function loadFullAutonomy({ missingPeer = false } = {}) {
+
+test('optional farm work includes the current catch-up character and stays bounded to a duo', () => {
+  const { controller } = loadStrategy({
+    peers: [
+      {
+        name: 'My_Priest', running: true, emergencyStopLatched: false,
+        profile: { name: 'My_Priest', ctype: 'priest', level: 80, hp: 3000, maxHp: 3000, attack: 450, armor: 250, resistance: 450, frequency: 1, gearScore: 500, trainingMs: 5000 }
+      },
+      {
+        name: 'My_Ranger1', running: true, emergencyStopLatched: false,
+        profile: { name: 'My_Ranger1', ctype: 'ranger', level: 55, hp: 1800, maxHp: 2500, attack: 350, armor: 100, resistance: 100, frequency: 1, gearScore: 220, trainingMs: 250 }
+      },
+      {
+        name: 'My_Merchant', running: true, emergencyStopLatched: false,
+        profile: { name: 'My_Merchant', ctype: 'merchant', level: 70, hp: 2200, maxHp: 2200, attack: 120, frequency: 0.8, gearScore: 200, trainingMs: 1000 }
+      }
+    ]
+  });
+  const progression = controller.progressionPlan();
+  assert.equal(progression.selectedCharacterName, 'My_Ranger1');
+  const plan = controller.optimizeTask({ type: 'FARM' });
+  assert.equal(plan.status, 'SELECTION_READY');
+  assert.ok(plan.selected.memberNames.includes('My_Ranger1'));
+  assert.ok(plan.selected.memberNames.length <= 2);
+  assert.equal(plan.selected.memberNames.includes('My_Merchant'), false);
+});
+
+function loadFullAutonomy({ missingPeer = false, localName = 'My_Warrior', partyHealthy = true } = {}) {
   const source = fs.readFileSync(path.resolve(here, '../src/full-autonomy.js'), 'utf8');
   const clone = value => value == null ? value : JSON.parse(JSON.stringify(value));
   const ctx = {
@@ -127,12 +154,21 @@ function loadFullAutonomy({ missingPeer = false } = {}) {
     broadcasts: 0,
     training: []
   };
-  const profiles = [
-    { name: 'My_Warrior', ctype: 'warrior', online: true, local: true, peerFresh: true, running: true },
-    { name: 'My_Priest', ctype: 'priest', online: true, peerFresh: true, running: true },
-    { name: 'My_Ranger1', ctype: 'ranger', online: true, peerFresh: true, running: true },
-    ...(!missingPeer ? [{ name: 'My_Merchant', ctype: 'merchant', online: true, peerFresh: true, running: true }] : [])
+  const profileRows = [
+    { name: 'My_Warrior', ctype: 'warrior' },
+    { name: 'My_Priest', ctype: 'priest' },
+    { name: 'My_Ranger1', ctype: 'ranger' },
+    { name: 'My_Merchant', ctype: 'merchant' }
   ];
+  const profiles = profileRows
+    .filter(row => !missingPeer || row.name !== 'My_Merchant')
+    .map(row => ({
+      ...row,
+      online: true,
+      local: row.name === localName,
+      peerFresh: true,
+      running: true
+    }));
   const strategy = {
     profiles: () => clone(profiles),
     optimizeTask: () => ({
@@ -171,7 +207,25 @@ function loadFullAutonomy({ missingPeer = false } = {}) {
     running: true,
     stopLatch: { status: () => ({ latched: false }) },
     actionAllowed: () => true,
-    game: { snapshot: () => ({ available: true, character: { name: 'My_Warrior', ctype: 'warrior' } }) },
+    game: {
+      snapshot: () => ({
+        available: true,
+        character: {
+          name: localName,
+          ctype: profileRows.find(row => row.name === localName).ctype
+        }
+      })
+    },
+    party: {
+      snapshot: () => partyHealthy
+        ? {
+          available: true,
+          leader: 'My_Warrior',
+          memberNames: ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior'],
+          size: 4
+        }
+        : { available: false, leader: null, memberNames: [], size: 0 }
+    },
     roster: {
       refresh: () => ({
         onlineCharacterNames: ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior']
@@ -216,4 +270,25 @@ test('full autonomy applies one shared party policy and starts the selected comb
   );
   assert.equal(state.broadcasts, 1);
   assert.deepEqual(state.training, [true]);
+});
+
+
+test('healthy non-coordinator does not run competing lifecycle autonomy', () => {
+  const { controller, state } = loadFullAutonomy({ localName: 'My_Priest', partyHealthy: true });
+  const started = controller.startAutonomy({ taskType: 'FARM' });
+  assert.equal(started.accepted, true);
+  assert.equal(started.tick.state, 'RUNNING');
+  assert.equal(started.tick.localLifecycleCoordinator, false);
+  assert.equal(started.tick.lifecycleCoordinator, 'My_Warrior');
+  assert.equal(state.lifecycleStarts, 0);
+});
+
+test('full autonomy refuses to start unless the configured four-character live roster is online', () => {
+  const { controller } = loadFullAutonomy();
+  controller.runtime.roster.refresh = () => ({
+    onlineCharacterNames: ['My_Priest', 'My_Ranger1', 'My_Warrior']
+  });
+  const started = controller.startAutonomy({ taskType: 'FARM' });
+  assert.equal(started.accepted, false);
+  assert.equal(started.reason, 'FULL_AUTONOMY_EXPECTED_ONLINE_COUNT_MISMATCH');
 });
