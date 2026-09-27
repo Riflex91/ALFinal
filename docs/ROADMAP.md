@@ -461,7 +461,7 @@ H13 basiert nach bestandenem und gemergtem H12 direkt auf dem aktuellen `main`.
 - alle H13-UNKNOWN-Deltas 0
 - Cleanup ohne Pending/Request/H13-Movement
 - Runtime wieder STOPPED, Scheduler `totalResources=0`
-- Post-Live read-only Hardening: globaler Spread nur noch bei gleichem Item+Level
+- Post-Live Hardening: globaler Spread nur bei gleichem Item+Level; Goldreserve vor Buy-Dispatch erneut geprüft; NPC-/Market-Sell-Safety und exakte Bid-Variante unmittelbar vor Dispatch erneut geprüft
 - finale Evidence in `docs/H13-LIVE-TEST.md`
 
 Vor Merge: neuen Exact-Head-CI und vollständigen Merge-Gate erneut prüfen.
