@@ -679,8 +679,12 @@
           'H12_BANK_RESERVATION_BLOCKED',
           'H12_WITHDRAW_ITEM_NOT_FOUND'
         ]);
+        const minBankStackQuantity = Math.max(
+          q,
+          Math.floor(finite(options.minBankStackQuantity) == null ? q : finite(options.minBankStackQuantity))
+        );
         const bankRows = this._bankMaterialRows(name, options.level || 0)
-          .filter(row => row.withdrawable === true && row.quantity >= q);
+          .filter(row => row.withdrawable === true && row.quantity >= minBankStackQuantity);
         for (const row of bankRows) {
           const result = this.bank.queueWithdraw(row.pack, row.slot);
           if (result && result.accepted) {
