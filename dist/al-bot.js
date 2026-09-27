@@ -15764,6 +15764,7 @@
       this._registerH17LiveTest();
       this._registerH18LiveTest();
       this._registerH19LiveTest();
+      this._registerH19RemoteRecoveryLiveTest();
       this._installErrorCapture();
       this.logger.info('AL Bot Runtime erstellt', {
         version: this.version,
@@ -19770,7 +19771,7 @@
         title: 'H19 – Character Lifecycle & Recovery',
         description: 'Begrenzter erster H19-Live-Test für einen echten lokalen Death→Respawn-Recovery-Pfad mit bestätigter Live-Evidence und ohne Blind-Retry.',
         version: '1',
-        recommended: true,
+        recommended: false,
         autoStartRuntime: true,
         restoreRuntimeState: true,
         prepare: async ({ runtime }) => {
@@ -19931,6 +19932,321 @@
                 currentAction: status.currentAction,
                 queueLength: status.queue.length,
                 suspended: status.suspended
+              };
+            }
+          }
+        ]
+      });
+    }
+
+
+    _registerH19RemoteRecoveryLiveTest() {
+      let baseline = null;
+      let targetName = null;
+      let originalPolicy = null;
+
+      const activeSet = roster => new Set(
+        roster && Array.isArray(roster.activeCharacterNames)
+          ? roster.activeCharacterNames.map(String)
+          : []
+      );
+
+      const restorePolicy = runtime => {
+        if (!originalPolicy) return null;
+        return runtime.lifecycle.setPolicy({
+          desiredActiveNames: Array.isArray(originalPolicy.desiredActiveNames) ? originalPolicy.desiredActiveNames : [],
+          desiredPartyMemberNames: Array.isArray(originalPolicy.desiredPartyMemberNames) ? originalPolicy.desiredPartyMemberNames : [],
+          desiredPartyLeader: originalPolicy.desiredPartyLeader || null,
+          maxActionsPerSession: originalPolicy.maxActionsPerSession
+        });
+      };
+
+      this.liveTests.register({
+        id: 'h19-remote-recovery',
+        title: 'H19 – Remote Start/Stop & Restart Recovery',
+        description: 'Bounded Live-Test: einen sicheren eigenen Remote-Character stoppen, Live-Roster-Abwesenheit bestätigen und ihn über Desired Active genau einmal automatisch wieder starten.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          targetName = null;
+          try { runtime.lifecycle.stopAutonomy('H19_REMOTE_LIVE_TEST_RESET'); } catch (_) {}
+          const status = runtime.lifecycle.status();
+          if (status.currentAction) throw new Error('H19_REMOTE_ACTIVE_ACTION_BEFORE_LIVE_TEST');
+          if (status.suspended) throw new Error(status.suspendedReason || 'H19_REMOTE_SUSPENDED_BEFORE_LIVE_TEST');
+          try { runtime.lifecycle.cancelQueued(); } catch (_) {}
+          try { runtime.lifecycle.resetSafety('H19_REMOTE_LIVE_TEST_RESET'); } catch (_) {}
+          const clean = runtime.lifecycle.status();
+          originalPolicy = {
+            desiredActiveNames: Array.isArray(clean.policy.desiredActiveNames) ? clean.policy.desiredActiveNames.slice() : [],
+            desiredPartyMemberNames: Array.isArray(clean.policy.desiredPartyMemberNames) ? clean.policy.desiredPartyMemberNames.slice() : [],
+            desiredPartyLeader: clean.policy.desiredPartyLeader || null,
+            maxActionsPerSession: clean.policy.maxActionsPerSession
+          };
+          baseline = {
+            actionsDispatched: Number(clean.metrics.actionsDispatched || 0),
+            actionsConfirmed: Number(clean.metrics.actionsConfirmed || 0),
+            actionsRejected: Number(clean.metrics.actionsRejected || 0),
+            actionsUnknown: Number(clean.metrics.actionsUnknown || 0),
+            startsConfirmed: Number(clean.metrics.startsConfirmed || 0),
+            stopsConfirmed: Number(clean.metrics.stopsConfirmed || 0)
+          };
+        },
+        cleanup: async ({ runtime, waitFor }) => {
+          try { runtime.lifecycle.stopAutonomy('H19_REMOTE_LIVE_TEST_CLEANUP'); } catch (_) {}
+
+          try {
+            let status = runtime.lifecycle.status();
+            if (!status.currentAction) runtime.lifecycle.cancelQueued();
+
+            if (targetName && baseline) {
+              const roster = runtime.roster.refresh();
+              const targetActive = roster && roster.activeStateAvailable === true
+                ? activeSet(roster).has(String(targetName))
+                : null;
+              const dispatchedDelta = Number(status.metrics.actionsDispatched || 0) - baseline.actionsDispatched;
+              const rejectedDelta = Number(status.metrics.actionsRejected || 0) - baseline.actionsRejected;
+              const unknownDelta = Number(status.metrics.actionsUnknown || 0) - baseline.actionsUnknown;
+
+              const safeFirstStartRecovery = targetActive === false
+                && !status.currentAction
+                && status.suspended === false
+                && dispatchedDelta === 1
+                && rejectedDelta === 0
+                && unknownDelta === 0;
+
+              if (safeFirstStartRecovery) {
+                const queued = runtime.lifecycle.queueStart(targetName);
+                if (queued && queued.accepted === true) {
+                  await waitFor(() => {
+                    const current = runtime.lifecycle.status();
+                    if (current.suspended) return false;
+                    const liveRoster = runtime.roster.refresh();
+                    return Number(current.metrics.startsConfirmed || 0) > baseline.startsConfirmed
+                      && current.currentAction == null
+                      && liveRoster
+                      && liveRoster.activeStateAvailable === true
+                      && activeSet(liveRoster).has(String(targetName))
+                      ? true
+                      : false;
+                  }, { timeoutMs: 25000, pollMs: 250, label: 'h19-remote-cleanup-restore' });
+                }
+              }
+            }
+          } catch (_) {}
+
+          try { restorePolicy(runtime); } catch (_) {}
+          try {
+            const status = runtime.lifecycle.status();
+            if (!status.suspended && !status.currentAction) runtime.lifecycle.resetSafety('H19_REMOTE_LIVE_TEST_CLEANUP');
+          } catch (_) {}
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Sicheren eigenen aktiven Remote-Character und Lifecycle-APIs prüfen',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, note }) => {
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(game.character.rip !== true, 'H19_REMOTE_LOCAL_CHARACTER_DEAD');
+
+              const module = runtime.modules.describe('character-lifecycle');
+              assert(module && module.state === 'ACTIVE', 'H19_REMOTE_MODULE_NOT_ACTIVE');
+
+              const roster = runtime.roster.refresh();
+              assert(roster && roster.accountStateAvailable === true, 'H19_REMOTE_ACCOUNT_ROSTER_UNAVAILABLE');
+              assert(roster.activeStateAvailable === true, 'H19_REMOTE_ACTIVE_ROSTER_UNAVAILABLE');
+              assert(runtime.actions.available('stop_character'), 'H19_REMOTE_STOP_API_UNAVAILABLE');
+              assert(runtime.actions.available('start_character'), 'H19_REMOTE_START_API_UNAVAILABLE');
+
+              const status = runtime.lifecycle.status();
+              assert(status.suspended === false, status.suspendedReason || 'H19_REMOTE_SUSPENDED');
+              assert(status.currentAction == null, 'H19_REMOTE_ACTION_ACTIVE_BEFORE_PREFLIGHT');
+              assert(status.queue.length === 0, 'H19_REMOTE_QUEUE_NOT_EMPTY');
+
+              const localName = String(game.character.name || '');
+              const active = activeSet(roster);
+              const party = runtime.party.snapshot();
+              const leader = party && party.leader ? String(party.leader) : null;
+              const partyMembers = new Set(party && Array.isArray(party.memberNames) ? party.memberNames.map(String) : []);
+
+              const candidates = (roster.accountCharacters || [])
+                .filter(row => row && row.name)
+                .map(row => ({ name: String(row.name), ctype: row.ctype || null }))
+                .filter(row => row.name !== localName && row.name !== leader && active.has(row.name))
+                .sort((a, b) => {
+                  const aParty = partyMembers.has(a.name) ? 1 : 0;
+                  const bParty = partyMembers.has(b.name) ? 1 : 0;
+                  if (aParty !== bParty) return aParty - bParty;
+                  return a.name.localeCompare(b.name);
+                });
+
+              assert(candidates.length > 0, 'H19_REMOTE_SAFE_ACTIVE_TARGET_UNAVAILABLE');
+              targetName = candidates[0].name;
+
+              const captured = runtime.lifecycle.captureDesiredActive();
+              assert(captured && captured.accepted === true, captured && captured.reason || 'H19_REMOTE_CAPTURE_ACTIVE_FAILED');
+              assert(Array.isArray(captured.desiredActiveNames) && captured.desiredActiveNames.includes(targetName), 'H19_REMOTE_TARGET_NOT_CAPTURED_AS_DESIRED');
+
+              note({
+                local: localName,
+                target: targetName,
+                targetCtype: candidates[0].ctype,
+                targetWasPartyMember: partyMembers.has(targetName),
+                partyLeader: leader,
+                desiredActiveNames: captured.desiredActiveNames,
+                desiredPartyMemberNames: captured.desiredPartyMemberNames
+              });
+
+              return {
+                local: localName,
+                target: targetName,
+                targetCtype: candidates[0].ctype,
+                targetWasPartyMember: partyMembers.has(targetName),
+                partyLeader: leader,
+                activeCharacterNames: roster.activeCharacterNames
+              };
+            }
+          },
+          {
+            id: 'remote-stop',
+            title: 'Remote-Character genau einmal stoppen und Live-Abwesenheit bestätigen',
+            timeoutMs: 30000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(targetName, 'H19_REMOTE_TARGET_MISSING');
+              const queued = runtime.lifecycle.queueStop(targetName);
+              assert(queued && queued.accepted === true, queued && queued.reason || 'H19_REMOTE_STOP_QUEUE_FAILED');
+
+              await waitFor(() => {
+                const status = runtime.lifecycle.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H19_REMOTE_SUSPENDED_DURING_STOP');
+                if (Number(status.metrics.actionsUnknown || 0) > baseline.actionsUnknown) throw new Error('H19_REMOTE_STOP_UNKNOWN');
+                if (Number(status.metrics.actionsRejected || 0) > baseline.actionsRejected) throw new Error('H19_REMOTE_STOP_REJECTED');
+                const roster = runtime.roster.refresh();
+                return Number(status.metrics.stopsConfirmed || 0) > baseline.stopsConfirmed
+                  && status.currentAction == null
+                  && roster
+                  && roster.activeStateAvailable === true
+                  && !activeSet(roster).has(String(targetName))
+                  ? { status, roster }
+                  : null;
+              }, { timeoutMs: 25000, pollMs: 250, label: 'h19-remote-stop' });
+
+              const status = runtime.lifecycle.status();
+              const roster = runtime.roster.refresh();
+              const dispatched = Number(status.metrics.actionsDispatched || 0) - baseline.actionsDispatched;
+              const confirmed = Number(status.metrics.actionsConfirmed || 0) - baseline.actionsConfirmed;
+              const stopped = Number(status.metrics.stopsConfirmed || 0) - baseline.stopsConfirmed;
+              assert(dispatched === 1, 'H19_REMOTE_STOP_DISPATCH_COUNT_INVALID');
+              assert(confirmed === 1, 'H19_REMOTE_STOP_CONFIRM_COUNT_INVALID');
+              assert(stopped === 1, 'H19_REMOTE_STOP_CONFIRMATION_MISSING');
+              assert(!activeSet(roster).has(String(targetName)), 'H19_REMOTE_TARGET_STILL_ACTIVE');
+              return { target: targetName, dispatched, confirmed, stopsConfirmed: stopped };
+            }
+          },
+          {
+            id: 'restart-recovery',
+            title: 'Desired-Active-Recovery starten und Remote-Character genau einmal zurückholen',
+            timeoutMs: 40000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(targetName, 'H19_REMOTE_TARGET_MISSING');
+              const started = runtime.lifecycle.startAutonomy({ maxActions: 1 });
+              assert(started && started.accepted === true, started && started.reason || 'H19_REMOTE_AUTONOMY_START_FAILED');
+
+              await waitFor(() => {
+                const status = runtime.lifecycle.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H19_REMOTE_SUSPENDED_DURING_RESTART');
+                if (Number(status.metrics.actionsUnknown || 0) > baseline.actionsUnknown) throw new Error('H19_REMOTE_RESTART_UNKNOWN');
+                if (Number(status.metrics.actionsRejected || 0) > baseline.actionsRejected) throw new Error('H19_REMOTE_RESTART_REJECTED');
+                const roster = runtime.roster.refresh();
+                return Number(status.metrics.startsConfirmed || 0) > baseline.startsConfirmed
+                  && status.currentAction == null
+                  && roster
+                  && roster.activeStateAvailable === true
+                  && activeSet(roster).has(String(targetName))
+                  ? { status, roster }
+                  : null;
+              }, { timeoutMs: 35000, pollMs: 250, label: 'h19-remote-restart' });
+
+              runtime.lifecycle.stopAutonomy('H19_REMOTE_RECOVERY_COMPLETE');
+              const status = runtime.lifecycle.status();
+              const roster = runtime.roster.refresh();
+              const dispatched = Number(status.metrics.actionsDispatched || 0) - baseline.actionsDispatched;
+              const confirmed = Number(status.metrics.actionsConfirmed || 0) - baseline.actionsConfirmed;
+              const startedCount = Number(status.metrics.startsConfirmed || 0) - baseline.startsConfirmed;
+              const stoppedCount = Number(status.metrics.stopsConfirmed || 0) - baseline.stopsConfirmed;
+              const rejected = Number(status.metrics.actionsRejected || 0) - baseline.actionsRejected;
+              const unknown = Number(status.metrics.actionsUnknown || 0) - baseline.actionsUnknown;
+
+              assert(dispatched === 2, 'H19_REMOTE_TOTAL_DISPATCH_COUNT_INVALID');
+              assert(confirmed === 2, 'H19_REMOTE_TOTAL_CONFIRM_COUNT_INVALID');
+              assert(stoppedCount === 1, 'H19_REMOTE_STOP_CONFIRM_COUNT_INVALID');
+              assert(startedCount === 1, 'H19_REMOTE_START_CONFIRM_COUNT_INVALID');
+              assert(rejected === 0, 'H19_REMOTE_REJECTED');
+              assert(unknown === 0, 'H19_REMOTE_UNKNOWN');
+              assert(activeSet(roster).has(String(targetName)), 'H19_REMOTE_TARGET_NOT_ACTIVE_AFTER_RECOVERY');
+
+              return {
+                target: targetName,
+                dispatched,
+                confirmed,
+                stopsConfirmed: stoppedCount,
+                startsConfirmed: startedCount,
+                rejected,
+                unknown
+              };
+            }
+          },
+          {
+            id: 'stability',
+            title: 'Fünf Sekunden ohne Start/Stop-Retry oder UNKNOWN beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              const before = runtime.lifecycle.status();
+              const beforeDispatch = Number(before.metrics.actionsDispatched || 0);
+              await sleep(5000);
+              const after = runtime.lifecycle.status();
+              const roster = runtime.roster.refresh();
+              assert(after.autonomyEnabled === false, 'H19_REMOTE_AUTONOMY_RESTARTED');
+              assert(after.currentAction == null, 'H19_REMOTE_ACTION_REMAINS');
+              assert(after.suspended === false, after.suspendedReason || 'H19_REMOTE_SUSPENDED_DURING_STABILITY');
+              assert(Number(after.metrics.actionsDispatched || 0) === beforeDispatch, 'H19_REMOTE_RETRY_AFTER_RECOVERY');
+              assert(Number(after.metrics.actionsUnknown || 0) === baseline.actionsUnknown, 'H19_REMOTE_UNKNOWN_DURING_STABILITY');
+              assert(Number(after.metrics.actionsRejected || 0) === baseline.actionsRejected, 'H19_REMOTE_REJECT_DURING_STABILITY');
+              assert(roster && roster.activeStateAvailable === true && activeSet(roster).has(String(targetName)), 'H19_REMOTE_TARGET_LOST_DURING_STABILITY');
+              return {
+                target: targetName,
+                actionsDispatched: Number(after.metrics.actionsDispatched || 0) - baseline.actionsDispatched,
+                actionsConfirmed: Number(after.metrics.actionsConfirmed || 0) - baseline.actionsConfirmed,
+                actionsRejected: Number(after.metrics.actionsRejected || 0) - baseline.actionsRejected,
+                actionsUnknown: Number(after.metrics.actionsUnknown || 0) - baseline.actionsUnknown
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'Policy wiederherstellen und Remote-Character aktiv hinterlassen',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert }) => {
+              runtime.lifecycle.stopAutonomy('H19_REMOTE_LIVE_TEST_COMPLETE');
+              const restored = restorePolicy(runtime);
+              assert(!restored || restored.accepted === true, restored && restored.reason || 'H19_REMOTE_POLICY_RESTORE_FAILED');
+              const status = runtime.lifecycle.status();
+              const roster = runtime.roster.refresh();
+              assert(status.autonomyEnabled === false, 'H19_REMOTE_AUTONOMY_STILL_ENABLED');
+              assert(status.currentAction == null, 'H19_REMOTE_CURRENT_ACTION_REMAINS');
+              assert(status.queue.length === 0, 'H19_REMOTE_QUEUE_REMAINS');
+              assert(status.suspended === false, status.suspendedReason || 'H19_REMOTE_SUSPENDED_AT_CLEANUP');
+              assert(roster && roster.activeStateAvailable === true && activeSet(roster).has(String(targetName)), 'H19_REMOTE_TARGET_NOT_RESTORED');
+              return {
+                target: targetName,
+                autonomyEnabled: status.autonomyEnabled,
+                currentAction: status.currentAction,
+                queueLength: status.queue.length,
+                suspended: status.suspended,
+                targetActive: true
               };
             }
           }
