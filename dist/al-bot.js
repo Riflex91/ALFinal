@@ -1,4 +1,4 @@
-/* AL Bot 0.16.0-h16 | generated file | do not edit dist directly */
+/* AL Bot 0.17.0-h17 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -12589,6 +12589,702 @@
   const clone = ns.helpers.clone;
   const cleanText = ns.helpers.cleanText;
 
+  function finite(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function nowIso() {
+    return new Date().toISOString();
+  }
+
+  const DEFAULT_PRIORITIES = Object.freeze({
+    BANK_MOUNT: 110,
+    BANK_DEPOSIT: 100,
+    GEAR_EQUIP: 90,
+    MARKET_SELL: 75,
+    EXCHANGE: 70,
+    CRAFT: 65,
+    UPGRADE: 55,
+    COMPOUND: 50,
+    NPC_SELL: 40
+  });
+
+  const DEFAULT_KINDS = Object.freeze({
+    BANK_MOUNT: true,
+    BANK_DEPOSIT: true,
+    GEAR_EQUIP: true,
+    MARKET_SELL: true,
+    EXCHANGE: true,
+    CRAFT: true,
+    UPGRADE: true,
+    COMPOUND: true,
+    NPC_SELL: true
+  });
+
+  class EconomyController {
+    constructor(options = {}) {
+      this.root = options.root || root;
+      this.logger = options.logger || null;
+      this.game = options.game || null;
+      this.movement = options.movement || null;
+      this.combat = options.combat || null;
+      this.inventory = options.inventory || null;
+      this.merchant = options.merchant || null;
+      this.bank = options.bank || null;
+      this.trade = options.trade || null;
+      this.gear = options.gear || null;
+      this.upgrade = options.upgrade || null;
+      this.exchangeCraft = options.exchangeCraft || null;
+      this.canAct = typeof options.canAct === 'function' ? options.canAct : null;
+
+      this.moduleActive = false;
+      this.autonomyEnabled = false;
+      this.scope = null;
+      this.suspendedReason = null;
+      this.currentAction = null;
+      this.lastPlan = null;
+      this.lastAction = null;
+      this.sequence = 0;
+      this.actionsThisSession = 0;
+      this.cooldownUntilMs = null;
+
+      this.config = {
+        tickMs: Math.max(250, Math.min(5000, Number(options.tickMs) || 1000)),
+        actionCooldownMs: Math.max(0, Math.min(60000, Number(options.actionCooldownMs) || 1500)),
+        actionTimeoutMs: Math.max(5000, Math.min(300000, Number(options.actionTimeoutMs) || 120000)),
+        maxActionsPerSession: Math.max(1, Math.min(100, Math.floor(Number(options.maxActionsPerSession) || 12))),
+        minMarketPremiumRatio: Math.max(1, Math.min(10, finite(options.minMarketPremiumRatio) == null ? 1 : finite(options.minMarketPremiumRatio))),
+        priorities: { ...DEFAULT_PRIORITIES, ...(options.priorities || {}) },
+        allowKinds: { ...DEFAULT_KINDS, ...(options.allowKinds || {}) }
+      };
+
+      this.metrics = {
+        ticks: 0,
+        plans: 0,
+        proposals: 0,
+        conflictBlocks: 0,
+        combatBlocks: 0,
+        movementBlocks: 0,
+        actionsQueued: 0,
+        actionsConfirmed: 0,
+        actionsRejected: 0,
+        actionsUnknown: 0,
+        sessionBudgetBlocks: 0,
+        byKind: {}
+      };
+    }
+
+    start(context = {}) {
+      if (this.moduleActive) return { started: false, reason: 'H17_ALREADY_ACTIVE' };
+      this.moduleActive = true;
+      this.scope = context.scope || null;
+      this.suspendedReason = null;
+      this.autonomyEnabled = false;
+      this.currentAction = null;
+      this.actionsThisSession = 0;
+      this.cooldownUntilMs = null;
+      if (this.scope && typeof this.scope.interval === 'function') {
+        this.scope.interval('economy-tick', () => this.tick(), this.config.tickMs, { immediate: true });
+      }
+      return { started: true };
+    }
+
+    stop(reason = 'H17_MODULE_STOP') {
+      this.moduleActive = false;
+      this.autonomyEnabled = false;
+      this.scope = null;
+      this.currentAction = null;
+      this.cooldownUntilMs = null;
+      this.lastAction = { at: nowIso(), type: 'STOP', reason: cleanText(reason, 240) };
+      return { stopped: true };
+    }
+
+    startAutonomy(options = {}) {
+      if (!this.moduleActive) return { accepted: false, reason: 'H17_MODULE_NOT_ACTIVE' };
+      if (this.suspendedReason) return { accepted: false, reason: this.suspendedReason };
+      if (this.currentAction) return { accepted: false, reason: 'H17_ACTION_ACTIVE' };
+      if (this.canAct && this.canAct('economy') !== true) return { accepted: false, reason: 'H17_RUNTIME_ACTION_BLOCKED' };
+      if (options.maxActions != null) {
+        this.config.maxActionsPerSession = Math.max(1, Math.min(100, Math.floor(Number(options.maxActions) || 1)));
+      }
+      this.actionsThisSession = 0;
+      this.cooldownUntilMs = null;
+      this.autonomyEnabled = true;
+      this.lastAction = { at: nowIso(), type: 'AUTONOMY_STARTED', maxActions: this.config.maxActionsPerSession };
+      return { accepted: true, status: this.status() };
+    }
+
+    stopAutonomy(reason = 'H17_AUTONOMY_STOP') {
+      this.autonomyEnabled = false;
+      this.lastAction = { at: nowIso(), type: 'AUTONOMY_STOPPED', reason: cleanText(reason, 240) };
+      return this.status();
+    }
+
+    resetSafety(reason = 'H17_EXPLICIT_RESET') {
+      if (this.currentAction) {
+        this.lastAction = { at: nowIso(), type: 'RESET_BLOCKED', reason: 'H17_ACTION_ACTIVE' };
+        return { ...this.status(), reset: false, reason: 'H17_ACTION_ACTIVE' };
+      }
+      this.suspendedReason = null;
+      this.autonomyEnabled = false;
+      this.actionsThisSession = 0;
+      this.cooldownUntilMs = null;
+      this.lastAction = { at: nowIso(), type: 'RESET', reason: cleanText(reason, 240) };
+      return this.status();
+    }
+
+    policy(value = null) {
+      if (value == null) return clone(this.config);
+      if (!value || typeof value !== 'object') throw new Error('H17_POLICY_MUST_BE_OBJECT');
+      if (value.maxActionsPerSession != null) this.config.maxActionsPerSession = Math.max(1, Math.min(100, Math.floor(Number(value.maxActionsPerSession) || 1)));
+      if (value.actionCooldownMs != null) this.config.actionCooldownMs = Math.max(0, Math.min(60000, Math.floor(Number(value.actionCooldownMs) || 0)));
+      if (value.actionTimeoutMs != null) this.config.actionTimeoutMs = Math.max(5000, Math.min(300000, Math.floor(Number(value.actionTimeoutMs) || 5000)));
+      if (value.minMarketPremiumRatio != null) this.config.minMarketPremiumRatio = Math.max(1, Math.min(10, Number(value.minMarketPremiumRatio) || 1));
+      if (value.priorities && typeof value.priorities === 'object') {
+        for (const [kind, priority] of Object.entries(value.priorities)) {
+          if (!Object.prototype.hasOwnProperty.call(DEFAULT_PRIORITIES, kind)) continue;
+          this.config.priorities[kind] = Math.max(0, Math.min(1000, Math.floor(Number(priority) || 0)));
+        }
+      }
+      if (value.allowKinds && typeof value.allowKinds === 'object') {
+        for (const [kind, allowed] of Object.entries(value.allowKinds)) {
+          if (!Object.prototype.hasOwnProperty.call(DEFAULT_KINDS, kind)) continue;
+          this.config.allowKinds[kind] = allowed === true;
+        }
+      }
+      return clone(this.config);
+    }
+
+    _snapshot() {
+      try { return this.game && this.game.snapshot ? this.game.snapshot() : null; }
+      catch (_) { return null; }
+    }
+
+    _movementStatus() {
+      try { return this.movement && typeof this.movement.status === 'function' ? this.movement.status() : null; }
+      catch (_) { return null; }
+    }
+
+    _combatActive() {
+      try {
+        const status = this.combat && typeof this.combat.status === 'function' ? this.combat.status() : null;
+        return !!(status && (status.active || (status.state && !['IDLE', 'STOPPED'].includes(String(status.state)))));
+      } catch (_) {
+        return false;
+      }
+    }
+
+    _callPlan(controller) {
+      try { return controller && typeof controller.plan === 'function' ? controller.plan() : null; }
+      catch (error) { return { state: 'BLOCKED', reason: cleanText(error && error.message || error, 240) }; }
+    }
+
+    _status(controller) {
+      try { return controller && typeof controller.status === 'function' ? controller.status() : null; }
+      catch (_) { return null; }
+    }
+
+    _lastActionSignature(status) {
+      const row = status && status.lastAction;
+      if (!row) return null;
+      return [row.at || '', row.type || '', row.reason || ''].join('|');
+    }
+
+    _childRows() {
+      return [
+        { name: 'merchant', controller: this.merchant },
+        { name: 'bank', controller: this.bank },
+        { name: 'trade', controller: this.trade },
+        { name: 'gear', controller: this.gear },
+        { name: 'upgrade', controller: this.upgrade },
+        { name: 'exchangeCraft', controller: this.exchangeCraft }
+      ];
+    }
+
+    _childSnapshot() {
+      const output = {};
+      for (const row of this._childRows()) output[row.name] = this._status(row.controller);
+      return output;
+    }
+
+    _childBusy(child) {
+      return !!(child && (child.pending || child.request || child.delivery));
+    }
+
+    _proposal(kind, module, details = {}) {
+      if (this.config.allowKinds[kind] !== true) return null;
+      return {
+        id: 'h17-proposal-' + kind + '-' + cleanText(details.key || details.itemName || details.slot || '', 120),
+        kind,
+        module,
+        priority: Number(this.config.priorities[kind] || 0),
+        risk: Math.max(0, finite(details.risk) || 0),
+        ...clone(details)
+      };
+    }
+
+    _marketSellProposal(row) {
+      if (!row || !row.name || !this.trade || typeof this.trade.marketAnalysis !== 'function') return null;
+      let analysis = null;
+      try { analysis = this.trade.marketAnalysis(row.name, { level: Math.max(0, Number(row.level) || 0) }); } catch (_) {}
+      const bid = analysis && analysis.bestBid || null;
+      const price = finite(bid && bid.price);
+      const definition = this.game && typeof this.game.itemDefinition === 'function' ? this.game.itemDefinition(row.name) : null;
+      const npcPrice = finite(definition && definition.g);
+      if (!bid || !bid.rid || price == null || price <= 0 || npcPrice == null || npcPrice < 0) return null;
+      const minimum = npcPrice * this.config.minMarketPremiumRatio;
+      if (price < minimum) return null;
+      const quantity = Math.min(
+        Math.max(1, Math.floor(Number(row.quantity) || 1)),
+        Math.max(1, Math.floor(Number(bid.quantity) || 1))
+      );
+      return this._proposal('MARKET_SELL', 'trade', {
+        key: row.name + ':' + row.slot,
+        itemName: row.name,
+        inventorySlot: Number(row.slot),
+        quantity,
+        playerName: bid.playerName,
+        tradeSlot: bid.slot,
+        minUnitPrice: minimum,
+        unitPrice: price,
+        risk: 0
+      });
+    }
+
+    _npcSellProposal(row) {
+      if (!row || !row.name) return null;
+      let location = null;
+      try { location = this.game && typeof this.game.npcLocation === 'function' ? this.game.npcLocation('fancypots') : null; } catch (_) {}
+      if (!location) return null;
+      return this._proposal('NPC_SELL', 'trade', {
+        key: row.name + ':' + row.slot,
+        itemName: row.name,
+        inventorySlot: Number(row.slot),
+        quantity: Math.max(1, Math.floor(Number(row.quantity) || 1)),
+        risk: 0
+      });
+    }
+
+    plan() {
+      this.metrics.plans += 1;
+      const snap = this._snapshot();
+      const children = this._childSnapshot();
+      const movement = this._movementStatus();
+      const proposals = [];
+      const blockers = [];
+
+      if (this.suspendedReason) {
+        const plan = { state: 'SUSPENDED', reason: this.suspendedReason, selected: null, proposals, blockers, children };
+        this.lastPlan = clone(plan);
+        return clone(plan);
+      }
+      if (!snap || !snap.available || !snap.character) {
+        const plan = { state: 'BLOCKED', reason: 'H17_CHARACTER_UNAVAILABLE', selected: null, proposals, blockers, children };
+        this.lastPlan = clone(plan);
+        return clone(plan);
+      }
+      if (snap.character.rip === true) {
+        const plan = { state: 'BLOCKED', reason: 'H17_CHARACTER_DEAD', selected: null, proposals, blockers, children };
+        this.lastPlan = clone(plan);
+        return clone(plan);
+      }
+      if (String(snap.character.ctype || '').toLowerCase() !== 'merchant') {
+        const plan = { state: 'BLOCKED', reason: 'H17_REQUIRES_MERCHANT', selected: null, proposals, blockers, children };
+        this.lastPlan = clone(plan);
+        return clone(plan);
+      }
+      if (this.canAct && this.canAct('economy') !== true) {
+        const plan = { state: 'BLOCKED', reason: 'H17_RUNTIME_ACTION_BLOCKED', selected: null, proposals, blockers, children };
+        this.lastPlan = clone(plan);
+        return clone(plan);
+      }
+      if (this._combatActive()) {
+        this.metrics.combatBlocks += 1;
+        const plan = { state: 'BLOCKED', reason: 'H17_COMBAT_ACTIVE', selected: null, proposals, blockers, children };
+        this.lastPlan = clone(plan);
+        return clone(plan);
+      }
+
+      for (const [name, status] of Object.entries(children)) {
+        if (status && status.suspended) blockers.push({ module: name, reason: status.suspendedReason || status.reason || 'SUSPENDED' });
+      }
+      if (blockers.length) {
+        const plan = { state: 'BLOCKED', reason: 'H17_CHILD_SUSPENDED', selected: null, proposals, blockers, children };
+        this.lastPlan = clone(plan);
+        return clone(plan);
+      }
+
+      if (!this.currentAction && movement && movement.activeOrder) {
+        this.metrics.movementBlocks += 1;
+        const plan = {
+          state: 'WAITING',
+          reason: 'H17_MOVEMENT_OWNED',
+          selected: null,
+          proposals,
+          blockers: [{ module: 'movement', reason: 'ACTIVE_ORDER', owner: movement.activeOrder.owner || null }],
+          children
+        };
+        this.lastPlan = clone(plan);
+        return clone(plan);
+      }
+
+      const busyChildren = Object.entries(children)
+        .filter(([, status]) => this._childBusy(status))
+        .map(([module, status]) => ({ module, reason: 'BUSY', lastAction: status && status.lastAction || null }));
+      if (!this.currentAction && busyChildren.length) {
+        this.metrics.conflictBlocks += 1;
+        const plan = { state: 'WAITING', reason: 'H17_CHILD_BUSY', selected: null, proposals, blockers: busyChildren, children };
+        this.lastPlan = clone(plan);
+        return clone(plan);
+      }
+
+      const merchantPlan = this._callPlan(this.merchant);
+      const bankPlan = this._callPlan(this.bank);
+      const tradePlan = this._callPlan(this.trade);
+      const gearPlan = this._callPlan(this.gear);
+      const upgradePlan = this._callPlan(this.upgrade);
+      const exchangePlan = this._callPlan(this.exchangeCraft);
+
+      const pressure = merchantPlan && merchantPlan.pressure && merchantPlan.pressure.state || 'NORMAL';
+      const bankRows = bankPlan && bankPlan.safeDepositRows || [];
+      if (['HIGH', 'CRITICAL'].includes(String(pressure)) && bankRows.length) {
+        if (bankPlan && bankPlan.state === 'NEEDS_BANK') {
+          const proposal = this._proposal('BANK_MOUNT', 'bank', { key: 'bank', pressure, risk: 0 });
+          if (proposal) proposals.push(proposal);
+        } else if (bankPlan && bankPlan.state === 'READY') {
+          const row = bankRows[0];
+          const proposal = this._proposal('BANK_DEPOSIT', 'bank', {
+            key: row.name + ':' + row.slot,
+            itemName: row.name,
+            inventorySlot: Number(row.slot),
+            quantity: Math.max(1, Math.floor(Number(row.quantity) || 1)),
+            pressure,
+            risk: 0
+          });
+          if (proposal) proposals.push(proposal);
+        }
+      }
+
+      const improvement = gearPlan && gearPlan.local && (gearPlan.local.improvements || [])[0] || null;
+      if (improvement && improvement.bestInventory) {
+        const proposal = this._proposal('GEAR_EQUIP', 'gear', {
+          key: improvement.slot,
+          slot: improvement.slot,
+          inventorySlot: Number(improvement.bestInventory.inventorySlot),
+          itemName: improvement.bestInventory.item && improvement.bestInventory.item.name || null,
+          delta: finite(improvement.delta) || 0,
+          risk: Math.max(0, finite(improvement.bestInventory.item && improvement.bestInventory.item.definition && improvement.bestInventory.item.definition.g) || 0)
+        });
+        if (proposal) proposals.push(proposal);
+      }
+
+      const safeExchange = exchangePlan && (exchangePlan.exchangeCandidates || []).find(row => row && row.safe === true) || null;
+      if (safeExchange) {
+        const proposal = this._proposal('EXCHANGE', 'exchangeCraft', {
+          key: safeExchange.itemName + ':' + safeExchange.inventorySlot,
+          itemName: safeExchange.itemName,
+          inventorySlot: Number(safeExchange.inventorySlot),
+          quantity: Math.max(1, Math.floor(Number(safeExchange.requiredQuantity) || 1)),
+          risk: Math.max(0, finite(safeExchange.valueAtRisk) || 0)
+        });
+        if (proposal) proposals.push(proposal);
+      }
+
+      const safeCraft = exchangePlan && (exchangePlan.craftCandidates || []).find(row => row && row.safe === true) || null;
+      if (safeCraft) {
+        const proposal = this._proposal('CRAFT', 'exchangeCraft', {
+          key: safeCraft.itemName,
+          itemName: safeCraft.itemName,
+          risk: Math.max(0, finite(safeCraft.inputValueAtRisk) || 0),
+          goldCost: Math.max(0, finite(safeCraft.cost) || 0)
+        });
+        if (proposal) proposals.push(proposal);
+      }
+
+      const upgradeCandidate = upgradePlan && (upgradePlan.upgradeCandidates || [])[0] || null;
+      if (upgradeCandidate) {
+        const proposal = this._proposal('UPGRADE', 'upgrade', {
+          key: String(upgradeCandidate.itemSlot),
+          inventorySlot: Number(upgradeCandidate.itemSlot),
+          itemName: upgradeCandidate.itemName || upgradeCandidate.name || null,
+          fromLevel: Number(upgradeCandidate.fromLevel || 0),
+          risk: Math.max(0, finite(upgradeCandidate.budget && upgradeCandidate.budget.itemValueAtRisk) || 0)
+        });
+        if (proposal) proposals.push(proposal);
+      }
+
+      const compoundCandidate = upgradePlan && (upgradePlan.compoundCandidates || [])[0] || null;
+      if (compoundCandidate) {
+        const proposal = this._proposal('COMPOUND', 'upgrade', {
+          key: (compoundCandidate.itemSlots || []).join(','),
+          inventorySlots: clone(compoundCandidate.itemSlots || []),
+          itemName: compoundCandidate.itemName || compoundCandidate.name || null,
+          fromLevel: Number(compoundCandidate.fromLevel || 0),
+          risk: Math.max(0, finite(compoundCandidate.budget && compoundCandidate.budget.itemValueAtRisk) || 0)
+        });
+        if (proposal) proposals.push(proposal);
+      }
+
+      const sellRow = tradePlan && (tradePlan.safeSellRows || [])[0] || null;
+      if (sellRow) {
+        const market = this._marketSellProposal(sellRow);
+        const npc = this._npcSellProposal(sellRow);
+        if (market) proposals.push(market);
+        else if (npc) proposals.push(npc);
+      }
+
+      proposals.sort((a, b) =>
+        Number(b.priority || 0) - Number(a.priority || 0)
+        || Number(a.risk || 0) - Number(b.risk || 0)
+        || String(a.kind).localeCompare(String(b.kind))
+        || String(a.id).localeCompare(String(b.id)));
+
+      this.metrics.proposals += proposals.length;
+      const selected = proposals[0] || null;
+      const plan = {
+        state: selected ? 'READY' : 'IDLE',
+        reason: selected ? 'H17_PLAN_READY' : 'H17_NO_SAFE_ECONOMY_ACTION',
+        character: {
+          name: snap.character.name,
+          ctype: snap.character.ctype,
+          map: snap.character.map,
+          gold: snap.character.gold
+        },
+        autonomyEnabled: this.autonomyEnabled,
+        actionsThisSession: this.actionsThisSession,
+        maxActionsPerSession: this.config.maxActionsPerSession,
+        pressure,
+        selected: selected ? clone(selected) : null,
+        proposals: clone(proposals),
+        blockers: clone(blockers),
+        children: clone(children)
+      };
+      this.lastPlan = clone(plan);
+      return clone(plan);
+    }
+
+    _childController(module) {
+      return {
+        bank: this.bank,
+        trade: this.trade,
+        gear: this.gear,
+        upgrade: this.upgrade,
+        exchangeCraft: this.exchangeCraft
+      }[module] || null;
+    }
+
+    _queueProposal(proposal) {
+      if (!proposal) return { accepted: false, reason: 'H17_PROPOSAL_REQUIRED' };
+      let result = null;
+      if (proposal.kind === 'BANK_MOUNT') result = this.bank && this.bank.queueMount ? this.bank.queueMount() : null;
+      else if (proposal.kind === 'BANK_DEPOSIT') result = this.bank && this.bank.queueDeposit
+        ? this.bank.queueDeposit(proposal.itemName, { inventorySlot: proposal.inventorySlot }) : null;
+      else if (proposal.kind === 'GEAR_EQUIP') result = this.gear && this.gear.queueEquip
+        ? this.gear.queueEquip(proposal.inventorySlot, proposal.slot) : null;
+      else if (proposal.kind === 'MARKET_SELL') result = this.trade && this.trade.queueMarketSell
+        ? this.trade.queueMarketSell(proposal.playerName, proposal.tradeSlot, proposal.quantity, { minUnitPrice: proposal.minUnitPrice }) : null;
+      else if (proposal.kind === 'NPC_SELL') result = this.trade && this.trade.queueNpcSell
+        ? this.trade.queueNpcSell(proposal.inventorySlot, proposal.quantity) : null;
+      else if (proposal.kind === 'UPGRADE') result = this.upgrade && this.upgrade.queueUpgrade
+        ? this.upgrade.queueUpgrade(proposal.inventorySlot) : null;
+      else if (proposal.kind === 'COMPOUND') result = this.upgrade && this.upgrade.queueCompound
+        ? this.upgrade.queueCompound(proposal.inventorySlots) : null;
+      else if (proposal.kind === 'EXCHANGE') result = this.exchangeCraft && this.exchangeCraft.queueExchange
+        ? this.exchangeCraft.queueExchange(proposal.inventorySlot) : null;
+      else if (proposal.kind === 'CRAFT') result = this.exchangeCraft && this.exchangeCraft.queueCraft
+        ? this.exchangeCraft.queueCraft(proposal.itemName) : null;
+      else return { accepted: false, reason: 'H17_PROPOSAL_KIND_UNSUPPORTED' };
+
+      if (!result) return { accepted: false, reason: 'H17_CHILD_QUEUE_UNAVAILABLE' };
+      if (result.accepted !== true) return clone(result);
+
+      if (proposal.kind === 'BANK_MOUNT' && result.alreadyMounted === true) {
+        this.actionsThisSession += 1;
+        this.metrics.actionsQueued += 1;
+        this.metrics.actionsConfirmed += 1;
+        this.metrics.byKind[proposal.kind] = Number(this.metrics.byKind[proposal.kind] || 0) + 1;
+        this.cooldownUntilMs = Date.now() + this.config.actionCooldownMs;
+        this.lastAction = {
+          at: nowIso(),
+          type: 'ACTION_CONFIRMED',
+          action: {
+            id: 'h17-action-' + (++this.sequence),
+            kind: proposal.kind,
+            module: proposal.module,
+            proposal: clone(proposal)
+          },
+          details: { immediate: true, child: clone(result) }
+        };
+        return { accepted: true, immediate: true, result: clone(this.lastAction) };
+      }
+
+      const child = this._status(this._childController(proposal.module));
+      const now = Date.now();
+      this.currentAction = {
+        id: 'h17-action-' + (++this.sequence),
+        kind: proposal.kind,
+        module: proposal.module,
+        proposal: clone(proposal),
+        queuedAt: nowIso(),
+        queuedAtMs: now,
+        deadlineAtMs: now + this.config.actionTimeoutMs,
+        beforeLastAction: this._lastActionSignature(child)
+      };
+      this.actionsThisSession += 1;
+      this.metrics.actionsQueued += 1;
+      this.metrics.byKind[proposal.kind] = Number(this.metrics.byKind[proposal.kind] || 0) + 1;
+      this.lastAction = { at: nowIso(), type: 'ACTION_QUEUED', action: clone(this.currentAction) };
+      return { accepted: true, action: clone(this.currentAction), child: clone(result) };
+    }
+
+    queueSelected() {
+      if (this.suspendedReason) return { accepted: false, reason: this.suspendedReason };
+      if (this.currentAction) return { accepted: false, reason: 'H17_ACTION_ACTIVE' };
+      if (this.canAct && this.canAct('economy') !== true) return { accepted: false, reason: 'H17_RUNTIME_ACTION_BLOCKED' };
+      if (this.actionsThisSession >= this.config.maxActionsPerSession) {
+        this.metrics.sessionBudgetBlocks += 1;
+        return { accepted: false, reason: 'H17_SESSION_ACTION_BUDGET_EXHAUSTED' };
+      }
+      const plan = this.plan();
+      if (!plan || plan.state !== 'READY' || !plan.selected) {
+        return { accepted: false, reason: plan && plan.reason || 'H17_PLAN_UNAVAILABLE' };
+      }
+      return this._queueProposal(plan.selected);
+    }
+
+    _finishCurrent(outcome, details = {}) {
+      const current = this.currentAction;
+      this.currentAction = null;
+      this.cooldownUntilMs = Date.now() + this.config.actionCooldownMs;
+      if (outcome === 'CONFIRMED') this.metrics.actionsConfirmed += 1;
+      else if (outcome === 'REJECTED') this.metrics.actionsRejected += 1;
+      else this.metrics.actionsUnknown += 1;
+      this.lastAction = {
+        at: nowIso(),
+        type: 'ACTION_' + outcome,
+        action: current ? clone(current) : null,
+        details: clone(details)
+      };
+      return clone(this.lastAction);
+    }
+
+    _observeCurrent() {
+      const current = this.currentAction;
+      if (!current) return { state: 'IDLE' };
+      const child = this._status(this._childController(current.module));
+      if (!child) {
+        this.suspendedReason = 'H17_CHILD_STATUS_UNAVAILABLE';
+        this._finishCurrent('UNKNOWN', { module: current.module });
+        return { state: 'SUSPENDED', reason: this.suspendedReason };
+      }
+      if (child.suspended) {
+        this.suspendedReason = 'H17_CHILD_SUSPENDED:' + cleanText(child.suspendedReason || current.module, 160);
+        this._finishCurrent('UNKNOWN', { module: current.module, reason: child.suspendedReason || null });
+        return { state: 'SUSPENDED', reason: this.suspendedReason };
+      }
+      if (this._childBusy(child)) return { state: 'WAITING', action: clone(current) };
+
+      const after = this._lastActionSignature(child);
+      if (after && after !== current.beforeLastAction) {
+        const type = String(child.lastAction && child.lastAction.type || '');
+        if (type.includes('UNKNOWN')) {
+          this.suspendedReason = 'H17_CHILD_UNKNOWN:' + current.module;
+          this._finishCurrent('UNKNOWN', { childLastAction: clone(child.lastAction) });
+          return { state: 'SUSPENDED', reason: this.suspendedReason };
+        }
+        if (type.includes('CONFIRMED') || type.includes('SUCCEEDED') || type === 'BANK_ALREADY_MOUNTED' || type === 'BANK_MOUNTED') {
+          return { state: 'CONFIRMED', result: this._finishCurrent('CONFIRMED', { childLastAction: clone(child.lastAction) }) };
+        }
+        if (type.includes('REJECTED') || type.includes('FAILED') || type.includes('CANCELLED')) {
+          return { state: 'REJECTED', result: this._finishCurrent('REJECTED', { childLastAction: clone(child.lastAction) }) };
+        }
+      }
+
+      if (Date.now() >= current.deadlineAtMs) {
+        this.suspendedReason = 'H17_CHILD_COMPLETION_UNOBSERVABLE';
+        this._finishCurrent('UNKNOWN', { module: current.module });
+        return { state: 'SUSPENDED', reason: this.suspendedReason };
+      }
+      return { state: 'WAITING', action: clone(current) };
+    }
+
+    tick() {
+      this.metrics.ticks += 1;
+      if (!this.moduleActive) return { state: 'IDLE', reason: 'H17_MODULE_INACTIVE' };
+      if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason };
+
+      if (this.currentAction) {
+        const observed = this._observeCurrent();
+        if (observed.state === 'WAITING' || observed.state === 'SUSPENDED') return observed;
+      }
+
+      const plan = this.plan();
+      if (!this.autonomyEnabled) return { state: 'OBSERVE', plan };
+      if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason, plan };
+      if (this.cooldownUntilMs && Date.now() < this.cooldownUntilMs) {
+        return { state: 'COOLDOWN', untilMs: this.cooldownUntilMs, plan };
+      }
+      if (this.actionsThisSession >= this.config.maxActionsPerSession) {
+        this.metrics.sessionBudgetBlocks += 1;
+        this.autonomyEnabled = false;
+        this.lastAction = { at: nowIso(), type: 'SESSION_BUDGET_REACHED', actions: this.actionsThisSession };
+        return { state: 'COMPLETE', reason: 'H17_SESSION_ACTION_BUDGET_REACHED', plan };
+      }
+      if (!plan || plan.state !== 'READY' || !plan.selected) {
+        return { state: plan && plan.state || 'IDLE', reason: plan && plan.reason || 'H17_NO_SAFE_ECONOMY_ACTION', plan };
+      }
+      const queued = this._queueProposal(plan.selected);
+      if (!queued || queued.accepted !== true) {
+        this.metrics.actionsRejected += 1;
+        this.cooldownUntilMs = Date.now() + this.config.actionCooldownMs;
+        this.lastAction = {
+          at: nowIso(),
+          type: 'ACTION_QUEUE_REJECTED',
+          proposal: clone(plan.selected),
+          reason: queued && queued.reason || 'H17_CHILD_QUEUE_REJECTED'
+        };
+        return {
+          state: 'REJECTED',
+          reason: this.lastAction.reason,
+          cooldownUntilMs: this.cooldownUntilMs,
+          plan,
+          result: clone(queued)
+        };
+      }
+      return { state: 'QUEUED', plan, result: queued };
+    }
+
+    status() {
+      return {
+        schemaVersion: 1,
+        moduleActive: this.moduleActive,
+        autonomyEnabled: this.autonomyEnabled,
+        suspended: !!this.suspendedReason,
+        suspendedReason: this.suspendedReason,
+        currentAction: clone(this.currentAction),
+        actionsThisSession: this.actionsThisSession,
+        cooldownUntilMs: this.cooldownUntilMs,
+        lastPlan: clone(this.lastPlan),
+        lastAction: clone(this.lastAction),
+        config: clone(this.config),
+        metrics: clone(this.metrics)
+      };
+    }
+  }
+
+  ns.EconomyController = EconomyController;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+(function (root) {
+  'use strict';
+
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns) throw new Error('ALBOT_INTERNALS_MISSING');
+
+  const clone = ns.helpers.clone;
+  const cleanText = ns.helpers.cleanText;
+
   function errorDetails(error) {
     return {
       name: cleanText(error && error.name || 'Error', 80),
@@ -12920,7 +13616,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.16.0-h16';
+      this.version = options.version || '0.17.0-h17';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -13052,6 +13748,21 @@
         trade: this.trade,
         combat: this.combat
       });
+      this.economy = new ns.EconomyController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        movement: this.movement,
+        combat: this.combat,
+        inventory: this.inventory,
+        merchant: this.merchant,
+        bank: this.bank,
+        trade: this.trade,
+        gear: this.gear,
+        upgrade: this.upgrade,
+        exchangeCraft: this.exchangeCraft,
+        canAct: action => this.actionAllowed(action)
+      });
       this.liveTests = new ns.LiveTestRunner({
         runtime: this,
         logger: this.logger,
@@ -13068,6 +13779,7 @@
       this._registerH14LiveTest();
       this._registerH15LiveTest();
       this._registerH16LiveTest();
+      this._registerH17LiveTest();
       this._installErrorCapture();
       this.logger.info('AL Bot Runtime erstellt', {
         version: this.version,
@@ -13215,6 +13927,15 @@
         start: context => this.exchangeCraft.start(context),
         stop: reason => this.exchangeCraft.stop(reason),
         status: () => this.exchangeCraft.status()
+      });
+
+      this.modules.register({
+        id: 'economy',
+        title: 'Economy Autonomy',
+        version: '0.17.0',
+        start: context => this.economy.start(context),
+        stop: reason => this.economy.stop(reason),
+        status: () => this.economy.status()
       });
     }
 
@@ -16595,6 +17316,219 @@
       });
     }
 
+    _registerH17LiveTest() {
+      let baseline = null;
+      let previousPolicy = null;
+
+      const childUnknownTotal = runtime => {
+        const bank = runtime.bank.status().metrics || {};
+        const trade = runtime.trade.status().metrics || {};
+        const gear = runtime.gear.status().metrics || {};
+        const upgrade = runtime.upgrade.status().metrics || {};
+        const exchange = runtime.exchangeCraft.status().metrics || {};
+        return Number(bank.withdrawalsUnknown || 0)
+          + Number(bank.depositsUnknown || 0)
+          + Number(bank.goldWithdrawalsUnknown || 0)
+          + Number(bank.goldDepositsUnknown || 0)
+          + Number(bank.movementUnknown || 0)
+          + Number(trade.npcBuysUnknown || 0)
+          + Number(trade.npcSellsUnknown || 0)
+          + Number(trade.marketBuysUnknown || 0)
+          + Number(trade.marketSellsUnknown || 0)
+          + Number(gear.equipsUnknown || 0)
+          + Number(gear.unequipsUnknown || 0)
+          + Number(gear.deliveriesUnknown || 0)
+          + Number(upgrade.upgradesUnknown || 0)
+          + Number(upgrade.compoundsUnknown || 0)
+          + Number(exchange.exchangesUnknown || 0)
+          + Number(exchange.craftsUnknown || 0);
+      };
+
+      const childBusy = runtime => {
+        const statuses = [
+          runtime.bank.status(),
+          runtime.trade.status(),
+          runtime.gear.status(),
+          runtime.upgrade.status(),
+          runtime.exchangeCraft.status()
+        ];
+        return statuses.some(status => status && (status.pending || status.request));
+      };
+
+      this.liveTests.register({
+        id: 'h17-economy-autonomy',
+        title: 'H17 – Economy Autonomy',
+        description: 'Begrenzter Live-Test des gemeinsamen Economy-Planners mit Konfliktauflösung, maximal drei bestätigten Aktionen und ohne Gear-/Upgrade-/Compound-Mutation.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.economy.stopAutonomy('H17_LIVE_TEST_RESET'); } catch (_) {}
+          const current = runtime.economy.status();
+          if (current.currentAction) throw new Error('H17_ACTIVE_ACTION_BEFORE_LIVE_TEST');
+          try {
+            if (!current.suspended) runtime.economy.resetSafety('H17_LIVE_TEST_RESET');
+          } catch (_) {}
+          previousPolicy = runtime.economy.policy();
+          runtime.economy.policy({
+            maxActionsPerSession: 3,
+            actionCooldownMs: 1500,
+            actionTimeoutMs: 120000,
+            minMarketPremiumRatio: 1,
+            allowKinds: {
+              BANK_MOUNT: true,
+              BANK_DEPOSIT: true,
+              GEAR_EQUIP: false,
+              MARKET_SELL: true,
+              EXCHANGE: true,
+              CRAFT: true,
+              UPGRADE: false,
+              COMPOUND: false,
+              NPC_SELL: true
+            }
+          });
+          const status = runtime.economy.status();
+          baseline = {
+            actionsQueued: Number(status.metrics.actionsQueued || 0),
+            actionsConfirmed: Number(status.metrics.actionsConfirmed || 0),
+            actionsRejected: Number(status.metrics.actionsRejected || 0),
+            actionsUnknown: Number(status.metrics.actionsUnknown || 0),
+            childUnknown: childUnknownTotal(runtime)
+          };
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.economy.stopAutonomy('H17_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try {
+            const current = runtime.economy.status();
+            if (!current.suspended && !current.currentAction) runtime.economy.resetSafety('H17_LIVE_TEST_CLEANUP');
+          } catch (_) {}
+          if (previousPolicy) {
+            try { runtime.economy.policy(previousPolicy); } catch (_) {}
+          }
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Economy-Planner und konfliktfreien Merchant-Pfad prüfen',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, note }) => {
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(game.character.rip !== true, 'CHARACTER_DEAD');
+              assert(String(game.character.ctype || '').toLowerCase() === 'merchant', 'H17_REQUIRES_MERCHANT');
+              const module = runtime.modules.describe('economy');
+              assert(module && module.state === 'ACTIVE', 'H17_MODULE_NOT_ACTIVE');
+
+              const status = runtime.economy.status();
+              assert(status.suspended === false, status.suspendedReason || 'H17_SUSPENDED');
+              assert(status.currentAction == null, 'H17_ACTION_ACTIVE_BEFORE_PREFLIGHT');
+              assert(childUnknownTotal(runtime) === baseline.childUnknown, 'H17_CHILD_UNKNOWN_BEFORE_PREFLIGHT');
+
+              const plan = runtime.economy.plan();
+              note({
+                selected: plan.selected || null,
+                proposals: (plan.proposals || []).slice(0, 8),
+                blockers: plan.blockers || [],
+                pressure: plan.pressure || null
+              });
+              assert(plan.state === 'READY' && plan.selected, plan.reason || 'H17_NEEDS_SAFE_ECONOMY_ACTION');
+              assert(['BANK_MOUNT','BANK_DEPOSIT','MARKET_SELL','EXCHANGE','CRAFT','NPC_SELL'].includes(plan.selected.kind),
+                'H17_LIVE_SELECTED_KIND_NOT_ALLOWED');
+              return {
+                state: plan.state,
+                reason: plan.reason,
+                selected: plan.selected,
+                proposalCount: (plan.proposals || []).length,
+                pressure: plan.pressure || null
+              };
+            }
+          },
+          {
+            id: 'bounded-autonomy',
+            title: 'Economy-Autonomie begrenzt arbeiten lassen',
+            timeoutMs: 70000,
+            run: async ({ runtime, assert, sleep, waitFor }) => {
+              const started = runtime.economy.startAutonomy({ maxActions: 3 });
+              assert(started && started.accepted === true, started && started.reason || 'H17_AUTONOMY_START_FAILED');
+
+              await sleep(30000);
+              runtime.economy.stopAutonomy('H17_LIVE_TEST_WINDOW_COMPLETE');
+
+              await waitFor(() => {
+                const status = runtime.economy.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H17_SUSPENDED_DURING_AUTONOMY');
+                if (Number(status.metrics.actionsUnknown || 0) > baseline.actionsUnknown) throw new Error('H17_ACTION_UNKNOWN');
+                if (childUnknownTotal(runtime) > baseline.childUnknown) throw new Error('H17_CHILD_UNKNOWN');
+                return status.currentAction == null && !childBusy(runtime) ? status : null;
+              }, { timeoutMs: 30000, pollMs: 200, label: 'h17-autonomy-settle' });
+
+              const status = runtime.economy.status();
+              const confirmed = Number(status.metrics.actionsConfirmed || 0) - baseline.actionsConfirmed;
+              const queued = Number(status.metrics.actionsQueued || 0) - baseline.actionsQueued;
+              const rejected = Number(status.metrics.actionsRejected || 0) - baseline.actionsRejected;
+              assert(confirmed >= 1, 'H17_NO_CONFIRMED_ECONOMY_ACTION');
+              assert(confirmed <= 3, 'H17_CONFIRMED_ACTION_BUDGET_EXCEEDED');
+              assert(queued <= 3, 'H17_QUEUED_ACTION_BUDGET_EXCEEDED');
+              assert(Number(status.metrics.actionsUnknown || 0) === baseline.actionsUnknown, 'H17_ACTION_UNKNOWN');
+              assert(childUnknownTotal(runtime) === baseline.childUnknown, 'H17_CHILD_UNKNOWN');
+              return {
+                actionsQueued: queued,
+                actionsConfirmed: confirmed,
+                actionsRejected: rejected,
+                actionsUnknown: Number(status.metrics.actionsUnknown || 0) - baseline.actionsUnknown,
+                actionsThisSession: status.actionsThisSession,
+                lastAction: status.lastAction || null
+              };
+            }
+          },
+          {
+            id: 'stability',
+            title: 'Zehn Sekunden ohne UNKNOWN oder neue Economy-Mutation beobachten',
+            timeoutMs: 15000,
+            run: async ({ runtime, assert, sleep }) => {
+              const before = runtime.economy.status();
+              const beforeQueued = Number(before.metrics.actionsQueued || 0);
+              await sleep(10000);
+              const after = runtime.economy.status();
+              assert(after.autonomyEnabled === false, 'H17_AUTONOMY_RESTARTED');
+              assert(after.currentAction == null, 'H17_ACTION_REMAINS_DURING_STABILITY');
+              assert(after.suspended === false, after.suspendedReason || 'H17_SUSPENDED_DURING_STABILITY');
+              assert(Number(after.metrics.actionsQueued || 0) === beforeQueued, 'H17_NEW_ACTION_AFTER_AUTONOMY_STOP');
+              assert(Number(after.metrics.actionsUnknown || 0) === baseline.actionsUnknown, 'H17_ACTION_UNKNOWN_DURING_STABILITY');
+              assert(childUnknownTotal(runtime) === baseline.childUnknown, 'H17_CHILD_UNKNOWN_DURING_STABILITY');
+              assert(!childBusy(runtime), 'H17_CHILD_BUSY_DURING_STABILITY');
+              return {
+                actionsQueued: Number(after.metrics.actionsQueued || 0) - baseline.actionsQueued,
+                actionsConfirmed: Number(after.metrics.actionsConfirmed || 0) - baseline.actionsConfirmed,
+                actionsRejected: Number(after.metrics.actionsRejected || 0) - baseline.actionsRejected,
+                actionsUnknown: Number(after.metrics.actionsUnknown || 0) - baseline.actionsUnknown,
+                childUnknown: childUnknownTotal(runtime) - baseline.childUnknown
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'Economy-Autonomie stoppen und Ownership freigeben',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.economy.stopAutonomy('H17_LIVE_TEST_COMPLETE');
+              const status = runtime.economy.status();
+              assert(status.autonomyEnabled === false, 'H17_AUTONOMY_STILL_ENABLED');
+              assert(status.currentAction == null, 'H17_CURRENT_ACTION_REMAINS');
+              assert(!childBusy(runtime), 'H17_CHILD_BUSY_AFTER_TEST');
+              return {
+                autonomyEnabled: status.autonomyEnabled,
+                currentAction: status.currentAction,
+                actionsThisSession: status.actionsThisSession,
+                suspended: status.suspended
+              };
+            }
+          }
+        ]
+      });
+    }
+
     _installErrorCapture() {
       if (!this.root || typeof this.root.addEventListener !== 'function') return;
       this._errorHandler = event => {
@@ -16748,6 +17682,7 @@
         gear: this.gear.status(),
         upgrade: this.upgrade.status(),
         exchangeCraft: this.exchangeCraft.status(),
+        economy: this.economy.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
         roster,
@@ -16779,6 +17714,7 @@
         gear: this.gear.status(),
         upgrade: this.upgrade.status(),
         exchangeCraft: this.exchangeCraft.status(),
+        economy: this.economy.status(),
         liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
         logs: this.logger.list(160),
@@ -16809,6 +17745,7 @@
       push('gear-controller', !!this.gear.status() && typeof this.gear.plan === 'function' && typeof this.gear.queueBestLocal === 'function', this.gear.status());
       push('upgrade-compound-controller', !!this.upgrade.status() && typeof this.upgrade.plan === 'function' && typeof this.upgrade.queueBest === 'function', this.upgrade.status());
       push('exchange-craft-controller', !!this.exchangeCraft.status() && typeof this.exchangeCraft.plan === 'function' && typeof this.exchangeCraft.productionPlan === 'function', this.exchangeCraft.status());
+      push('economy-controller', !!this.economy.status() && typeof this.economy.plan === 'function' && typeof this.economy.startAutonomy === 'function', this.economy.status());
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
       push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);
@@ -16906,6 +17843,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this);
 
 
+
 (function (root) {
   'use strict';
   const ns = root.__ALBOT_INTERNALS__;
@@ -16998,7 +17936,7 @@
 </style>
 <div class="albot-head" id="albot-drag-handle"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-minimize" class="albot-window-btn" title="Fenster minimieren" aria-label="Fenster minimieren">—</button><button id="albot-emergency" class="albot-stop">STOP</button></div>
 <div class="albot-tabs">
-<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="merchant">Merchant</button><button class="albot-tab" data-tab="bank">Bank</button><button class="albot-tab" data-tab="trade">Handel</button><button class="albot-tab" data-tab="gear">Gear</button><button class="albot-tab" data-tab="upgrade">Upgrade & Compound</button><button class="albot-tab" data-tab="exchange-craft">Exchange & Craft</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
+<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="merchant">Merchant</button><button class="albot-tab" data-tab="bank">Bank</button><button class="albot-tab" data-tab="trade">Handel</button><button class="albot-tab" data-tab="gear">Gear</button><button class="albot-tab" data-tab="upgrade">Upgrade & Compound</button><button class="albot-tab" data-tab="exchange-craft">Exchange & Craft</button><button class="albot-tab" data-tab="economy">Economy</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
 </div>
 <div class="albot-body">
 <section id="albot-panel-overview" class="albot-panel active"></section>
@@ -17015,6 +17953,7 @@
 <section id="albot-panel-gear" class="albot-panel"></section>
 <section id="albot-panel-upgrade" class="albot-panel"></section>
 <section id="albot-panel-exchange-craft" class="albot-panel"></section>
+<section id="albot-panel-economy" class="albot-panel"></section>
 <section id="albot-panel-live-test" class="albot-panel"></section>
 <section id="albot-panel-knowledge" class="albot-panel"></section>
 <section id="albot-panel-logs" class="albot-panel"></section>
@@ -17160,6 +18099,7 @@
       if (this.activeTab === 'gear') this.renderGear(status);
       if (this.activeTab === 'upgrade') this.renderUpgrade(status);
       if (this.activeTab === 'exchange-craft') this.renderExchangeCraft(status);
+      if (this.activeTab === 'economy') this.renderEconomy(status);
       if (this.activeTab === 'live-test') this.renderLiveTest(status);
       if (this.activeTab === 'knowledge') this.renderKnowledge(status);
       if (this.activeTab === 'logs') this.renderLogs();
@@ -17185,6 +18125,7 @@
       this.renderGear(status);
       this.renderUpgrade(status);
       this.renderExchangeCraft(status);
+      this.renderEconomy(status);
       this.renderLiveTest(status);
       this.renderKnowledge(status);
       this.renderLogs();
@@ -18228,6 +19169,84 @@ ${items.length ? items.slice(0, 24).map(row => '<div class="albot-small">#'+esc(
       }));
     }
 
+    renderEconomy(status) {
+      const panel = this.host.querySelector('#albot-panel-economy');
+      if (!panel) return;
+      const economy = status.economy || {};
+      const metrics = economy.metrics || {};
+      const policy = economy.config || {};
+      let plan = economy.lastPlan || null;
+      try {
+        if (!plan || !['READY', 'IDLE', 'WAITING', 'BLOCKED'].includes(String(plan.state || ''))) {
+          plan = this.runtime.economy.plan();
+        }
+      } catch (_) {}
+      const proposals = plan && Array.isArray(plan.proposals) ? plan.proposals : [];
+      const selected = plan && plan.selected || null;
+      const action = economy.currentAction || null;
+      const resultText = this.economyResult ? JSON.stringify(this.economyResult, null, 2) : 'Noch keine manuelle H17-Steuerung.';
+      const proposalText = proposals.length
+        ? proposals.slice(0, 10).map((row, index) =>
+          (index + 1)+'. '+esc(row.kind)+' · Priorität '+esc(row.priority)+' · Risiko '+esc(row.risk || 0)
+          +(row.itemName ? ' · '+esc(row.itemName) : '')
+        ).join('<br>')
+        : 'Keine sichere Economy-Aktion vorgeschlagen.';
+
+      panel.innerHTML = `<div class="albot-card"><b>H17 Economy Autonomy</b>
+<div class="albot-small">Gemeinsamer Planner für Bank, Markt, Gear, Upgrade, Compound, Exchange und Craft. Der Planner schreibt nie direkt ins Spiel, sondern delegiert ausschließlich an die bestehenden H12–H16-Safety-Pfade.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${economy.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Autonomie</span><div class="albot-v">${economy.autonomyEnabled ? 'AKTIV' : 'AUS'}</div></div>
+<div><span class="albot-k">Plan</span><div class="albot-v">${esc(plan && plan.state || '-')} · ${esc(plan && plan.reason || '-')}</div></div>
+<div><span class="albot-k">Auswahl</span><div class="albot-v">${selected ? esc(selected.kind) : '-'}</div></div>
+<div><span class="albot-k">Session-Aktionen</span><div class="albot-v">${esc(economy.actionsThisSession || 0)} / ${esc(policy.maxActionsPerSession || '-')}</div></div>
+<div><span class="albot-k">Aktive Aktion</span><div class="albot-v">${action ? esc(action.kind)+' · '+esc(action.module) : 'keine'}</div></div>
+<div><span class="albot-k">Bestätigt / Reject / Unknown</span><div class="albot-v">${esc(metrics.actionsConfirmed || 0)} / ${esc(metrics.actionsRejected || 0)} / ${esc(metrics.actionsUnknown || 0)}</div></div>
+<div><span class="albot-k">Konflikt-/Movement-Blocks</span><div class="albot-v">${esc(metrics.conflictBlocks || 0)} / ${esc(metrics.movementBlocks || 0)}</div></div>
+<div><span class="albot-k">Suspendiert</span><div class="albot-v">${economy.suspended ? 'JA · '+esc(economy.suspendedReason || '-') : 'NEIN'}</div></div>
+<div><span class="albot-k">Druck</span><div class="albot-v">${esc(plan && plan.pressure || '-')}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Priorisierte Vorschläge</b><div class="albot-small">${proposalText}</div></div>
+
+<div class="albot-card"><b>Autonomie-Steuerung</b>
+<div class="albot-row"><label>Max Aktionen <input id="albot-h17-max-actions" type="number" min="1" max="100" value="${esc(policy.maxActionsPerSession == null ? 12 : policy.maxActionsPerSession)}"></label><label>Market/NPC Mindestfaktor <input id="albot-h17-market-ratio" type="number" min="1" max="10" step="0.05" value="${esc(policy.minMarketPremiumRatio == null ? 1 : policy.minMarketPremiumRatio)}"></label></div>
+<div class="albot-row"><button id="albot-h17-start" class="albot-btn" ${economy.autonomyEnabled || action ? 'disabled' : ''}>Autonomie starten</button><button id="albot-h17-stop" class="albot-btn warn" ${economy.autonomyEnabled ? '' : 'disabled'}>Autonomie stoppen</button><button id="albot-h17-policy-save" class="albot-btn">Policy speichern</button></div>
+<div class="albot-small">Autonomie startet nie automatisch durch das Öffnen des Tabs. STOP, Combat, Movement-Ownership, Child-Suspension und Session-Budget bleiben harte Gates.</div>
+</div>
+
+<div class="albot-card"><b>Manuelle Planner-Steuerung</b>
+<div class="albot-row"><button id="albot-h17-plan" class="albot-btn">Plan</button><button id="albot-h17-tick" class="albot-btn">Tick</button><button id="albot-h17-queue" class="albot-btn" ${action ? 'disabled' : ''}>Auswahl vormerken</button><button id="albot-h17-reset" class="albot-btn warn" ${economy.suspended && !action ? '' : 'disabled'}>Safety zurücksetzen</button></div>
+</div>
+
+<div class="albot-card"><b>Letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.economyResult = fn(); }
+        catch (error) { this.economyResult = { ok: false, reason: String(error && error.message || error) }; }
+        this.renderEconomy(this.runtime.status());
+      };
+      const planButton = panel.querySelector('#albot-h17-plan');
+      if (planButton) planButton.onclick = () => run(() => this.runtime.economy.plan());
+      const tickButton = panel.querySelector('#albot-h17-tick');
+      if (tickButton) tickButton.onclick = () => run(() => this.runtime.economy.tick());
+      const queueButton = panel.querySelector('#albot-h17-queue');
+      if (queueButton) queueButton.onclick = () => run(() => this.runtime.economy.queueSelected());
+      const resetButton = panel.querySelector('#albot-h17-reset');
+      if (resetButton) resetButton.onclick = () => run(() => this.runtime.economy.resetSafety('GUI_H17_RESET'));
+      const startButton = panel.querySelector('#albot-h17-start');
+      if (startButton) startButton.onclick = () => run(() => this.runtime.economy.startAutonomy({
+        maxActions: Math.max(1, Math.floor(Number(panel.querySelector('#albot-h17-max-actions').value) || 1))
+      }));
+      const stopButton = panel.querySelector('#albot-h17-stop');
+      if (stopButton) stopButton.onclick = () => run(() => this.runtime.economy.stopAutonomy('GUI_H17_AUTONOMY_STOP'));
+      const policyButton = panel.querySelector('#albot-h17-policy-save');
+      if (policyButton) policyButton.onclick = () => run(() => this.runtime.economy.policy({
+        maxActionsPerSession: Math.max(1, Math.floor(Number(panel.querySelector('#albot-h17-max-actions').value) || 1)),
+        minMarketPremiumRatio: Number(panel.querySelector('#albot-h17-market-ratio').value)
+      }));
+    }
+
     async runRecommendedLiveTest() {
       const state = this.runtime.status();
       if (state.emergencyStop && state.emergencyStop.latched) {
@@ -18406,6 +19425,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 })(typeof globalThis !== 'undefined' ? globalThis : this);
 
 
+
 (function (root) {
   'use strict';
   const ns = root.__ALBOT_INTERNALS__;
@@ -18458,7 +19478,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.16.0-h16',
+    version: '0.17.0-h17',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -18666,6 +19686,17 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
       acquire: (itemName, quantity, options) => runtime.exchangeCraft.queueMaterialAcquire(itemName, quantity, options || {})
     },
 
+    economy: {
+      status: () => runtime.economy.status(),
+      plan: () => runtime.economy.plan(),
+      tick: () => runtime.economy.tick(),
+      policy: value => runtime.economy.policy(value),
+      start: options => runtime.economy.startAutonomy(options || {}),
+      stop: reason => runtime.economy.stopAutonomy(reason || 'API_H17_AUTONOMY_STOP'),
+      reset: reason => runtime.economy.resetSafety(reason || 'API_H17_RESET'),
+      queueSelected: () => runtime.economy.queueSelected()
+    },
+
     liveTests: {
       status: () => runtime.liveTests.status(),
       list: () => runtime.liveTests.list(),
@@ -18739,11 +19770,10 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
     };
   } catch (_) {}
 
-  runtime.logger.info('AL Bot H16 geladen', {
+  runtime.logger.info('AL Bot H17 geladen', {
     version: api.version,
     bootCount,
     hotReload: !!previous,
     sharedHost: sharedHost !== root
   });
 })(typeof globalThis !== 'undefined' ? globalThis : this);
-
