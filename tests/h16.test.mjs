@@ -259,7 +259,7 @@ test('H16 production graph expands nested recipes and reports missing leaves', (
   const { controller } = fixture({ rows: [] });
   const plan = controller.productionPlan('cocoon', 2, { includeBank: false });
   assert.equal(plan.state, 'NEEDS_MATERIALS');
-  assert.deepEqual(plan.stages.map(row => [row.itemName, row.runs]), [['cocoon', 2]]);
+  assert.equal(JSON.stringify(plan.stages.map(row => [row.itemName, row.runs])), JSON.stringify([['cocoon', 2]]));
   assert.equal(plan.missing.length, 1);
   assert.equal(plan.missing[0].itemName, 'spidersilk');
   assert.equal(plan.missing[0].quantity, 2000);
