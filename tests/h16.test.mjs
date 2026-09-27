@@ -542,7 +542,7 @@ test('H16 runtime, API, UI, build, adapter and ActionBoundary are wired', () => 
   assert.match(h16Suite, /H16_BANK_DISCOVERY_WRITE_DETECTED/);
   assert.ok(h16Suite.indexOf("id: 'bank-discovery'") < h16Suite.indexOf("id: 'preflight'"));
   const h5Start = runtime.indexOf("id: 'h5-combat'");
-  const h6Start = runtime.indexOf("id: 'h6-class-skills'");
+  const h6Start = runtime.indexOf("id: 'h6-class-logic'");
   assert.ok(h5Start > -1 && h6Start > h5Start);
   assert.doesNotMatch(runtime.slice(h5Start, h6Start), /id: 'bank-discovery'/);
   assert.match(runtime, /localCraftRejects/);
