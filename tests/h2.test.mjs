@@ -204,7 +204,7 @@ test('hot reload is shared across separate same-origin runner contexts', async t
   await first.ALBot.start();
 
   const previousRuntime = first.ALBot.__runtime;
-  assert.equal(previousRuntime.status().scheduler.totalResources, 13);
+  assert.equal(previousRuntime.status().scheduler.totalResources, 14);
   assert.equal(first.ALBot.status().bootCount, 1);
 
   second = runtimeContext();
