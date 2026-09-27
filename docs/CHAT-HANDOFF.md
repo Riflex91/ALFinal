@@ -837,21 +837,22 @@ Pre-Live-Hardening:
 - kein `CHANGES_REQUESTED`;
 - `behind_by=0`, `mergeable=true`.
 
-v2 technischer Pre-Live-Stand:
-- technischer Head `3e36f6ccaa34d7359e8cf7d26e5d44af942811cc`;
-- Exact-Head-CI Run #355: **211/211 PASS, 0 FAIL, 0 SKIP, completed/success**;
+v2 finaler technischer Pre-Live-Stand:
+- technischer Head `9e007bc6bfdf872ebf91ecd9f8dbf7f7c2140428`;
+- Exact-Head-CI Run #362: **213/213 PASS, 0 FAIL, 0 SKIP, completed/success**;
 - `behind_by=0`, PR `mergeable=true`;
-- keine offenen Review-Threads, kein `CHANGES_REQUESTED` zum Prüfzeitpunkt;
 - Bundle exakt source-synchron auf `0.16.0-h16`;
 - Craft→Exchange-Output-Risiko wird bereits im Preflight geblockt;
 - H16-UNKNOWN-Suspension bleibt auch nach Suite-Cleanup erhalten;
-- v2-Safety/Wiring regressionsseitig abgedeckt;
-- frischer Codex-Review wurde auf dem technischen v2-Head angefordert.
+- frischer Codex-v2-Review ausgewertet;
+- P1: Character-Gold muss Materialbeschaffung + Craft-Kosten + 10.000 Reserve vor jeder Materialmutation decken;
+- P2: recoverable H12-Bank-Rejects prüfen weitere passende Stacks; non-recoverable Rejects stoppen fail-closed;
+- beide neuen Review-Threads resolved;
+- kein `CHANGES_REQUESTED`;
+- v2-Safety/Wiring regressionsseitig abgedeckt.
 
 Noch offen:
-- frischen Codex-Review abschließen/auswerten;
-- alle eventuell neuen Threads resolve;
-- finalen Doku-Exact-Head-CI grün bestätigen;
+- nach diesen finalen Dokucommits neuen Exact-Head-CI grün bestätigen;
 - vollständiges v2-Pre-Live-Gate frisch prüfen;
 - danach Nutzer genau einmal den zweiten echten `h16-exchange-craft`-Test starten lassen;
 - Diagnose vollständig auswerten;
@@ -950,4 +951,4 @@ Bei Fehler:
 
 ## Nächster Schritt
 
-H16 v2 ist technisch grün (Head `3e36f6cc...`, Run #355: 211/211 PASS). Jetzt nur noch frischen Codex-Review und finalen Doku-Exact-Head-CI abschließen. Danach vollständiges Pre-Live-Gate prüfen und erst dann den Nutzer genau einmal den zweiten `h16-exchange-craft`-Live-Test starten lassen.
+H16 v2 ist technisch und reviewseitig grün (Head `9e007bc6...`, Run #362: 213/213 PASS). Jetzt nur noch den neuen Exact-Head-CI der finalen Dokucommits bestätigen und das vollständige Pre-Live-Gate frisch prüfen. Danach den Nutzer genau einmal den zweiten `h16-exchange-craft`-Live-Test starten lassen.
