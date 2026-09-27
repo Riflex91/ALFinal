@@ -620,7 +620,7 @@ H15-Live-Gate ist bestanden. Nach den Evidence-Dokucommits ist nur noch der neue
 - v2 zusätzlich `ACQUIRE_CRAFT_AND_EXCHANGE_COVERAGE`
 - maximal zwei echte H16-Aktionen (Craft + Exchange)
 - bei Bedarf höchstens zwei fehlende Level-0-Leaf-Materialien via H16 → H13
-- Materialbeschaffung insgesamt maximal 10.000 Gold
+- Materialbeschaffung insgesamt maximal 1.000.000 Gold
 - Bank im Live-Test-Fallback explizit deaktiviert (`allowBank:false`)
 - temporäre Live-Test-Grenzen: Exchange-Risiko ≤ 2.000.000 Gold, Craft-Input-Risiko ≤ 2.000.000 Gold, Craft-Kosten ≤ 1.000.000 Gold
 - keine Quest-/Event-Aktion im automatischen Live-Test

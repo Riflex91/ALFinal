@@ -783,13 +783,13 @@ Implementiert:
 - H16-Regressionen;
 - `dist/al-bot.js` auf H16-Source synchronisiert.
 
-H16 Live-Test v2:
+H16 Live-Test v4:
 - bevorzugt echte `CRAFT_TO_EXCHANGE_CHAIN`;
 - sonst `CRAFT_AND_EXCHANGE_COVERAGE`;
 - wenn kein lokaler Craft bereit ist: `ACQUIRE_CRAFT_AND_EXCHANGE_COVERAGE`;
 - maximal zwei echte H16-Aktionen (Craft + Exchange);
 - bei Bedarf höchstens zwei fehlende Level-0-Leaf-Materialien;
-- Materialbeschaffung maximal 10.000 Gold gesamt;
+- Materialbeschaffung maximal 1.000.000 Gold gesamt;
 - Materialquelle muss live als NPC-Quelle oder ausreichender sichtbarer Market-Ask belegbar sein;
 - Beschaffung läuft explizit über H16 → H13 mit `allowBank:false`;
 - temporäre Live-Test-Grenzen: Exchange-Risiko ≤ 2.000.000 Gold, Craft-Input-Risiko ≤ 2.000.000 Gold, Craft-Kosten ≤ 1.000.000 Gold;
@@ -819,7 +819,7 @@ v2-Fix:
 - `queueMaterialAcquire(..., {allowBank:false})` ergänzt;
 - Beschaffung nur über H13 und explizites Max-Unit-Price;
 - maximal 2 fehlende Level-0-Leaf-Materialien;
-- Materialbudget maximal 10.000 Gold;
+- Materialbudget maximal 1.000.000 Gold;
 - H13-UNKNOWN/Suspension ist harter FAIL;
 - nach Beschaffung muss `productionPlan(...).state === READY` sein.
 
