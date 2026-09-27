@@ -5703,6 +5703,13 @@
       this.stopRuntime = typeof options.stopRuntime === 'function'
         ? options.stopRuntime
         : async () => { throw new Error('H19_CROSS_WINDOW_STOP_RUNTIME_UNAVAILABLE'); };
+      this.getPartyState = typeof options.getPartyState === 'function' ? options.getPartyState : () => null;
+      this.leavePartyLocal = typeof options.leavePartyLocal === 'function'
+        ? options.leavePartyLocal
+        : async () => { throw new Error('H19_CROSS_WINDOW_PARTY_LEAVE_UNAVAILABLE'); };
+      this.requestPartyJoinLocal = typeof options.requestPartyJoinLocal === 'function'
+        ? options.requestPartyJoinLocal
+        : async () => { throw new Error('H19_CROSS_WINDOW_PARTY_REQUEST_UNAVAILABLE'); };
       this.now = typeof options.now === 'function' ? options.now : () => Date.now();
 
       this.config = {
@@ -5730,6 +5737,7 @@
       this.peers = new Map();
       this.pending = new Map();
       this.inboundCommands = new Map();
+      this.partyRecoveryLease = null;
       this.sessionId = cleanText(options.sessionId || this._makeSessionId(), 240);
       this.lastHeartbeatAt = null;
       this.lastError = null;
@@ -6049,14 +6057,15 @@
       }
     }
 
-    _sendSettlement(target, command, success, reason) {
+    _sendSettlement(target, command, success, reason, details = null) {
       const envelope = this._baseEnvelope('SETTLEMENT', target, {
         replyTo: command.messageId,
         commandType: command.commandType,
         targetSessionId: this.sessionId,
         success: success === true,
         reason: cleanText(reason || (success ? 'H19_CROSS_WINDOW_SETTLED' : 'H19_CROSS_WINDOW_SETTLEMENT_FAILED'), 300),
-        state: this._localStatePayload()
+        state: this._localStatePayload(),
+        details: details == null ? null : clone(details)
       });
       try {
         const value = this._sendEnvelope(target, envelope, 'settlementsSent');
@@ -6138,60 +6147,193 @@
         target: envelope.senderCharacterName,
         targetSessionId: expectedSessionId,
         observedTargetSessionId: observedSessionId || null,
-        state: clone(state)
+        state: clone(state),
+        details: clone(envelope.details || null)
       });
+    }
+
+    _partySnapshot() {
+      try {
+        const snapshot = this.getPartyState();
+        return snapshot && typeof snapshot === 'object' ? clone(snapshot) : null;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    _partyMemberNames(snapshot) {
+      return snapshot && Array.isArray(snapshot.memberNames) ? snapshot.memberNames.map(name => String(name)) : [];
+    }
+
+    _partyHasOnlyOwned(snapshot) {
+      const owned = this._ownedNames();
+      return this._partyMemberNames(snapshot).every(name => owned.has(name));
+    }
+
+    _delay(ms) {
+      const waitMs = Math.max(0, Number(ms) || 0);
+      return new Promise(resolve => {
+        if (this.setTimeoutFn) this.setTimeoutFn(resolve, waitMs);
+        else resolve();
+      });
+    }
+
+    async _runPartyMutation(callback, args, timeoutReason) {
+      if (typeof callback !== 'function') throw new Error('H19_CROSS_WINDOW_PARTY_ACTION_UNAVAILABLE');
+      const timeoutMs = Math.max(1000, Math.floor(this.config.settlementTimeoutMs * 0.6));
+      if (!this.setTimeoutFn) return Promise.resolve().then(() => callback(...args));
+      return new Promise((resolve, reject) => {
+        let done = false;
+        const timer = this.setTimeoutFn(() => {
+          if (done) return;
+          done = true;
+          reject(new Error(timeoutReason));
+        }, timeoutMs);
+        Promise.resolve().then(() => callback(...args)).then(value => {
+          if (done) return;
+          done = true;
+          try { if (this.clearTimeoutFn) this.clearTimeoutFn(timer); } catch (_) {}
+          resolve(value);
+        }).catch(error => {
+          if (done) return;
+          done = true;
+          try { if (this.clearTimeoutFn) this.clearTimeoutFn(timer); } catch (_) {}
+          reject(error);
+        });
+      });
+    }
+
+    async _waitForPartyState(predicate, timeoutReason) {
+      const pollMs = 100;
+      const timeoutMs = Math.max(500, Math.floor(this.config.settlementTimeoutMs * 0.25));
+      const attempts = Math.max(1, Math.ceil(timeoutMs / pollMs));
+      for (let attempt = 0; attempt < attempts; attempt += 1) {
+        const snapshot = this._partySnapshot();
+        if (snapshot && predicate(snapshot)) return snapshot;
+        if (attempt + 1 < attempts) await this._delay(pollMs);
+      }
+      throw new Error(timeoutReason);
+    }
+
+    async _executePartyLeave(sender) {
+      const localState = this._localStatePayload();
+      const localName = this._localName();
+      if (localState.running !== true) throw new Error('H19_CROSS_WINDOW_PARTY_RUNTIME_NOT_RUNNING');
+      if (localState.emergencyStopLatched === true) throw new Error('H19_CROSS_WINDOW_PARTY_EMERGENCY_STOP_LATCHED');
+      const existingLease = this.partyRecoveryLease;
+      if (existingLease && this.now() <= Number(existingLease.validUntilMs || 0)) throw new Error('H19_CROSS_WINDOW_PARTY_RECOVERY_ALREADY_IN_PROGRESS');
+      this.partyRecoveryLease = null;
+      const before = this._partySnapshot();
+      const members = this._partyMemberNames(before);
+      if (!before || !before.partyId || !members.includes(String(localName || ''))) throw new Error('H19_CROSS_WINDOW_PARTY_TARGET_NOT_IN_PARTY');
+      if (!this._partyHasOnlyOwned(before)) throw new Error('H19_CROSS_WINDOW_FOREIGN_PARTY_MEMBER_PRESENT');
+      if (String(before.leader || '') === String(localName || '')) throw new Error('H19_CROSS_WINDOW_PARTY_LEADER_PROTECTED');
+      if (String(before.leader || '') !== String(sender || '')) throw new Error('H19_CROSS_WINDOW_PARTY_SENDER_NOT_LEADER');
+      await this._runPartyMutation(this.leavePartyLocal, [], 'H19_CROSS_WINDOW_PARTY_LEAVE_ACTION_TIMEOUT');
+      const after = await this._waitForPartyState(snapshot => {
+        const names = this._partyMemberNames(snapshot);
+        return !snapshot.partyId && !names.includes(String(localName || ''));
+      }, 'H19_CROSS_WINDOW_PARTY_LEAVE_UNVERIFIED_TIMEOUT');
+      this.partyRecoveryLease = {
+        leader: String(sender || ''),
+        targetName: String(localName || ''),
+        issuedAtMs: this.now(),
+        validUntilMs: this.now() + this.config.settlementTimeoutMs * 2
+      };
+      return {
+        reason: 'H19_CROSS_WINDOW_PARTY_LEFT',
+        details: {
+          localName,
+          previousLeader: before.leader || null,
+          memberNames: this._partyMemberNames(after),
+          recoveryAuthorityValidUntilMs: this.partyRecoveryLease.validUntilMs
+        }
+      };
+    }
+
+    async _executePartyJoinRequest(sender) {
+      const localState = this._localStatePayload();
+      const localName = this._localName();
+      if (localState.running !== true) throw new Error('H19_CROSS_WINDOW_PARTY_RUNTIME_NOT_RUNNING');
+      if (localState.emergencyStopLatched === true) throw new Error('H19_CROSS_WINDOW_PARTY_EMERGENCY_STOP_LATCHED');
+      const lease = this.partyRecoveryLease;
+      const authorityValid = !!lease
+        && String(lease.leader || '') === String(sender || '')
+        && String(lease.targetName || '') === String(localName || '')
+        && this.now() <= Number(lease.validUntilMs || 0);
+      if (!authorityValid) {
+        this.partyRecoveryLease = null;
+        throw new Error('H19_CROSS_WINDOW_PARTY_RECOVERY_AUTHORITY_UNAVAILABLE');
+      }
+      this.partyRecoveryLease = null;
+      const before = this._partySnapshot();
+      const beforeMembers = this._partyMemberNames(before);
+      if (!before) throw new Error('H19_CROSS_WINDOW_PARTY_STATE_UNAVAILABLE');
+      if (before.partyId || beforeMembers.includes(String(localName || ''))) throw new Error('H19_CROSS_WINDOW_PARTY_TARGET_ALREADY_IN_PARTY');
+      await this._runPartyMutation(this.requestPartyJoinLocal, [sender], 'H19_CROSS_WINDOW_PARTY_REQUEST_ACTION_TIMEOUT');
+      const after = await this._waitForPartyState(snapshot => {
+        const names = this._partyMemberNames(snapshot);
+        return !!snapshot.partyId
+          && String(snapshot.leader || '') === String(sender || '')
+          && names.includes(String(localName || ''))
+          && names.includes(String(sender || ''))
+          && this._partyHasOnlyOwned(snapshot);
+      }, 'H19_CROSS_WINDOW_PARTY_JOIN_UNVERIFIED_TIMEOUT');
+      return {
+        reason: 'H19_CROSS_WINDOW_PARTY_JOINED',
+        details: { localName, leader: after.leader || null, partyId: after.partyId || null, memberNames: this._partyMemberNames(after) }
+      };
     }
 
     _handleCommand(envelope) {
       this.metrics.commandsReceived += 1;
       const commandId = cleanText(envelope.messageId || '', 240);
       const sender = cleanText(envelope.senderCharacterName || '', 120);
-      const desiredRunning = envelope.commandType === 'START_RUNTIME'
-        ? true
-        : envelope.commandType === 'STOP_RUNTIME'
-          ? false
-          : null;
-      if (!commandId || !sender || desiredRunning == null) return false;
+      const commandType = cleanText(envelope.commandType || '', 80);
+      const supported = new Set(['START_RUNTIME', 'STOP_RUNTIME', 'LEAVE_PARTY', 'REQUEST_PARTY_JOIN']);
+      if (!commandId || !sender || !supported.has(commandType)) return false;
       if (cleanText(envelope.targetSessionId || '', 240) !== this.sessionId) {
         this.metrics.rejectedSessionMismatch += 1;
         this._sendSettlement(sender, envelope, false, 'H19_CROSS_WINDOW_TARGET_SESSION_MISMATCH');
         return false;
       }
-
       const existing = this.inboundCommands.get(commandId);
       if (existing) {
         this.metrics.duplicates += 1;
         this._sendAck(sender, envelope);
-        if (existing.settlement) {
-          this._sendSettlement(sender, envelope, existing.settlement.success, existing.settlement.reason);
-        }
+        if (existing.settlement) this._sendSettlement(sender, envelope, existing.settlement.success, existing.settlement.reason, existing.settlement.details || null);
         return true;
       }
-
       const record = { state: 'PROCESSING', settlement: null, receivedAtMs: this.now() };
       this._boundedPut(this.inboundCommands, commandId, record, this.config.maxInboundCommands);
       this._sendAck(sender, envelope);
-
       Promise.resolve().then(async () => {
-        const before = this._localStatePayload();
-        if (before.running !== desiredRunning) {
-          if (desiredRunning) await this.startRuntime('H19_REMOTE_CM_START:' + sender);
-          else await this.stopRuntime('H19_REMOTE_CM_STOP:' + sender);
-        }
-        const after = this._localStatePayload();
-        if (after.running !== desiredRunning) {
-          throw new Error('H19_CROSS_WINDOW_LOCAL_RUNTIME_STATE_MISMATCH');
+        let outcome = null;
+        if (commandType === 'START_RUNTIME' || commandType === 'STOP_RUNTIME') {
+          const desiredRunning = commandType === 'START_RUNTIME';
+          const before = this._localStatePayload();
+          if (before.running !== desiredRunning) {
+            if (desiredRunning) await this.startRuntime('H19_REMOTE_CM_START:' + sender);
+            else await this.stopRuntime('H19_REMOTE_CM_STOP:' + sender);
+          }
+          const after = this._localStatePayload();
+          if (after.running !== desiredRunning) throw new Error('H19_CROSS_WINDOW_LOCAL_RUNTIME_STATE_MISMATCH');
+          outcome = {
+            reason: desiredRunning ? 'H19_CROSS_WINDOW_RUNTIME_STARTED' : 'H19_CROSS_WINDOW_RUNTIME_STOPPED',
+            details: { running: after.running, runEpoch: after.runEpoch }
+          };
+        } else if (commandType === 'LEAVE_PARTY') {
+          outcome = await this._executePartyLeave(sender);
+        } else if (commandType === 'REQUEST_PARTY_JOIN') {
+          outcome = await this._executePartyJoinRequest(sender);
         }
         record.state = 'SETTLED';
-        record.settlement = {
-          success: true,
-          reason: desiredRunning ? 'H19_CROSS_WINDOW_RUNTIME_STARTED' : 'H19_CROSS_WINDOW_RUNTIME_STOPPED'
-        };
-        this._sendSettlement(sender, envelope, true, record.settlement.reason);
+        record.settlement = { success: true, reason: outcome && outcome.reason || 'H19_CROSS_WINDOW_SETTLED', details: outcome && outcome.details || null };
+        this._sendSettlement(sender, envelope, true, record.settlement.reason, record.settlement.details);
         try { this.broadcastHeartbeat(); } catch (_) {}
       }).catch(error => {
         record.state = 'SETTLED';
-        record.settlement = { success: false, reason: errorReason(error, 'H19_CROSS_WINDOW_LOCAL_EXECUTION_FAILED') };
+        record.settlement = { success: false, reason: errorReason(error, 'H19_CROSS_WINDOW_LOCAL_EXECUTION_FAILED'), details: null };
         this._sendSettlement(sender, envelope, false, record.settlement.reason);
       });
       return true;
@@ -6208,59 +6350,28 @@
       return false;
     }
 
-    requestRuntimeState(targetName, desiredRunning) {
+    _requestCommand(targetName, commandType, options = {}) {
       const target = cleanText(targetName || '', 120);
       const local = this._localName();
-      if (!target || target === local) {
-        return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H19_CROSS_WINDOW_REMOTE_TARGET_REQUIRED' } };
-      }
-      if (!this._ownedNames().has(target)) {
-        return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H19_CROSS_WINDOW_TARGET_NOT_OWNED' } };
-      }
-      const peer = this.freshPeer(target);
-      if (!peer) {
-        return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H19_CROSS_WINDOW_PEER_NOT_FRESH' } };
-      }
-      const desired = desiredRunning === true;
-      if (peer.running === desired) {
-        return {
-          id: null,
-          state: 'UNAVAILABLE',
-          dispatched: false,
-          error: { message: desired ? 'H19_CROSS_WINDOW_RUNTIME_ALREADY_RUNNING' : 'H19_CROSS_WINDOW_RUNTIME_ALREADY_STOPPED' }
-        };
-      }
-
-      const commandType = desired ? 'START_RUNTIME' : 'STOP_RUNTIME';
+      if (!target || target === local) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H19_CROSS_WINDOW_REMOTE_TARGET_REQUIRED' } };
+      if (!this._ownedNames().has(target)) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H19_CROSS_WINDOW_TARGET_NOT_OWNED' } };
+      const peer = options.peer || this.freshPeer(target);
+      if (!peer) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H19_CROSS_WINDOW_PEER_NOT_FRESH' } };
       const envelope = this._baseEnvelope('COMMAND', target, {
-        commandType,
+        commandType: cleanText(commandType || '', 80),
         targetSessionId: peer.sessionId,
         validUntilMs: this.now() + this.config.settlementTimeoutMs
       });
       const messageId = envelope.messageId;
-
       let resolvePromise;
       let rejectPromise;
-      const value = new Promise((resolve, reject) => {
-        resolvePromise = resolve;
-        rejectPromise = reject;
-      });
-
+      const value = new Promise((resolve, reject) => { resolvePromise = resolve; rejectPromise = reject; });
       const pending = {
-        messageId,
-        target,
-        targetSessionId: peer.sessionId,
-        commandType,
-        desiredRunning: desired,
-        sentAtMs: this.now(),
-        acknowledgedAtMs: null,
-        ackState: null,
-        timer: null,
-        resolve: resolvePromise,
-        reject: rejectPromise
+        messageId, target, targetSessionId: peer.sessionId, commandType: envelope.commandType,
+        desiredRunning: Object.prototype.hasOwnProperty.call(options, 'desiredRunning') ? options.desiredRunning === true : null,
+        sentAtMs: this.now(), acknowledgedAtMs: null, ackState: null, timer: null, resolve: resolvePromise, reject: rejectPromise
       };
       this.pending.set(messageId, pending);
-
       if (this.setTimeoutFn) {
         pending.timer = this.setTimeoutFn(() => {
           if (!this.pending.has(messageId)) return;
@@ -6269,22 +6380,14 @@
           rejectPromise(new Error('H19_CROSS_WINDOW_SETTLEMENT_TIMEOUT'));
         }, this.config.settlementTimeoutMs);
       }
-
       let transportValue;
       try {
         transportValue = this._sendEnvelope(target, envelope, 'commandsSent');
       } catch (error) {
         this.pending.delete(messageId);
         if (pending.timer != null && this.clearTimeoutFn) this.clearTimeoutFn(pending.timer);
-        return {
-          id: messageId,
-          state: 'UNKNOWN',
-          dispatched: true,
-          value: null,
-          error: { message: errorReason(error) }
-        };
+        return { id: messageId, state: 'UNKNOWN', dispatched: true, value: null, error: { message: errorReason(error) } };
       }
-
       if (transportValue && typeof transportValue.then === 'function') {
         Promise.resolve(transportValue).catch(error => {
           const stillPending = this.pending.get(messageId);
@@ -6294,15 +6397,36 @@
           stillPending.reject(new Error(errorReason(error, 'H19_CROSS_WINDOW_SEND_CM_REJECTED')));
         });
       }
+      return { id: messageId, state: 'DISPATCHED', dispatched: true, value, transport: 'send_cm', targetSessionId: peer.sessionId };
+    }
 
-      return {
-        id: messageId,
-        state: 'DISPATCHED',
-        dispatched: true,
-        value,
-        transport: 'send_cm',
-        targetSessionId: peer.sessionId
-      };
+    requestRuntimeState(targetName, desiredRunning) {
+      const target = cleanText(targetName || '', 120);
+      const peer = this.freshPeer(target);
+      if (!peer) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H19_CROSS_WINDOW_PEER_NOT_FRESH' } };
+      const desired = desiredRunning === true;
+      if (peer.running === desired) {
+        return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: desired ? 'H19_CROSS_WINDOW_RUNTIME_ALREADY_RUNNING' : 'H19_CROSS_WINDOW_RUNTIME_ALREADY_STOPPED' } };
+      }
+      return this._requestCommand(target, desired ? 'START_RUNTIME' : 'STOP_RUNTIME', { peer, desiredRunning: desired });
+    }
+
+    requestPartyLeave(targetName) {
+      const target = cleanText(targetName || '', 120);
+      const peer = this.freshPeer(target);
+      if (!peer) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H19_CROSS_WINDOW_PEER_NOT_FRESH' } };
+      if (peer.running !== true) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H19_CROSS_WINDOW_PARTY_RUNTIME_NOT_RUNNING' } };
+      if (peer.emergencyStopLatched === true) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H19_CROSS_WINDOW_PARTY_EMERGENCY_STOP_LATCHED' } };
+      return this._requestCommand(target, 'LEAVE_PARTY', { peer });
+    }
+
+    requestPartyJoin(targetName) {
+      const target = cleanText(targetName || '', 120);
+      const peer = this.freshPeer(target);
+      if (!peer) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H19_CROSS_WINDOW_PEER_NOT_FRESH' } };
+      if (peer.running !== true) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H19_CROSS_WINDOW_PARTY_RUNTIME_NOT_RUNNING' } };
+      if (peer.emergencyStopLatched === true) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H19_CROSS_WINDOW_PARTY_EMERGENCY_STOP_LATCHED' } };
+      return this._requestCommand(target, 'REQUEST_PARTY_JOIN', { peer });
     }
 
     install() {
@@ -6354,6 +6478,7 @@
         } catch (_) {}
       }
       this.pending.clear();
+      this.partyRecoveryLease = null;
       return this.status();
     }
 
@@ -6385,6 +6510,7 @@
           sentAtMs: row.sentAtMs,
           acknowledgedAtMs: row.acknowledgedAtMs
         })),
+        partyRecoveryLease: clone(this.partyRecoveryLease),
         config: clone(this.config),
         metrics: clone(this.metrics),
         lastError: clone(this.lastError)
@@ -16607,6 +16733,22 @@
         economy: this.economy,
         canAct: action => this.actionAllowed(action)
       });
+      const dispatchH19CrossWindowPartyAction = async (actionName, args = []) => {
+        let dispatched;
+        try { dispatched = this.actions.dispatch(actionName, args); }
+        catch (error) { throw new Error('H19_CROSS_WINDOW_PARTY_ACTION_THROW:' + String(error && error.message || error || actionName)); }
+        if (dispatched && dispatched.state === 'UNKNOWN' && dispatched.dispatched === true) throw new Error('H19_CROSS_WINDOW_PARTY_ACTION_UNKNOWN:' + actionName);
+        if (!dispatched || dispatched.state !== 'DISPATCHED') {
+          const reason = dispatched && dispatched.error && dispatched.error.message || 'H19_CROSS_WINDOW_PARTY_ACTION_NOT_DISPATCHED';
+          throw new Error(String(reason));
+        }
+        let response;
+        try { response = await Promise.resolve(dispatched.value); }
+        catch (error) { throw new Error('H19_CROSS_WINDOW_PARTY_ACTION_REJECTED:' + String(error && error.message || error || actionName)); }
+        if (response && (response.failed === true || response.success === false)) throw new Error(String(response.reason || 'H19_CROSS_WINDOW_PARTY_SERVER_REJECTED'));
+        return response;
+      };
+
       this.lifecycleTransport = new ns.H19CrossWindowLifecycleTransport({
         root: this.root,
         logger: this.logger,
@@ -16622,6 +16764,9 @@
             version: this.version
           };
         },
+        getPartyState: () => this.party.snapshot(),
+        leavePartyLocal: () => dispatchH19CrossWindowPartyAction('leave_party', []),
+        requestPartyJoinLocal: leaderName => dispatchH19CrossWindowPartyAction('send_party_request', [leaderName]),
         startRuntime: () => this.start(),
         stopRuntime: reason => this.stop(reason)
       });
@@ -16659,6 +16804,7 @@
       this._registerH18LiveTest();
       this._registerH19LiveTest();
       this._registerH19RemoteRecoveryLiveTest();
+      this._registerH19PartyRecoveryLiveTest();
       this._installErrorCapture();
       this.lifecycleTransport.install();
       this.logger.info('AL Bot Runtime erstellt', {
@@ -21431,6 +21577,246 @@
       });
     }
 
+
+    _registerH19PartyRecoveryLiveTest() {
+      let baseline = null;
+      let targetName = null;
+      let originalPolicy = null;
+      let originalParty = null;
+      let joinSettlementPromise = null;
+      const sortedNames = snapshot => (snapshot && Array.isArray(snapshot.memberNames) ? snapshot.memberNames.map(String).sort((a, b) => a.localeCompare(b)) : []);
+      const topologyMatches = snapshot => {
+        if (!originalParty) return true;
+        const currentNames = sortedNames(snapshot);
+        if (String(snapshot && snapshot.leader || '') !== String(originalParty.leader || '')) return false;
+        if (currentNames.length !== originalParty.memberNames.length) return false;
+        return currentNames.every((name, index) => name === originalParty.memberNames[index])
+          && !(snapshot && Array.isArray(snapshot.foreignMemberNames) && snapshot.foreignMemberNames.length);
+      };
+      const restorePolicy = runtime => {
+        if (!originalPolicy) return null;
+        return runtime.lifecycle.setPolicy({
+          desiredActiveNames: Array.isArray(originalPolicy.desiredActiveNames) ? originalPolicy.desiredActiveNames : [],
+          desiredRuntimeRunningNames: Array.isArray(originalPolicy.desiredRuntimeRunningNames) ? originalPolicy.desiredRuntimeRunningNames : [],
+          desiredPartyMemberNames: Array.isArray(originalPolicy.desiredPartyMemberNames) ? originalPolicy.desiredPartyMemberNames : [],
+          desiredPartyLeader: originalPolicy.desiredPartyLeader || null,
+          maxActionsPerSession: originalPolicy.maxActionsPerSession
+        });
+      };
+      this.liveTests.register({
+        id: 'h19-party-recovery',
+        title: 'H19 – Party Recovery',
+        description: 'Bounded Cross-Window-Live-Test: ein eigener Nicht-Leader verlaesst kontrolliert die Party, fordert ueber denselben sessiongebundenen H19-CM-Kanal genau einmal den Wiedereintritt an und der geschuetzte Leader stellt die zuvor erfasste Party-Struktur mit terminaler Live-Evidence wieder her.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          targetName = null; baseline = null; originalPolicy = null; originalParty = null; joinSettlementPromise = null;
+          try { runtime.lifecycle.stopAutonomy('H19_PARTY_LIVE_TEST_RESET'); } catch (_) {}
+          const status = runtime.lifecycle.status();
+          if (status.currentAction) throw new Error('H19_PARTY_ACTIVE_ACTION_BEFORE_LIVE_TEST');
+          if (status.suspended) throw new Error(status.suspendedReason || 'H19_PARTY_SUSPENDED_BEFORE_LIVE_TEST');
+          try { runtime.lifecycle.cancelQueued(); } catch (_) {}
+          try { runtime.lifecycle.resetSafety('H19_PARTY_LIVE_TEST_RESET'); } catch (_) {}
+          const clean = runtime.lifecycle.status();
+          originalPolicy = {
+            desiredActiveNames: Array.isArray(clean.policy.desiredActiveNames) ? clean.policy.desiredActiveNames.slice() : [],
+            desiredRuntimeRunningNames: Array.isArray(clean.policy.desiredRuntimeRunningNames) ? clean.policy.desiredRuntimeRunningNames.slice() : [],
+            desiredPartyMemberNames: Array.isArray(clean.policy.desiredPartyMemberNames) ? clean.policy.desiredPartyMemberNames.slice() : [],
+            desiredPartyLeader: clean.policy.desiredPartyLeader || null,
+            maxActionsPerSession: clean.policy.maxActionsPerSession
+          };
+          const party = runtime.party.snapshot();
+          originalParty = { leader: party && party.leader || null, memberNames: sortedNames(party) };
+          const transport = runtime.lifecycleTransport.status();
+          baseline = {
+            actionsDispatched: Number(clean.metrics.actionsDispatched || 0),
+            actionsConfirmed: Number(clean.metrics.actionsConfirmed || 0),
+            actionsRejected: Number(clean.metrics.actionsRejected || 0),
+            actionsUnknown: Number(clean.metrics.actionsUnknown || 0),
+            partyInvitesDispatched: Number(clean.metrics.partyInvitesDispatched || 0),
+            partyRequestsDispatched: Number(clean.metrics.partyRequestsDispatched || 0),
+            partyAcceptsConfirmed: Number(clean.metrics.partyAcceptsConfirmed || 0),
+            commandsSent: Number(transport.metrics.commandsSent || 0),
+            acksReceived: Number(transport.metrics.acksReceived || 0),
+            settlementsReceived: Number(transport.metrics.settlementsReceived || 0),
+            settlementsSucceeded: Number(transport.metrics.settlementsSucceeded || 0),
+            settlementsFailed: Number(transport.metrics.settlementsFailed || 0),
+            transportFailures: Number(transport.metrics.transportFailures || 0)
+          };
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.lifecycle.stopAutonomy('H19_PARTY_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try { const status = runtime.lifecycle.status(); if (!status.currentAction) runtime.lifecycle.cancelQueued(); } catch (_) {}
+          const restored = restorePolicy(runtime);
+          if (restored && restored.accepted !== true) throw new Error(restored.reason || 'H19_PARTY_CLEANUP_POLICY_RESTORE_FAILED');
+          if (!topologyMatches(runtime.party.snapshot())) throw new Error('H19_PARTY_CLEANUP_MANUAL_RESTORE_REQUIRED');
+          const status = runtime.lifecycle.status();
+          if (!status.suspended && !status.currentAction) runtime.lifecycle.resetSafety('H19_PARTY_LIVE_TEST_CLEANUP');
+        },
+        steps: [
+          {
+            id: 'preflight', title: 'Eigenen Party-Leader, Nicht-Leader-Ziel und frische Cross-Window-Authority pruefen', timeoutMs: 12000,
+            run: async ({ runtime, assert, note, waitFor }) => {
+              assert(runtime.running === true, 'H19_PARTY_RUNTIME_NOT_RUNNING');
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(game.character.rip !== true, 'H19_PARTY_LOCAL_CHARACTER_DEAD');
+              const module = runtime.modules.describe('character-lifecycle');
+              assert(module && module.state === 'ACTIVE', 'H19_PARTY_MODULE_NOT_ACTIVE');
+              assert(runtime.lifecycleTransport && runtime.lifecycleTransport.status().installed === true, 'H19_PARTY_CROSS_WINDOW_TRANSPORT_UNAVAILABLE');
+              assert(typeof runtime.lifecycleTransport.requestPartyLeave === 'function', 'H19_PARTY_LEAVE_COMMAND_UNAVAILABLE');
+              assert(typeof runtime.lifecycleTransport.requestPartyJoin === 'function', 'H19_PARTY_JOIN_COMMAND_UNAVAILABLE');
+              assert(runtime.actions.available('accept_party_request'), 'H19_PARTY_ACCEPT_REQUEST_API_UNAVAILABLE');
+              const localName = String(game.character.name || '');
+              const party = runtime.party.snapshot();
+              assert(party && party.partyId && party.size >= 2, 'H19_PARTY_REQUIRES_ACTIVE_PARTY');
+              assert(String(party.leader || '') === localName, 'H19_PARTY_TEST_REQUIRES_LOCAL_LEADER');
+              assert(!(party.foreignMemberNames && party.foreignMemberNames.length), 'H19_PARTY_FOREIGN_MEMBER_PRESENT');
+              const status = runtime.lifecycle.status();
+              assert(status.suspended === false, status.suspendedReason || 'H19_PARTY_SUSPENDED');
+              assert(status.currentAction == null, 'H19_PARTY_ACTION_ACTIVE_BEFORE_PREFLIGHT');
+              assert(status.queue.length === 0, 'H19_PARTY_QUEUE_NOT_EMPTY');
+              const candidate = await waitFor(() => {
+                const roster = runtime.roster.refresh();
+                if (!roster || roster.accountStateAvailable !== true || roster.onlineStateAvailable !== true) return null;
+                const owned = new Set((roster.accountCharacters || []).map(row => String(row && row.name || '')).filter(Boolean));
+                const online = new Set((roster.onlineCharacterNames || []).map(String));
+                const members = sortedNames(runtime.party.snapshot());
+                const peers = new Map(runtime.lifecycleTransport.freshPeers().map(peer => [String(peer.name), peer]));
+                return members.filter(name => name !== localName && owned.has(name) && online.has(name))
+                  .map(name => ({ name, peer: peers.get(name) || null }))
+                  .filter(row => row.peer && row.peer.running === true && row.peer.emergencyStopLatched !== true && String(row.peer.version || '') === String(runtime.version))
+                  .sort((a, b) => a.name.localeCompare(b.name))[0] || null;
+              }, { timeoutMs: 8000, pollMs: 250, label: 'h19-party-recovery-target' });
+              assert(candidate, 'H19_PARTY_SAFE_CROSS_WINDOW_TARGET_UNAVAILABLE');
+              targetName = candidate.name;
+              const captured = runtime.lifecycle.captureDesiredActive();
+              assert(captured && captured.accepted === true, captured && captured.reason || 'H19_PARTY_CAPTURE_POLICY_FAILED');
+              assert(captured.desiredPartyLeader === localName, 'H19_PARTY_CAPTURED_LEADER_MISMATCH');
+              assert(Array.isArray(captured.desiredPartyMemberNames) && captured.desiredPartyMemberNames.includes(targetName), 'H19_PARTY_TARGET_NOT_CAPTURED');
+              assert(Array.isArray(captured.desiredActiveNames) && captured.desiredActiveNames.includes(targetName), 'H19_PARTY_TARGET_NOT_DESIRED_ACTIVE');
+              note({ localLeader: localName, target: targetName, targetSessionId: candidate.peer.sessionId, partyMembers: sortedNames(party), desiredPartyMemberNames: captured.desiredPartyMemberNames, desiredPartyLeader: captured.desiredPartyLeader });
+              return { localLeader: localName, target: targetName, targetSessionId: candidate.peer.sessionId, targetRunning: candidate.peer.running, partyMembers: sortedNames(party), partyLeader: party.leader };
+            }
+          },
+          {
+            id: 'controlled-party-loss', title: 'Nicht-Leader genau einmal sessiongebunden aus der Party loesen und terminal bestaetigen', timeoutMs: 20000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(targetName, 'H19_PARTY_TARGET_MISSING');
+              const command = runtime.lifecycleTransport.requestPartyLeave(targetName);
+              assert(command && command.state === 'DISPATCHED', command && command.error && command.error.message || 'H19_PARTY_LEAVE_NOT_DISPATCHED');
+              const settled = await Promise.resolve(command.value).then(value => ({ ok: true, value }), error => ({ ok: false, error }));
+              assert(settled.ok === true, settled.error && settled.error.message || 'H19_PARTY_LEAVE_TRANSPORT_UNKNOWN');
+              assert(settled.value && settled.value.success === true, settled.value && settled.value.reason || 'H19_PARTY_LEAVE_FAILED');
+              assert(settled.value.reason === 'H19_CROSS_WINDOW_PARTY_LEFT', 'H19_PARTY_LEAVE_SETTLEMENT_INVALID');
+              const recovered = await waitFor(() => {
+                const party = runtime.party.snapshot();
+                const names = new Set(sortedNames(party));
+                if (!party || String(party.leader || '') !== String(originalParty.leader || '')) return null;
+                if (names.has(String(targetName))) return null;
+                if (party.foreignMemberNames && party.foreignMemberNames.length) return null;
+                const peer = runtime.lifecycleTransport.freshPeer(targetName);
+                return peer && peer.running === true ? { party, peer } : null;
+              }, { timeoutMs: 8000, pollMs: 200, label: 'h19-party-loss-confirmed' });
+              const transport = runtime.lifecycleTransport.status();
+              assert(Number(transport.metrics.commandsSent || 0) - baseline.commandsSent === 1, 'H19_PARTY_LEAVE_COMMAND_COUNT_INVALID');
+              assert(Number(transport.metrics.settlementsSucceeded || 0) - baseline.settlementsSucceeded === 1, 'H19_PARTY_LEAVE_SETTLEMENT_COUNT_INVALID');
+              assert(Number(transport.metrics.settlementsFailed || 0) === baseline.settlementsFailed, 'H19_PARTY_LEAVE_SETTLEMENT_FAILED');
+              assert(Number(transport.metrics.transportFailures || 0) === baseline.transportFailures, 'H19_PARTY_LEAVE_TRANSPORT_FAILED');
+              return { target: targetName, partyMembersAfterLoss: sortedNames(recovered.party), targetRunning: recovered.peer.running, commandReason: settled.value.reason };
+            }
+          },
+          {
+            id: 'party-recovery', title: 'Remote-Join genau einmal anfordern und durch H19-Leader-Accept terminal wiederherstellen', timeoutMs: 30000,
+            run: async ({ runtime, assert, waitFor }) => {
+              assert(targetName, 'H19_PARTY_TARGET_MISSING');
+              const join = runtime.lifecycleTransport.requestPartyJoin(targetName);
+              assert(join && join.state === 'DISPATCHED', join && join.error && join.error.message || 'H19_PARTY_JOIN_NOT_DISPATCHED');
+              joinSettlementPromise = Promise.resolve(join.value).then(value => ({ ok: true, value }), error => ({ ok: false, error }));
+              await waitFor(() => {
+                const status = runtime.lifecycle.status();
+                return (status.partySignals || []).some(signal => signal && signal.kind === 'REQUEST' && String(signal.targetName || '') === String(targetName)) ? status : null;
+              }, { timeoutMs: 8000, pollMs: 100, label: 'h19-party-request-signal' });
+              const started = runtime.lifecycle.startAutonomy({ maxActions: 1 });
+              assert(started && started.accepted === true, started && started.reason || 'H19_PARTY_AUTONOMY_START_FAILED');
+              await waitFor(() => {
+                const status = runtime.lifecycle.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H19_PARTY_SUSPENDED_DURING_RECOVERY');
+                if (Number(status.metrics.actionsUnknown || 0) > baseline.actionsUnknown) throw new Error('H19_PARTY_RECOVERY_UNKNOWN');
+                if (Number(status.metrics.actionsRejected || 0) > baseline.actionsRejected) throw new Error('H19_PARTY_RECOVERY_REJECTED');
+                const party = runtime.party.snapshot();
+                return Number(status.metrics.partyAcceptsConfirmed || 0) > baseline.partyAcceptsConfirmed && status.currentAction == null && topologyMatches(party) ? status : null;
+              }, { timeoutMs: 20000, pollMs: 150, label: 'h19-party-membership-restored' });
+              runtime.lifecycle.stopAutonomy('H19_PARTY_RECOVERY_COMPLETE');
+              const joined = await joinSettlementPromise;
+              assert(joined.ok === true, joined.error && joined.error.message || 'H19_PARTY_JOIN_TRANSPORT_UNKNOWN');
+              assert(joined.value && joined.value.success === true, joined.value && joined.value.reason || 'H19_PARTY_JOIN_FAILED');
+              assert(joined.value.reason === 'H19_CROSS_WINDOW_PARTY_JOINED', 'H19_PARTY_JOIN_SETTLEMENT_INVALID');
+              const status = runtime.lifecycle.status(), transport = runtime.lifecycleTransport.status(), party = runtime.party.snapshot();
+              const dispatched = Number(status.metrics.actionsDispatched || 0) - baseline.actionsDispatched;
+              const confirmed = Number(status.metrics.actionsConfirmed || 0) - baseline.actionsConfirmed;
+              const accepts = Number(status.metrics.partyAcceptsConfirmed || 0) - baseline.partyAcceptsConfirmed;
+              const rejected = Number(status.metrics.actionsRejected || 0) - baseline.actionsRejected;
+              const unknown = Number(status.metrics.actionsUnknown || 0) - baseline.actionsUnknown;
+              assert(dispatched === 1, 'H19_PARTY_LIFECYCLE_DISPATCH_COUNT_INVALID');
+              assert(confirmed === 1, 'H19_PARTY_LIFECYCLE_CONFIRM_COUNT_INVALID');
+              assert(accepts === 1, 'H19_PARTY_ACCEPT_CONFIRM_COUNT_INVALID');
+              assert(Number(status.metrics.partyInvitesDispatched || 0) === baseline.partyInvitesDispatched, 'H19_PARTY_INVITE_PINGPONG_DETECTED');
+              assert(Number(status.metrics.partyRequestsDispatched || 0) === baseline.partyRequestsDispatched, 'H19_PARTY_LOCAL_REQUEST_PINGPONG_DETECTED');
+              assert(rejected === 0, 'H19_PARTY_RECOVERY_REJECTED');
+              assert(unknown === 0, 'H19_PARTY_RECOVERY_UNKNOWN');
+              assert(topologyMatches(party), 'H19_PARTY_TOPOLOGY_NOT_RESTORED');
+              assert(Number(transport.metrics.commandsSent || 0) - baseline.commandsSent === 2, 'H19_PARTY_CM_COMMAND_COUNT_INVALID');
+              assert(Number(transport.metrics.acksReceived || 0) - baseline.acksReceived === 2, 'H19_PARTY_CM_ACK_COUNT_INVALID');
+              assert(Number(transport.metrics.settlementsReceived || 0) - baseline.settlementsReceived === 2, 'H19_PARTY_CM_SETTLEMENT_COUNT_INVALID');
+              assert(Number(transport.metrics.settlementsSucceeded || 0) - baseline.settlementsSucceeded === 2, 'H19_PARTY_CM_SETTLEMENT_SUCCESS_COUNT_INVALID');
+              assert(Number(transport.metrics.settlementsFailed || 0) === baseline.settlementsFailed, 'H19_PARTY_CM_SETTLEMENT_FAILED');
+              assert(Number(transport.metrics.transportFailures || 0) === baseline.transportFailures, 'H19_PARTY_CM_TRANSPORT_FAILED');
+              return { target: targetName, partyLeader: party.leader, partyMembers: sortedNames(party), lifecycleDispatched: dispatched, lifecycleConfirmed: confirmed, partyAcceptsConfirmed: accepts, cmCommands: Number(transport.metrics.commandsSent || 0) - baseline.commandsSent, cmAcks: Number(transport.metrics.acksReceived || 0) - baseline.acksReceived, cmSettlements: Number(transport.metrics.settlementsReceived || 0) - baseline.settlementsReceived, rejected, unknown };
+            }
+          },
+          {
+            id: 'stability', title: 'Fuenf Sekunden ohne Party-Retry, Ping-Pong oder UNKNOWN beobachten', timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              const before = runtime.lifecycle.status(), beforeTransport = runtime.lifecycleTransport.status();
+              const beforeDispatch = Number(before.metrics.actionsDispatched || 0), beforeCommands = Number(beforeTransport.metrics.commandsSent || 0);
+              await sleep(5000);
+              const after = runtime.lifecycle.status(), transport = runtime.lifecycleTransport.status(), party = runtime.party.snapshot();
+              const peer = runtime.lifecycleTransport.freshPeer(targetName);
+              assert(after.autonomyEnabled === false, 'H19_PARTY_AUTONOMY_RESTARTED');
+              assert(after.currentAction == null, 'H19_PARTY_ACTION_REMAINS');
+              assert(after.queue.length === 0, 'H19_PARTY_QUEUE_REMAINS');
+              assert(after.suspended === false, after.suspendedReason || 'H19_PARTY_SUSPENDED_DURING_STABILITY');
+              assert(Number(after.metrics.actionsDispatched || 0) === beforeDispatch, 'H19_PARTY_LIFECYCLE_RETRY_DETECTED');
+              assert(Number(transport.metrics.commandsSent || 0) === beforeCommands, 'H19_PARTY_CM_RETRY_DETECTED');
+              assert(Number(after.metrics.actionsUnknown || 0) === baseline.actionsUnknown, 'H19_PARTY_UNKNOWN_DURING_STABILITY');
+              assert(Number(after.metrics.actionsRejected || 0) === baseline.actionsRejected, 'H19_PARTY_REJECT_DURING_STABILITY');
+              assert(topologyMatches(party), 'H19_PARTY_TOPOLOGY_LOST_DURING_STABILITY');
+              assert(peer && peer.running === true, 'H19_PARTY_TARGET_RUNTIME_LOST_DURING_STABILITY');
+              return { target: targetName, partyLeader: party.leader, partyMembers: sortedNames(party), lifecycleDispatches: Number(after.metrics.actionsDispatched || 0) - baseline.actionsDispatched, cmCommands: Number(transport.metrics.commandsSent || 0) - baseline.commandsSent };
+            }
+          },
+          {
+            id: 'cleanup', title: 'Urspruengliche Lifecycle-Policy und Party-Struktur unveraendert hinterlassen', timeoutMs: 10000,
+            run: async ({ runtime, assert }) => {
+              runtime.lifecycle.stopAutonomy('H19_PARTY_LIVE_TEST_COMPLETE');
+              const restored = restorePolicy(runtime);
+              assert(!restored || restored.accepted === true, restored && restored.reason || 'H19_PARTY_POLICY_RESTORE_FAILED');
+              const status = runtime.lifecycle.status(), party = runtime.party.snapshot(), peer = runtime.lifecycleTransport.freshPeer(targetName);
+              assert(status.autonomyEnabled === false, 'H19_PARTY_AUTONOMY_STILL_ENABLED');
+              assert(status.currentAction == null, 'H19_PARTY_CURRENT_ACTION_REMAINS');
+              assert(status.queue.length === 0, 'H19_PARTY_QUEUE_REMAINS');
+              assert(status.suspended === false, status.suspendedReason || 'H19_PARTY_SUSPENDED_AT_CLEANUP');
+              assert(topologyMatches(party), 'H19_PARTY_CLEANUP_TOPOLOGY_MISMATCH');
+              assert(peer && peer.running === true, 'H19_PARTY_TARGET_RUNTIME_NOT_HEALTHY_AT_CLEANUP');
+              return { target: targetName, partyLeader: party.leader, partyMembers: sortedNames(party), autonomyEnabled: status.autonomyEnabled, currentAction: status.currentAction, queueLength: status.queue.length, suspended: status.suspended, targetRunning: peer.running };
+            }
+          }
+        ]
+      });
+    }
 
     _installErrorCapture() {
       if (!this.root || typeof this.root.addEventListener !== 'function') return;
