@@ -214,12 +214,13 @@ test('H16 detects a safe exchange candidate from live e quantity', () => {
   assert.equal(candidates[0].valueAtRisk, 500);
 });
 
-test('H16 confirms exchange only after observed source quantity delta', () => {
+test('H16 confirms exchange only after observed source quantity delta and settled dispatch', async () => {
   const { controller, state, arrive } = fixture();
   assert.equal(controller.queueExchange(0).accepted, true);
   assert.equal(controller.tick().state, 'WAITING_TRAVEL');
   arrive();
   assert.equal(controller.tick().accepted, true);
+  await Promise.resolve();
   controller.tick();
   const status = controller.status();
   assert.equal(status.metrics.exchangesDispatched, 1);
@@ -229,7 +230,24 @@ test('H16 confirms exchange only after observed source quantity delta', () => {
   assert.equal(state.dispatches[0].name, 'exchange');
 });
 
-test('H16 observes the exact exchange item level instead of assuming level zero', () => {
+test('H16 retains exchange ownership while live delta is visible but dispatch settlement is pending', () => {
+  const { controller, state, arrive } = fixture({ neverSettle: true });
+  assert.equal(controller.queueExchange(0).accepted, true);
+  assert.equal(controller.tick().state, 'WAITING_TRAVEL');
+  arrive();
+  assert.equal(controller.tick().accepted, true);
+
+  const held = controller.tick();
+  const status = controller.status();
+  assert.equal(held.state, 'PENDING');
+  assert.ok(status.pending);
+  assert.equal(status.pending.settlement, 'PENDING');
+  assert.equal(status.metrics.exchangesConfirmed, 0);
+  assert.equal(status.metrics.exchangesUnknown, 0);
+  assert.equal(state.dispatches.length, 1);
+});
+
+test('H16 observes the exact exchange item level instead of assuming level zero', async () => {
   const { controller, state, arrive } = fixture({
     rows: [row({ slot: 0, name: 'gem1', quantity: 2, level: 2 })]
   });
@@ -237,6 +255,7 @@ test('H16 observes the exact exchange item level instead of assuming level zero'
   controller.tick();
   arrive();
   assert.equal(controller.tick().accepted, true);
+  await Promise.resolve();
   controller.tick();
   assert.equal(controller.status().metrics.exchangesConfirmed, 1);
   assert.equal(controller.status().metrics.exchangesUnknown, 0);
@@ -252,7 +271,7 @@ test('H16 quest and event exchange requires explicit opt-in', () => {
   assert.equal(controller.queueExchange(0, { allowQuestEvent: true }).accepted, true);
 });
 
-test('H16 crafts with live input output and gold deltas', () => {
+test('H16 crafts with live input output and gold deltas after dispatch settlement', async () => {
   const { controller, state, arrive } = fixture();
   const candidates = controller.craftCandidates();
   const cake = candidates.find(row => row.itemName === 'cake');
@@ -262,6 +281,7 @@ test('H16 crafts with live input output and gold deltas', () => {
   assert.equal(controller.tick().state, 'WAITING_TRAVEL');
   arrive();
   assert.equal(controller.tick().accepted, true);
+  await Promise.resolve();
   controller.tick();
   const status = controller.status();
   assert.equal(status.metrics.craftsDispatched, 1);
