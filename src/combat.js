@@ -708,7 +708,7 @@
       for (const name of expectedNames) {
         const row = members.find(member => String(member.name) === name);
         if (!row || finite(row.x) == null || finite(row.y) == null) return false;
-        if (row.map && character.map && String(row.map) !== String(character.map)) return false;
+        if (!row.map || !character.map || String(row.map) !== String(character.map)) return false;
       }
       const currentMax = Math.max(0, ...members.map(row => {
         const x = finite(row.x), y = finite(row.y);
@@ -918,12 +918,20 @@
 
       if (this._observePendingAttack()) return;
 
+      const localName = String(character.name || '');
+      const groupNames = new Set((this.session.policy.groupMemberNames || []).map(String));
+      const followerMirrorOnly = this.session.policy.leaderOwnedPulls === true
+        && this.session.policy.groupLeaderName
+        && localName !== String(this.session.policy.groupLeaderName);
+
       if (this.session.policy.partyAssist && this.party && typeof this.party.preferredTargetId === 'function') {
         const preferredId = this.party.preferredTargetId();
         if (preferredId != null && this.session.targetId != null && String(preferredId) !== String(this.session.targetId)) {
           const preferred = this.safeCandidates(this.session.policy)
             .find(candidate => String(candidate.id) === String(preferredId));
-          if (preferred) {
+          const preferredAllowed = preferred && (!followerMirrorOnly
+            || (preferred.targetId && groupNames.has(String(preferred.targetId))));
+          if (preferredAllowed) {
             this._clearGameTarget('PARTY_FOCUS_RETARGET');
             this.session.state = 'ACQUIRING';
           }
@@ -931,11 +939,6 @@
       }
 
       let target = this._freshTarget();
-      const localName = String(character.name || '');
-      const groupNames = new Set((this.session.policy.groupMemberNames || []).map(String));
-      const followerMirrorOnly = this.session.policy.leaderOwnedPulls === true
-        && this.session.policy.groupLeaderName
-        && localName !== String(this.session.policy.groupLeaderName);
       if (target && followerMirrorOnly
         && !(target.targetId && groupNames.has(String(target.targetId)))) {
         this._clearGameTarget('GROUP_FOLLOWER_STALE_FOCUS');
