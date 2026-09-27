@@ -398,7 +398,23 @@ Vor einem möglichen Fail schreibt der Schritt strukturierte Diagnose-Evidence i
 - `MISSING_LEAF_NO_NPC_OR_MARKET_SOURCE`
 - `MATERIAL_ACQUISITION_OVER_CAP`
 - `GOLD_RESERVE_AFTER_ACQUISITION_AND_CRAFT`
+- `MATERIAL_ACQUISITION_REQUIRES_MERCHANT`
+- `MATERIAL_ACQUISITION_TRADE_SUSPENDED`
 
 `topNearMatches` zeigt die fünf Kandidaten, die dem erlaubten Pfad am nächsten kamen, inklusive relevanter Material-, Quellen-, Risiko- und Kosteninformationen.
 
 Wichtig: Diese Änderung erweitert **nur Diagnose/Evidence**. Sie lockert keine Safety-Regel und löst keine Mutation aus. Der Preflight bleibt fail-closed.
+
+Bei lokal bereits `READY` bewerteten Crafts, die weder als direkte Craft→Exchange-Kette noch mit einem disjunkten Exchange-Kandidaten gepaart werden können, wird `NO_DISJOINT_EXCHANGE_CANDIDATE` zusätzlich in `localCraftRejects` und `topNearMatches` erfasst. Wenn der Material-Fallback gar nicht betreten werden kann, unterscheiden `MATERIAL_ACQUISITION_REQUIRES_MERCHANT` und `MATERIAL_ACQUISITION_TRADE_SUSPENDED` den Infrastruktur-Gate vom eigentlichen Rezept-Reject.
+
+### PR #19 – v5 technischer Gate-Stand
+
+Append-only Evidence vom 2026-09-27:
+
+- technischer Head: `c923147b9d3eda0d132b63d441c25c29aea525d7`
+- Exact-Head-CI Run #393: **216/216 PASS, 0 FAIL, 0 SKIP, completed/success**
+- frischer Codex-Review auf exakt `c923147b9d`: **keine major issues**
+- alle Review-Threads resolved
+- Branch beim technischen Gate: `behind_by=0`
+- `src/runtime.js` im committed `dist/al-bot.js` vollständig synchron enthalten
+- keine Safety-Lockerung und kein neuer Mutation-Pfad
