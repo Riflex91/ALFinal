@@ -300,10 +300,18 @@ Finale Suite:
 - sichtbare Bids: `1`
 - `marketBuysDispatched=0`
 - `marketSellsDispatched=0`
-- der Live-Bericht zeigte dabei einen semantisch falschen globalen Spread zwischen unterschiedlichen Items; nach dem Live-Test wurde deshalb read-only gehärtet:
-  - Spread wird nur noch berechnet, wenn Best Ask und Best Bid dasselbe Item und Level betreffen;
-  - neue Regression deckt Cross-Item-Spread ab;
-  - kein Gameplay-Write-Pfad wurde dadurch verändert.
+
+### Post-Live-Hardening
+Der Live-Bericht und der anschließende Review führten zu zusätzlichen fail-closed Härtungen:
+- globaler Spread nur noch, wenn Best Ask und Best Bid dasselbe Item+Level betreffen;
+- NPC-Buy prüft die Goldreserve direkt vor dem Dispatch erneut;
+- Market-Buy prüft die Goldreserve ebenfalls direkt vor Dispatch erneut;
+- NPC-Sell prüft unmittelbar vor Dispatch erneut, dass der konkrete Slot weiterhin in H10 als `SELL` sicher ist;
+- Player-Market-Sell verlangt exakt dieselbe Item-Variante wie der Bid-Fingerprint, inklusive Stat-Type/Property;
+- Player-Market-Sell prüft unmittelbar vor Dispatch erneut H10-Safety und verfügbare Menge;
+- neue Regressionen decken alle diese Fälle ab;
+- Bundle wurde auf denselben Source-Stand synchronisiert;
+- alle Änderungen sind zusätzliche Blockaden/Validierungen vor bestehenden Writes; es wurde kein neuer Write-Pfad eingeführt.
 
 ### Stability – PASSED
 - `npcBuyUnknown=0`
@@ -325,4 +333,4 @@ Finale Suite:
 ### Abnahme
 Alle H13-PASS-Kriterien sind erfüllt. H13 gilt damit live als **BESTANDEN**.
 
-Vor dem Merge bleibt nur der neue Exact-Head-CI-/Review-/Merge-Gate nach dem read-only Spread-Hardening und diesen Evidence-Commits.
+Vor dem Merge bleibt nur der neue Exact-Head-CI-/Review-/Merge-Gate nach allen Post-Live-Hardening- und Evidence-Commits.
