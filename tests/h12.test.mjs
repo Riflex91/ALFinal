@@ -352,5 +352,5 @@ test('H12 runtime, API, UI, build, adapter and ActionBoundary are wired', () => 
   assert.match(boundary, /bank_retrieve: Object\.freeze\(\{ publicName: 'bank_retrieve'/);
   assert.match(adapter, /bankSnapshot\(\)/);
   assert.match(adapter, /bankPackDefinitions\(\)/);
-  assert.equal(pkg.version, '0.19.0');
+  assert.equal(pkg.version, '0.20.0');
 });
