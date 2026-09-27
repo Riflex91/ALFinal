@@ -2688,6 +2688,30 @@
       return !!this._resolve(def.publicName);
     }
 
+    _normalizedCallArgs(action, resolved, args) {
+      if (!['trade_buy', 'trade_sell'].includes(action) || !Array.isArray(args) || args.length < 4) return args;
+      const target = args[0];
+      const tradeSlot = cleanText(args[1] || '', 80);
+      const rid = cleanText(args[2] || '', 160);
+      const quantity = Number(args[3]);
+      if (!target || !target.id || !tradeSlot || !rid || !Number.isFinite(quantity) || quantity <= 0) {
+        throw new Error('ALBOT_PLAYER_TRADE_ARGS_INVALID:' + action);
+      }
+      const live = target.slots && target.slots[tradeSlot];
+      if (!live || String(live.rid || '') !== rid) {
+        throw new Error('ALBOT_PLAYER_TRADE_RID_MISMATCH:' + action);
+      }
+
+      // Adventure Land exposes two compatible layers:
+      // CODE wrapper: trade_buy(target, slot, quantity)
+      // native parent: trade_buy(slot, id, rid, quantity)
+      // Keep one logical boundary contract and adapt only at dispatch time.
+      if (Number(resolved && resolved.fn && resolved.fn.length) >= 4) {
+        return [tradeSlot, target.id, rid, quantity];
+      }
+      return [target, tradeSlot, quantity];
+    }
+
     dispatch(action, args = [], options = {}) {
       const def = ACTIONS[action];
       if (!def) throw new Error('ALBOT_ACTION_UNKNOWN:' + cleanText(action, 80));
@@ -2731,7 +2755,8 @@
       }
 
       try {
-        const value = resolved.fn.apply(resolved.owner, args);
+        const callArgs = this._normalizedCallArgs(action, resolved, args);
+        const value = resolved.fn.apply(resolved.owner, callArgs);
         this.metrics.dispatched += 1;
         if (cleanup) this.metrics.cleanupDispatches += 1;
         const result = {
@@ -9183,6 +9208,9 @@
         String(row.playerName) === name && String(row.slot) === slot);
       if (!listing || listing.buying !== true || listing.giveaway) return { accepted: false, reason: 'H13_MARKET_BID_NOT_AVAILABLE' };
       if (!listing.rid) return { accepted: false, reason: 'H13_MARKET_RID_UNAVAILABLE' };
+      if (q > Math.max(1, Math.floor(Number(listing.quantity) || 1))) {
+        return { accepted: false, reason: 'H13_MARKET_BID_QUANTITY_UNAVAILABLE' };
+      }
       const unitPrice = finite(listing.price);
       if (unitPrice == null || unitPrice < minUnitPrice) {
         this.metrics.priceBlocks += 1;
@@ -9224,15 +9252,23 @@
       const sources = this.game && this.game.npcShopSources ? this.game.npcShopSources(name) : [];
       const npcAvailable = npcPrice != null && npcPrice > 0 && npcPrice <= maxUnitPrice && (sources || []).some(row => row.location);
       const analysis = this.marketAnalysis(name, { level: options.level == null ? 0 : options.level });
-      const bestAsk = analysis.bestAsk;
-      if (npcAvailable && (!bestAsk || npcPrice <= Number(bestAsk.price))) {
+      const eligibleAsk = (analysis.asks || []).find(row =>
+        Number(row.price) <= maxUnitPrice
+        && Math.max(1, Math.floor(Number(row.quantity) || 1)) >= q) || null;
+      if (npcAvailable && (!eligibleAsk || npcPrice <= Number(eligibleAsk.price))) {
         return this.queueNpcBuy(name, q, { maxUnitPrice });
       }
-      if (bestAsk && Number(bestAsk.price) <= maxUnitPrice) {
-        return this.queueMarketBuy(bestAsk.playerName, bestAsk.slot, q, { maxUnitPrice });
+      if (eligibleAsk) {
+        return this.queueMarketBuy(eligibleAsk.playerName, eligibleAsk.slot, q, { maxUnitPrice });
       }
       this.metrics.priceBlocks += 1;
-      return { accepted: false, reason: 'H13_NO_ACQUISITION_WITHIN_PRICE_LIMIT', npcPrice, bestAsk: clone(bestAsk) };
+      return {
+        accepted: false,
+        reason: 'H13_NO_ACQUISITION_WITHIN_PRICE_LIMIT',
+        npcPrice,
+        bestAsk: clone(analysis.bestAsk),
+        eligibleAsk: null
+      };
     }
 
     _metric(kind, suffix) {
@@ -9469,7 +9505,9 @@
 
       if (request.kind === 'MARKET_BUY') {
         const listing = this._marketListingStillMatches(request, false);
-        if (!listing || Number(listing.price) > Number(request.maxUnitPrice)) {
+        if (!listing
+          || Number(listing.price) > Number(request.maxUnitPrice)
+          || Math.max(1, Math.floor(Number(listing.quantity) || 1)) < request.quantity) {
           this.request = null;
           this.metrics.priceBlocks += 1;
           return { state: 'BLOCKED', reason: 'H13_MARKET_ASK_CHANGED' };
@@ -9480,7 +9518,7 @@
           return { state: 'BLOCKED', reason: 'H13_MARKET_TARGET_UNAVAILABLE' };
         }
         const beforeQuantity = this._quantityByName(inventory, request.itemName, request.level || 0);
-        return this._dispatch('trade_buy', [target, request.tradeSlot, request.quantity], {
+        return this._dispatch('trade_buy', [target, request.tradeSlot, request.rid, request.quantity], {
           kind: request.kind,
           itemName: request.itemName,
           level: request.level || 0,
@@ -9497,7 +9535,9 @@
 
       if (request.kind === 'MARKET_SELL') {
         const listing = this._marketListingStillMatches(request, true);
-        if (!listing || Number(listing.price) < Number(request.minUnitPrice)) {
+        if (!listing
+          || Number(listing.price) < Number(request.minUnitPrice)
+          || Math.max(1, Math.floor(Number(listing.quantity) || 1)) < request.quantity) {
           this.request = null;
           this.metrics.priceBlocks += 1;
           return { state: 'BLOCKED', reason: 'H13_MARKET_BID_CHANGED' };
@@ -9508,7 +9548,7 @@
           return { state: 'BLOCKED', reason: 'H13_MARKET_TARGET_UNAVAILABLE' };
         }
         const beforeQuantity = this._quantity(inventory, request.fingerprint);
-        return this._dispatch('trade_sell', [target, request.tradeSlot, request.quantity], {
+        return this._dispatch('trade_sell', [target, request.tradeSlot, request.rid, request.quantity], {
           kind: request.kind,
           itemName: request.itemName,
           fingerprint: request.fingerprint,
