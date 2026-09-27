@@ -55,6 +55,7 @@
       this.partyRequestHandler = null;
       this.policyState = {
         desiredActiveNames: [],
+        desiredPartyMemberNames: [],
         desiredPartyLeader: null
       };
       this.metrics = {
@@ -247,6 +248,7 @@
     _persistPolicy() {
       this._writeStorage('policy', {
         desiredActiveNames: clone(this.policyState.desiredActiveNames),
+        desiredPartyMemberNames: clone(this.policyState.desiredPartyMemberNames),
         desiredPartyLeader: this.policyState.desiredPartyLeader || null
       });
     }
@@ -260,6 +262,9 @@
         this.policyState.desiredActiveNames = policy.desiredActiveNames
           .map(name => cleanText(name, 120))
           .filter(Boolean);
+        this.policyState.desiredPartyMemberNames = Array.isArray(policy.desiredPartyMemberNames)
+          ? policy.desiredPartyMemberNames.map(name => cleanText(name, 120)).filter(Boolean)
+          : [];
         this.policyState.desiredPartyLeader = cleanText(policy.desiredPartyLeader || '', 120) || null;
       }
 
@@ -412,12 +417,21 @@
         .filter(name => owned.has(name))
         .sort((a, b) => a.localeCompare(b));
       const party = this._partySnapshot();
+      const partyMembers = this._partyMemberSet(party);
+      this.policyState.desiredPartyMemberNames = [...partyMembers]
+        .filter(name => owned.has(name))
+        .sort((a, b) => a.localeCompare(b));
       const partyLeader = cleanText(party && party.leader || '', 120);
-      this.policyState.desiredPartyLeader = partyLeader && owned.has(partyLeader) ? partyLeader : null;
+      this.policyState.desiredPartyLeader = partyLeader
+        && owned.has(partyLeader)
+        && this.policyState.desiredPartyMemberNames.includes(partyLeader)
+        ? partyLeader
+        : null;
       this._persistPolicy();
       return {
         accepted: true,
         desiredActiveNames: clone(this.policyState.desiredActiveNames),
+        desiredPartyMemberNames: clone(this.policyState.desiredPartyMemberNames),
         desiredPartyLeader: this.policyState.desiredPartyLeader
       };
     }
@@ -431,12 +445,24 @@
         if (normalized.some(name => !owned.has(name))) return { accepted: false, reason: 'H19_POLICY_CONTAINS_NON_OWNED_CHARACTER' };
         this.policyState.desiredActiveNames = normalized.sort((a,b) => a.localeCompare(b));
       }
+      if (Array.isArray(next.desiredPartyMemberNames)) {
+        if (!roster || roster.accountStateAvailable !== true) return { accepted: false, reason: 'H19_ACCOUNT_ROSTER_UNAVAILABLE' };
+        const owned = new Set((roster.accountCharacters || []).map(row => String(row.name || '')));
+        const activeDesired = new Set(this.policyState.desiredActiveNames.map(String));
+        const normalizedParty = [...new Set(next.desiredPartyMemberNames.map(name => cleanText(name, 120)).filter(Boolean))];
+        if (normalizedParty.some(name => !owned.has(name))) return { accepted: false, reason: 'H19_PARTY_POLICY_CONTAINS_NON_OWNED_CHARACTER' };
+        if (normalizedParty.some(name => !activeDesired.has(name))) return { accepted: false, reason: 'H19_PARTY_MEMBER_NOT_DESIRED_ACTIVE' };
+        this.policyState.desiredPartyMemberNames = normalizedParty.sort((a,b) => a.localeCompare(b));
+        if (this.policyState.desiredPartyLeader && !this.policyState.desiredPartyMemberNames.includes(this.policyState.desiredPartyLeader)) {
+          this.policyState.desiredPartyLeader = null;
+        }
+      }
       if (Object.prototype.hasOwnProperty.call(next, 'desiredPartyLeader')) {
         if (!roster || roster.accountStateAvailable !== true) return { accepted: false, reason: 'H19_ACCOUNT_ROSTER_UNAVAILABLE' };
         const leader = cleanText(next.desiredPartyLeader || '', 120) || null;
         const owned = new Set((roster.accountCharacters || []).map(row => String(row.name || '')));
         if (leader && !owned.has(leader)) return { accepted: false, reason: 'H19_PARTY_LEADER_NOT_OWNED' };
-        if (leader && !this.policyState.desiredActiveNames.includes(leader)) return { accepted: false, reason: 'H19_PARTY_LEADER_NOT_DESIRED_ACTIVE' };
+        if (leader && !this.policyState.desiredPartyMemberNames.includes(leader)) return { accepted: false, reason: 'H19_PARTY_LEADER_NOT_DESIRED_MEMBER' };
         this.policyState.desiredPartyLeader = leader;
       }
       if (next.maxActionsPerSession != null) {
@@ -571,8 +597,9 @@
         }
       }
 
+      const desiredPartyMembers = this.policyState.desiredPartyMemberNames;
       const leader = this.policyState.desiredPartyLeader;
-      if (!leader) return { state: 'IDLE', reason: 'H19_DESIRED_ACTIVE_SET_HEALTHY' };
+      if (!leader || !desiredPartyMembers.length) return { state: 'IDLE', reason: 'H19_DESIRED_ACTIVE_SET_HEALTHY' };
       const party = this._partySnapshot();
       const members = this._partyMemberSet(party);
       const foreign = party && Array.isArray(party.foreignMemberNames) ? party.foreignMemberNames : [];
@@ -587,7 +614,7 @@
       }
 
       if (String(localName) === String(leader)) {
-        for (const name of this.policyState.desiredActiveNames) {
+        for (const name of desiredPartyMembers) {
           if (name === localName || !active.has(name) || members.has(name)) continue;
           return {
             state: 'READY',
@@ -601,7 +628,7 @@
             }
           };
         }
-      } else if (active.has(String(leader)) && !members.has(String(leader))) {
+      } else if (desiredPartyMembers.includes(localName) && active.has(String(leader)) && !members.has(String(leader))) {
         return {
           state: 'READY',
           reason: 'H19_DESIRED_PARTY_LEADER_MISSING',
@@ -806,12 +833,18 @@
     }
 
     _suspend(reason, details = {}) {
+      const current = this.currentAction;
+      const alreadyRecorded = !!(current && current.unknownRecorded === true);
       this.suspended = true;
       this.suspendedReason = cleanText(reason, 300) || 'H19_SUSPENDED';
       this.autonomyEnabled = false;
-      this.metrics.actionsUnknown += 1;
-      if (this.currentAction) this._persistCurrent();
-      this.lastAction = { at: nowIso(), type: 'SUSPENDED', reason: this.suspendedReason, ...clone(details) };
+      if (!alreadyRecorded) this.metrics.actionsUnknown += 1;
+      if (current) {
+        current.unknownRecorded = true;
+        this.currentAction = current;
+        this._persistCurrent();
+      }
+      this.lastAction = { at: nowIso(), type: 'SUSPENDED', reason: this.suspendedReason, repeated: alreadyRecorded, ...clone(details) };
       if (this.logger) this.logger.error('H19 Lifecycle Recovery suspendiert', this.lastAction);
       return { state: 'UNKNOWN', reason: this.suspendedReason, currentAction: clone(this.currentAction) };
     }
@@ -893,7 +926,10 @@
 
       const fromQueue = this.queue.length && String(this.queue[0].id) === String(plan.request.id);
       const result = this._dispatch(plan.request);
-      if (result.accepted && fromQueue) this.queue.shift();
+      if (fromQueue) {
+        const ownsDispatchedRequest = !!(this.currentAction && String(this.currentAction.requestId) === String(plan.request.id));
+        if (result.accepted || ownsDispatchedRequest) this.queue.shift();
+      }
       return result;
     }
 
@@ -910,6 +946,7 @@
         actionsThisSession: this.actionsThisSession,
         policy: {
           desiredActiveNames: clone(this.policyState.desiredActiveNames),
+          desiredPartyMemberNames: clone(this.policyState.desiredPartyMemberNames),
           desiredPartyLeader: this.policyState.desiredPartyLeader,
           maxActionsPerSession: this.config.maxActionsPerSession
         },
