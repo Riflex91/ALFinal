@@ -417,7 +417,7 @@ Vor Merge: neuen Exact-Head-CI und vollständigen Merge-Gate erneut prüfen.
 
 ## H13 – Handel
 
-**🟦 IMPLEMENTIERT · PRE-LIVE CI GRÜN · LIVE-TEST OFFEN**
+**🟩 BESTANDEN – 2026-09-27**
 
 H13 basiert nach bestandenem und gemergtem H12 direkt auf dem aktuellen `main`.
 
@@ -449,16 +449,22 @@ H13 basiert nach bestandenem und gemergtem H12 direkt auf dem aktuellen `main`.
 - neuer H13-v2-Branch wird auf aktuellem H12-Merge-`main` erneut Exact-Head-CI geprüft
 - `dist/al-bot.js` source-synchron auf `0.13.0-h13`
 
-**🟧 LIVE-TEST NOCH AUSSTEHEND**
-- eigener Merchant
-- exakt 1 `hpot0` zum live bekannten NPC-Festpreis kaufen
-- Inventory- und Gold-Delta bestätigen
-- Player-Market nur read-only analysieren; kein Player-Trade-Write im H13-Live-Test
-- 5-Sekunden-Stabilität ohne H13-UNKNOWN
-- Cleanup + Auto-Restore
-- Nutzer klickt nur **Test starten**
+**🟩 LIVE-TEST BESTANDEN**
+- Suite `h13-trade`: `PASSED / ALL_STEPS_PASSED`
+- Merchant `My_Merchant`
+- 1 x `hpot0` zum Live-NPC-Preis 20 Gold gekauft
+- Inventar: `5999 -> 6000`
+- Gold: `14195004 -> 14194984`
+- `npcBuysConfirmed=1`
+- Player-Market read-only: 51 Asks, 1 Bid
+- `marketBuysDispatched=0`, `marketSellsDispatched=0`
+- alle H13-UNKNOWN-Deltas 0
+- Cleanup ohne Pending/Request/H13-Movement
+- Runtime wieder STOPPED, Scheduler `totalResources=0`
+- Post-Live read-only Hardening: globaler Spread nur noch bei gleichem Item+Level
+- finale Evidence in `docs/H13-LIVE-TEST.md`
 
-H13 wird erst nach eigenem echten Adventure-Land-Live-PASS gemergt.
+Vor Merge: neuen Exact-Head-CI und vollständigen Merge-Gate erneut prüfen.
 ---
 
 ## H14 – Gear
