@@ -32,6 +32,7 @@
       this.bankResult = null;
       this.tradeResult = null;
       this.gearResult = null;
+      this.upgradeResult = null;
       this.liveTestClipboard = null;
       this._offLog = null;
       this._dragCleanup = null;
@@ -88,7 +89,7 @@
 </style>
 <div class="albot-head" id="albot-drag-handle"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-minimize" class="albot-window-btn" title="Fenster minimieren" aria-label="Fenster minimieren">—</button><button id="albot-emergency" class="albot-stop">STOP</button></div>
 <div class="albot-tabs">
-<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="merchant">Merchant</button><button class="albot-tab" data-tab="bank">Bank</button><button class="albot-tab" data-tab="trade">Handel</button><button class="albot-tab" data-tab="gear">Gear</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
+<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="merchant">Merchant</button><button class="albot-tab" data-tab="bank">Bank</button><button class="albot-tab" data-tab="trade">Handel</button><button class="albot-tab" data-tab="gear">Gear</button><button class="albot-tab" data-tab="upgrade">Upgrade & Compound</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
 </div>
 <div class="albot-body">
 <section id="albot-panel-overview" class="albot-panel active"></section>
@@ -103,6 +104,7 @@
 <section id="albot-panel-bank" class="albot-panel"></section>
 <section id="albot-panel-trade" class="albot-panel"></section>
 <section id="albot-panel-gear" class="albot-panel"></section>
+<section id="albot-panel-upgrade" class="albot-panel"></section>
 <section id="albot-panel-live-test" class="albot-panel"></section>
 <section id="albot-panel-knowledge" class="albot-panel"></section>
 <section id="albot-panel-logs" class="albot-panel"></section>
@@ -246,6 +248,7 @@
       if (this.activeTab === 'bank') this.renderBank(status);
       if (this.activeTab === 'trade') this.renderTrade(status);
       if (this.activeTab === 'gear') this.renderGear(status);
+      if (this.activeTab === 'upgrade') this.renderUpgrade(status);
       if (this.activeTab === 'live-test') this.renderLiveTest(status);
       if (this.activeTab === 'knowledge') this.renderKnowledge(status);
       if (this.activeTab === 'logs') this.renderLogs();
@@ -269,6 +272,7 @@
       this.renderBank(status);
       this.renderTrade(status);
       this.renderGear(status);
+      this.renderUpgrade(status);
       this.renderLiveTest(status);
       this.renderKnowledge(status);
       this.renderLogs();
@@ -1110,6 +1114,97 @@ ${items.length ? items.slice(0, 24).map(row => '<div class="albot-small">#'+esc(
       };
       const clearGoal = panel.querySelector('#albot-h14-goal-clear');
       if (clearGoal) clearGoal.onclick = () => run(() => this.runtime.gear.setGoals([]));
+    }
+
+    renderUpgrade(status) {
+      const panel = this.host.querySelector('#albot-panel-upgrade');
+      if (!panel) return;
+      const upgrade = status.upgrade || {};
+      const metrics = upgrade.metrics || {};
+      let plan = upgrade.lastPlan || null;
+      try { if (!plan || plan.state !== 'READY') plan = this.runtime.upgrade.plan(); } catch (_) {}
+      const upgrades = plan && Array.isArray(plan.upgradeCandidates) ? plan.upgradeCandidates : [];
+      const compounds = plan && Array.isArray(plan.compoundCandidates) ? plan.compoundCandidates : [];
+      const policy = upgrade.config || {};
+      const workspace = plan && plan.workspace || {};
+      const resultText = this.upgradeResult ? JSON.stringify(this.upgradeResult, null, 2) : 'Noch keine manuelle H15-Aktion.';
+
+      const upgradeOptions = upgrades.length
+        ? upgrades.map(row => '<option value="'+esc(row.itemSlot)+'">'+esc(row.item.name)+' +'+esc(row.fromLevel)+' → +'+esc(row.targetLevel)+' · '+esc(row.scrollName)+' · Risiko '+esc(row.budget.itemValueAtRisk)+'</option>').join('')
+        : '<option value="">kein sicherer Upgrade-Kandidat</option>';
+      const compoundOptions = compounds.length
+        ? compounds.map(row => '<option value="'+esc(row.itemSlots.join(','))+'">'+esc(row.items[0].name)+' +'+esc(row.fromLevel)+' · Slots '+esc(row.itemSlots.join(', '))+' · '+esc(row.scrollName)+'</option>').join('')
+        : '<option value="">kein sicherer Compound-Kandidat</option>';
+
+      panel.innerHTML = `<div class="albot-card"><b>H15 Upgrade & Compound</b>
+<div class="albot-small">Scroll-/Offering-Auswahl, Risiko- und Kostenbudgets, Workspace-Slotreservierung sowie Live-Delta-Ergebnisprüfung. Promise-Erfolg allein bestätigt nichts.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${upgrade.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Plan</span><div class="albot-v">${esc(plan && plan.state || '-')} · ${esc(plan && plan.reason || '-')}</div></div>
+<div><span class="albot-k">Upgrade-Kandidaten</span><div class="albot-v">${esc(upgrades.length)}</div></div>
+<div><span class="albot-k">Compound-Kandidaten</span><div class="albot-v">${esc(compounds.length)}</div></div>
+<div><span class="albot-k">Versuche Session</span><div class="albot-v">${esc(upgrade.attemptsThisSession || 0)} / ${esc(policy.maxAttemptsPerSession || '-')}</div></div>
+<div><span class="albot-k">Reservierte Slots</span><div class="albot-v">${esc((workspace.reservedSlots || []).join(', ') || 'keine')}</div></div>
+<div><span class="albot-k">Upgrade Erfolg / Fail / Unknown</span><div class="albot-v">${esc(metrics.upgradesSucceeded || 0)} / ${esc(metrics.upgradesFailed || 0)} / ${esc(metrics.upgradesUnknown || 0)}</div></div>
+<div><span class="albot-k">Compound Erfolg / Fail / Unknown</span><div class="albot-v">${esc(metrics.compoundsSucceeded || 0)} / ${esc(metrics.compoundsFailed || 0)} / ${esc(metrics.compoundsUnknown || 0)}</div></div>
+<div><span class="albot-k">Budget Blocks</span><div class="albot-v">${esc(metrics.budgetBlocks || 0)}</div></div>
+<div><span class="albot-k">Suspendiert</span><div class="albot-v">${upgrade.suspended ? 'JA · '+esc(upgrade.suspendedReason || '-') : 'NEIN'}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Einzelaktion</b>
+<div class="albot-row"><select id="albot-h15-upgrade">${upgradeOptions}</select><button id="albot-h15-upgrade-run" class="albot-btn">Upgrade vormerken</button></div>
+<div class="albot-row"><select id="albot-h15-compound">${compoundOptions}</select><button id="albot-h15-compound-run" class="albot-btn">Compound vormerken</button></div>
+<div class="albot-small">Jeder Quell-, Scroll- und Offering-Slot wird unmittelbar vor Dispatch erneut validiert. Während Combat wird fail-closed blockiert.</div>
+</div>
+
+<div class="albot-card"><b>Budget / Offering Policy</b>
+<div class="albot-row"><label>Upgrade max +<input id="albot-h15-max-up" type="number" min="0" max="20" value="${esc(policy.maxUpgradeLevel == null ? 8 : policy.maxUpgradeLevel)}"></label><label>Compound max +<input id="albot-h15-max-comp" type="number" min="0" max="20" value="${esc(policy.maxCompoundLevel == null ? 4 : policy.maxCompoundLevel)}"></label></div>
+<div class="albot-row"><label>Item-Risiko max <input id="albot-h15-max-risk" type="number" min="0" value="${esc(policy.maxItemValueAtRisk == null ? 250000 : policy.maxItemValueAtRisk)}"></label><label>Consumables max <input id="albot-h15-max-cost" type="number" min="0" value="${esc(policy.maxConsumableCost == null ? 250000 : policy.maxConsumableCost)}"></label></div>
+<div class="albot-row"><select id="albot-h15-offering-mode"><option ${policy.offeringMode==='DISABLED'?'selected':''}>DISABLED</option><option ${policy.offeringMode==='OPTIONAL'?'selected':''}>OPTIONAL</option><option ${policy.offeringMode==='REQUIRED'?'selected':''}>REQUIRED</option></select><input id="albot-h15-offering-level" type="number" min="0" max="20" value="${esc(policy.offeringFromLevel == null ? 7 : policy.offeringFromLevel)}"><button id="albot-h15-policy-save" class="albot-btn">Policy speichern</button></div>
+</div>
+
+<div class="albot-card"><b>Steuerung</b>
+<div class="albot-row"><button id="albot-h15-plan" class="albot-btn">Plan</button><button id="albot-h15-tick" class="albot-btn">Tick</button><button id="albot-h15-best" class="albot-btn">Sichersten Kandidaten vormerken</button><button id="albot-h15-reset" class="albot-btn warn" ${upgrade.suspended ? '' : 'disabled'}>Safety zurücksetzen</button></div>
+<div class="albot-small">Pending: ${upgrade.pending ? esc(upgrade.pending.kind) : 'nein'} · Request: ${upgrade.request ? esc(upgrade.request.kind) : 'keiner'}</div>
+</div>
+
+<div class="albot-card"><b>Letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.upgradeResult = fn(); }
+        catch (error) { this.upgradeResult = { ok: false, reason: String(error && error.message || error) }; }
+        this.renderUpgrade(this.runtime.status());
+      };
+      const planButton = panel.querySelector('#albot-h15-plan');
+      if (planButton) planButton.onclick = () => run(() => this.runtime.upgrade.plan());
+      const tickButton = panel.querySelector('#albot-h15-tick');
+      if (tickButton) tickButton.onclick = () => run(() => this.runtime.upgrade.tick());
+      const bestButton = panel.querySelector('#albot-h15-best');
+      if (bestButton) bestButton.onclick = () => run(() => this.runtime.upgrade.queueBest());
+      const resetButton = panel.querySelector('#albot-h15-reset');
+      if (resetButton) resetButton.onclick = () => run(() => this.runtime.upgrade.resetSafety('GUI_H15_RESET'));
+      const upgradeButton = panel.querySelector('#albot-h15-upgrade-run');
+      if (upgradeButton) upgradeButton.onclick = () => {
+        const slot = Number(panel.querySelector('#albot-h15-upgrade').value);
+        run(() => Number.isInteger(slot) ? this.runtime.upgrade.queueUpgrade(slot) : { accepted: false, reason: 'H15_GUI_NO_UPGRADE_CANDIDATE' });
+      };
+      const compoundButton = panel.querySelector('#albot-h15-compound-run');
+      if (compoundButton) compoundButton.onclick = () => {
+        const raw = panel.querySelector('#albot-h15-compound').value || '';
+        const slots = raw ? raw.split(',').map(Number) : [];
+        run(() => slots.length === 3 && slots.every(Number.isInteger)
+          ? this.runtime.upgrade.queueCompound(slots)
+          : { accepted: false, reason: 'H15_GUI_NO_COMPOUND_CANDIDATE' });
+      };
+      const policyButton = panel.querySelector('#albot-h15-policy-save');
+      if (policyButton) policyButton.onclick = () => run(() => this.runtime.upgrade.policy({
+        maxUpgradeLevel: Number(panel.querySelector('#albot-h15-max-up').value),
+        maxCompoundLevel: Number(panel.querySelector('#albot-h15-max-comp').value),
+        maxItemValueAtRisk: Number(panel.querySelector('#albot-h15-max-risk').value),
+        maxConsumableCost: Number(panel.querySelector('#albot-h15-max-cost').value),
+        offeringMode: panel.querySelector('#albot-h15-offering-mode').value,
+        offeringFromLevel: Number(panel.querySelector('#albot-h15-offering-level').value)
+      }));
     }
 
     async runRecommendedLiveTest() {
