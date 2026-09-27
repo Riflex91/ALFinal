@@ -1354,3 +1354,91 @@ Live-Ziel:
 - Bot soll kontrolliert und fail-safe in einen gültigen Betriebszustand zurückfinden.
 
 Bestehende Projektregeln bleiben unverändert: GLOBAL STOP höchste Priorität, Live Truth > Knowledge, keine hartcodierten Namen, zentrale Roster-/Ownership-Schichten, sichere Movement-/Scheduler-/ActionBoundary-Pfade, UNKNOWN niemals blind wiederholen, Supabase READ-ONLY und GitHub-Writes nur auf einem nicht-stalen Branch.
+
+
+## H19 – Character Lifecycle & Recovery technischer Pre-Live-Stand
+
+Stand 2026-09-27, PR #28 `H19: Add bounded character lifecycle recovery`.
+
+### Implementierter Scope
+
+- `CharacterLifecycleController` als eigener H19-Owner;
+- Remote Start/Stop nur für account-eigene, nichtlokale Characters;
+- lokaler Respawn nur bei `rip=true`;
+- Desired-Active-Set aus Live-Roster für Disconnect-/Restart-Recovery;
+- persistente in-flight Lifecycle-Evidence vor Dispatch;
+- nach Bundle-/Runtime-Restart ausschließlich Reconciliation, kein Blind-Redispatch;
+- Party-Recovery mit gespeichertem eigenen Desired-Party-Leader;
+- Leader lädt fehlende aktive Desired-Mitglieder ein;
+- Non-Leader fordert den gespeicherten Leader an;
+- eingehende Invite/Request-Hooks beobachten nur und queueen H19-Signale;
+- Accept erfolgt später über ActionBoundary und wird erst durch Live-Party-Snapshot bestätigt;
+- Signale ohne eindeutigen gespeicherten Leader werden ignoriert;
+- Foreign Party oder abweichender Party-Leader blockiert fail-closed;
+- kein automatisches `leave_party`;
+- bounded Session-Budget;
+- bekannte automatische Rejects stoppen Autonomie;
+- UNKNOWN/Promise-Rejection/Timeout suspendiert ohne Blind-Retry.
+
+### Oberflächen
+
+- Runtime-Modul `character-lifecycle`, Version `0.19.0`;
+- Runtime/Bundle `0.19.0-h19`;
+- Package `0.19.0`;
+- Headless API `ALBot.lifecycle`;
+- eigener Lifecycle-Tab mit Desired Active, Desired Party Leader, Start/Stop/Respawn, Party-Recovery-Metriken, Pending/Reconciliation/UNKNOWN/Suspension.
+
+### Regressionen
+
+H19 testet u. a.:
+
+- Ownership/Local-vs-Remote;
+- Start/Stop-Live-Evidence;
+- Respawn-Live-Evidence;
+- Sync-UNKNOWN;
+- Promise-Rejection ohne Retry;
+- Reload-Reconciliation ohne Redispatch;
+- Desired-Active Disconnect-Recovery;
+- Leader Invite;
+- Non-Leader Request;
+- Invite Accept nur vom gespeicherten eigenen Leader;
+- kein Party-Recovery ohne Leader;
+- Foreign-Party-Block;
+- bekannter Auto-Reject stoppt Session;
+- Runtime/API/UI/ActionBoundary/Build/Bundle-Wiring.
+
+Technischer Code-Head vor finaler Doku-/Bundle-Finalisierung:
+
+`9d35c98966a627595ab872e1322b5b8f1e8bdd54`
+
+CI #522:
+
+- 272 tests
+- 272 pass
+- 0 fail
+- 0 cancelled
+- 0 skipped
+- 0 todo
+- completed / success
+
+### Live-Suite v1
+
+`h19-character-lifecycle`:
+
+1. `preflight` – lokaler Character muss bereits tot sein, Roster und Respawn-API verfügbar;
+2. `death-recovery` – genau einen Respawn dispatchen und erst bei Settlement + `rip=false` bestätigen;
+3. `stability` – fünf Sekunden ohne Retry/UNKNOWN;
+4. `cleanup` – Autonomie AUS, keine aktive Aktion, Queue leer, keine Suspension.
+
+Der erste Live-Gate mutiert bewusst **nicht** Remote Start/Stop oder Party-Topologie. Diese Pfade sind technisch implementiert und regressionsgetestet, erhalten aber erst in einem gezielten bounded Live-Test echte Mutation-Evidence.
+
+### Nächste verpflichtende Schritte
+
+1. finalen `dist/al-bot.js` exakt aus dem aktuellen H19-Source-Stand synchronisieren;
+2. normalen read-only Testworkflow sicherstellen;
+3. finalen PR-Head per Exact-Head-CI komplett grün bestätigen;
+4. frisch `behind_by=0`, Mergeability, Checks, Review-Threads und Reviews prüfen;
+5. PR #28 nur per `merge` und exaktem aktuellem `expected_head_sha` mergen;
+6. `main` verifizieren;
+7. anschließend Nutzer genau den bounded H19-v1-Live-Test auf einem bereits toten lokalen Character starten lassen;
+8. bei FAIL kein Blind-Rerun, sondern Diagnosebericht auswerten.

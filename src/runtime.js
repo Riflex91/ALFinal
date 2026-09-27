@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.18.0-h18';
+      this.version = options.version || '0.19.0-h19';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -170,6 +170,16 @@
         economy: this.economy,
         canAct: action => this.actionAllowed(action)
       });
+      this.lifecycle = new ns.CharacterLifecycleController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        roster: this.roster,
+        party: this.party,
+        storage: this.storage,
+        canAct: action => this.actionAllowed(action)
+      });
       this.inventory.partyLogistics = this.partyLogistics;
       this.merchant.partyLogistics = this.partyLogistics;
       this.economy.partyLogistics = this.partyLogistics;
@@ -191,6 +201,7 @@
       this._registerH16LiveTest();
       this._registerH17LiveTest();
       this._registerH18LiveTest();
+      this._registerH19LiveTest();
       this._installErrorCapture();
       this.logger.info('AL Bot Runtime erstellt', {
         version: this.version,
@@ -356,6 +367,15 @@
         start: context => this.partyLogistics.start(context),
         stop: reason => this.partyLogistics.stop(reason),
         status: () => this.partyLogistics.status()
+      });
+
+      this.modules.register({
+        id: 'character-lifecycle',
+        title: 'Character Lifecycle & Recovery',
+        version: '0.19.0',
+        start: context => this.lifecycle.start(context),
+        stop: reason => this.lifecycle.stop(reason),
+        status: () => this.lifecycle.status()
       });
     }
 
@@ -4180,6 +4200,158 @@
       });
     }
 
+    _registerH19LiveTest() {
+      let baseline = null;
+
+      this.liveTests.register({
+        id: 'h19-character-lifecycle',
+        title: 'H19 – Character Lifecycle & Recovery',
+        description: 'Begrenzter erster H19-Live-Test für einen echten lokalen Death→Respawn-Recovery-Pfad mit bestätigter Live-Evidence und ohne Blind-Retry.',
+        version: '1',
+        recommended: true,
+        autoStartRuntime: true,
+        restoreRuntimeState: true,
+        prepare: async ({ runtime }) => {
+          try { runtime.lifecycle.stopAutonomy('H19_LIVE_TEST_RESET'); } catch (_) {}
+          const current = runtime.lifecycle.status();
+          if (current.currentAction) throw new Error('H19_ACTIVE_ACTION_BEFORE_LIVE_TEST');
+          try { runtime.lifecycle.cancelQueued(); } catch (_) {}
+          try {
+            if (!current.currentAction) runtime.lifecycle.resetSafety('H19_LIVE_TEST_RESET');
+          } catch (_) {}
+          const status = runtime.lifecycle.status();
+          baseline = {
+            actionsDispatched: Number(status.metrics.actionsDispatched || 0),
+            actionsConfirmed: Number(status.metrics.actionsConfirmed || 0),
+            actionsUnknown: Number(status.metrics.actionsUnknown || 0),
+            respawnsConfirmed: Number(status.metrics.respawnsConfirmed || 0)
+          };
+        },
+        cleanup: async ({ runtime }) => {
+          try { runtime.lifecycle.stopAutonomy('H19_LIVE_TEST_CLEANUP'); } catch (_) {}
+          try {
+            const current = runtime.lifecycle.status();
+            if (!current.currentAction) runtime.lifecycle.cancelQueued();
+            if (!current.suspended && !current.currentAction) runtime.lifecycle.resetSafety('H19_LIVE_TEST_CLEANUP');
+          } catch (_) {}
+        },
+        steps: [
+          {
+            id: 'preflight',
+            title: 'Toten lokalen Character und sicheren Respawn-Pfad prüfen',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, note }) => {
+              const game = runtime.game.snapshot();
+              assert(game && game.available && game.character, 'CHARACTER_UNAVAILABLE');
+              assert(game.character.rip === true, 'H19_NEEDS_DEAD_LOCAL_CHARACTER');
+              const module = runtime.modules.describe('character-lifecycle');
+              assert(module && module.state === 'ACTIVE', 'H19_MODULE_NOT_ACTIVE');
+              const roster = runtime.roster.refresh();
+              assert(roster && roster.accountStateAvailable === true, 'H19_ACCOUNT_ROSTER_UNAVAILABLE');
+              assert(roster.activeStateAvailable === true, 'H19_ACTIVE_ROSTER_UNAVAILABLE');
+              assert(runtime.actions.available('respawn'), 'H19_RESPAWN_API_UNAVAILABLE');
+              const status = runtime.lifecycle.status();
+              assert(status.suspended === false, status.suspendedReason || 'H19_SUSPENDED');
+              assert(status.currentAction == null, 'H19_ACTION_ACTIVE_BEFORE_PREFLIGHT');
+              note({
+                local: game.character.name,
+                ctype: game.character.ctype,
+                desiredActiveNames: status.policy.desiredActiveNames
+              });
+              return {
+                local: game.character.name,
+                ctype: game.character.ctype,
+                rip: game.character.rip,
+                activeCharacterNames: roster.activeCharacterNames
+              };
+            }
+          },
+          {
+            id: 'death-recovery',
+            title: 'Genau einen echten Respawn bestätigen',
+            timeoutMs: 30000,
+            run: async ({ runtime, assert, waitFor }) => {
+              const queued = runtime.lifecycle.queueRespawn();
+              assert(queued && queued.accepted === true, queued && queued.reason || 'H19_RESPAWN_QUEUE_FAILED');
+              const started = runtime.lifecycle.startAutonomy({ maxActions: 1 });
+              assert(started && started.accepted === true, started && started.reason || 'H19_RESPAWN_AUTONOMY_START_FAILED');
+
+              await waitFor(() => {
+                const status = runtime.lifecycle.status();
+                if (status.suspended) throw new Error(status.suspendedReason || 'H19_SUSPENDED_DURING_RESPAWN');
+                if (Number(status.metrics.actionsUnknown || 0) > baseline.actionsUnknown) throw new Error('H19_ACTION_UNKNOWN');
+                return Number(status.metrics.respawnsConfirmed || 0) > baseline.respawnsConfirmed
+                  && status.currentAction == null
+                  ? status
+                  : null;
+              }, { timeoutMs: 25000, pollMs: 200, label: 'h19-respawn' });
+
+              runtime.lifecycle.stopAutonomy('H19_RESPAWN_COMPLETE');
+              const game = runtime.game.snapshot();
+              const status = runtime.lifecycle.status();
+              const dispatched = Number(status.metrics.actionsDispatched || 0) - baseline.actionsDispatched;
+              const confirmed = Number(status.metrics.actionsConfirmed || 0) - baseline.actionsConfirmed;
+              const unknown = Number(status.metrics.actionsUnknown || 0) - baseline.actionsUnknown;
+              const respawns = Number(status.metrics.respawnsConfirmed || 0) - baseline.respawnsConfirmed;
+              assert(game && game.character && game.character.rip !== true, 'H19_CHARACTER_STILL_DEAD');
+              assert(dispatched === 1, 'H19_RESPAWN_DISPATCH_COUNT_INVALID');
+              assert(confirmed === 1, 'H19_RESPAWN_CONFIRM_COUNT_INVALID');
+              assert(respawns === 1, 'H19_RESPAWN_CONFIRMATION_MISSING');
+              assert(unknown === 0, 'H19_RESPAWN_UNKNOWN');
+              return {
+                local: game.character.name,
+                dispatched,
+                confirmed,
+                respawnsConfirmed: respawns,
+                unknown
+              };
+            }
+          },
+          {
+            id: 'stability',
+            title: 'Fünf Sekunden ohne Respawn-Retry oder UNKNOWN beobachten',
+            timeoutMs: 10000,
+            run: async ({ runtime, assert, sleep }) => {
+              const before = runtime.lifecycle.status();
+              const beforeDispatch = Number(before.metrics.actionsDispatched || 0);
+              await sleep(5000);
+              const after = runtime.lifecycle.status();
+              assert(after.autonomyEnabled === false, 'H19_AUTONOMY_RESTARTED');
+              assert(after.currentAction == null, 'H19_ACTION_REMAINS');
+              assert(after.suspended === false, after.suspendedReason || 'H19_SUSPENDED_DURING_STABILITY');
+              assert(Number(after.metrics.actionsDispatched || 0) === beforeDispatch, 'H19_RESPAWN_RETRY_AFTER_STOP');
+              assert(Number(after.metrics.actionsUnknown || 0) === baseline.actionsUnknown, 'H19_UNKNOWN_DURING_STABILITY');
+              return {
+                actionsDispatched: Number(after.metrics.actionsDispatched || 0) - baseline.actionsDispatched,
+                actionsConfirmed: Number(after.metrics.actionsConfirmed || 0) - baseline.actionsConfirmed,
+                actionsUnknown: Number(after.metrics.actionsUnknown || 0) - baseline.actionsUnknown
+              };
+            }
+          },
+          {
+            id: 'cleanup',
+            title: 'Lifecycle-Autonomie stoppen und Ownership freigeben',
+            timeoutMs: 5000,
+            run: async ({ runtime, assert }) => {
+              runtime.lifecycle.stopAutonomy('H19_LIVE_TEST_COMPLETE');
+              const status = runtime.lifecycle.status();
+              assert(status.autonomyEnabled === false, 'H19_AUTONOMY_STILL_ENABLED');
+              assert(status.currentAction == null, 'H19_CURRENT_ACTION_REMAINS');
+              assert(status.queue.length === 0, 'H19_QUEUE_REMAINS');
+              assert(status.suspended === false, status.suspendedReason || 'H19_SUSPENDED_AT_CLEANUP');
+              return {
+                autonomyEnabled: status.autonomyEnabled,
+                currentAction: status.currentAction,
+                queueLength: status.queue.length,
+                suspended: status.suspended
+              };
+            }
+          }
+        ]
+      });
+    }
+
+
     _installErrorCapture() {
       if (!this.root || typeof this.root.addEventListener !== 'function') return;
       this._errorHandler = event => {
@@ -4335,6 +4507,7 @@
         exchangeCraft: this.exchangeCraft.status(),
         economy: this.economy.status(),
         partyLogistics: this.partyLogistics.status(),
+        lifecycle: this.lifecycle.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
         roster,
@@ -4368,6 +4541,7 @@
         exchangeCraft: this.exchangeCraft.status(),
         economy: this.economy.status(),
         partyLogistics: this.partyLogistics.status(),
+        lifecycle: this.lifecycle.status(),
         liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
         logs: this.logger.list(160),
@@ -4400,6 +4574,7 @@
       push('exchange-craft-controller', !!this.exchangeCraft.status() && typeof this.exchangeCraft.plan === 'function' && typeof this.exchangeCraft.productionPlan === 'function', this.exchangeCraft.status());
       push('economy-controller', !!this.economy.status() && typeof this.economy.plan === 'function' && typeof this.economy.startAutonomy === 'function', this.economy.status());
       push('party-logistics-controller', !!this.partyLogistics.status() && typeof this.partyLogistics.plan === 'function' && typeof this.partyLogistics.queueSupply === 'function', this.partyLogistics.status());
+      push('character-lifecycle-controller', !!this.lifecycle.status() && typeof this.lifecycle.plan === 'function' && typeof this.lifecycle.queueStart === 'function' && typeof this.lifecycle.queueRespawn === 'function', this.lifecycle.status());
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
       push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);

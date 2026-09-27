@@ -207,10 +207,10 @@ test('H7 exposes normalized owned party roles and coordinator API', async t => {
   t.after(async () => { try { await ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {} });
   await ctx.ALBot.start();
 
-  assert.equal(ctx.ALBot.version, '0.18.0-h18');
+  assert.equal(ctx.ALBot.version, '0.19.0-h19');
   assert.equal(typeof ctx.ALBot.party.status, 'function');
   assert.equal(typeof ctx.ALBot.party.snapshot, 'function');
-  assert.equal(ctx.ALBot.liveTests.status().recommendedId, 'h18-party-logistics');
+  assert.equal(ctx.ALBot.liveTests.status().recommendedId, 'h19-character-lifecycle');
 
   const snapshot = ctx.ALBot.party.snapshot();
   assert.equal(snapshot.size, 2);
@@ -218,7 +218,7 @@ test('H7 exposes normalized owned party roles and coordinator API', async t => {
   assert.equal(snapshot.foreignMemberNames.length, 0);
   assert.equal(snapshot.ownedMembers.find(row => row.name === 'TankWarrior').role, 'TANK');
   assert.equal(snapshot.ownedMembers.find(row => row.name === 'LocalRanger').role, 'DPS');
-  assert.equal(ctx.ALBot.scheduler.status().totalResources, 14);
+  assert.equal(ctx.ALBot.scheduler.status().totalResources, 15);
 });
 
 test('H7 fail-closes coordination when a foreign party member is present', async t => {

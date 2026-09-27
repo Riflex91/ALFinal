@@ -151,18 +151,18 @@ test('H5 combat API, module and explicit H5 live suite remain available under H6
   });
   vm.runInNewContext(bundle, ctx);
 
-  assert.equal(ctx.ALBot.version, '0.18.0-h18');
+  assert.equal(ctx.ALBot.version, '0.19.0-h19');
   assert.equal(typeof ctx.ALBot.combat.start, 'function');
   assert.equal(typeof ctx.ALBot.combat.stop, 'function');
   assert.equal(typeof ctx.ALBot.combat.candidates, 'function');
   assert.ok(ctx.ALBot.liveTests.list().some(row => row.id === 'h5-combat'));
-  assert.equal(ctx.ALBot.liveTests.status().recommendedId, 'h18-party-logistics');
+  assert.equal(ctx.ALBot.liveTests.status().recommendedId, 'h19-character-lifecycle');
 
   await ctx.ALBot.start();
   const module = ctx.ALBot.modules.list().find(row => row.id === 'combat');
   assert.equal(module.state, 'ACTIVE');
   assert.equal(module.resources, 1);
-  assert.equal(ctx.ALBot.scheduler.status().totalResources, 14);
+  assert.equal(ctx.ALBot.scheduler.status().totalResources, 15);
   await ctx.ALBot.stop('DONE');
 });
 

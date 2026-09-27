@@ -31,7 +31,15 @@
     upgrade: Object.freeze({ publicName: 'upgrade', family: 'upgrade-compound' }),
     compound: Object.freeze({ publicName: 'compound', family: 'upgrade-compound' }),
     exchange: Object.freeze({ publicName: 'exchange', family: 'exchange-craft' }),
-    auto_craft: Object.freeze({ publicName: 'auto_craft', family: 'exchange-craft' })
+    auto_craft: Object.freeze({ publicName: 'auto_craft', family: 'exchange-craft' }),
+    start_character: Object.freeze({ publicName: 'start_character', family: 'character-lifecycle' }),
+    stop_character: Object.freeze({ publicName: 'stop_character', family: 'character-lifecycle' }),
+    respawn: Object.freeze({ publicName: 'respawn', family: 'character-recovery' }),
+    send_party_invite: Object.freeze({ publicName: 'send_party_invite', family: 'party-recovery' }),
+    send_party_request: Object.freeze({ publicName: 'send_party_request', family: 'party-recovery' }),
+    accept_party_invite: Object.freeze({ publicName: 'accept_party_invite', family: 'party-recovery' }),
+    accept_party_request: Object.freeze({ publicName: 'accept_party_request', family: 'party-recovery' }),
+    leave_party: Object.freeze({ publicName: 'leave_party', family: 'party-recovery' })
   });
 
   function errorDetails(error) {

@@ -34,6 +34,7 @@
       this.gearResult = null;
       this.upgradeResult = null;
       this.exchangeCraftResult = null;
+      this.lifecycleResult = null;
       this.liveTestClipboard = null;
       this._offLog = null;
       this._dragCleanup = null;
@@ -90,7 +91,7 @@
 </style>
 <div class="albot-head" id="albot-drag-handle"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-minimize" class="albot-window-btn" title="Fenster minimieren" aria-label="Fenster minimieren">—</button><button id="albot-emergency" class="albot-stop">STOP</button></div>
 <div class="albot-tabs">
-<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="merchant">Merchant</button><button class="albot-tab" data-tab="bank">Bank</button><button class="albot-tab" data-tab="trade">Handel</button><button class="albot-tab" data-tab="gear">Gear</button><button class="albot-tab" data-tab="upgrade">Upgrade & Compound</button><button class="albot-tab" data-tab="exchange-craft">Exchange & Craft</button><button class="albot-tab" data-tab="economy">Economy</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
+<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="merchant">Merchant</button><button class="albot-tab" data-tab="bank">Bank</button><button class="albot-tab" data-tab="trade">Handel</button><button class="albot-tab" data-tab="gear">Gear</button><button class="albot-tab" data-tab="upgrade">Upgrade & Compound</button><button class="albot-tab" data-tab="exchange-craft">Exchange & Craft</button><button class="albot-tab" data-tab="economy">Economy</button><button class="albot-tab" data-tab="lifecycle">Lifecycle</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
 </div>
 <div class="albot-body">
 <section id="albot-panel-overview" class="albot-panel active"></section>
@@ -108,6 +109,7 @@
 <section id="albot-panel-upgrade" class="albot-panel"></section>
 <section id="albot-panel-exchange-craft" class="albot-panel"></section>
 <section id="albot-panel-economy" class="albot-panel"></section>
+<section id="albot-panel-lifecycle" class="albot-panel"></section>
 <section id="albot-panel-live-test" class="albot-panel"></section>
 <section id="albot-panel-knowledge" class="albot-panel"></section>
 <section id="albot-panel-logs" class="albot-panel"></section>
@@ -254,6 +256,7 @@
       if (this.activeTab === 'upgrade') this.renderUpgrade(status);
       if (this.activeTab === 'exchange-craft') this.renderExchangeCraft(status);
       if (this.activeTab === 'economy') this.renderEconomy(status);
+      if (this.activeTab === 'lifecycle') this.renderLifecycle(status);
       if (this.activeTab === 'live-test') this.renderLiveTest(status);
       if (this.activeTab === 'knowledge') this.renderKnowledge(status);
       if (this.activeTab === 'logs') this.renderLogs();
@@ -280,6 +283,7 @@
       this.renderUpgrade(status);
       this.renderExchangeCraft(status);
       this.renderEconomy(status);
+      this.renderLifecycle(status);
       this.renderLiveTest(status);
       this.renderKnowledge(status);
       this.renderLogs();
@@ -1491,6 +1495,98 @@ ${items.length ? items.slice(0, 24).map(row => '<div class="albot-small">#'+esc(
         minMarketPremiumRatio: Number(panel.querySelector('#albot-h17-market-ratio').value)
       }));
     }
+
+    renderLifecycle(status) {
+      const panel = this.host.querySelector('#albot-panel-lifecycle');
+      if (!panel) return;
+      const lifecycle = status.lifecycle || {};
+      const metrics = lifecycle.metrics || {};
+      const policy = lifecycle.policy || {};
+      const roster = status.roster || {};
+      let plan = lifecycle.lastPlan || null;
+      try {
+        if (!plan || !['READY', 'IDLE', 'OBSERVE', 'PENDING', 'BLOCKED', 'SUSPENDED'].includes(String(plan.state || ''))) {
+          plan = this.runtime.lifecycle.plan();
+        }
+      } catch (_) {}
+      const localName = roster.local && roster.local.name || '';
+      const accountRows = Array.isArray(roster.accountCharacters) ? roster.accountCharacters : [];
+      const targetRows = accountRows.filter(row => String(row.name || '') !== String(localName));
+      const targetOptions = targetRows.length
+        ? targetRows.map(row => '<option value="'+esc(row.name)+'">'+esc(row.name)+' · '+esc(row.ctype || '-')+'</option>').join('')
+        : '<option value="">Kein Remote-Character verfügbar</option>';
+      const desired = Array.isArray(policy.desiredActiveNames) ? policy.desiredActiveNames : [];
+      const desiredParty = Array.isArray(policy.desiredPartyMemberNames) ? policy.desiredPartyMemberNames : [];
+      const action = lifecycle.currentAction || null;
+      const resultText = this.lifecycleResult ? JSON.stringify(this.lifecycleResult, null, 2) : 'Noch keine manuelle H19-Steuerung.';
+
+      panel.innerHTML = `<div class="albot-card"><b>H19 Character Lifecycle & Recovery</b>
+<div class="albot-small">Fail-closed Start/Stop/Respawn mit Account-Ownership, Live-Roster-Evidence und persistentem Pending-Reconcile über Runtime-/Bundle-Restarts. Autonomie ist standardmäßig AUS.</div>
+<div class="albot-grid" style="margin-top:8px">
+<div><span class="albot-k">Modul</span><div class="albot-v">${lifecycle.moduleActive ? 'ACTIVE' : 'STOPPED'}</div></div>
+<div><span class="albot-k">Autonomie</span><div class="albot-v">${lifecycle.autonomyEnabled ? 'AKTIV' : 'AUS'}</div></div>
+<div><span class="albot-k">Plan</span><div class="albot-v">${esc(plan && plan.state || '-')} · ${esc(plan && plan.reason || '-')}</div></div>
+<div><span class="albot-k">Aktive Aktion</span><div class="albot-v">${action ? esc(action.kind)+' · '+esc(action.targetName || '-')+' · '+esc(action.settlement || '-') : 'keine'}</div></div>
+<div><span class="albot-k">Desired Active</span><div class="albot-v">${desired.length ? desired.map(esc).join(', ') : 'nicht erfasst'}</div></div>
+<div><span class="albot-k">Desired Party Members</span><div class="albot-v">${desiredParty.length ? desiredParty.map(esc).join(', ') : 'nicht erfasst'}</div></div>\n<div><span class="albot-k">Desired Party Leader</span><div class="albot-v">${esc(policy.desiredPartyLeader || '-')}</div></div>
+<div><span class="albot-k">Session-Aktionen</span><div class="albot-v">${esc(lifecycle.actionsThisSession || 0)} / ${esc(policy.maxActionsPerSession || '-')}</div></div>
+<div><span class="albot-k">Bestätigt / Reject / Unknown</span><div class="albot-v">${esc(metrics.actionsConfirmed || 0)} / ${esc(metrics.actionsRejected || 0)} / ${esc(metrics.actionsUnknown || 0)}</div></div>
+<div><span class="albot-k">Start / Stop / Respawn bestätigt</span><div class="albot-v">${esc(metrics.startsConfirmed || 0)} / ${esc(metrics.stopsConfirmed || 0)} / ${esc(metrics.respawnsConfirmed || 0)}</div></div>
+<div><span class="albot-k">Party Invite / Request / Accept bestätigt</span><div class="albot-v">${esc(metrics.partyInvitesConfirmed || 0)} / ${esc(metrics.partyRequestsConfirmed || 0)} / ${esc(metrics.partyAcceptsConfirmed || 0)}</div></div>
+<div><span class="albot-k">Party Signals / Konflikt-Blocks</span><div class="albot-v">${esc((lifecycle.partySignals || []).length)} / ${esc(metrics.partyConflictBlocks || 0)}</div></div>
+<div><span class="albot-k">Reconciliations</span><div class="albot-v">${esc(metrics.reconciliations || 0)}</div></div>
+<div><span class="albot-k">Suspendiert</span><div class="albot-v">${lifecycle.suspended ? 'JA · '+esc(lifecycle.suspendedReason || '-') : 'NEIN'}</div></div>
+</div></div>
+
+<div class="albot-card"><b>Gewünschtes aktives Team</b>
+<div class="albot-row"><button id="albot-h19-capture" class="albot-btn">Aktive Characters erfassen</button><label>Max Aktionen <input id="albot-h19-max-actions" type="number" min="1" max="20" value="${esc(policy.maxActionsPerSession == null ? 4 : policy.maxActionsPerSession)}"></label></div>
+<div class="albot-row"><button id="albot-h19-start-auto" class="albot-btn" ${lifecycle.autonomyEnabled || action ? 'disabled' : ''}>Recovery starten</button><button id="albot-h19-stop-auto" class="albot-btn warn" ${lifecycle.autonomyEnabled ? '' : 'disabled'}>Recovery stoppen</button></div>
+<div class="albot-small">„Aktive Characters erfassen“ speichert ausschließlich aktuell live beobachtete, account-eigene Characters als Desired-Set und übernimmt einen live beobachteten eigenen Party-Leader. Fehlende Desired-Characters dürfen bounded wieder gestartet werden; Party-Recovery läuft nur mit eindeutig gespeichertem Leader.</div>
+</div>
+
+<div class="albot-card"><b>Manuelle Lifecycle-Aktion</b>
+<div class="albot-row"><select id="albot-h19-target">${targetOptions}</select></div>
+<div class="albot-row"><button id="albot-h19-start-char" class="albot-btn" ${action ? 'disabled' : ''}>Character starten</button><button id="albot-h19-stop-char" class="albot-btn warn" ${action ? 'disabled' : ''}>Character stoppen</button><button id="albot-h19-respawn" class="albot-btn" ${action ? 'disabled' : ''}>Lokalen Respawn vormerken</button></div>
+<div class="albot-row"><button id="albot-h19-plan" class="albot-btn">Plan</button><button id="albot-h19-tick" class="albot-btn">Tick</button><button id="albot-h19-cancel" class="albot-btn warn" ${action ? 'disabled' : ''}>Queue leeren</button><button id="albot-h19-ack-unknown" class="albot-btn warn" ${lifecycle.suspended && action && action.unknownRecorded ? '' : 'disabled'}>UNKNOWN bestätigen</button><button id="albot-h19-reset" class="albot-btn warn" ${lifecycle.suspended && !action ? '' : 'disabled'}>Safety zurücksetzen</button></div>
+</div>
+
+<div class="albot-card"><b>Letztes Ergebnis</b><div class="albot-log">${esc(resultText)}</div></div>`;
+
+      const run = fn => {
+        try { this.lifecycleResult = fn(); }
+        catch (error) { this.lifecycleResult = { ok: false, reason: String(error && error.message || error) }; }
+        this.renderLifecycle(this.runtime.status());
+      };
+      const target = () => {
+        const el = panel.querySelector('#albot-h19-target');
+        return el ? el.value : '';
+      };
+      const capture = panel.querySelector('#albot-h19-capture');
+      if (capture) capture.onclick = () => run(() => this.runtime.lifecycle.captureDesiredActive());
+      const startAuto = panel.querySelector('#albot-h19-start-auto');
+      if (startAuto) startAuto.onclick = () => run(() => this.runtime.lifecycle.startAutonomy({
+        maxActions: Math.max(1, Math.floor(Number(panel.querySelector('#albot-h19-max-actions').value) || 1))
+      }));
+      const stopAuto = panel.querySelector('#albot-h19-stop-auto');
+      if (stopAuto) stopAuto.onclick = () => run(() => this.runtime.lifecycle.stopAutonomy('GUI_H19_AUTONOMY_STOP'));
+      const startChar = panel.querySelector('#albot-h19-start-char');
+      if (startChar) startChar.onclick = () => run(() => this.runtime.lifecycle.queueStart(target()));
+      const stopChar = panel.querySelector('#albot-h19-stop-char');
+      if (stopChar) stopChar.onclick = () => run(() => this.runtime.lifecycle.queueStop(target()));
+      const respawn = panel.querySelector('#albot-h19-respawn');
+      if (respawn) respawn.onclick = () => run(() => this.runtime.lifecycle.queueRespawn());
+      const planButton = panel.querySelector('#albot-h19-plan');
+      if (planButton) planButton.onclick = () => run(() => this.runtime.lifecycle.plan());
+      const tickButton = panel.querySelector('#albot-h19-tick');
+      if (tickButton) tickButton.onclick = () => run(() => this.runtime.lifecycle.tick());
+      const cancel = panel.querySelector('#albot-h19-cancel');
+      if (cancel) cancel.onclick = () => run(() => this.runtime.lifecycle.cancelQueued());
+      const acknowledgeUnknown = panel.querySelector('#albot-h19-ack-unknown');
+      if (acknowledgeUnknown) acknowledgeUnknown.onclick = () => run(() => this.runtime.lifecycle.acknowledgeUnknown('GUI_H19_UNKNOWN_ACK'));
+      const reset = panel.querySelector('#albot-h19-reset');
+      if (reset) reset.onclick = () => run(() => this.runtime.lifecycle.resetSafety('GUI_H19_RESET'));
+    }
+
 
     async runRecommendedLiveTest() {
       const state = this.runtime.status();
