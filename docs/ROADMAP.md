@@ -1335,3 +1335,31 @@ Party-Recovery:
 - Cleanup PASS: Autonomie aus, keine aktive Aktion, Queue leer, keine Suspension, Zielruntime aktiv.
 
 Damit ist die H19-Live-Validation abgeschlossen. H20 bleibt nur noch bis zum Merge dieser append-only Evidence blockiert; mit diesem Merge ist H19 abgeschlossen und H20 freigegeben.
+
+
+### H20 Foundation – Account Progression, Task × Party Optimizer und Full Live
+
+Stand 2026-09-27.
+
+Vor der eigentlichen Boss-/Event-/Quest-Autonomie wird die in frueheren Bot-Versionen bewaehrte accountweite Progressions- und Gruppenwahl als native ALFinal/V6-Foundation wieder eingefuehrt. Es wird kein alter Runtimecode importiert.
+
+Implementiert:
+
+- accountweite Character-Profile aus lokalem Live-State plus bounded Cross-Window-Heartbeats;
+- Level, HP/MP, Attack, Armor, Resistance, Frequenz, Speed, Range, Gear-Score und lokale Trainingszeit als read-only Planungsdaten;
+- rollenbezogene Capabilities fuer Tank, Heal/Revive, DPS, Support sowie Merchant Economy/Logistics;
+- normalisierte Strength-Sicht aus Level, Gear, Combatwerten und Survival;
+- Progressionskorridor mit bounded Catch-up-Prioritaet fuer zurueckliegende Combat-Characters;
+- FARM/QUEST muessen bei vorhandenem Catch-up-Ziel dieses Character enthalten und bleiben auf maximal zwei aktive Combat-Mitglieder begrenzt;
+- BOSS/EVENT verlangen weiterhin hart TANK + HEALER + DPS und erhalten keinen Catch-up-Bonus;
+- Merchant wird nicht als Combat-DPS missbraucht, sondern als Economy-/Logistics-Support behandelt;
+- Task × Party Optimizer enumeriert erlaubte Kombinationen, filtert harte Rollenanforderungen zuerst und rankt erst danach;
+- ein dynamischer Lifecycle-Coordinator verhindert konkurrierende Remote-Recovery-Aktionen aus mehreren Fenstern;
+- alle vier online Characters werden beim Full-Live-Start als stabiles Desired-Set gepinnt;
+- Full Live wartet fail-closed auf frische Profile aller vier online Characters und startet nicht bei gemischten/fehlenden Bot-Fenstern;
+- H17 Economy und H18 Party Logistics werden auf dem Merchant bewusst arbitriert und nicht gleichzeitig gegeneinander gestartet;
+- bestehende STOP-, Ownership-, Reject-, UNKNOWN- und No-Blind-Retry-Grenzen bleiben unveraendert.
+
+Der neue Full-Live-Modus dient dem geplanten echten Vier-Character-Beobachtungslauf. Alle Module werden durch die normale Runtime aktiviert; mutierende Autonomie wird rollenbezogen koordiniert statt pauschal gleichzeitig auf jedem Modul freigeschaltet.
+
+Diese Foundation ersetzt H20 nicht. Event Detection, Boss Planning, Quest Targets, Special Encounters und temporaere Prioritaetswechsel bleiben der anschliessende H20-Funktionsblock.
