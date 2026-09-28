@@ -186,12 +186,26 @@
       const leaderName = cleanText(options.groupLeaderName || '', 120) || null;
       const memberNames = [...new Set((Array.isArray(options.groupMemberNames) ? options.groupMemberNames : [])
         .map(value => cleanText(value, 120)).filter(Boolean))].sort();
+      const previous = this.groupPolicy || { leaderName: null, memberNames: [] };
+      const previousMembers = Array.isArray(previous.memberNames) ? previous.memberNames.map(String).sort() : [];
+      const changed = String(previous.leaderName || '') !== String(leaderName || '')
+        || previousMembers.join('|') !== memberNames.join('|');
+
       this.groupPolicy = { leaderName, memberNames };
       if (this.session && this.session.enabled) {
         this.session.groupLeaderName = leaderName;
         this.session.groupMemberNames = memberNames.slice();
       }
-      return clone(this.groupPolicy);
+
+      const farm = this._farmingStatus();
+      if (changed && this._ownedFarming(farm) && this.farming && typeof this.farming.configureGroup === 'function') {
+        this.farming.configureGroup({
+          groupLeaderName: leaderName,
+          groupMemberNames: memberNames,
+          leaderOwnedPulls: true
+        });
+      }
+      return { ...clone(this.groupPolicy), changed };
     }
 
     suspendFromCombatUnknown(reason = 'ATTACK_OUTCOME_UNCONFIRMED', details = null) {
@@ -703,7 +717,7 @@
         local,
         leader,
         distance: d,
-        sameMap: !!(local && leader && (!local.map || !leader.map || String(local.map) === String(leader.map))),
+        sameMap: !!(local && leader && local.map && leader.map && String(local.map) === String(leader.map)),
         focusTargetId: this.party && typeof this.party.preferredTargetId === 'function' ? this.party.preferredTargetId() : null
       };
     }
@@ -776,7 +790,7 @@
         const shifted = destination && group.leader ? distance(destination, group.leader) : null;
         const moveAge = this.groupMove ? this.now() - Number(this.groupMove.atMs || 0) : 0;
         if (shifted != null && shifted >= this.config.groupRetargetDistance && moveAge >= this.config.groupRetargetMs) {
-          const target = { map: group.leader.map || character.map, x: group.leader.x, y: group.leader.y };
+          const target = { map: group.leader.map, x: group.leader.x, y: group.leader.y };
           const retarget = this.movement.retarget(target, {
             owner: 'farm-intelligence-h9-group-regroup',
             arrivalRadius: this.config.groupRegroupStopDistance
@@ -802,7 +816,7 @@
           this.metrics.ownershipBlocks += 1;
           return { state: 'WAITING', reason: 'H9_GROUP_REGROUP_MOVEMENT_BUSY', distance: d };
         }
-        const destination = { map: group.leader.map || character.map, x: group.leader.x, y: group.leader.y };
+        const destination = { map: group.leader.map, x: group.leader.x, y: group.leader.y };
         const move = this.movement.smartMove(destination, {
           owner: 'farm-intelligence-h9-group-regroup',
           arrivalRadius: this.config.groupRegroupStopDistance
