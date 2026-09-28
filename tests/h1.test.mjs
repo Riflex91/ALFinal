@@ -143,6 +143,9 @@ test('control center source includes large resizable drag and minimize behavior'
   assert.match(ui, /id="albot-minimize"/);
   assert.match(ui, /data-goal-delete/);
   assert.match(ui, /albot-goal-delete/);
+  assert.match(ui, /Catch-up Rotation/);
+  assert.match(ui, /H19_ROTATION_STOP_NOT_RUNNER_CONTROLLABLE/);
+  assert.match(ui, /Aktiver Fallback/);
 });
 
 
