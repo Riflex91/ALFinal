@@ -519,12 +519,12 @@ test('H13 runtime, API, UI, build, adapter and ActionBoundary are wired', () => 
   assert.match(runtime, /id: 'trade'/);
   assert.match(runtime, /id: 'h13-trade'/);
   assert.match(runtime, /H13_LIVE_TEST_REQUIRES_MERCHANT/);
-  assert.match(entry, /0\.22\.0-h22/);
+  assert.match(entry, /0\.22\.1-h22/);
   assert.match(entry, /runtime\.trade\.queueAcquire/);
   assert.match(ui, /data-tab="trade"/);
   assert.match(ui, /H13 Handel/);
   assert.match(build, /src\/trade\.js/);
-  assert.match(build, /const runtimeVersion = '0\.22\.0-h22'/);
+  assert.match(build, /const runtimeVersion = '0\.22\.1-h22'/);
   assert.match(boundary, /buy_with_gold: Object\.freeze\(\{ publicName: 'buy_with_gold'/);
   assert.match(boundary, /trade_buy: Object\.freeze\(\{ publicName: 'trade_buy'/);
   assert.match(boundary, /ALBOT_PLAYER_TRADE_RID_MISMATCH/);
