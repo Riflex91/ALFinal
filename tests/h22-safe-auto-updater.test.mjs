@@ -59,12 +59,43 @@ function runtimeFixture(options = {}) {
     storage,
     logger: null,
     stopLatch: { status: () => ({ latched: false }) },
-    game: { snapshot: () => ({ character: { name: 'My_Ranger1', hp: 1000, max_hp: 1000, rip: false } }) },
-    combat: { status: () => ({ active: state.combatActive }) },
+    game: {
+      snapshot: () => options.gameSnapshot || ({
+        character: { name: options.localName || 'My_Ranger1', hp: 1000, max_hp: 1000, rip: false, targetId: null },
+        target: null
+      }),
+      monsterDefinition: mtype => ({
+        id: String(mtype || ''),
+        boss: Array.isArray(options.bossTypes) && options.bossTypes.includes(String(mtype || ''))
+      })
+    },
+    combat: { status: () => ({
+      active: state.combatActive,
+      pendingAttack: options.pendingAttack || null,
+      session: options.combatSession || null
+    }) },
     movement: { status: () => ({ active: state.movementActive }) },
     resourceTopoff: { status: () => ({ pending: state.resourcePending }) },
     lifecycle: { status: () => options.lifecycleStatus || emptyStatus() },
-    lifecycleTransport: { status: () => options.lifecycleTransportStatus || { pending: [], partyRecoveryLease: null } },
+    lifecycleTransport: {
+      status: () => options.lifecycleTransportStatus || { pending: [], partyRecoveryLease: null },
+      freshPeers: () => Array.isArray(options.freshPeers) ? options.freshPeers : [],
+      requestUpdatePrepare: (name, payload) => options.requestUpdatePrepare
+        ? options.requestUpdatePrepare(name, payload)
+        : { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'NO_PREPARE_STUB' } },
+      requestUpdateCommit: (name, payload) => options.requestUpdateCommit
+        ? options.requestUpdateCommit(name, payload)
+        : { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'NO_COMMIT_STUB' } },
+      requestUpdateCancel: (name, payload) => options.requestUpdateCancel
+        ? options.requestUpdateCancel(name, payload)
+        : { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'NO_CANCEL_STUB' } }
+    },
+    roster: {
+      refresh: () => options.rosterSnapshot || {
+        onlineStateAvailable: true,
+        onlineCharacterNames: [options.localName || 'My_Ranger1']
+      }
+    },
     partyLogistics: { status: () => options.partyLogisticsStatus || emptyStatus() },
     bank: { status: () => options.bankStatus || emptyStatus() },
     trade: { status: () => options.tradeStatus || emptyStatus() },
@@ -178,23 +209,61 @@ test('H22 rejects a downloaded bundle when SHA-256 does not match the manifest',
   assert.equal(updater.status().stats.hashRejects, 1);
 });
 
-test('H22 defers auto-apply while combat is active', async () => {
+test('H22 ordinary combat and gameplay activity do not block update safety', () => {
   const { Controller } = loadUpdater();
-  const body = bundle('0.22.4-h22');
-  const fixture = runtimeFixture({ combatActive: true, config: { autoApply: true, stagingSlots: ['2'] } });
+  const fixture = runtimeFixture({
+    combatActive: true,
+    movementActive: true,
+    resourcePending: { kind: 'POTION' },
+    lifecycleTransportStatus: { pending: [{ messageId: 'h19-1' }], partyRecoveryLease: { id: 'lease-1' } },
+    economyStatus: { active: true, suspended: false, currentAction: { kind: 'BANK' } }
+  });
   const updater = new Controller({ runtime: fixture.runtime, root: fixture.root, storage: fixture.storage, sha256: async () => 'a'.repeat(64) });
-  updater.pending = { downloadedAt: new Date().toISOString(), manifest: manifestFor('0.22.4-h22', body), bundle: body };
-  const result = await updater.applyPending();
-  assert.equal(result.applied, false);
-  assert.equal(result.reason, 'UPDATE_SAFE_WINDOW_REQUIRED');
-  assert.ok(result.safety.reasons.includes('COMBAT_ACTIVE'));
-  assert.equal(fixture.state.stops, 0);
+  const safety = updater.safety();
+  assert.equal(safety.safe, true);
+  assert.equal(safety.reasons.length, 0);
+  assert.equal(safety.protection.event, false);
+  assert.equal(safety.protection.boss, false);
+});
+
+test('H22 defers every update while participating in an EVENT task', () => {
+  const { Controller } = loadUpdater();
+  const fixture = runtimeFixture({
+    fullAutonomyStatus: { enabled: true, config: { taskType: 'EVENT' }, lastDecision: { state: 'RUNNING' } }
+  });
+  const updater = new Controller({ runtime: fixture.runtime, root: fixture.root, storage: fixture.storage, sha256: async () => 'a'.repeat(64) });
+  const safety = updater.safety();
+  assert.equal(safety.safe, false);
+  assert.equal(safety.protection.event, true);
+  assert.ok(safety.reasons.includes('EVENT_ACTIVE'));
+});
+
+test('H22 defers while the character is actually fighting a boss but not merely travelling to a BOSS task', () => {
+  const { Controller } = loadUpdater();
+  const travelling = runtimeFixture({
+    combatActive: false,
+    fullAutonomyStatus: { enabled: true, config: { taskType: 'BOSS' }, lastDecision: { state: 'RUNNING' } }
+  });
+  const travellingUpdater = new Controller({ runtime: travelling.runtime, root: travelling.root, storage: travelling.storage, sha256: async () => 'a'.repeat(64) });
+  assert.equal(travellingUpdater.safety().safe, true);
+
+  const fighting = runtimeFixture({
+    combatActive: true,
+    combatSession: { targetType: 'mrgreen' },
+    bossTypes: ['mrgreen'],
+    fullAutonomyStatus: { enabled: true, config: { taskType: 'BOSS' }, lastDecision: { state: 'RUNNING' } }
+  });
+  const fightingUpdater = new Controller({ runtime: fighting.runtime, root: fighting.root, storage: fighting.storage, sha256: async () => 'a'.repeat(64) });
+  const safety = fightingUpdater.safety();
+  assert.equal(safety.safe, false);
+  assert.equal(safety.protection.boss, true);
+  assert.ok(safety.reasons.includes('BOSS_COMBAT_ACTIVE'));
 });
 
 test('H22 requires a separate staging slot before any automatic install', async () => {
   const { Controller } = loadUpdater();
   const body = bundle('0.22.4-h22');
-  const fixture = runtimeFixture({ config: { autoApply: true, safeHoldMs: 3000 } });
+  const fixture = runtimeFixture({ config: { autoApply: true, coordinatedApply: false, safeHoldMs: 3000 } });
   fixture.root.get_active_code_slot = () => '1';
   const updater = new Controller({ runtime: fixture.runtime, root: fixture.root, storage: fixture.storage, sha256: async () => 'a'.repeat(64) });
   updater.pending = { downloadedAt: new Date().toISOString(), manifest: manifestFor('0.22.4-h22', body), bundle: body };
@@ -208,7 +277,7 @@ test('H22 requires a separate staging slot before any automatic install', async 
 test('H22 applies a verified update through a separate slot and requires the new runtime handshake', async () => {
   const { Controller } = loadUpdater();
   const body = bundle('0.22.4-h22');
-  const fixture = runtimeFixture({ config: { autoApply: true, safeHoldMs: 3000, stagingSlots: ['2', '3'] } });
+  const fixture = runtimeFixture({ config: { autoApply: true, coordinatedApply: false, safeHoldMs: 3000, stagingSlots: ['2', '3'] } });
   fixture.root.get_active_code_slot = () => '1';
   fixture.root.upload_code = async (slot, name, code) => {
     fixture.state.uploads.push({ slot: String(slot), name, bytes: code.length });
@@ -255,24 +324,103 @@ test('H22 rejects mutable main bundle URLs and requires immutable commit pinning
   assert.equal(result2.reason, 'UPDATE_MANIFEST_COMMIT_SHA_INVALID');
 });
 
-test('H22 safe point blocks H19 remote work and active economy transitions', () => {
+test('H22 coordinator prepares every online peer before one shared group commit', async () => {
   const { Controller } = loadUpdater();
+  const body = bundle('0.22.4-h22');
+  const manifest = manifestFor('0.22.4-h22', body);
+  const calls = [];
+  const peerProtection = {
+    schemaVersion: 1,
+    protocol: 'h22-synchronized-update-v1',
+    coordinatedUpdateCapable: true,
+    blocked: false,
+    event: false,
+    boss: false,
+    observedAtMs: Date.now()
+  };
   const fixture = runtimeFixture({
-    lifecycleTransportStatus: { pending: [{ messageId: 'h19-1' }], partyRecoveryLease: null },
-    economyStatus: { active: false, suspended: false, currentAction: { kind: 'BANK' } }
+    localName: 'Alpha',
+    config: { autoApply: true, coordinatedApply: true, stagingSlots: ['2'], groupApplyDelayMs: 6500 },
+    rosterSnapshot: { onlineStateAvailable: true, onlineCharacterNames: ['Alpha', 'Bravo'] },
+    freshPeers: [{ name: 'Bravo', running: true, version: '0.22.3-h22', updateProtection: peerProtection }],
+    requestUpdatePrepare: (name, payload) => {
+      calls.push({ type: 'PREPARE', name, payload });
+      return { id: 'prepare-1', state: 'DISPATCHED', dispatched: true, value: Promise.resolve({ success: true }) };
+    },
+    requestUpdateCommit: (name, payload) => {
+      calls.push({ type: 'COMMIT', name, payload });
+      return { id: 'commit-1', state: 'DISPATCHED', dispatched: true, value: Promise.resolve({ success: true }) };
+    },
+    requestUpdateCancel: (name, payload) => {
+      calls.push({ type: 'CANCEL', name, payload });
+      return { id: 'cancel-1', state: 'DISPATCHED', dispatched: true, value: Promise.resolve({ success: true }) };
+    }
   });
-  const updater = new Controller({ runtime: fixture.runtime, root: fixture.root, storage: fixture.storage, sha256: async () => 'a'.repeat(64) });
-  const safety = updater.safety();
-  assert.equal(safety.safe, false);
-  assert.ok(safety.reasons.includes('H19_REMOTE_REQUEST_PENDING'));
-  assert.ok(safety.reasons.includes('ECONOMY_CURRENTACTION'));
+  fixture.root.get_active_code_slot = () => '1';
+  fixture.root.upload_code = async (slot, name, code) => {
+    fixture.state.uploads.push({ slot: String(slot), name, bytes: code.length });
+    return { success: true };
+  };
+  const updater = new Controller({ runtime: fixture.runtime, root: fixture.root, storage: fixture.storage, sha256: async () => manifest.sha256 });
+  updater.pending = { downloadedAt: new Date().toISOString(), manifest, bundle: body };
+
+  const result = await updater.applyPending();
+  assert.equal(result.applied, false);
+  assert.equal(result.reason, 'UPDATE_GROUP_COMMITTED');
+  assert.deepEqual(calls.map(row => row.type), ['PREPARE', 'COMMIT']);
+  assert.equal(calls[0].name, 'Bravo');
+  assert.equal(calls[1].name, 'Bravo');
+  assert.equal(calls[0].payload.releaseKey, calls[1].payload.releaseKey);
+  assert.equal(calls[0].payload.coordinator, 'Alpha');
+  assert.deepEqual(calls[0].payload.participants, ['Alpha', 'Bravo']);
+  assert.ok(Number(calls[1].payload.applyAtMs) > Date.now());
+  assert.equal(fixture.state.uploads.length, 1);
+  assert.equal(fixture.state.stops, 0);
+  const cancelled = updater.cancelCoordinatedUpdate({ releaseKey: calls[0].payload.releaseKey });
+  assert.equal(cancelled.accepted, true);
+});
+
+test('H22 group rollout is deferred when any online peer reports event or boss protection', async () => {
+  const { Controller } = loadUpdater();
+  const body = bundle('0.22.4-h22');
+  const manifest = manifestFor('0.22.4-h22', body);
+  let dispatches = 0;
+  const fixture = runtimeFixture({
+    localName: 'Alpha',
+    config: { autoApply: true, coordinatedApply: true, stagingSlots: ['2'] },
+    rosterSnapshot: { onlineStateAvailable: true, onlineCharacterNames: ['Alpha', 'Bravo'] },
+    freshPeers: [{
+      name: 'Bravo',
+      running: true,
+      version: '0.22.3-h22',
+      updateProtection: {
+        schemaVersion: 1,
+        protocol: 'h22-synchronized-update-v1',
+        coordinatedUpdateCapable: true,
+        blocked: true,
+        event: true,
+        boss: false,
+        observedAtMs: Date.now()
+      }
+    }],
+    requestUpdatePrepare: () => { dispatches += 1; throw new Error('MUST_NOT_DISPATCH'); }
+  });
+  fixture.root.get_active_code_slot = () => '1';
+  const updater = new Controller({ runtime: fixture.runtime, root: fixture.root, storage: fixture.storage, sha256: async () => manifest.sha256 });
+  updater.pending = { downloadedAt: new Date().toISOString(), manifest, bundle: body };
+
+  const result = await updater.applyPending();
+  assert.equal(result.applied, false);
+  assert.equal(result.reason, 'UPDATE_GROUP_NOT_READY');
+  assert.ok(result.group.reasons.includes('REMOTE_EVENT_ACTIVE:Bravo'));
+  assert.equal(dispatches, 0);
 });
 
 test('H22 failed release is quarantined after verified rollback and is not immediately retried', async () => {
   const { Controller } = loadUpdater();
   const body = bundle('0.22.4-h22');
   const manifest = manifestFor('0.22.4-h22', body);
-  const fixture = runtimeFixture({ config: { autoApply: true, safeHoldMs: 3000, stagingSlots: ['2'] } });
+  const fixture = runtimeFixture({ config: { autoApply: true, coordinatedApply: false, safeHoldMs: 3000, stagingSlots: ['2'] } });
   fixture.root.get_active_code_slot = () => '1';
   fixture.root.upload_code = async () => ({ success: true });
 
@@ -343,6 +491,12 @@ test('H22 runtime and public API expose updater diagnostics and stable updater n
   const entry = fs.readFileSync(new URL('../src/entry.js', import.meta.url), 'utf8');
   assert.match(runtime, /h22-safe-auto-updater/);
   assert.match(runtime, /bundleUrlMustPinCommitSha/);
+  assert.match(runtime, /prepareUpdateLocal/);
+  assert.match(runtime, /commitUpdateLocal/);
+  const transport = fs.readFileSync(new URL('../src/cross-window-lifecycle.js', import.meta.url), 'utf8');
+  assert.match(transport, /PREPARE_UPDATE/);
+  assert.match(transport, /COMMIT_UPDATE/);
+  assert.match(transport, /requestUpdatePrepare/);
   assert.match(entry, /updater:\s*\{/);
   assert.match(entry, /tick:\s*\(\) => runtime\.safeUpdater\.cycle\(\)/);
   assert.match(entry, /Object\.freeze\(api\.updater\)/);
