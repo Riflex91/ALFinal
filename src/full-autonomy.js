@@ -425,7 +425,12 @@
       const selected = new Set(plan && plan.selected ? plan.selected.memberNames : []);
       const shouldFarm = ctype !== 'merchant' && selected.has(localName);
       const status = this.runtime.farmIntelligence.status();
+      const sessionOwner = status && status.session ? String(status.session.owner || '') : '';
+      const fullAutonomyOwns = status && status.active && sessionOwner === 'full-autonomy';
 
+      if (shouldFarm && status && status.active && !fullAutonomyOwns) {
+        return { ok: false, reason: 'FULL_AUTONOMY_FOREIGN_FARM_INTELLIGENCE_OWNERSHIP' };
+      }
       if (shouldFarm && status.suspended === true) {
         return { ok: false, reason: status.suspendedReason || 'FULL_AUTONOMY_FARM_INTELLIGENCE_SUSPENDED' };
       }
@@ -436,13 +441,7 @@
         });
       }
 
-      const sessionOwner = status && status.session ? String(status.session.owner || '') : '';
-      const fullAutonomyOwns = status && status.active && sessionOwner === 'full-autonomy';
-
       if (shouldFarm) {
-        if (status && status.active && !fullAutonomyOwns) {
-          return { ok: false, reason: 'FULL_AUTONOMY_FOREIGN_FARM_INTELLIGENCE_OWNERSHIP' };
-        }
         if (!status.active) {
           const started = this.runtime.farmIntelligence.startAutonomy({
             owner: 'full-autonomy',
