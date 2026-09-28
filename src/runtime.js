@@ -367,6 +367,7 @@
         logger: this.logger,
         runtime: this
       });
+      this.bridge = null;
       this.liveTests = new ns.LiveTestRunner({
         runtime: this,
         logger: this.logger,
@@ -5706,6 +5707,8 @@
         marketIntelligence: this.marketIntelligence.status(),
         merchantStand: this.merchantStand.status(),
         telemetry: this.telemetry.status(),
+        windowsBridge: this.bridge && typeof this.bridge.status === 'function' ? this.bridge.status() : null,
+        windowsBridge: this.bridge && typeof this.bridge.status === 'function' ? this.bridge.status() : null,
         fullAutonomy: this.fullAutonomy.status(),
         safeUpdater: this.safeUpdater.status(),
         observation: this.observer.status(),
@@ -5812,6 +5815,14 @@
       push('host-telemetry-client', !!this.telemetry.status()
         && this.telemetry.status().hostStorageContract
         && this.telemetry.status().hostStorageContract.defaultRoot === 'D:/ALBot/telemetry', this.telemetry.status());
+      const bridgeIdentity = this.bridge && typeof this.bridge.identity === 'function' ? this.bridge.identity() : null;
+      push('windows-bridge-v6-transport', !!bridgeIdentity
+        && bridgeIdentity.product === 'AL Bot'
+        && bridgeIdentity.generation === 6
+        && bridgeIdentity.bridgeProtocol === 'albot-v6-bridge-v1'
+        && bridgeIdentity.transportOnly === true
+        && bridgeIdentity.gameplayActionAuthority === false
+        && bridgeIdentity.acceptsLegacyGenerations === false, bridgeIdentity);
       push('full-autonomy-controller', !!this.fullAutonomy.status() && typeof this.fullAutonomy.startAutonomy === 'function' && typeof this.fullAutonomy.stopAutonomy === 'function', this.fullAutonomy.status());
       const updaterStatus = this.safeUpdater.status();
       push('h22-safe-auto-updater', !!updaterStatus
@@ -5914,6 +5925,7 @@
       this.running = false;
       try { this.liveTests.cancel(reason); } catch (_) {}
       try { if (this.lifecycleTransport) this.lifecycleTransport.destroy(reason); } catch (_) {}
+      try { if (this.bridge && typeof this.bridge.destroy === 'function') this.bridge.destroy(reason); } catch (_) {}
 
       // Zuerst alle zentral verwalteten Ressourcen synchron stoppen. Dadurch kann
       // ein neu geladenes Bundle niemals alte Timer/Listener weiterlaufen lassen.
