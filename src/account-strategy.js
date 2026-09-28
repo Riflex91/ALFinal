@@ -297,7 +297,9 @@
         const gearProgress = clamp((finite(row.gearScore) || 0) / maxGear);
         const combatProgress = clamp(combatRaw(row) / maxCombat);
         const survival = row.maxHp && row.hp != null ? clamp(Number(row.hp) / Number(row.maxHp)) : 0.75;
-        const strength = clamp(levelProgress * 0.42 + gearProgress * 0.23 + combatProgress * 0.27 + survival * 0.08);
+        const strength = row.fallback === true
+          ? clamp(levelProgress * 0.82 + survival * 0.18)
+          : clamp(levelProgress * 0.42 + gearProgress * 0.23 + combatProgress * 0.27 + survival * 0.08);
         const trainingShare = totalTraining > 0 ? Math.max(0, finite(row.trainingMs) || 0) / totalTraining : 0;
         return {
           ...row,
@@ -322,7 +324,7 @@
       const ranking = combat.map(row => {
         const gap = Math.max(0, strongest - row.strength - this.config.targetCorridor);
         const trainingDeficit = Math.max(0, 1 - row.trainingShare);
-        const catchUp = clamp(gap * 0.72 + trainingDeficit * 0.28);
+        const catchUp = gap > 0 ? clamp(gap * 0.90 + trainingDeficit * 0.10) : 0;
         return { name: row.name, strength: row.strength, gap, trainingShare: row.trainingShare, catchUp, ctype: row.ctype };
       }).sort((a, b) => b.catchUp - a.catchUp || a.strength - b.strength || a.name.localeCompare(b.name));
       const result = {
