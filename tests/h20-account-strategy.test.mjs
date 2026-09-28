@@ -209,7 +209,7 @@ test('activity requirements change the exact three-farmer composition without ha
 });
 
 
-function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, localName = 'My_Warrior', partyHealthy = true, partyLeader = 'My_Warrior', partyMembers = null, profileRows: customProfileRows = null, selectedMembers = ['My_Priest', 'My_Ranger1', 'My_Warrior'], supportMembers = ['My_Merchant'], leaderName = 'My_Warrior', lifecycleSuspended = false, lifecycleSuspendedReason = null, farmSuspended = false, farmSuspendedReason = null, onlineNames = ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior'] } = {}) {
+function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, localName = 'My_Warrior', partyHealthy = true, partyLeader = 'My_Warrior', partyMembers = null, profileRows: customProfileRows = null, selectedMembers = ['My_Priest', 'My_Ranger1', 'My_Warrior'], supportMembers = ['My_Merchant'], leaderName = 'My_Warrior', lifecycleSuspended = false, lifecycleSuspendedReason = null, farmSuspended = false, farmSuspendedReason = null, farmOwner = 'full-autonomy', onlineNames = ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior'] } = {}) {
   const source = fs.readFileSync(path.resolve(here, '../src/full-autonomy.js'), 'utf8');
   const clone = value => value == null ? value : JSON.parse(JSON.stringify(value));
   const ctx = {
@@ -237,6 +237,8 @@ function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, localNa
     farmSuspended,
     farmSuspendedReason,
     farmGroup: null,
+    farmGroupConfigCalls: 0,
+    farmOwner,
     economyStarts: 0,
     economyStops: 0,
     economyActive: false,
@@ -312,9 +314,13 @@ function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, localNa
       active: state.farmActive,
       suspended: state.farmSuspended,
       suspendedReason: state.farmSuspendedReason,
-      session: state.farmActive ? { owner: 'full-autonomy' } : null
+      session: state.farmActive ? { owner: state.farmOwner } : null
     }),
-    configureGroup: value => { state.farmGroup = clone(value); return clone(value); },
+    configureGroup: value => {
+      state.farmGroupConfigCalls += 1;
+      state.farmGroup = clone(value);
+      return clone(value);
+    },
     startAutonomy: () => { state.farmStarts += 1; state.farmActive = true; return { accepted: true }; },
     stopAutonomy: () => { state.farmStops += 1; state.farmActive = false; return { stopped: true }; }
   };
@@ -549,6 +555,27 @@ test('Full Autonomy rejects any plan that is not exactly three farmers plus one 
   assert.equal(started.tick.reason, 'FULL_AUTONOMY_REQUIRES_THREE_FARMERS_AND_ONE_MERCHANT');
   assert.equal(state.farmStarts, 0);
   assert.equal(state.lifecycleStarts, 0);
+});
+
+test('Full Autonomy never reconfigures a foreign active H9 session before rejecting ownership', () => {
+  const { controller, state } = loadFullAutonomy({
+    localName: 'My_Warrior',
+    farmOwner: 'manual-h9'
+  });
+  state.farmActive = true;
+
+  const result = controller._ensureCombatRole({
+    selected: { memberNames: ['My_Priest', 'My_Ranger1', 'My_Warrior'] },
+    leaderName: 'My_Priest'
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'FULL_AUTONOMY_FOREIGN_FARM_INTELLIGENCE_OWNERSHIP');
+  assert.equal(state.farmGroupConfigCalls, 0);
+  assert.equal(state.farmGroup, null);
+  assert.equal(state.farmStarts, 0);
+  assert.equal(state.farmStops, 0);
+  assert.equal(state.farmActive, true);
 });
 
 test('Full Autonomy stops an already-active owned H9 session when the local farmer is no longer selected', () => {
