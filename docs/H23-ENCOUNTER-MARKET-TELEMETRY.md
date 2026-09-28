@@ -20,8 +20,8 @@ This branch is prepared for review/testing only and must remain fresh against ma
 
 ## Market intelligence
 
-- New read-only ALData market provider using https://aldata.earthiverse.ca/merchants.
-- External data is advisory and may be stale. It never proves mutation safety.
+- New read-only ALData market provider using the documented `GET https://aldata.earthiverse.ca/trades` WTS/WTB feed.
+- Owner-level `lastUpdated` is enforced with a seven-day default freshness ceiling; older external listings are ignored. External data is advisory and never proves mutation safety.
 - Local visible market from H13 remains the live source for immediate listing validation.
 - Price bands combine local visible asks/bids, ALData samples, NPC value floor and bounded local history.
 - New Merchant Stand controller uses central ActionBoundary actions open_stand, close_stand and trade.
