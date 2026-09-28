@@ -1285,7 +1285,24 @@
       let failureRecorded = false;
       try {
         await this.runtime.stop('PLANNED_AUTO_UPDATE');
-        await this._executeVerifiedRelease(manifest, this.pending.bundle);
+        try {
+          await this._executeVerifiedRelease(manifest, this.pending.bundle);
+        } catch (executionError) {
+          this.stats.rollbacks += 1;
+          const failedApi = this.root && this.root.ALBot;
+          let failedStatus = null;
+          try { failedStatus = failedApi && typeof failedApi.status === 'function' ? failedApi.status() : null; } catch (_) {}
+          const rollbackBaseBootCount = Math.max(previousBootCount, finite(failedStatus && failedStatus.bootCount, 0));
+          const rollback = await this._rollbackToRelease(previousRelease, failedApi, rollbackBaseBootCount, rearmIntent);
+          const executionReason = clean(executionError && executionError.message || executionError, 240);
+          this._recordReleaseFailure(
+            manifest,
+            'UPDATE_EXECUTION_FAILED:' + executionReason,
+            { executionReason, rollback, previousRelease: this._releaseDescriptor(previousRelease) }
+          );
+          failureRecorded = true;
+          throw new Error('UPDATE_EXECUTION_FAILED:' + executionReason + ':ROLLBACK_' + (rollback.ok ? 'OK' : 'FAILED'));
+        }
 
         const handshake = await this._waitHandshake(previousApi, manifest.version, { previousBootCount });
         if (!handshake.ok) {
