@@ -53,6 +53,7 @@ function runtimeFixture(options = {}) {
   const emptyStatus = () => ({ active: false, suspended: false });
   const runtime = {
     version: options.version || '0.22.0-h22',
+    bootCount: 1,
     running: true,
     root,
     storage,
@@ -62,29 +63,40 @@ function runtimeFixture(options = {}) {
     combat: { status: () => ({ active: state.combatActive }) },
     movement: { status: () => ({ active: state.movementActive }) },
     resourceTopoff: { status: () => ({ pending: state.resourcePending }) },
-    lifecycle: { status: emptyStatus },
-    partyLogistics: { status: emptyStatus },
-    economy: { status: emptyStatus },
+    lifecycle: { status: () => options.lifecycleStatus || emptyStatus() },
+    lifecycleTransport: { status: () => options.lifecycleTransportStatus || { pending: [], partyRecoveryLease: null } },
+    partyLogistics: { status: () => options.partyLogisticsStatus || emptyStatus() },
+    bank: { status: () => options.bankStatus || emptyStatus() },
+    trade: { status: () => options.tradeStatus || emptyStatus() },
+    upgrade: { status: () => options.upgradeStatus || emptyStatus() },
+    exchangeCraft: { status: () => options.exchangeCraftStatus || emptyStatus() },
+    economy: { status: () => options.economyStatus || emptyStatus() },
+    inventory: { status: emptyStatus },
+    merchant: { status: emptyStatus },
+    gear: { status: emptyStatus },
+    fullAutonomy: { status: () => options.fullAutonomyStatus || { enabled: false } },
     stop: async () => { state.stops += 1; runtime.running = false; return { running: false }; }
   };
   return { root, storage, state, runtime };
 }
 
 function bundle(version) {
-  return `/* AL Bot ${version} */\n` + 'x'.repeat(12000);
+  return `/* AL Bot ${version} | generated file | do not edit dist directly */\n` + 'x'.repeat(12000);
 }
 
-function manifestFor(version, body, sha256 = 'a'.repeat(64)) {
+function manifestFor(version, body, sha256 = 'a'.repeat(64), commitSha = '1'.repeat(40)) {
   return {
     schemaVersion: 1,
     product: 'AL Bot',
     channel: 'stable',
     version,
     packageVersion: version.replace(/-h\d+$/, ''),
-    bundleUrl: 'https://raw.githubusercontent.com/Riflex91/ALFinal/main/dist/al-bot.js',
+    commitSha,
+    bundleUrl: `https://raw.githubusercontent.com/Riflex91/ALFinal/${commitSha}/dist/al-bot.js`,
     sha256,
     bytes: new TextEncoder().encode(body).byteLength,
-    sourceRef: 'main'
+    sourceRef: commitSha,
+    releasedAt: '2026-09-28T10:00:00.000Z'
   };
 }
 
@@ -202,7 +214,7 @@ test('H22 applies a verified update through a separate slot and requires the new
     fixture.state.uploads.push({ slot: String(slot), name, bytes: code.length });
     return { success: true };
   };
-  const oldApi = { version: '0.22.0-h22', status: () => ({ running: true, version: '0.22.0-h22' }) };
+  const oldApi = { version: '0.22.0-h22', status: () => ({ running: true, version: '0.22.0-h22', bootCount: 1 }) };
   fixture.root.ALBot = oldApi;
   fixture.root.load_code = async slot => {
     fixture.state.loads.push(String(slot));
@@ -224,4 +236,74 @@ test('H22 applies a verified update through a separate slot and requires the new
   assert.equal(fixture.state.stops, 1);
   assert.equal(updater.status().pending, null);
   assert.equal(updater.status().stats.reloads, 1);
+});
+
+
+test('H22 rejects mutable main bundle URLs and requires immutable commit pinning', () => {
+  const { helpers } = loadUpdater();
+  const body = bundle('0.22.1-h22');
+  const manifest = manifestFor('0.22.1-h22', body);
+  manifest.bundleUrl = 'https://raw.githubusercontent.com/Riflex91/ALFinal/main/dist/al-bot.js';
+  const result = helpers.validateManifest(manifest);
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'UPDATE_MANIFEST_BUNDLE_NOT_COMMIT_PINNED');
+
+  const missingCommit = manifestFor('0.22.1-h22', body);
+  delete missingCommit.commitSha;
+  const result2 = helpers.validateManifest(missingCommit);
+  assert.equal(result2.ok, false);
+  assert.equal(result2.reason, 'UPDATE_MANIFEST_COMMIT_SHA_INVALID');
+});
+
+test('H22 safe point blocks H19 remote work and active economy transitions', () => {
+  const { Controller } = loadUpdater();
+  const fixture = runtimeFixture({
+    lifecycleTransportStatus: { pending: [{ messageId: 'h19-1' }], partyRecoveryLease: null },
+    economyStatus: { active: false, suspended: false, currentAction: { kind: 'BANK' } }
+  });
+  const updater = new Controller({ runtime: fixture.runtime, root: fixture.root, storage: fixture.storage, sha256: async () => 'a'.repeat(64) });
+  const safety = updater.safety();
+  assert.equal(safety.safe, false);
+  assert.ok(safety.reasons.includes('H19_REMOTE_REQUEST_PENDING'));
+  assert.ok(safety.reasons.includes('ECONOMY_CURRENTACTION'));
+});
+
+test('H22 failed release is quarantined after verified rollback and is not immediately retried', async () => {
+  const { Controller } = loadUpdater();
+  const body = bundle('0.22.1-h22');
+  const manifest = manifestFor('0.22.1-h22', body);
+  const fixture = runtimeFixture({ config: { autoApply: true, safeHoldMs: 3000, stagingSlots: ['2'] } });
+  fixture.root.get_active_code_slot = () => '1';
+  fixture.root.upload_code = async () => ({ success: true });
+
+  const oldApi = { version: '0.22.0-h22', status: () => ({ running: true, version: '0.22.0-h22', bootCount: 1 }) };
+  fixture.root.ALBot = oldApi;
+  fixture.root.load_code = async slot => {
+    fixture.state.loads.push(String(slot));
+    fixture.root.ALBot = slot === '2'
+      ? { version: '0.22.1-h22', status: () => ({ running: false, version: '0.22.1-h22', bootCount: 2 }) }
+      : { version: '0.22.0-h22', status: () => ({ running: true, version: '0.22.0-h22', bootCount: 3 }) };
+  };
+
+  const updater = new Controller({ runtime: fixture.runtime, root: fixture.root, storage: fixture.storage, sha256: async () => manifest.sha256 });
+  updater.pending = { downloadedAt: new Date().toISOString(), manifest, bundle: body };
+  updater.safeSince = Date.now() - 4000;
+  updater._waitHandshake = async (_previousApi, version) => version === '0.22.1-h22'
+    ? { ok: false, reason: 'RUNTIME_HEARTBEAT_MISSING' }
+    : { ok: true, version, bootCount: 3, heartbeatActive: true };
+
+  const result = await updater.applyPending();
+  assert.equal(result.applied, false);
+  assert.match(result.reason, /UPDATE_HANDSHAKE_FAILED:RUNTIME_HEARTBEAT_MISSING:ROLLBACK_OK/);
+  assert.deepEqual(fixture.state.loads, ['2', '1']);
+  const status = updater.status();
+  assert.equal(status.stats.rollbacks, 1);
+  assert.equal(status.stats.quarantines, 1);
+  const quarantineRows = Object.values(status.quarantine);
+  assert.equal(quarantineRows.length, 1);
+  assert.ok(quarantineRows[0].retryAtMs > Date.now());
+
+  const second = await updater.applyPending();
+  assert.equal(second.applied, false);
+  assert.equal(second.reason, 'UPDATE_RELEASE_QUARANTINED');
 });
