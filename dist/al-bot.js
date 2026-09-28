@@ -8486,11 +8486,11 @@
             && !!current.before.targetSessionId
             && !!peer.sessionId
             && String(peer.sessionId) !== String(current.before.targetSessionId);
-          if (settlementFinished && replacedSession && peer.running === desiredRunning) {
+          if (replacedSession && peer.running === desiredRunning) {
             // A target window can reload while the transport command is in
             // flight. A fresh replacement-session heartbeat proving the desired
-            // runtime state is live evidence and must win over the dead
-            // session's late/failed transport settlement.
+            // runtime state is independent live evidence and must win even when
+            // the dead session's transport settlement never arrives.
             this.metrics.crossWindowConfirms += 1;
             return this._confirmCurrent({
               evidence: 'CROSS_WINDOW_RUNTIME_REPLACED_SESSION_LIVE_STATE',
