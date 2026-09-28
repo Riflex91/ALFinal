@@ -37,6 +37,8 @@
       this.config = {
         tickMs: Math.max(250, Math.min(5000, Number(options.tickMs) || 750)),
         outcomeTimeoutMs: Math.max(3000, Math.min(120000, Number(options.outcomeTimeoutMs) || 15000)),
+        startOutcomeTimeoutMs: Math.max(15000, Math.min(120000, Number(options.startOutcomeTimeoutMs) || 60000)),
+        browserSwapTimeoutMs: Math.max(20000, Math.min(180000, Number(options.browserSwapTimeoutMs) || 90000)),
         respawnGraceMs: Math.max(12000, Math.min(30000, Number(options.respawnGraceMs) || 13000)),
         maxActionsPerSession: Math.max(1, Math.min(20, Number(options.maxActionsPerSession) || 4)),
         maxQueue: Math.max(1, Math.min(32, Number(options.maxQueue) || 12))
@@ -99,6 +101,9 @@
         crossWindowDispatches: 0,
         crossWindowConfirms: 0,
         crossWindowCharacterDisconnects: 0,
+        browserSwapsDispatched: 0,
+        browserSwapsConfirmed: 0,
+        lateOutcomeRecoveries: 0,
         rotationCapabilityBlocks: 0,
         stalePendingDiscarded: 0,
         stalePendingReconciled: 0
@@ -431,6 +436,13 @@
       return new Set(names.map(String));
     }
 
+    _startEvidenceSet(roster) {
+      return new Set([
+        ...this._onlineSet(roster),
+        ...this._runnerActiveSet(roster)
+      ]);
+    }
+
     _actionAvailable(actionName) {
       if (!this.actions) return false;
       if (typeof this.actions.available === 'function') {
@@ -443,6 +455,22 @@
       if (!pending || !pending.kind) return { confirmed: false, reason: 'H19_STALE_PENDING_INVALID' };
       const kind = String(pending.kind);
       const targetName = cleanText(pending.targetName || '', 120);
+      if (kind === 'BROWSER_SWAP') {
+        const roster = this._roster();
+        if (!roster || roster.onlineStateAvailable !== true) {
+          return { confirmed: false, reason: 'H25_STALE_BROWSER_SWAP_ROSTER_UNAVAILABLE' };
+        }
+        const oldGone = !this._onlineSet(roster).has(targetName);
+        const desiredName = cleanText(pending.desiredName || '', 120);
+        const desiredPresent = !!desiredName && this._startEvidenceSet(roster).has(desiredName);
+        const desiredPeer = desiredName && this.crossWindow && typeof this.crossWindow.freshPeer === 'function'
+          ? this.crossWindow.freshPeer(desiredName)
+          : null;
+        if (oldGone && (desiredPresent || desiredPeer)) {
+          return { confirmed: true, evidence: desiredPeer ? 'STALE_BROWSER_SWAP_NEW_PEER' : 'STALE_BROWSER_SWAP_NEW_CHARACTER_PRESENT' };
+        }
+        return { confirmed: false, reason: 'H25_STALE_BROWSER_SWAP_OUTCOME_UNVERIFIED' };
+      }
       if (kind === 'START' || kind === 'STOP') {
         if (pending.transport === 'cross-window-runtime') {
           const peer = this.crossWindow && typeof this.crossWindow.freshPeer === 'function'
@@ -459,7 +487,8 @@
           return { confirmed: false, reason: 'H19_STALE_ROSTER_UNAVAILABLE' };
         }
         const online = this._onlineSet(roster).has(targetName);
-        if (kind === 'START' && online) return { confirmed: true, evidence: 'STALE_ACTIVE_ROSTER_PRESENT' };
+        const startPresent = this._startEvidenceSet(roster).has(targetName);
+        if (kind === 'START' && startPresent) return { confirmed: true, evidence: online ? 'STALE_ACTIVE_ROSTER_PRESENT' : 'STALE_RUNNER_START_STATE_PRESENT' };
         if (kind === 'STOP' && !online) return { confirmed: true, evidence: 'STALE_ACTIVE_ROSTER_ABSENT' };
         return { confirmed: false, reason: 'H19_STALE_CHARACTER_OUTCOME_UNVERIFIED' };
       }
@@ -502,18 +531,19 @@
 
       const online = this._onlineSet(roster);
       const runnerActive = this._runnerActiveSet(roster);
+      const startEvidence = this._startEvidenceSet(roster);
       const localName = this._localName();
       const unexpectedOnlineNames = [...online]
         .filter(name => owned.has(String(name)) && !desired.includes(String(name)))
         .sort((a, b) => a.localeCompare(b));
-      const missingDesiredNames = desired.filter(name => !online.has(String(name))).sort((a, b) => a.localeCompare(b));
+      const missingDesiredNames = desired.filter(name => !startEvidence.has(String(name))).sort((a, b) => a.localeCompare(b));
       const blockers = [];
       const remoteDisconnectNames = [];
+      const browserSwapPairs = [];
       const stopActionAvailable = this._actionAvailable('stop_character');
+      const startActionAvailable = this._actionAvailable('start_character');
+      const remainingMissing = missingDesiredNames.slice();
 
-      if (missingDesiredNames.length && !this._actionAvailable('start_character')) {
-        blockers.push('H19_ROTATION_START_ACTION_UNAVAILABLE');
-      }
       for (const name of unexpectedOnlineNames) {
         if (String(name) === String(localName)) {
           blockers.push('H19_ROTATION_WOULD_STOP_LOCAL:' + name);
@@ -526,6 +556,15 @@
         const peer = this.crossWindow && typeof this.crossWindow.freshPeer === 'function'
           ? this.crossWindow.freshPeer(name)
           : null;
+        if (remainingMissing.length) {
+          if (peer && peer.running === true && peer.characterNavigateCapable === true
+              && this.crossWindow && typeof this.crossWindow.requestCharacterNavigation === 'function') {
+            browserSwapPairs.push({ from: String(name), to: String(remainingMissing.shift()) });
+            continue;
+          }
+          blockers.push('H25_ROTATION_BROWSER_NAVIGATION_UNAVAILABLE:' + name);
+          continue;
+        }
         if (peer && peer.running === true && peer.characterDisconnectCapable === true) {
           remoteDisconnectNames.push(String(name));
           continue;
@@ -533,20 +572,26 @@
         blockers.push('H19_ROTATION_STOP_NOT_RUNNER_CONTROLLABLE:' + name);
       }
 
+      if (remainingMissing.length && !startActionAvailable) {
+        blockers.push('H19_ROTATION_START_ACTION_UNAVAILABLE');
+      }
+
       const ready = blockers.length === 0;
       if (!ready) this.metrics.rotationCapabilityBlocks += 1;
       return {
         ready,
-        reason: ready ? 'H24_ROTATION_CHARACTER_CONTROL_READY' : blockers[0],
+        reason: ready ? 'H25_ROTATION_CHARACTER_CONTROL_READY' : blockers[0],
         blockers,
         desiredCharacterNames: desired,
         onlineCharacterNames: [...online].sort((a, b) => a.localeCompare(b)),
         runnerActiveCharacterNames: [...runnerActive].sort((a, b) => a.localeCompare(b)),
+        startEvidenceCharacterNames: [...startEvidence].sort((a, b) => a.localeCompare(b)),
+        browserSwapPairs: clone(browserSwapPairs),
         remoteDisconnectNames: remoteDisconnectNames.sort((a, b) => a.localeCompare(b)),
         unexpectedOnlineNames,
         missingDesiredNames,
         stopActionAvailable,
-        startActionAvailable: this._actionAvailable('start_character')
+        startActionAvailable
       };
     }
 
@@ -568,6 +613,7 @@
       const targetName = String(owned.name);
       const active = this._onlineSet(roster).has(targetName);
       const runnerActive = this._runnerActiveSet(roster).has(targetName);
+      const startPresent = this._startEvidenceSet(roster).has(targetName);
       const peer = this.crossWindow && typeof this.crossWindow.freshPeer === 'function'
         ? this.crossWindow.freshPeer(targetName)
         : null;
@@ -599,9 +645,23 @@
         return { ok: false, reason: 'H19_REMOTE_TARGET_NOT_RUNNER_CONTROLLABLE' };
       }
 
+      if (mode === 'BROWSER_SWAP') {
+        const desiredName = cleanText(options.desiredName || '', 120);
+        const desiredOwned = this._ownedRow(desiredName, roster);
+        const desiredPresent = desiredName ? this._startEvidenceSet(roster).has(desiredName) : false;
+        if (!active) return { ok: false, reason: 'H25_BROWSER_SWAP_SOURCE_NOT_ONLINE' };
+        if (!desiredName || !desiredOwned || desiredName === targetName) return { ok: false, reason: 'H25_BROWSER_SWAP_TARGET_INVALID' };
+        if (desiredPresent) return { ok: false, reason: 'H25_BROWSER_SWAP_TARGET_ALREADY_PRESENT' };
+        if (!peer || peer.running !== true || peer.characterNavigateCapable !== true
+            || !this.crossWindow || typeof this.crossWindow.requestCharacterNavigation !== 'function') {
+          return { ok: false, reason: 'H25_BROWSER_SWAP_NAVIGATION_UNAVAILABLE' };
+        }
+        return { ok: true, roster, owned, active, runnerActive, peer, desiredOwned, desiredName, transport: 'cross-window-browser-navigation' };
+      }
+
       if (mode === 'START') {
         if (options.requireCharacterStateChange === true) {
-          if (active) return { ok: false, reason: 'H19_TARGET_ALREADY_ACTIVE' };
+          if (startPresent) return { ok: false, reason: 'H19_TARGET_ALREADY_ACTIVE' };
           if (!this._actionAvailable('start_character')) return { ok: false, reason: 'H19_ROTATION_START_ACTION_UNAVAILABLE' };
           return { ok: true, roster, owned, active, runnerActive, peer, transport: 'child-character' };
         }
@@ -609,7 +669,7 @@
           if (peer.running === true) return { ok: false, reason: 'H19_TARGET_ALREADY_ACTIVE' };
           return { ok: true, roster, owned, active, runnerActive, peer, transport: 'cross-window-runtime' };
         }
-        if (active) return { ok: false, reason: 'H19_REMOTE_RUNTIME_PEER_UNAVAILABLE' };
+        if (startPresent) return { ok: false, reason: 'H19_REMOTE_RUNTIME_PEER_UNAVAILABLE' };
         return { ok: true, roster, owned, active, runnerActive, peer: null, transport: 'child-character' };
       }
 
@@ -882,17 +942,46 @@
       }
 
       const active = this._onlineSet(roster);
+      const startEvidence = this._startEvidenceSet(roster);
       const localName = this._localName();
       const desiredActive = new Set(this.policyState.desiredActiveNames.map(String));
 
-      // Rotation is deliberately stop-before-start. This check must happen
-      // before party-leader reconciliation: the current leader itself may be
-      // the farmer that is being rotated out.
+      // Separate browser windows are rotated in-place: navigate the outgoing
+      // browser directly to the missing desired character on the same server.
+      // This avoids disconnect/reconnect races and avoids mixing the browser
+      // model with child-runner start_character().
       const undesiredActive = [...active]
         .filter(name => this._ownedRow(name, roster) && !desiredActive.has(String(name)))
         .sort((a, b) => a.localeCompare(b));
+      const runnerActive = this._runnerActiveSet(roster);
+      const missingDesired = [...desiredActive]
+        .filter(name => this._ownedRow(name, roster) && !startEvidence.has(String(name)))
+        .sort((a, b) => a.localeCompare(b));
+      const remainingMissing = missingDesired.slice();
       for (const name of undesiredActive) {
         if (String(name) === String(localName)) continue;
+        const peer = this.crossWindow && typeof this.crossWindow.freshPeer === 'function'
+          ? this.crossWindow.freshPeer(name)
+          : null;
+        if (!runnerActive.has(String(name))
+            && remainingMissing.length
+            && peer && peer.running === true && peer.characterNavigateCapable === true
+            && this.crossWindow && typeof this.crossWindow.requestCharacterNavigation === 'function') {
+          const desiredName = remainingMissing.shift();
+          return {
+            state: 'READY',
+            reason: 'H25_BROWSER_CHARACTER_ROTATION',
+            request: {
+              id: 'h25-auto-browser-swap-' + name + '-to-' + desiredName,
+              kind: 'BROWSER_SWAP',
+              targetName: name,
+              desiredName,
+              queuedAt: nowIso(),
+              automatic: true,
+              requireCharacterStateChange: true
+            }
+          };
+        }
         return {
           state: 'READY',
           reason: 'H19_UNDESIRED_CHARACTER_ACTIVE',
@@ -941,7 +1030,7 @@
         if (name === localName) continue;
         if (!this._ownedRow(name, roster)) continue;
         if (crossWindowManaged.has(name)) continue;
-        if (!active.has(name)) {
+        if (!startEvidence.has(name)) {
           return {
             state: 'READY',
             reason: 'H19_DESIRED_CHARACTER_OFFLINE',
@@ -1076,7 +1165,21 @@
       let actionName;
       let args;
       let before = {};
-      if (request.kind === 'START' || request.kind === 'STOP') {
+      if (request.kind === 'BROWSER_SWAP') {
+        const check = this._validateRemoteTarget(request.targetName, 'BROWSER_SWAP', {
+          desiredName: request.desiredName
+        });
+        if (!check.ok) return { accepted: false, reason: check.reason };
+        actionName = null;
+        args = [];
+        before = {
+          onlineStateAvailable: true,
+          targetWasActive: check.active,
+          desiredWasPresent: this._startEvidenceSet(check.roster).has(String(check.desiredName)),
+          transport: check.transport,
+          targetSessionId: check.peer && check.peer.sessionId || null
+        };
+      } else if (request.kind === 'START' || request.kind === 'STOP') {
         const check = this._validateRemoteTarget(request.targetName, request.kind, {
           requireCharacterStateChange: request.requireCharacterStateChange === true
         });
@@ -1150,12 +1253,17 @@
         requestId: request.id,
         kind: request.kind,
         targetName: request.targetName || null,
+        desiredName: request.desiredName || null,
         automatic: request.automatic === true,
         requireCharacterStateChange: request.requireCharacterStateChange === true,
         signalId: request.signalId || null,
         preparedAt: nowIso(),
         preparedAtMs: nowMs,
-        deadlineAtMs: nowMs + this.config.outcomeTimeoutMs,
+        deadlineAtMs: nowMs + (request.kind === 'BROWSER_SWAP'
+          ? this.config.browserSwapTimeoutMs
+          : request.kind === 'START'
+            ? this.config.startOutcomeTimeoutMs
+            : this.config.outcomeTimeoutMs),
         settlement: 'PREPARED',
         restored: false,
         response: null,
@@ -1168,7 +1276,14 @@
 
       let dispatched;
       try {
-        if ((request.kind === 'START' || request.kind === 'STOP')
+        if (request.kind === 'BROWSER_SWAP' && action.transport === 'cross-window-browser-navigation') {
+          if (!this.crossWindow || typeof this.crossWindow.requestCharacterNavigation !== 'function') {
+            throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TRANSPORT_UNAVAILABLE');
+          }
+          dispatched = this.crossWindow.requestCharacterNavigation(request.targetName, request.desiredName);
+          this.metrics.crossWindowDispatches += 1;
+          this.metrics.browserSwapsDispatched += 1;
+        } else if ((request.kind === 'START' || request.kind === 'STOP')
             && action.transport === 'cross-window-runtime') {
           if (!this.crossWindow || typeof this.crossWindow.requestRuntimeState !== 'function') {
             throw new Error('H19_CROSS_WINDOW_TRANSPORT_UNAVAILABLE');
@@ -1237,6 +1352,7 @@
       this.actionsThisSession += 1;
       if (current.kind === 'START') this.metrics.startsConfirmed += 1;
       if (current.kind === 'STOP') this.metrics.stopsConfirmed += 1;
+      if (current.kind === 'BROWSER_SWAP') this.metrics.browserSwapsConfirmed += 1;
       if (current.kind === 'RESPAWN') this.metrics.respawnsConfirmed += 1;
       if (current.kind === 'PARTY_INVITE') this.metrics.partyInvitesConfirmed += 1;
       if (current.kind === 'PARTY_REQUEST') this.metrics.partyRequestsConfirmed += 1;
@@ -1246,8 +1362,32 @@
         this._persistPolicy();
       }
       if (current.signalId) this.partySignals = this.partySignals.filter(row => String(row.id) !== String(current.signalId));
-      this.lastAction = { at: nowIso(), type: current.kind + '_CONFIRMED', targetName: current.targetName, ...clone(details) };
-      return { state: 'CONFIRMED', kind: current.kind, targetName: current.targetName, details: clone(details) };
+      const timeoutReason = 'H19_' + current.kind + '_UNVERIFIED_TIMEOUT';
+      const lateConfirmed = current.unknownRecorded === true
+        && this.suspended === true
+        && this.suspendedReason === timeoutReason;
+      if (lateConfirmed) {
+        this.suspended = false;
+        this.suspendedReason = null;
+        if (current.automatic === true) this.autonomyEnabled = true;
+        this.metrics.lateOutcomeRecoveries += 1;
+      }
+      this.lastAction = {
+        at: nowIso(),
+        type: current.kind + '_CONFIRMED',
+        targetName: current.targetName,
+        desiredName: current.desiredName || null,
+        lateConfirmed,
+        ...clone(details)
+      };
+      return {
+        state: 'CONFIRMED',
+        kind: current.kind,
+        targetName: current.targetName,
+        desiredName: current.desiredName || null,
+        lateConfirmed,
+        details: clone(details)
+      };
     }
 
     _suspend(reason, details = {}) {
@@ -1263,7 +1403,7 @@
         this._persistCurrent();
       }
       this.lastAction = { at: nowIso(), type: 'SUSPENDED', reason: this.suspendedReason, repeated: alreadyRecorded, ...clone(details) };
-      if (this.logger) this.logger.error('H19 Lifecycle Recovery suspendiert', this.lastAction);
+      if (!alreadyRecorded && this.logger) this.logger.error('H19 Lifecycle Recovery suspendiert', this.lastAction);
       return { state: 'UNKNOWN', reason: this.suspendedReason, currentAction: clone(this.currentAction) };
     }
 
@@ -1272,7 +1412,25 @@
       if (!current) return { state: 'IDLE' };
 
       const settlementFinished = current.settlement !== 'PENDING' && current.settlement !== 'PREPARED';
-      if (current.kind === 'START' || current.kind === 'STOP') {
+      if (current.kind === 'BROWSER_SWAP') {
+        const roster = this._roster();
+        if (roster && roster.onlineStateAvailable === true) {
+          const oldGone = !this._onlineSet(roster).has(String(current.targetName || ''));
+          const desiredName = String(current.desiredName || '');
+          const desiredPresent = !!desiredName && this._startEvidenceSet(roster).has(desiredName);
+          const desiredPeer = desiredName && this.crossWindow && typeof this.crossWindow.freshPeer === 'function'
+            ? this.crossWindow.freshPeer(desiredName)
+            : null;
+          if (oldGone && (desiredPresent || desiredPeer)) {
+            this.metrics.crossWindowConfirms += 1;
+            return this._confirmCurrent({
+              evidence: desiredPeer ? 'BROWSER_SWAP_NEW_PEER_PRESENT' : 'BROWSER_SWAP_NEW_CHARACTER_PRESENT',
+              oldCharacterOffline: true,
+              desiredCharacterPresent: true
+            });
+          }
+        }
+      } else if (current.kind === 'START' || current.kind === 'STOP') {
         if (current.transport === 'cross-window-character-disconnect') {
           const roster = this._roster();
           if (roster && roster.onlineStateAvailable === true) {
@@ -1325,8 +1483,9 @@
           const roster = this._roster();
           if (roster && roster.onlineStateAvailable === true) {
             const active = this._onlineSet(roster).has(String(current.targetName || ''));
-            if (settlementFinished && current.kind === 'START' && active) {
-              return this._confirmCurrent({ evidence: 'ACTIVE_ROSTER_PRESENT' });
+            const startPresent = this._startEvidenceSet(roster).has(String(current.targetName || ''));
+            if (settlementFinished && current.kind === 'START' && startPresent) {
+              return this._confirmCurrent({ evidence: active ? 'ACTIVE_ROSTER_PRESENT' : 'RUNNER_START_STATE_PRESENT' });
             }
             if (settlementFinished && current.kind === 'STOP' && !active && current.before && current.before.targetWasActive === true) {
               return this._confirmCurrent({ evidence: 'ACTIVE_ROSTER_ABSENT' });

@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.24.0-h24';
+      this.version = options.version || '0.25.0-h25';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -218,6 +218,60 @@
         }
         return { actionBoundaryId: dispatched.id || null, settlement: dispatched.value || null };
       };
+      const resolveH25BrowserWindow = () => {
+        let current = this.root;
+        let best = null;
+        for (let depth = 0; depth < 8 && current; depth += 1) {
+          try {
+            const location = current.location;
+            if (location && typeof location.assign === 'function') best = current;
+          } catch (_) {}
+          let parentWindow = null;
+          try {
+            parentWindow = current.parent && current.parent !== current ? current.parent : null;
+            if (parentWindow) void parentWindow.document;
+          } catch (_) { parentWindow = null; }
+          if (!parentWindow) break;
+          current = parentWindow;
+        }
+        return best;
+      };
+      const h25BrowserNavigationCapability = () => {
+        const view = resolveH25BrowserWindow();
+        let snapshot = null;
+        try { snapshot = this.game.snapshot(); } catch (_) {}
+        const server = snapshot && snapshot.server || {};
+        return !!view
+          && !!server.region
+          && !!server.identifier;
+      };
+      const navigateH25BrowserCharacter = desiredName => {
+        const name = String(desiredName == null ? '' : desiredName).trim();
+        if (!name) throw new Error('H25_BROWSER_CHARACTER_TARGET_REQUIRED');
+        const roster = this.roster.refresh();
+        const owned = roster && Array.isArray(roster.accountCharacters)
+          ? roster.accountCharacters.some(row => row && String(row.name) === name)
+          : false;
+        if (!owned) throw new Error('H25_BROWSER_CHARACTER_TARGET_NOT_OWNED');
+        const snapshot = this.game.snapshot();
+        const server = snapshot && snapshot.server || {};
+        if (!server.region || !server.identifier) throw new Error('H25_BROWSER_SERVER_IDENTITY_UNAVAILABLE');
+        const view = resolveH25BrowserWindow();
+        if (!view || !view.location || typeof view.location.assign !== 'function') {
+          throw new Error('H25_BROWSER_NAVIGATION_UNAVAILABLE');
+        }
+        const hostname = String(view.location.hostname || '').toLowerCase();
+        if (hostname && hostname !== 'adventure.land' && !hostname.endsWith('.adventure.land')) {
+          throw new Error('H25_BROWSER_NAVIGATION_ORIGIN_REJECTED');
+        }
+        const origin = String(view.location.origin || 'https://adventure.land').replace(/\/$/, '');
+        const url = origin
+          + '/character/' + encodeURIComponent(name)
+          + '/in/' + encodeURIComponent(String(server.region))
+          + '/' + encodeURIComponent(String(server.identifier)) + '/';
+        view.location.assign(url);
+        return { accepted: true, url, desiredCharacterName: name, server: { region: server.region, identifier: server.identifier } };
+      };
 
       this.lifecycleTransport = new ns.H19CrossWindowLifecycleTransport({
         root: this.root,
@@ -233,6 +287,7 @@
             emergencyStopLatched: this.stopLatch.status().latched,
             lifecycleAutonomyEnabled: this.lifecycle ? this.lifecycle.status().autonomyEnabled === true : null,
             characterDisconnectCapable: this.actions.available('disconnect') === true,
+            characterNavigateCapable: h25BrowserNavigationCapability(),
             version: this.version,
             profile: this.accountStrategy ? this.accountStrategy.localProfile() : null,
             observation: this.observer ? this.observer.summary() : null,
@@ -243,6 +298,7 @@
         },
         getPartyState: () => this.party.snapshot(),
         disconnectLocal: () => dispatchH24CharacterDisconnect(),
+        navigateCharacterLocal: desiredName => navigateH25BrowserCharacter(desiredName),
         leavePartyLocal: () => dispatchH19CrossWindowPartyAction('leave_party', []),
         requestPartyJoinLocal: leaderName => dispatchH19CrossWindowPartyAction('send_party_request', [leaderName]),
         prepareUpdateLocal: (payload, sender) => {
@@ -601,7 +657,7 @@
       this.modules.register({
         id: 'encounters',
         title: 'Boss & Event Encounters',
-        version: '0.24.0',
+        version: '0.25.0',
         start: context => this.encounters.start(context),
         stop: reason => this.encounters.stop(reason),
         status: () => this.encounters.status()
@@ -610,7 +666,7 @@
       this.modules.register({
         id: 'market-intelligence',
         title: 'Market Intelligence',
-        version: '0.24.0',
+        version: '0.25.0',
         start: context => this.marketIntelligence.start(context),
         stop: reason => this.marketIntelligence.stop(reason),
         status: () => this.marketIntelligence.status()
@@ -619,7 +675,7 @@
       this.modules.register({
         id: 'merchant-stand',
         title: 'Merchant Stand',
-        version: '0.24.0',
+        version: '0.25.0',
         start: context => this.merchantStand.start(context),
         stop: reason => this.merchantStand.stop(reason),
         status: () => this.merchantStand.status()
@@ -628,7 +684,7 @@
       this.modules.register({
         id: 'host-telemetry',
         title: 'Host Telemetry',
-        version: '0.24.0',
+        version: '0.25.0',
         start: context => this.telemetry.start(context),
         stop: reason => this.telemetry.stop(reason),
         status: () => this.telemetry.status()

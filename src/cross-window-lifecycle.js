@@ -40,6 +40,9 @@
       this.disconnectLocal = typeof options.disconnectLocal === 'function'
         ? options.disconnectLocal
         : () => { throw new Error('H24_CROSS_WINDOW_CHARACTER_DISCONNECT_UNAVAILABLE'); };
+      this.navigateCharacterLocal = typeof options.navigateCharacterLocal === 'function'
+        ? options.navigateCharacterLocal
+        : () => { throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_UNAVAILABLE'); };
       this.getPartyState = typeof options.getPartyState === 'function' ? options.getPartyState : () => null;
       this.leavePartyLocal = typeof options.leavePartyLocal === 'function'
         ? options.leavePartyLocal
@@ -321,6 +324,7 @@
         emergencyStopLatched: row.emergencyStopLatched === true,
         lifecycleAutonomyEnabled: typeof row.lifecycleAutonomyEnabled === 'boolean' ? row.lifecycleAutonomyEnabled : null,
         characterDisconnectCapable: row.characterDisconnectCapable === true,
+        characterNavigateCapable: row.characterNavigateCapable === true,
         version: cleanText(row.version || '', 80) || null,
         party: row.party && typeof row.party === 'object' ? {
           available: row.party.available !== false,
@@ -399,6 +403,7 @@
         emergencyStopLatched: state.emergencyStopLatched === true,
         lifecycleAutonomyEnabled: typeof state.lifecycleAutonomyEnabled === 'boolean' ? state.lifecycleAutonomyEnabled : null,
         characterDisconnectCapable: state.characterDisconnectCapable === true,
+        characterNavigateCapable: state.characterNavigateCapable === true,
         version: cleanText(state.version || '', 80) || null,
         party: party && typeof party === 'object' ? {
           available: party.available !== false,
@@ -739,8 +744,8 @@
       const sender = cleanText(envelope.senderCharacterName || '', 120);
       const commandType = cleanText(envelope.commandType || '', 80);
       const supported = new Set([
-        'START_RUNTIME', 'STOP_RUNTIME', 'DISCONNECT_CHARACTER', 'LEAVE_PARTY', 'REQUEST_PARTY_JOIN',
-        'PREPARE_UPDATE', 'COMMIT_UPDATE', 'CANCEL_UPDATE'
+        'START_RUNTIME', 'STOP_RUNTIME', 'DISCONNECT_CHARACTER', 'NAVIGATE_CHARACTER',
+        'LEAVE_PARTY', 'REQUEST_PARTY_JOIN', 'PREPARE_UPDATE', 'COMMIT_UPDATE', 'CANCEL_UPDATE'
       ]);
       if (!commandId || !sender || !supported.has(commandType)) return false;
       if (cleanText(envelope.targetSessionId || '', 240) !== this.sessionId) {
@@ -779,9 +784,6 @@
           if (before.emergencyStopLatched === true) throw new Error('H24_CROSS_WINDOW_CHARACTER_EMERGENCY_STOP_LATCHED');
           if (before.characterDisconnectCapable !== true) throw new Error('H24_CROSS_WINDOW_CHARACTER_DISCONNECT_CAPABILITY_MISSING');
           if (!this.setTimeoutFn) throw new Error('H24_CROSS_WINDOW_CHARACTER_DISCONNECT_TIMER_UNAVAILABLE');
-          // Settlement must be emitted before the character severs its own
-          // connection. Completion is never inferred from this ACK; the
-          // coordinator waits for account-roster offline evidence.
           this.setTimeoutFn(() => {
             try { this.disconnectLocal('H24_REMOTE_CHARACTER_ROTATION:' + sender); }
             catch (error) {
@@ -792,6 +794,33 @@
           outcome = {
             reason: 'H24_CROSS_WINDOW_CHARACTER_DISCONNECT_ACCEPTED',
             details: { characterName: this._localName(), completionEvidence: 'ACCOUNT_ROSTER_OFFLINE_REQUIRED' }
+          };
+        } else if (commandType === 'NAVIGATE_CHARACTER') {
+          const before = this._localStatePayload();
+          const desiredCharacterName = cleanText(envelope.payload && envelope.payload.desiredCharacterName || '', 120);
+          if (before.running !== true) throw new Error('H25_CROSS_WINDOW_CHARACTER_RUNTIME_NOT_RUNNING');
+          if (before.emergencyStopLatched === true) throw new Error('H25_CROSS_WINDOW_CHARACTER_EMERGENCY_STOP_LATCHED');
+          if (before.characterNavigateCapable !== true) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_CAPABILITY_MISSING');
+          if (!desiredCharacterName || desiredCharacterName === this._localName()) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_INVALID');
+          if (!this._ownedNames().has(desiredCharacterName)) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_NOT_OWNED');
+          if (this._onlineOwnedNames().has(desiredCharacterName)) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_ALREADY_ONLINE');
+          if (!this.setTimeoutFn) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TIMER_UNAVAILABLE');
+          // Send the settlement first. The actual page navigation destroys this
+          // runtime and therefore cannot be used as its own transport ACK.
+          this.setTimeoutFn(() => {
+            try { this.navigateCharacterLocal(desiredCharacterName, 'H25_REMOTE_BROWSER_ROTATION:' + sender); }
+            catch (error) {
+              this.lastError = { at: nowIso(this.now()), reason: errorReason(error, 'H25_CROSS_WINDOW_CHARACTER_NAVIGATION_FAILED') };
+              this._log('error', 'H25 Cross-Window Character Navigation fehlgeschlagen', this.lastError);
+            }
+          }, 100);
+          outcome = {
+            reason: 'H25_CROSS_WINDOW_CHARACTER_NAVIGATION_ACCEPTED',
+            details: {
+              fromCharacterName: this._localName(),
+              desiredCharacterName,
+              completionEvidence: 'OLD_ACCOUNT_OFFLINE_AND_NEW_CHARACTER_PRESENT'
+            }
           };
         } else if (commandType === 'LEAVE_PARTY') {
           outcome = await this._executePartyLeave(sender);
@@ -911,6 +940,27 @@
       if (peer.characterDisconnectCapable !== true) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H24_CROSS_WINDOW_CHARACTER_DISCONNECT_CAPABILITY_MISSING' } };
       return this._requestCommand(target, 'DISCONNECT_CHARACTER', {
         peer,
+        settlementTimeoutMs: Math.min(this.config.settlementTimeoutMs, 5000)
+      });
+    }
+
+    requestCharacterNavigation(targetName, desiredCharacterName) {
+      const target = cleanText(targetName || '', 120);
+      const desired = cleanText(desiredCharacterName || '', 120);
+      const peer = this.freshPeer(target);
+      if (!peer) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H25_CROSS_WINDOW_CHARACTER_PEER_NOT_FRESH' } };
+      if (!desired || desired === target || desired === this._localName() || !this._ownedNames().has(desired)) {
+        return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_INVALID' } };
+      }
+      if (this._onlineOwnedNames().has(desired)) {
+        return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_ALREADY_ONLINE' } };
+      }
+      if (peer.running !== true) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H25_CROSS_WINDOW_CHARACTER_RUNTIME_NOT_RUNNING' } };
+      if (peer.emergencyStopLatched === true) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H25_CROSS_WINDOW_CHARACTER_EMERGENCY_STOP_LATCHED' } };
+      if (peer.characterNavigateCapable !== true) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H25_CROSS_WINDOW_CHARACTER_NAVIGATION_CAPABILITY_MISSING' } };
+      return this._requestCommand(target, 'NAVIGATE_CHARACTER', {
+        peer,
+        payload: { desiredCharacterName: desired },
         settlementTimeoutMs: Math.min(this.config.settlementTimeoutMs, 5000)
       });
     }
