@@ -201,6 +201,33 @@
       return { stopped: true, session: ended };
     }
 
+    configureGroup(options = {}) {
+      if (!this.session || !this.session.enabled) {
+        return { changed: false, reason: 'H8_SESSION_NOT_ACTIVE' };
+      }
+      const leaderName = cleanText(options.groupLeaderName || '', 120) || null;
+      const memberNames = [...new Set((Array.isArray(options.groupMemberNames) ? options.groupMemberNames : [])
+        .map(value => cleanText(value, 120)).filter(Boolean))].sort();
+      const leaderOwnedPulls = options.leaderOwnedPulls === true || (!!leaderName && memberNames.length > 1);
+      const previousMembers = Array.isArray(this.session.groupMemberNames) ? this.session.groupMemberNames.map(String).sort() : [];
+      const changed = String(this.session.groupLeaderName || '') !== String(leaderName || '')
+        || previousMembers.join('|') !== memberNames.join('|')
+        || this.session.leaderOwnedPulls !== leaderOwnedPulls;
+
+      this.session.groupLeaderName = leaderName;
+      this.session.groupMemberNames = memberNames.slice();
+      this.session.leaderOwnedPulls = leaderOwnedPulls;
+
+      if (this.combat && typeof this.combat.configureGroup === 'function') {
+        this.combat.configureGroup({
+          groupLeaderName: leaderName,
+          groupMemberNames: memberNames,
+          leaderOwnedPulls
+        });
+      }
+      return { changed, groupLeaderName: leaderName, groupMemberNames: memberNames.slice() };
+    }
+
     onCombatEnded(combatSessionId, reason = 'COMBAT_ENDED') {
       if (!this.session || String(this.session.combatSessionId) !== String(combatSessionId)) return false;
       this.pendingGeneration += 1;
