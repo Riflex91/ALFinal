@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.21.0-h21';
+      this.version = options.version || '0.22.0-h22';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -275,6 +275,12 @@
         runtime: this,
         strategy: this.accountStrategy
       });
+      this.safeUpdater = new ns.SafeAutoUpdater({
+        root: this.root,
+        logger: this.logger,
+        storage: this.storage,
+        runtime: this
+      });
       this.inventory.partyLogistics = this.partyLogistics;
       this.merchant.partyLogistics = this.partyLogistics;
       this.merchant.economy = this.economy;
@@ -502,6 +508,15 @@
         start: context => this.fullAutonomy.start(context),
         stop: reason => this.fullAutonomy.stop(reason),
         status: () => this.fullAutonomy.status()
+      });
+
+      this.modules.register({
+        id: 'safe-auto-updater',
+        title: 'H22 GitHub Safe Auto Updater',
+        version: '0.22.0',
+        start: context => this.safeUpdater.start(context),
+        stop: reason => this.safeUpdater.stop(reason),
+        status: () => this.safeUpdater.status()
       });
     }
 
@@ -5507,6 +5522,7 @@
         lifecycle: this.lifecycle.status(),
         accountStrategy: this.accountStrategy.status(),
         fullAutonomy: this.fullAutonomy.status(),
+        safeUpdater: this.safeUpdater.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
         roster,
@@ -5544,6 +5560,7 @@
         lifecycle: this.lifecycle.status(),
         accountStrategy: this.accountStrategy.status(),
         fullAutonomy: this.fullAutonomy.status(),
+        safeUpdater: this.safeUpdater.status(),
         liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
         logs: this.logger.list(160),
@@ -5576,6 +5593,9 @@
       push('exchange-craft-controller', !!this.exchangeCraft.status() && typeof this.exchangeCraft.plan === 'function' && typeof this.exchangeCraft.productionPlan === 'function', this.exchangeCraft.status());
       push('economy-controller', !!this.economy.status() && typeof this.economy.plan === 'function' && typeof this.economy.startAutonomy === 'function', this.economy.status());
       push('party-logistics-controller', !!this.partyLogistics.status() && typeof this.partyLogistics.plan === 'function' && typeof this.partyLogistics.queueSupply === 'function', this.partyLogistics.status());
+      push('safe-auto-updater', !!this.safeUpdater.status()
+        && typeof this.safeUpdater.checkAndDownload === 'function'
+        && typeof this.safeUpdater.applyPending === 'function', this.safeUpdater.status());
       push('h19-cross-window-lifecycle-transport', !!this.lifecycleTransport.status()
         && this.lifecycleTransport.status().protocol === 'albot-h19-cross-window-v1'
         && typeof this.lifecycleTransport.freshPeer === 'function'
@@ -5583,6 +5603,13 @@
       push('character-lifecycle-controller', !!this.lifecycle.status() && typeof this.lifecycle.plan === 'function' && typeof this.lifecycle.queueStart === 'function' && typeof this.lifecycle.queueRespawn === 'function', this.lifecycle.status());
       push('account-strategy-controller', !!this.accountStrategy.status() && typeof this.accountStrategy.optimizeTask === 'function' && typeof this.accountStrategy.progressionPlan === 'function', this.accountStrategy.status());
       push('full-autonomy-controller', !!this.fullAutonomy.status() && typeof this.fullAutonomy.startAutonomy === 'function' && typeof this.fullAutonomy.stopAutonomy === 'function', this.fullAutonomy.status());
+      const updaterStatus = this.safeUpdater.status();
+      push('h22-safe-auto-updater', !!updaterStatus
+        && updaterStatus.policies
+        && updaterStatus.policies.githubReadOnly === true
+        && updaterStatus.policies.bundleUrlMustPinCommitSha === true
+        && typeof this.safeUpdater.checkAndDownload === 'function'
+        && typeof this.safeUpdater.applyPending === 'function', updaterStatus);
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
       push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);

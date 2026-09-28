@@ -51,7 +51,7 @@
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.21.0-h21',
+    version: '0.22.0-h22',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -206,6 +206,25 @@
       },
       stop: reason => runtime.fullAutonomy.stopAutonomy(reason || 'API_FULL_AUTONOMY_STOP'),
       tick: () => runtime.fullAutonomy.tick()
+    },
+
+    updater: {
+      status: () => runtime.safeUpdater.status(),
+      configure: options => runtime.safeUpdater.configure(options || {}),
+      check: () => runtime.safeUpdater.checkAndDownload(),
+      tick: () => runtime.safeUpdater.cycle(),
+      apply: () => runtime.safeUpdater.applyPending(),
+      discard: reason => runtime.safeUpdater.discardPending(reason || 'API_UPDATE_DISCARD')
+    },
+
+    // Backwards-compatible alias for the first H22 branch iterations.
+    updates: {
+      status: () => runtime.safeUpdater.status(),
+      configure: options => runtime.safeUpdater.configure(options || {}),
+      check: () => runtime.safeUpdater.checkAndDownload(),
+      apply: () => runtime.safeUpdater.applyPending(),
+      cycle: () => runtime.safeUpdater.cycle(),
+      discard: reason => runtime.safeUpdater.discardPending(reason || 'API_UPDATE_DISCARD')
     },
 
     farming: {
@@ -377,6 +396,8 @@
   Object.freeze(api.lifecycle);
   Object.freeze(api.accountStrategy);
   Object.freeze(api.fullAutonomy);
+  Object.freeze(api.updater);
+  Object.freeze(api.updates);
   Object.freeze(api.farming);
   Object.freeze(api.farmIntelligence);
   Object.freeze(api.inventory);
@@ -404,7 +425,7 @@
     };
   } catch (_) {}
 
-  runtime.logger.info('AL Bot H21 geladen', {
+  runtime.logger.info('AL Bot H22 geladen', {
     version: api.version,
     bootCount,
     hotReload: !!previous,
