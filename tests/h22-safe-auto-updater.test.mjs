@@ -345,7 +345,14 @@ test('H22 applies a verified release through the bootstrap runtime loader and re
   const { Controller } = loadUpdater();
   const body = bundle('0.22.4-h22');
   const manifest = manifestFor('0.22.4-h22', body);
-  const fixture = runtimeFixture({ config: { autoApply: true, coordinatedApply: false } });
+  const fixture = runtimeFixture({
+    config: { autoApply: true, coordinatedApply: false },
+    fullAutonomyStatus: {
+      enabled: true,
+      config: { taskType: 'FARM' },
+      desiredCharacterNames: ['My_Ranger1']
+    }
+  });
   const oldApi = { version: '0.22.3-h22', status: () => ({ running: true, version: '0.22.3-h22', bootCount: 1 }) };
   fixture.root.ALBot = oldApi;
 
