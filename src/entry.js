@@ -226,6 +226,13 @@
       incidents: limit => runtime.observer.listIncidents(limit)
     },
 
+    recovery: {
+      status: () => runtime.knownRecovery.status(),
+      configure: options => runtime.knownRecovery.configure(options || {}),
+      plan: assessment => runtime.knownRecovery.plan(assessment || null),
+      tick: assessment => runtime.knownRecovery.tick(assessment || null)
+    },
+
     // Backwards-compatible alias for the first H22 branch iterations.
     updates: {
       status: () => runtime.safeUpdater.status(),
@@ -407,6 +414,7 @@
   Object.freeze(api.fullAutonomy);
   Object.freeze(api.updater);
   Object.freeze(api.observation);
+  Object.freeze(api.recovery);
   Object.freeze(api.updates);
   Object.freeze(api.farming);
   Object.freeze(api.farmIntelligence);
