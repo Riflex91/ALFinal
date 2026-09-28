@@ -726,9 +726,6 @@
         };
       }
 
-      const signalProposal = this._proposalPartySignal(roster);
-      if (signalProposal) return signalProposal;
-
       for (const name of this.policyState.desiredRuntimeRunningNames) {
         if (name === localName) continue;
         if (!this._ownedRow(name, roster)) continue;
@@ -777,6 +774,12 @@
           };
         }
       }
+
+      // Only reconcile party invitations/leader topology after the desired
+      // four-character active/runtime set is healthy. During a farmer rotation
+      // the old party leader may still be visible in a stale party snapshot.
+      const signalProposal = this._proposalPartySignal(roster);
+      if (signalProposal) return signalProposal;
 
       const desiredPartyMembers = this.policyState.desiredPartyMemberNames;
       const leader = this.policyState.desiredPartyLeader;
