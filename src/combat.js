@@ -206,6 +206,36 @@
       return { accepted: true, session: this._publicSession(this.session) };
     }
 
+    configureGroup(options = {}) {
+      if (!this.session || !this.session.enabled) {
+        return { changed: false, reason: 'COMBAT_SESSION_NOT_ACTIVE' };
+      }
+      const leaderName = cleanText(options.groupLeaderName || '', 120) || null;
+      const memberNames = [...new Set((Array.isArray(options.groupMemberNames) ? options.groupMemberNames : [])
+        .map(value => cleanText(value, 120)).filter(Boolean))].sort();
+      const leaderOwnedPulls = options.leaderOwnedPulls === true || (!!leaderName && memberNames.length > 1);
+      const policy = this.session.policy || {};
+      const previousMembers = Array.isArray(policy.groupMemberNames) ? policy.groupMemberNames.map(String).sort() : [];
+      const changed = String(policy.groupLeaderName || '') !== String(leaderName || '')
+        || previousMembers.join('|') !== memberNames.join('|')
+        || policy.leaderOwnedPulls !== leaderOwnedPulls;
+
+      policy.groupLeaderName = leaderName;
+      policy.groupMemberNames = memberNames.slice();
+      policy.leaderOwnedPulls = leaderOwnedPulls;
+      this.session.policy = policy;
+
+      if (changed) {
+        this.session.lastDecision = {
+          at: new Date().toISOString(),
+          type: 'GROUP_POLICY_UPDATED',
+          groupLeaderName: leaderName,
+          groupMemberNames: memberNames.slice()
+        };
+      }
+      return { changed, groupLeaderName: leaderName, groupMemberNames: memberNames.slice() };
+    }
+
     _combatMovementActive() {
       const movement = this.movement && this.movement.status ? this.movement.status() : null;
       const order = movement && movement.activeOrder;
