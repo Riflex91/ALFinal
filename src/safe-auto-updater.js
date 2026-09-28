@@ -615,7 +615,21 @@
       if (!this.config.autoApply) return { applied: false, reason: 'UPDATE_AUTO_APPLY_DISABLED' };
       if (this.busy) return { applied: false, reason: 'UPDATE_BUSY' };
 
-      const manifest = this.pending.manifest;
+      const checkedManifest = validateManifest(this.pending.manifest);
+      if (!checkedManifest.ok) {
+        this.pending = null;
+        this._persistPending();
+        return { applied: false, reason: checkedManifest.reason };
+      }
+      const manifest = checkedManifest.manifest;
+      if (compareVersions(manifest.version, this.runtime.version) <= 0) {
+        this.pending = null;
+        this._persistPending();
+        return { applied: false, reason: 'UPDATE_NOT_NEWER_THAN_RUNTIME' };
+      }
+      if (manifest.minBootstrapVersion && compareVersions(this.runtime.version, manifest.minBootstrapVersion) < 0) {
+        return { applied: false, reason: 'UPDATE_BOOTSTRAP_TOO_OLD' };
+      }
       const quarantine = this._quarantineState(manifest);
       if (quarantine.blocked) {
         return { applied: false, reason: 'UPDATE_RELEASE_QUARANTINED', retryAt: quarantine.row && quarantine.row.retryAt || null };
