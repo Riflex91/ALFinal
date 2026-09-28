@@ -956,6 +956,7 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   const boundary = fs.readFileSync(path.resolve(here, '../src/action-boundary.js'), 'utf8');
   const core = fs.readFileSync(path.resolve(here, '../src/core.js'), 'utf8');
   const crossWindow = fs.readFileSync(path.resolve(here, '../src/cross-window-lifecycle.js'), 'utf8');
+  const fullAutonomy = fs.readFileSync(path.resolve(here, '../src/full-autonomy.js'), 'utf8');
   const build = fs.readFileSync(path.resolve(here, '../scripts/build.mjs'), 'utf8');
   const dist = fs.readFileSync(path.resolve(here, '../dist/al-bot.js'), 'utf8');
   const pkg = JSON.parse(fs.readFileSync(path.resolve(here, '../package.json'), 'utf8'));
@@ -1011,12 +1012,16 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(source, /H19_DESIRED_RUNTIME_PEER_UNAVAILABLE/);
   assert.match(boundary, /start_character: Object\.freeze/);
   assert.match(boundary, /stop_character: Object\.freeze/);
+  assert.match(boundary, /disconnect: Object\.freeze/);
   assert.match(boundary, /respawn: Object\.freeze/);
   assert.match(core, /accountCharacters/);
   assert.match(core, /onlineStateAvailable/);
   assert.match(core, /onlineCharacterNames/);
   assert.match(core, /runnerActiveCharacterNames/);
   assert.match(core, /activeCharacterNames/);
+  assert.match(crossWindow, /requestCharacterDisconnect\(targetName\)/);
+  assert.match(crossWindow, /DISCONNECT_CHARACTER/);
+  assert.match(crossWindow, /ACCOUNT_ROSTER_OFFLINE_REQUIRED/);
   assert.match(crossWindow, /requestPartyLeave\(targetName\)/);
   assert.match(crossWindow, /requestPartyJoin\(targetName\)/);
   assert.match(crossWindow, /H19_CROSS_WINDOW_PARTY_LEADER_PROTECTED/);
@@ -1024,6 +1029,10 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(crossWindow, /H19_CROSS_WINDOW_PARTY_ACTION_UNKNOWN/);
   assert.match(crossWindow, /H19_CROSS_WINDOW_PARTY_RECOVERY_AUTHORITY_UNAVAILABLE/);
   assert.match(crossWindow, /partyRecoveryLease/);
+  assert.match(source, /cross-window-character-disconnect/);
+  assert.match(source, /ACTIVE_ROSTER_ABSENT_AFTER_REMOTE_SELF_DISCONNECT/);
+  assert.match(fullAutonomy, /FULL_AUTONOMY_ROTATION_UNAVAILABLE/);
+  assert.doesNotMatch(fullAutonomy, /fallbackUsesExactOnlineQuartet/);
   assert.match(build, /src\/cross-window-lifecycle\.js/);
   assert.match(build, /src\/lifecycle-recovery\.js/);
   assert.match(build, /const runtimeVersion = '0\.23\.0-h23'/);
