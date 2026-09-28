@@ -462,7 +462,7 @@
         120
       ) || null;
 
-      let boss = taskType === 'BOSS';
+      let boss = taskType === 'BOSS' && !!(combat && combat.active === true);
       if (!boss && targetType) {
         try {
           const definition = this.runtime.game && typeof this.runtime.game.monsterDefinition === 'function'
@@ -643,7 +643,12 @@
 
       const safety = this.safety();
       if (!safety.safe) return { ok: false, reason: 'UPDATE_EVENT_OR_BOSS_ACTIVE', safety };
-      return { ok: true, manifest, activeSlot, stagingSlot, bytes, sha256 };
+
+      const save = await this._saveCode(stagingSlot, this.pending.bundle, manifest.version);
+      if (save && (save.failed === true || save.success === false)) {
+        return { ok: false, reason: 'UPDATE_SAVE_CODE_REJECTED', activeSlot, stagingSlot };
+      }
+      return { ok: true, manifest, activeSlot, stagingSlot, bytes, sha256, staged: true };
     }
 
     async prepareCoordinatedUpdate(payload = {}, meta = {}) {
@@ -687,6 +692,7 @@
         localName,
         activeSlot: ready.activeSlot,
         stagingSlot: ready.stagingSlot,
+        staged: ready.staged === true,
         preparedAt: new Date().toISOString(),
         preparedAtMs: Date.now(),
         applyAt: null,
@@ -868,13 +874,6 @@
         };
       }
       if (this.preparedUpdate) {
-        if (this.preparedUpdate.state === 'COMMITTED' && finite(this.preparedUpdate.applyAtMs, 0) <= now) {
-          return this.applyPending({
-            localOnly: true,
-            releaseKey: this.preparedUpdate.releaseKey,
-            coordinated: true
-          });
-        }
         return {
           applied: false,
           reason: this.preparedUpdate.state === 'COMMITTED' ? 'UPDATE_GROUP_COMMITTED' : 'UPDATE_GROUP_PREPARED',
@@ -1168,11 +1167,18 @@
       const previousVersion = String(previousStatus && previousStatus.version || this.runtime.version || '');
       const previousBootCount = Math.max(0, finite(previousStatus && previousStatus.bootCount, this.runtime.bootCount || 0));
       const rearmIntent = this._captureRearmIntent();
+      const coordinatedStagingReady = options.coordinated === true
+        && this.preparedUpdate
+        && this.preparedUpdate.releaseKey === releaseKey
+        && this.preparedUpdate.staged === true
+        && String(this.preparedUpdate.stagingSlot || '') === String(stagingSlot);
       this.busy = true;
       let failureRecorded = false;
       try {
-        const save = await this._saveCode(stagingSlot, this.pending.bundle, manifest.version);
-        if (save && (save.failed === true || save.success === false)) throw new Error('UPDATE_SAVE_CODE_REJECTED');
+        if (!coordinatedStagingReady) {
+          const save = await this._saveCode(stagingSlot, this.pending.bundle, manifest.version);
+          if (save && (save.failed === true || save.success === false)) throw new Error('UPDATE_SAVE_CODE_REJECTED');
+        }
 
         await this.runtime.stop('PLANNED_AUTO_UPDATE');
         const load = this._binding('load_code');
@@ -1346,6 +1352,7 @@
           automaticApplyRequiresExplicitStagingSlots: true,
           coordinatedAllOnlineCharacters: true,
           twoPhasePrepareCommit: true,
+          bundleStagedBeforeGroupCommit: true,
           ordinaryCombatDoesNotBlockApply: true,
           ordinaryGameplayDoesNotBlockApply: true,
           eventOrBossDefersApply: true,
