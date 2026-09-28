@@ -51,7 +51,7 @@
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.22.6-h22',
+    version: '0.23.0-h23',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -195,6 +195,42 @@
       profiles: () => runtime.accountStrategy.profiles(),
       progression: () => runtime.accountStrategy.progressionPlan(),
       optimize: task => runtime.accountStrategy.optimizeTask(task || {})
+    },
+
+    encounters: {
+      status: () => runtime.encounters.status(),
+      catalog: () => runtime.encounters.catalog(),
+      plan: options => runtime.encounters.plan(options || {}),
+      preferredTask: () => runtime.encounters.preferredTask(),
+      setEnabled: (kind, id, enabled) => runtime.encounters.setEnabled(kind, id, enabled),
+      setAll: (kind, enabled) => runtime.encounters.setAll(kind, enabled),
+      start: options => runtime.encounters.startAutonomy(options || {}),
+      stop: reason => runtime.encounters.stopAutonomy(reason || 'API_ENCOUNTER_STOP'),
+      tick: () => runtime.encounters.tick(),
+      reset: reason => runtime.encounters.resetSafety(reason || 'API_ENCOUNTER_RESET')
+    },
+
+    marketIntelligence: {
+      status: () => runtime.marketIntelligence.status(),
+      refresh: () => runtime.marketIntelligence.refresh(),
+      item: (itemName, options) => runtime.marketIntelligence.item(itemName, options || {}),
+      priceBand: (itemName, options) => runtime.marketIntelligence.priceBand(itemName, options || {}),
+      overview: limit => runtime.marketIntelligence.overview(limit)
+    },
+
+    merchantStand: {
+      status: () => runtime.merchantStand.status(),
+      plan: () => runtime.merchantStand.plan(),
+      tick: () => runtime.merchantStand.tick(),
+      configure: options => runtime.merchantStand.configure(options || {}),
+      reset: reason => runtime.merchantStand.resetSafety(reason || 'API_MERCHANT_STAND_RESET')
+    },
+
+    telemetry: {
+      status: () => runtime.telemetry.status(),
+      configure: options => runtime.telemetry.configure(options || {}),
+      sample: () => runtime.telemetry.sample(),
+      flush: () => runtime.telemetry.flush()
     },
 
     fullAutonomy: {
@@ -411,6 +447,10 @@
   Object.freeze(api.partyLogistics);
   Object.freeze(api.lifecycle);
   Object.freeze(api.accountStrategy);
+  Object.freeze(api.encounters);
+  Object.freeze(api.marketIntelligence);
+  Object.freeze(api.merchantStand);
+  Object.freeze(api.telemetry);
   Object.freeze(api.fullAutonomy);
   Object.freeze(api.updater);
   Object.freeze(api.observation);
@@ -443,7 +483,7 @@
     };
   } catch (_) {}
 
-  runtime.logger.info('AL Bot H22 geladen', {
+  runtime.logger.info('AL Bot H23 geladen', {
     version: api.version,
     bootCount,
     hotReload: !!previous,
