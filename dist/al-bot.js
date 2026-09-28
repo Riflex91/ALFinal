@@ -1,4 +1,4 @@
-/* AL Bot 0.22.3-h22 | generated file | do not edit dist directly */
+/* AL Bot 0.22.4-h22 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -6219,6 +6219,15 @@
       this.requestPartyJoinLocal = typeof options.requestPartyJoinLocal === 'function'
         ? options.requestPartyJoinLocal
         : async () => { throw new Error('H19_CROSS_WINDOW_PARTY_REQUEST_UNAVAILABLE'); };
+      this.prepareUpdateLocal = typeof options.prepareUpdateLocal === 'function'
+        ? options.prepareUpdateLocal
+        : async () => { throw new Error('H22_CROSS_WINDOW_UPDATE_PREPARE_UNAVAILABLE'); };
+      this.commitUpdateLocal = typeof options.commitUpdateLocal === 'function'
+        ? options.commitUpdateLocal
+        : async () => { throw new Error('H22_CROSS_WINDOW_UPDATE_COMMIT_UNAVAILABLE'); };
+      this.cancelUpdateLocal = typeof options.cancelUpdateLocal === 'function'
+        ? options.cancelUpdateLocal
+        : async () => ({ accepted: true, cancelled: false });
       this.now = typeof options.now === 'function' ? options.now : () => Date.now();
 
       this.config = {
@@ -6518,6 +6527,19 @@
           classificationOnly: true,
           actionAuthority: false
         } : null,
+        updateProtection: row.updateProtection && typeof row.updateProtection === 'object' ? {
+          schemaVersion: 1,
+          protocol: cleanText(row.updateProtection.protocol || '', 80) || null,
+          coordinatedUpdateCapable: row.updateProtection.coordinatedUpdateCapable === true,
+          blocked: row.updateProtection.blocked === true,
+          event: row.updateProtection.event === true,
+          boss: row.updateProtection.boss === true,
+          taskType: cleanText(row.updateProtection.taskType || '', 40).toUpperCase() || null,
+          targetType: cleanText(row.updateProtection.targetType || '', 120) || null,
+          observedAtMs: Number.isFinite(Number(row.updateProtection.observedAtMs))
+            ? Number(row.updateProtection.observedAtMs)
+            : Number(observedAtMs) || this.now()
+        } : null,
         observedAtMs: Number(observedAtMs) || this.now(),
         aliveUntilMs: (Number(observedAtMs) || this.now()) + this.config.staleMs
       };
@@ -6548,7 +6570,10 @@
           seq: Number.isFinite(Number(state.observation.seq)) ? Math.max(0, Number(state.observation.seq)) : 0,
           classificationOnly: true,
           actionAuthority: false
-        } : null
+        } : null,
+        updateProtection: state.updateProtection && typeof state.updateProtection === 'object'
+          ? clone(state.updateProtection)
+          : null
       };
     }
 
@@ -6859,7 +6884,10 @@
       const commandId = cleanText(envelope.messageId || '', 240);
       const sender = cleanText(envelope.senderCharacterName || '', 120);
       const commandType = cleanText(envelope.commandType || '', 80);
-      const supported = new Set(['START_RUNTIME', 'STOP_RUNTIME', 'LEAVE_PARTY', 'REQUEST_PARTY_JOIN']);
+      const supported = new Set([
+        'START_RUNTIME', 'STOP_RUNTIME', 'LEAVE_PARTY', 'REQUEST_PARTY_JOIN',
+        'PREPARE_UPDATE', 'COMMIT_UPDATE', 'CANCEL_UPDATE'
+      ]);
       if (!commandId || !sender || !supported.has(commandType)) return false;
       if (cleanText(envelope.targetSessionId || '', 240) !== this.sessionId) {
         this.metrics.rejectedSessionMismatch += 1;
@@ -6895,6 +6923,21 @@
           outcome = await this._executePartyLeave(sender);
         } else if (commandType === 'REQUEST_PARTY_JOIN') {
           outcome = await this._executePartyJoinRequest(sender);
+        } else if (commandType === 'PREPARE_UPDATE') {
+          const result = await this.prepareUpdateLocal(clone(envelope.payload || {}), sender);
+          if (!result || result.accepted !== true) {
+            throw new Error(result && result.reason || 'H22_CROSS_WINDOW_UPDATE_PREPARE_REJECTED');
+          }
+          outcome = { reason: 'H22_CROSS_WINDOW_UPDATE_PREPARED', details: clone(result) };
+        } else if (commandType === 'COMMIT_UPDATE') {
+          const result = await this.commitUpdateLocal(clone(envelope.payload || {}), sender);
+          if (!result || result.accepted !== true) {
+            throw new Error(result && result.reason || 'H22_CROSS_WINDOW_UPDATE_COMMIT_REJECTED');
+          }
+          outcome = { reason: 'H22_CROSS_WINDOW_UPDATE_COMMITTED', details: clone(result) };
+        } else if (commandType === 'CANCEL_UPDATE') {
+          const result = await this.cancelUpdateLocal(clone(envelope.payload || {}), sender);
+          outcome = { reason: 'H22_CROSS_WINDOW_UPDATE_CANCELLED', details: clone(result || {}) };
         }
         record.state = 'SETTLED';
         record.settlement = { success: true, reason: outcome && outcome.reason || 'H19_CROSS_WINDOW_SETTLED', details: outcome && outcome.details || null };
@@ -6926,10 +6969,15 @@
       if (!this._ownedNames().has(target)) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H19_CROSS_WINDOW_TARGET_NOT_OWNED' } };
       const peer = options.peer || this.freshPeer(target);
       if (!peer) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H19_CROSS_WINDOW_PEER_NOT_FRESH' } };
+      const settlementTimeoutMs = Math.max(1000, Math.min(
+        this.config.settlementTimeoutMs,
+        Number(options.settlementTimeoutMs) || this.config.settlementTimeoutMs
+      ));
       const envelope = this._baseEnvelope('COMMAND', target, {
         commandType: cleanText(commandType || '', 80),
         targetSessionId: peer.sessionId,
-        validUntilMs: this.now() + this.config.settlementTimeoutMs
+        validUntilMs: this.now() + settlementTimeoutMs,
+        ...(options.payload && typeof options.payload === 'object' ? { payload: clone(options.payload) } : {})
       });
       const messageId = envelope.messageId;
       let resolvePromise;
@@ -6947,7 +6995,7 @@
           this.pending.delete(messageId);
           this.metrics.transportFailures += 1;
           rejectPromise(new Error('H19_CROSS_WINDOW_SETTLEMENT_TIMEOUT'));
-        }, this.config.settlementTimeoutMs);
+        }, settlementTimeoutMs);
       }
       let transportValue;
       try {
@@ -6996,6 +7044,35 @@
       if (peer.running !== true) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H19_CROSS_WINDOW_PARTY_RUNTIME_NOT_RUNNING' } };
       if (peer.emergencyStopLatched === true) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H19_CROSS_WINDOW_PARTY_EMERGENCY_STOP_LATCHED' } };
       return this._requestCommand(target, 'REQUEST_PARTY_JOIN', { peer });
+    }
+
+    _requestUpdateCommand(targetName, commandType, payload = {}) {
+      const target = cleanText(targetName || '', 120);
+      const peer = this.freshPeer(target);
+      if (!peer) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H22_CROSS_WINDOW_UPDATE_PEER_NOT_FRESH' } };
+      if (peer.running !== true) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H22_CROSS_WINDOW_UPDATE_RUNTIME_NOT_RUNNING' } };
+      if (!peer.updateProtection || peer.updateProtection.coordinatedUpdateCapable !== true) {
+        return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H22_CROSS_WINDOW_UPDATE_CAPABILITY_MISSING' } };
+      }
+      return this._requestCommand(target, commandType, {
+        peer,
+        payload,
+        settlementTimeoutMs: commandType === 'PREPARE_UPDATE'
+          ? this.config.settlementTimeoutMs
+          : Math.min(this.config.settlementTimeoutMs, 4000)
+      });
+    }
+
+    requestUpdatePrepare(targetName, payload = {}) {
+      return this._requestUpdateCommand(targetName, 'PREPARE_UPDATE', payload);
+    }
+
+    requestUpdateCommit(targetName, payload = {}) {
+      return this._requestUpdateCommand(targetName, 'COMMIT_UPDATE', payload);
+    }
+
+    requestUpdateCancel(targetName, payload = {}) {
+      return this._requestUpdateCommand(targetName, 'CANCEL_UPDATE', payload);
     }
 
     install() {
@@ -18880,8 +18957,12 @@
   const DEFAULT_HANDSHAKE_TIMEOUT_MS = 12000;
   const DEFAULT_RETRY_BASE_MS = 5 * 60 * 1000;
   const DEFAULT_RETRY_MAX_MS = 6 * 60 * 60 * 1000;
+  const DEFAULT_GROUP_APPLY_DELAY_MS = 8000;
+  const DEFAULT_COORDINATION_RETRY_MS = 5000;
+  const UPDATE_COORDINATION_PROTOCOL = 'h22-synchronized-update-v1';
   const PENDING_KEY = 'albot:auto-update:pending:v1';
   const QUARANTINE_KEY = 'albot:auto-update:quarantine:v1';
+  const GROUP_OUTCOME_PREFIX = 'albot:auto-update:rollout-outcome:v1:';
 
   function finite(value, fallback = 0) {
     const n = Number(value);
@@ -18982,11 +19063,11 @@
         handshakeTimeoutMs: Math.max(3000, finite(globalConfig.handshakeTimeoutMs, DEFAULT_HANDSHAKE_TIMEOUT_MS)),
         retryBaseMs: Math.max(60000, finite(globalConfig.retryBaseMs, DEFAULT_RETRY_BASE_MS)),
         retryMaxMs: Math.max(5 * 60000, finite(globalConfig.retryMaxMs, DEFAULT_RETRY_MAX_MS)),
+        groupApplyDelayMs: Math.max(6000, finite(globalConfig.groupApplyDelayMs, DEFAULT_GROUP_APPLY_DELAY_MS)),
+        coordinationRetryMs: Math.max(2000, finite(globalConfig.coordinationRetryMs, DEFAULT_COORDINATION_RETRY_MS)),
         autoDownload: globalConfig.autoDownload !== false,
-        autoApply: globalConfig.autoApply === true,
-        stagingSlots: Array.isArray(globalConfig.stagingSlots)
-          ? [...new Set(globalConfig.stagingSlots.map(value => String(value)).filter(Boolean))].slice(0, 4)
-          : []
+        autoApply: globalConfig.autoApply !== false,
+        coordinatedApply: globalConfig.coordinatedApply !== false
       };
       this.active = false;
       this.busy = false;
@@ -18999,6 +19080,10 @@
       this.lastSafety = { safe: false, reasons: ['NOT_EVALUATED'] };
       this.lastApply = null;
       this.lastIncident = null;
+      this.preparedUpdate = null;
+      this.rolloutTimer = null;
+      this.coordinationRetryAtMs = 0;
+      this.lastCoordination = null;
       this.stats = {
         checks: 0,
         updatesFound: 0,
@@ -19012,6 +19097,11 @@
         rollbackFailures: 0,
         rearms: 0,
         quarantines: 0,
+        groupPrepares: 0,
+        groupCommits: 0,
+        groupCancels: 0,
+        groupDeferrals: 0,
+        coordinationFailures: 0,
         failures: 0
       };
       this._loadPending();
@@ -19033,9 +19123,9 @@
       if (value.handshakeTimeoutMs != null) this.config.handshakeTimeoutMs = Math.max(3000, finite(value.handshakeTimeoutMs, this.config.handshakeTimeoutMs));
       if (value.retryBaseMs != null) this.config.retryBaseMs = Math.max(60000, finite(value.retryBaseMs, this.config.retryBaseMs));
       if (value.retryMaxMs != null) this.config.retryMaxMs = Math.max(this.config.retryBaseMs, finite(value.retryMaxMs, this.config.retryMaxMs));
-      if (Array.isArray(value.stagingSlots)) {
-        this.config.stagingSlots = [...new Set(value.stagingSlots.map(item => String(item)).filter(Boolean))].slice(0, 4);
-      }
+      if (value.groupApplyDelayMs != null) this.config.groupApplyDelayMs = Math.max(6000, finite(value.groupApplyDelayMs, this.config.groupApplyDelayMs));
+      if (value.coordinationRetryMs != null) this.config.coordinationRetryMs = Math.max(2000, finite(value.coordinationRetryMs, this.config.coordinationRetryMs));
+      if (Object.prototype.hasOwnProperty.call(value, 'coordinatedApply')) this.config.coordinatedApply = value.coordinatedApply !== false;
       return this.status();
     }
 
@@ -19044,16 +19134,56 @@
       try {
         const raw = this.storage.get(PENDING_KEY);
         const row = raw ? JSON.parse(raw) : null;
-        if (row && row.manifest && typeof row.bundle === 'string') this.pending = row;
+        if (row && row.manifest) {
+          this.pending = {
+            downloadedAt: row.downloadedAt || null,
+            manifest: row.manifest,
+            bundle: null
+          };
+        }
       } catch (_) {}
     }
 
     _persistPending() {
       if (!this.storage) return;
       try {
-        if (!this.pending) this.storage.remove(PENDING_KEY);
-        else this.storage.set(PENDING_KEY, JSON.stringify(this.pending));
+        if (!this.pending) {
+          this.storage.remove(PENDING_KEY);
+        } else {
+          this.storage.set(PENDING_KEY, JSON.stringify({
+            downloadedAt: this.pending.downloadedAt || null,
+            manifest: clone(this.pending.manifest)
+          }));
+        }
       } catch (_) {}
+    }
+
+    _bootstrap() {
+      const api = this.root && this.root.__ALBOT_BOOTSTRAP__;
+      if (!api || String(api.product || '') !== 'AL Bot') return null;
+      return api;
+    }
+
+    _bootstrapCompatibility(manifest) {
+      const bootstrap = this._bootstrap();
+      if (!bootstrap) return { ok: false, reason: 'UPDATE_BOOTSTRAP_UNAVAILABLE' };
+      for (const method of ['loadRelease', 'executeVerifiedRelease', 'confirmActiveRelease', 'activeRelease']) {
+        if (typeof bootstrap[method] !== 'function') {
+          return { ok: false, reason: 'UPDATE_BOOTSTRAP_API_INCOMPLETE:' + method };
+        }
+      }
+      const version = clean(bootstrap.version || '', 80);
+      if (!version) return { ok: false, reason: 'UPDATE_BOOTSTRAP_VERSION_UNKNOWN' };
+      if (manifest && manifest.minBootstrapVersion
+          && compareVersions(version, manifest.minBootstrapVersion) < 0) {
+        return {
+          ok: false,
+          reason: 'UPDATE_BOOTSTRAP_TOO_OLD',
+          bootstrapVersion: version,
+          minBootstrapVersion: manifest.minBootstrapVersion
+        };
+      }
+      return { ok: true, bootstrap, version };
     }
 
     _loadQuarantine() {
@@ -19102,6 +19232,8 @@
         version: manifest.version,
         commitSha: manifest.commitSha,
         sha256: manifest.sha256,
+        bytes: Math.floor(finite(manifest.bytes, 0)),
+        bundleUrl: clean(manifest.bundleUrl || '', 900) || null,
         failures,
         retryAtMs,
         retryAt: new Date(retryAtMs).toISOString(),
@@ -19149,7 +19281,9 @@
           });
         }, this.config.checkIntervalMs, { immediate: true });
         context.scope.interval('update-apply', () => {
-          if (!this.config.autoApply || !this.pending || this.busy) return;
+          if (!this.config.autoApply || this.busy) return;
+          if (!this.pending) this._loadPending();
+          if (!this.pending) return;
           Promise.resolve(this.applyPending()).catch(error => {
             this.stats.failures += 1;
             this.lastError = { at: new Date().toISOString(), reason: clean(error && error.message || error, 240) };
@@ -19161,6 +19295,14 @@
 
     stop() {
       this.active = false;
+      if (this.rolloutTimer != null) {
+        try {
+          const clear = this.root && this.root.clearTimeout || clearTimeout;
+          clear(this.rolloutTimer);
+        } catch (_) {}
+      }
+      this.rolloutTimer = null;
+      this.preparedUpdate = null;
       return this.status();
     }
 
@@ -19207,9 +19349,8 @@
         const checked = validateManifest(rawManifest);
         if (!checked.ok) throw new Error(checked.reason);
         const manifest = checked.manifest;
-        if (manifest.minBootstrapVersion && compareVersions(this.runtime.version, manifest.minBootstrapVersion) < 0) {
-          throw new Error('UPDATE_BOOTSTRAP_TOO_OLD');
-        }
+        const bootstrapCheck = this._bootstrapCompatibility(manifest);
+        if (!bootstrapCheck.ok) throw new Error(bootstrapCheck.reason);
         if (compareVersions(manifest.version, this.runtime.version) <= 0) {
           if (this.pending && compareVersions(this.pending.manifest.version, this.runtime.version) <= 0) {
             this.pending = null;
@@ -19276,61 +19417,76 @@
       }
     }
 
-    safety() {
-      const reasons = [];
+    localProtection() {
+      const now = Date.now();
       const read = controller => {
         try { return controller && typeof controller.status === 'function' ? controller.status() : null; }
         catch (_) { return null; }
       };
-      const blockController = (name, status, busyKeys = []) => {
-        if (!status) return;
-        if (status.suspended === true) reasons.push(name + '_SUSPENDED');
-        for (const key of busyKeys) {
-          const value = status[key];
-          if (Array.isArray(value) ? value.length > 0 : !!value) reasons.push(name + '_' + key.toUpperCase());
-        }
-      };
-
-      if (!this.runtime.running) reasons.push('RUNTIME_NOT_RUNNING');
-      if (this.runtime.stopLatch && this.runtime.stopLatch.status().latched) reasons.push('EMERGENCY_STOP_LATCHED');
-
-      const combat = read(this.runtime.combat);
-      if (combat && combat.active) reasons.push('COMBAT_ACTIVE');
-      if (combat && combat.pendingAttack) reasons.push('COMBAT_PENDING_ATTACK');
-
-      const movement = read(this.runtime.movement);
-      if (movement && (movement.active || movement.activeOrder)) reasons.push('MOVEMENT_ACTIVE');
-
-      blockController('RESOURCE', read(this.runtime.resourceTopoff), ['pending']);
-      blockController('LIFECYCLE', read(this.runtime.lifecycle), ['currentAction', 'queue']);
-      blockController('LOGISTICS', read(this.runtime.partyLogistics), ['currentAction', 'queue']);
-      blockController('BANK', read(this.runtime.bank), ['pending', 'request']);
-      blockController('TRADE', read(this.runtime.trade), ['pending', 'request']);
-      blockController('UPGRADE', read(this.runtime.upgrade), ['pending', 'request']);
-      blockController('CRAFT', read(this.runtime.exchangeCraft), ['pending', 'request']);
-      blockController('ECONOMY', read(this.runtime.economy), ['currentAction']);
-      blockController('INVENTORY', read(this.runtime.inventory), ['pending', 'request', 'pendingLoot']);
-      blockController('MERCHANT', read(this.runtime.merchant), ['pending', 'request', 'delivery', 'currentAction']);
-      blockController('GEAR', read(this.runtime.gear), ['pending', 'request', 'delivery']);
-
-      const transport = read(this.runtime.lifecycleTransport);
-      if (transport && Array.isArray(transport.pending) && transport.pending.length) reasons.push('H19_REMOTE_REQUEST_PENDING');
-      if (transport && transport.partyRecoveryLease) reasons.push('H19_PARTY_RECOVERY_PENDING');
-
-      const full = read(this.runtime.fullAutonomy);
-      if (full && full.enabled === true) {
-        const state = full.lastDecision && String(full.lastDecision.state || '').toUpperCase();
-        if (!state || state !== 'RUNNING') reasons.push('FULL_AUTONOMY_UNSAFE_TRANSITION');
-      }
 
       let game = null;
-      try { game = this.runtime.game.snapshot(); } catch (_) {}
-      const character = game && game.character;
-      if (!character) reasons.push('CHARACTER_UNKNOWN');
-      if (character && (character.rip || character.dead)) reasons.push('CHARACTER_DEAD');
-      const hp = finite(character && character.hp, 0);
-      const maxHp = finite(character && (character.max_hp != null ? character.max_hp : character.maxHp), 0);
-      if (maxHp > 0 && hp / maxHp < 0.90) reasons.push('HP_BELOW_UPDATE_THRESHOLD');
+      try { game = this.runtime.game && typeof this.runtime.game.snapshot === 'function' ? this.runtime.game.snapshot() : null; }
+      catch (_) {}
+      const character = game && game.character || null;
+      const localName = clean(character && character.name || '', 120) || null;
+
+      const full = read(this.runtime.fullAutonomy);
+      const taskType = full && full.enabled === true
+        ? clean(full.config && full.config.taskType || '', 40).toUpperCase() || null
+        : null;
+      const event = taskType === 'EVENT';
+
+      const combat = read(this.runtime.combat);
+      const combatSession = combat && combat.session || null;
+      const targetType = clean(
+        combatSession && combatSession.targetType
+          || game && game.target && game.target.mtype
+          || '',
+        120
+      ) || null;
+
+      let boss = taskType === 'BOSS' && !!(combat && combat.active === true);
+      if (!boss && targetType) {
+        try {
+          const definition = this.runtime.game && typeof this.runtime.game.monsterDefinition === 'function'
+            ? this.runtime.game.monsterDefinition(targetType)
+            : null;
+          const engaged = !!(
+            combat && combat.active === true
+            || character && character.targetId
+            || game && game.target && game.target.targetId && localName
+              && String(game.target.targetId) === String(localName)
+          );
+          if (definition && definition.boss === true && engaged) boss = true;
+        } catch (_) {}
+      }
+
+      const reasons = [];
+      if (event) reasons.push('EVENT_ACTIVE');
+      if (boss) reasons.push('BOSS_COMBAT_ACTIVE');
+      return {
+        schemaVersion: 1,
+        protocol: UPDATE_COORDINATION_PROTOCOL,
+        coordinatedUpdateCapable: true,
+        observedAtMs: now,
+        characterName: localName,
+        blocked: event || boss,
+        event,
+        boss,
+        taskType,
+        targetType,
+        reasons
+      };
+    }
+
+    safety() {
+      const protection = this.localProtection();
+      const reasons = [];
+      if (!this.runtime.running) reasons.push('RUNTIME_NOT_RUNNING');
+      if (this.runtime.stopLatch && this.runtime.stopLatch.status().latched) reasons.push('EMERGENCY_STOP_LATCHED');
+      if (!protection.characterName) reasons.push('CHARACTER_UNKNOWN');
+      if (protection.event) reasons.push('EVENT_ACTIVE');
+      if (protection.boss) reasons.push('BOSS_COMBAT_ACTIVE');
 
       const safe = reasons.length === 0;
       const now = Date.now();
@@ -19342,47 +19498,632 @@
       this.lastSafety = {
         at: new Date(now).toISOString(),
         safe,
-        stable: safe && this.safeSince > 0 && now - this.safeSince >= this.config.safeHoldMs,
-        reasons
+        stable: safe,
+        reasons,
+        protection
       };
       return clone(this.lastSafety);
     }
 
-    _binding(name) {
-      if (this.root && typeof this.root[name] === 'function') return { fn: this.root[name], owner: this.root };
-      let parent = null;
-      try { parent = this.root && this.root.parent; } catch (_) {}
-      if (parent && typeof parent[name] === 'function') return { fn: parent[name], owner: parent };
-      return null;
+    _releaseDescriptor(manifest) {
+      return manifest ? {
+        version: clean(manifest.version || '', 80),
+        commitSha: clean(manifest.commitSha || '', 80).toLowerCase(),
+        sha256: clean(manifest.sha256 || '', 80).toLowerCase(),
+        bytes: Math.floor(finite(manifest.bytes, 0)),
+        bundleUrl: clean(manifest.bundleUrl || '', 900)
+      } : null;
     }
 
-    _activeSlot() {
-      const binding = this._binding('get_active_code_slot');
-      if (!binding) return null;
+    _releaseMatches(manifest, release) {
+      if (!manifest || !release) return false;
+      const local = this._releaseDescriptor(manifest);
+      return !!local
+        && local.version === clean(release.version || '', 80)
+        && local.commitSha === clean(release.commitSha || '', 80).toLowerCase()
+        && local.sha256 === clean(release.sha256 || '', 80).toLowerCase()
+        && local.bytes === Math.floor(finite(release.bytes, 0))
+        && local.bundleUrl === clean(release.bundleUrl || '', 900);
+    }
+
+    _localName() {
+      const protection = this.localProtection();
+      return protection.characterName || null;
+    }
+
+    _groupState(options = {}) {
+      const local = this.localProtection();
+      const acceptedVersions = new Set([
+        String(this.runtime.version || ''),
+        ...(Array.isArray(options.acceptedVersions) ? options.acceptedVersions.map(value => String(value || '')) : [])
+      ].filter(Boolean));
+      const localName = local.characterName;
+      const transport = this.runtime.lifecycleTransport;
+      let peers = [];
       try {
-        const value = binding.fn.call(binding.owner);
-        const slot = value && typeof value === 'object' ? (value.slot ?? value.id ?? value.name) : value;
-        return slot == null ? null : String(slot);
+        peers = transport && typeof transport.freshPeers === 'function' ? transport.freshPeers() : [];
+      } catch (_) {
+        peers = [];
+      }
+      const peerMap = new Map(peers.filter(Boolean).map(peer => [String(peer.name || ''), peer]));
+
+      let online = [];
+      try {
+        const roster = this.runtime.roster && typeof this.runtime.roster.refresh === 'function'
+          ? this.runtime.roster.refresh()
+          : null;
+        if (roster && roster.onlineStateAvailable === true && Array.isArray(roster.onlineCharacterNames)) {
+          online = roster.onlineCharacterNames.map(String);
+        }
+      } catch (_) {}
+      if (!online.length) online = [localName, ...peers.map(peer => peer && peer.name)].filter(Boolean).map(String);
+
+      const participants = [...new Set(online.filter(Boolean))].sort((a, b) => a.localeCompare(b));
+      if (localName && !participants.includes(String(localName))) participants.push(String(localName));
+      participants.sort((a, b) => a.localeCompare(b));
+
+      const reasons = [];
+      if (!localName) reasons.push('UPDATE_GROUP_LOCAL_IDENTITY_REQUIRED');
+      if (local.blocked) reasons.push(...local.reasons.map(reason => 'LOCAL_' + reason));
+
+      for (const name of participants) {
+        if (String(name) === String(localName || '')) continue;
+        const peer = peerMap.get(String(name));
+        if (!peer) {
+          reasons.push('UPDATE_GROUP_PEER_NOT_FRESH:' + name);
+          continue;
+        }
+        if (peer.running !== true) reasons.push('UPDATE_GROUP_PEER_RUNTIME_NOT_RUNNING:' + name);
+        if (peer.emergencyStopLatched === true) reasons.push('UPDATE_GROUP_PEER_EMERGENCY_STOP:' + name);
+        if (peer.version && !acceptedVersions.has(String(peer.version))) {
+          reasons.push('UPDATE_GROUP_PEER_VERSION_MISMATCH:' + name);
+        }
+        const protection = peer.updateProtection;
+        if (!protection || protection.coordinatedUpdateCapable !== true) {
+          reasons.push('UPDATE_GROUP_PEER_CAPABILITY_MISSING:' + name);
+          continue;
+        }
+        if (protection.event === true) reasons.push('REMOTE_EVENT_ACTIVE:' + name);
+        if (protection.boss === true) reasons.push('REMOTE_BOSS_COMBAT_ACTIVE:' + name);
+      }
+
+      const coordinator = participants.length ? participants[0] : localName;
+      return {
+        ready: reasons.length === 0,
+        localName,
+        coordinator,
+        participants,
+        peers: peers.map(peer => ({
+          name: peer.name,
+          running: peer.running === true,
+          version: peer.version || null,
+          updateProtection: clone(peer.updateProtection || null)
+        })),
+        localProtection: local,
+        reasons
+      };
+    }
+
+    async _verifyPendingForRelease(release) {
+      if (!this.pending) this._loadPending();
+      if (!this.pending || !this.pending.manifest || !this._releaseMatches(this.pending.manifest, release)
+          || typeof this.pending.bundle !== 'string') {
+        const checked = await this.checkAndDownload();
+        if (!checked || checked.accepted !== true) {
+          return { ok: false, reason: checked && checked.reason || 'UPDATE_GROUP_DOWNLOAD_FAILED' };
+        }
+      }
+      if (!this.pending || !this.pending.manifest || !this._releaseMatches(this.pending.manifest, release)
+          || typeof this.pending.bundle !== 'string') {
+        return { ok: false, reason: 'UPDATE_GROUP_RELEASE_MISMATCH' };
+      }
+
+      const manifestCheck = validateManifest(this.pending.manifest);
+      if (!manifestCheck.ok) return { ok: false, reason: manifestCheck.reason };
+      const manifest = manifestCheck.manifest;
+      const bootstrapCheck = this._bootstrapCompatibility(manifest);
+      if (!bootstrapCheck.ok) return { ok: false, reason: bootstrapCheck.reason };
+
+      const bytes = this._utf8Bytes(this.pending.bundle);
+      const sha256 = await this._sha256(this.pending.bundle);
+      const expectedBanner = '/* AL Bot ' + String(manifest.version) + ' | generated file | do not edit dist directly */';
+      if (bytes !== manifest.bytes || bytes > this.config.maxBundleBytes || sha256 !== manifest.sha256
+          || !String(this.pending.bundle).startsWith(expectedBanner + '\n')) {
+        return { ok: false, reason: 'UPDATE_PENDING_REVALIDATION_FAILED', bytes, sha256 };
+      }
+
+      const safety = this.safety();
+      if (!safety.safe) return { ok: false, reason: 'UPDATE_EVENT_OR_BOSS_ACTIVE', safety };
+
+      return {
+        ok: true,
+        manifest,
+        bytes,
+        sha256,
+        bundleUrl: manifest.bundleUrl,
+        cachedInWindow: true
+      };
+    }
+
+    async prepareCoordinatedUpdate(payload = {}, meta = {}) {
+      if (!this.config.enabled) return { accepted: false, reason: 'UPDATE_DISABLED' };
+      if (!this.config.autoApply) return { accepted: false, reason: 'UPDATE_AUTO_APPLY_DISABLED' };
+      if (!this.config.coordinatedApply) return { accepted: false, reason: 'UPDATE_GROUP_COORDINATION_DISABLED' };
+      if (this.busy) return { accepted: false, reason: 'UPDATE_BUSY' };
+
+      const release = payload && payload.release || null;
+      const releaseKey = clean(payload && payload.releaseKey || '', 300);
+      const rolloutId = clean(payload && payload.rolloutId || '', 500);
+      const expectedKey = release && release.version && release.commitSha && release.sha256
+        ? String(release.version) + '@' + String(release.commitSha).toLowerCase() + ':' + String(release.sha256).toLowerCase()
+        : null;
+      if (!release || !releaseKey || releaseKey !== expectedKey) return { accepted: false, reason: 'UPDATE_GROUP_RELEASE_INVALID' };
+      if (!rolloutId || !rolloutId.startsWith(releaseKey + ':')) {
+        return { accepted: false, reason: 'UPDATE_GROUP_ROLLOUT_ID_INVALID' };
+      }
+
+      const previousRelease = payload && payload.previousRelease || null;
+      const localActiveRelease = this._activeRelease();
+      if (!previousRelease || !localActiveRelease || !this._releaseMatches(localActiveRelease, previousRelease)) {
+        return { accepted: false, reason: 'UPDATE_GROUP_ROLLBACK_RELEASE_MISMATCH' };
+      }
+
+      const coordinator = clean(payload.coordinator || '', 120);
+      const sender = clean(meta && meta.sender || '', 120);
+      if (!coordinator) return { accepted: false, reason: 'UPDATE_GROUP_COORDINATOR_REQUIRED' };
+      if (sender && sender !== coordinator) return { accepted: false, reason: 'UPDATE_GROUP_COORDINATOR_MISMATCH' };
+
+      const participants = Array.isArray(payload.participants)
+        ? [...new Set(payload.participants.map(value => clean(value, 120)).filter(Boolean))].sort((a, b) => a.localeCompare(b))
+        : [];
+      const localName = this._localName();
+      if (!localName || !participants.includes(localName)) return { accepted: false, reason: 'UPDATE_GROUP_LOCAL_NOT_PARTICIPANT' };
+
+      if (this.preparedUpdate && this.preparedUpdate.releaseKey !== releaseKey) {
+        return { accepted: false, reason: 'UPDATE_GROUP_DIFFERENT_RELEASE_ALREADY_PREPARED' };
+      }
+
+      const ready = await this._verifyPendingForRelease(release);
+      if (!ready.ok) return { accepted: false, reason: ready.reason, details: clone(ready) };
+
+      this.preparedUpdate = {
+        protocol: UPDATE_COORDINATION_PROTOCOL,
+        state: 'PREPARED',
+        releaseKey,
+        rolloutId,
+        release: clone(release),
+        previousRelease: clone(previousRelease),
+        coordinator,
+        participants,
+        localName,
+        cachedInWindow: ready.cachedInWindow === true,
+        bytes: ready.bytes,
+        sha256: ready.sha256,
+        bundleUrl: ready.bundleUrl,
+        rearmIntent: this._captureRearmIntent(),
+        preparedAt: new Date().toISOString(),
+        preparedAtMs: Date.now(),
+        applyAt: null,
+        applyAtMs: null
+      };
+      this.stats.groupPrepares += 1;
+      return {
+        accepted: true,
+        state: 'PREPARED',
+        releaseKey,
+        rolloutId,
+        localName,
+        previousRelease: clone(previousRelease),
+        cachedInWindow: ready.cachedInWindow === true,
+        bytes: ready.bytes,
+        sha256: ready.sha256,
+        bundleUrl: ready.bundleUrl
+      };
+    }
+
+    commitCoordinatedUpdate(payload = {}, meta = {}) {
+      const releaseKey = clean(payload && payload.releaseKey || '', 300);
+      const coordinator = clean(payload && payload.coordinator || '', 120);
+      const sender = clean(meta && meta.sender || '', 120);
+      if (!this.preparedUpdate || this.preparedUpdate.state !== 'PREPARED') {
+        return { accepted: false, reason: 'UPDATE_GROUP_NOT_PREPARED' };
+      }
+      if (!releaseKey || this.preparedUpdate.releaseKey !== releaseKey) {
+        return { accepted: false, reason: 'UPDATE_GROUP_RELEASE_MISMATCH' };
+      }
+      if (!coordinator || coordinator !== this.preparedUpdate.coordinator) {
+        return { accepted: false, reason: 'UPDATE_GROUP_COORDINATOR_MISMATCH' };
+      }
+      if (sender && sender !== coordinator) return { accepted: false, reason: 'UPDATE_GROUP_COORDINATOR_MISMATCH' };
+
+      const safety = this.safety();
+      if (!safety.safe) return { accepted: false, reason: 'UPDATE_EVENT_OR_BOSS_ACTIVE', safety };
+
+      const applyAtMs = Math.floor(finite(payload.applyAtMs, 0));
+      const now = Date.now();
+      if (applyAtMs < now + 250 || applyAtMs > now + 30000) {
+        return { accepted: false, reason: 'UPDATE_GROUP_APPLY_TIME_INVALID' };
+      }
+
+      if (this.rolloutTimer != null) {
+        try {
+          const clear = this.root && this.root.clearTimeout || clearTimeout;
+          clear(this.rolloutTimer);
+        } catch (_) {}
+      }
+
+      this.preparedUpdate = {
+        ...this.preparedUpdate,
+        state: 'COMMITTED',
+        applyAtMs,
+        applyAt: new Date(applyAtMs).toISOString(),
+        committedAt: new Date().toISOString()
+      };
+      const timer = this.root && this.root.setTimeout || setTimeout;
+      this.rolloutTimer = timer(() => {
+        this.rolloutTimer = null;
+        Promise.resolve(this.applyPending({
+          localOnly: true,
+          releaseKey,
+          coordinated: true
+        })).catch(error => {
+          this.stats.failures += 1;
+          this.lastError = { at: new Date().toISOString(), reason: clean(error && error.message || error, 240) };
+        });
+      }, Math.max(0, applyAtMs - now));
+
+      this.stats.groupCommits += 1;
+      return {
+        accepted: true,
+        state: 'COMMITTED',
+        releaseKey,
+        localName: this.preparedUpdate.localName,
+        applyAt: this.preparedUpdate.applyAt,
+        applyAtMs
+      };
+    }
+
+    cancelCoordinatedUpdate(payload = {}, meta = {}) {
+      const releaseKey = clean(payload && payload.releaseKey || '', 300);
+      const sender = clean(meta && meta.sender || '', 120);
+      if (this.preparedUpdate && releaseKey && this.preparedUpdate.releaseKey !== releaseKey) {
+        return { accepted: true, cancelled: false, reason: 'UPDATE_GROUP_OTHER_RELEASE_PREPARED' };
+      }
+      if (this.preparedUpdate && sender && this.preparedUpdate.coordinator && sender !== this.preparedUpdate.coordinator) {
+        return { accepted: false, cancelled: false, reason: 'UPDATE_GROUP_COORDINATOR_MISMATCH' };
+      }
+      if (this.rolloutTimer != null) {
+        try {
+          const clear = this.root && this.root.clearTimeout || clearTimeout;
+          clear(this.rolloutTimer);
+        } catch (_) {}
+      }
+      const previous = clone(this.preparedUpdate);
+      this.rolloutTimer = null;
+      this.preparedUpdate = null;
+      if (previous) this.stats.groupCancels += 1;
+      return { accepted: true, cancelled: !!previous, previous };
+    }
+
+    async _dispatchGroup(method, names, payload) {
+      const transport = this.runtime.lifecycleTransport;
+      if (!transport || typeof transport[method] !== 'function') {
+        return { ok: false, reason: 'UPDATE_GROUP_TRANSPORT_UNAVAILABLE', results: [] };
+      }
+      const commands = [];
+      for (const name of names) {
+        const command = transport[method](name, payload);
+        if (!command || command.state !== 'DISPATCHED' || !command.value) {
+          return {
+            ok: false,
+            reason: command && command.error && command.error.message || 'UPDATE_GROUP_COMMAND_NOT_DISPATCHED:' + name,
+            results: commands
+          };
+        }
+        commands.push({ name, command });
+      }
+      try {
+        const settled = await Promise.all(commands.map(async row => ({
+          name: row.name,
+          outcome: await row.command.value
+        })));
+        const failed = settled.find(row => !row.outcome || row.outcome.success !== true);
+        if (failed) {
+          return {
+            ok: false,
+            reason: failed.outcome && failed.outcome.reason || 'UPDATE_GROUP_REMOTE_REJECTED:' + failed.name,
+            results: settled
+          };
+        }
+        return { ok: true, results: settled };
+      } catch (error) {
+        return { ok: false, reason: clean(error && error.message || error, 240), results: [] };
+      }
+    }
+
+    async _cancelGroup(names, payload) {
+      const transport = this.runtime.lifecycleTransport;
+      if (!transport || typeof transport.requestUpdateCancel !== 'function') return;
+      const waits = [];
+      for (const name of names) {
+        try {
+          const command = transport.requestUpdateCancel(name, payload);
+          if (command && command.state === 'DISPATCHED' && command.value) waits.push(command.value.catch(() => null));
+        } catch (_) {}
+      }
+      if (waits.length) {
+        try { await Promise.all(waits); } catch (_) {}
+      }
+    }
+
+    _groupOutcomeKey(rolloutId, characterName) {
+      return GROUP_OUTCOME_PREFIX
+        + encodeURIComponent(clean(rolloutId || '', 500))
+        + ':'
+        + encodeURIComponent(clean(characterName || '', 120));
+    }
+
+    _recordGroupOutcome(rollout, state, details = {}) {
+      if (!this.storage || !rollout || !rollout.rolloutId || !rollout.localName) return null;
+      const row = {
+        rolloutId: rollout.rolloutId,
+        releaseKey: rollout.releaseKey,
+        characterName: rollout.localName,
+        state: clean(state || '', 40),
+        atMs: Date.now(),
+        at: new Date().toISOString(),
+        details: clone(details)
+      };
+      try {
+        this.storage.set(this._groupOutcomeKey(rollout.rolloutId, rollout.localName), JSON.stringify(row));
+        return row;
       } catch (_) {
         return null;
       }
     }
 
-    _stagingSlot(activeSlot) {
-      return this.config.stagingSlots.find(slot => String(slot) !== String(activeSlot)) || null;
+    _readGroupOutcomes(rollout) {
+      const rows = [];
+      if (!this.storage || !rollout || !rollout.rolloutId) return rows;
+      const participants = Array.isArray(rollout.participants) ? rollout.participants : [];
+      for (const name of participants) {
+        try {
+          const raw = this.storage.get(this._groupOutcomeKey(rollout.rolloutId, name));
+          const row = raw ? JSON.parse(raw) : null;
+          if (row && row.rolloutId === rollout.rolloutId && row.releaseKey === rollout.releaseKey
+              && String(row.characterName || '') === String(name)) {
+            rows.push(row);
+          }
+        } catch (_) {}
+      }
+      return rows;
     }
 
-    async _saveCode(slot, code, version) {
-      const upload = this._binding('upload_code');
-      if (upload) {
-        const result = upload.fn.call(upload.owner, slot, 'AL Bot ' + version, code);
-        return result && typeof result.then === 'function' ? await result : result;
+    async _waitGroupReady(rollout, details = {}) {
+      const participants = Array.isArray(rollout && rollout.participants) ? rollout.participants.slice() : [];
+      if (!rollout || !rollout.rolloutId || !rollout.localName || !participants.length) {
+        return { ok: false, reason: 'UPDATE_GROUP_HEALTH_BARRIER_INVALID', outcomes: [] };
       }
-      let parent = null;
-      try { parent = this.root && this.root.parent; } catch (_) {}
-      if (!parent || typeof parent.api_call !== 'function') throw new Error('UPDATE_SAVE_CODE_UNAVAILABLE');
-      const result = parent.api_call('save_code', { slot, name: 'AL Bot ' + version, code, auto: true, electron: true }, { timeout: 15000 });
-      return result && typeof result.then === 'function' ? await result : result;
+
+      this._recordGroupOutcome(rollout, 'READY', details);
+      if (participants.length === 1) {
+        return { ok: true, reason: 'UPDATE_GROUP_HEALTHY', outcomes: this._readGroupOutcomes(rollout) };
+      }
+
+      const deadline = Date.now() + Math.max(5000, this.config.handshakeTimeoutMs);
+      while (Date.now() < deadline) {
+        const outcomes = this._readGroupOutcomes(rollout);
+        const failed = outcomes.find(row => row && row.state === 'FAILED');
+        if (failed) {
+          return {
+            ok: false,
+            reason: 'UPDATE_GROUP_MEMBER_FAILED:' + clean(failed.characterName || '', 120),
+            outcomes
+          };
+        }
+        const ready = new Set(outcomes.filter(row => row && row.state === 'READY').map(row => String(row.characterName || '')));
+        if (participants.every(name => ready.has(String(name)))) {
+          return { ok: true, reason: 'UPDATE_GROUP_HEALTHY', outcomes };
+        }
+        await this._sleep(100);
+      }
+
+      return {
+        ok: false,
+        reason: 'UPDATE_GROUP_HEALTH_TIMEOUT',
+        outcomes: this._readGroupOutcomes(rollout)
+      };
+    }
+
+    _coordinationFailure(reason, details = {}) {
+      const now = Date.now();
+      this.stats.coordinationFailures += 1;
+      this.coordinationRetryAtMs = now + this.config.coordinationRetryMs;
+      this.lastCoordination = {
+        at: new Date(now).toISOString(),
+        state: 'FAILED',
+        reason: clean(reason, 240),
+        retryAt: new Date(this.coordinationRetryAtMs).toISOString(),
+        details: clone(details)
+      };
+      this._emitIncident('UPDATE_GROUP_COORDINATION_FAILED', this.lastCoordination);
+      return {
+        applied: false,
+        reason: this.lastCoordination.reason,
+        retryAt: this.lastCoordination.retryAt,
+        coordination: clone(this.lastCoordination)
+      };
+    }
+
+    async _coordinatePending(manifest) {
+      const now = Date.now();
+      if (now < this.coordinationRetryAtMs) {
+        return {
+          applied: false,
+          reason: 'UPDATE_GROUP_COORDINATION_BACKOFF',
+          retryAt: new Date(this.coordinationRetryAtMs).toISOString()
+        };
+      }
+      if (this.preparedUpdate) {
+        return {
+          applied: false,
+          reason: this.preparedUpdate.state === 'COMMITTED' ? 'UPDATE_GROUP_COMMITTED' : 'UPDATE_GROUP_PREPARED',
+          rollout: clone(this.preparedUpdate)
+        };
+      }
+
+      const group = this._groupState();
+      if (!group.ready) {
+        this.stats.groupDeferrals += 1;
+        this.lastCoordination = {
+          at: new Date().toISOString(),
+          state: 'DEFERRED',
+          reason: 'UPDATE_GROUP_NOT_READY',
+          details: clone(group)
+        };
+        return { applied: false, reason: 'UPDATE_GROUP_NOT_READY', group };
+      }
+      if (String(group.coordinator || '') !== String(group.localName || '')) {
+        return {
+          applied: false,
+          reason: 'UPDATE_WAITING_FOR_GROUP_COORDINATOR',
+          coordinator: group.coordinator,
+          participants: group.participants
+        };
+      }
+
+      const release = this._releaseDescriptor(manifest);
+      const releaseKey = this._releaseKey(manifest);
+      const rolloutId = releaseKey + ':' + String(now) + ':' + String(group.coordinator || '');
+      const previousRelease = this._releaseDescriptor(this._activeRelease());
+      if (!previousRelease) {
+        return this._coordinationFailure('UPDATE_GROUP_ROLLBACK_RELEASE_UNKNOWN', { group, release });
+      }
+      const payload = {
+        protocol: UPDATE_COORDINATION_PROTOCOL,
+        releaseKey,
+        rolloutId,
+        release,
+        previousRelease,
+        coordinator: group.coordinator,
+        participants: group.participants.slice()
+      };
+      const remoteNames = group.participants.filter(name => String(name) !== String(group.localName));
+
+      const localPrepare = await this.prepareCoordinatedUpdate(payload, {});
+      if (!localPrepare || localPrepare.accepted !== true) {
+        return this._coordinationFailure(localPrepare && localPrepare.reason || 'UPDATE_GROUP_LOCAL_PREPARE_FAILED', { group, localPrepare });
+      }
+      const remotePrepare = await this._dispatchGroup('requestUpdatePrepare', remoteNames, payload);
+      if (!remotePrepare.ok) {
+        await this._cancelGroup(remoteNames, { ...payload, reason: remotePrepare.reason });
+        this.cancelCoordinatedUpdate({ releaseKey, reason: remotePrepare.reason });
+        return this._coordinationFailure(remotePrepare.reason, { phase: 'PREPARE', group, remotePrepare });
+      }
+
+      const rechecked = this._groupState();
+      if (!rechecked.ready) {
+        await this._cancelGroup(remoteNames, { ...payload, reason: 'UPDATE_GROUP_PROTECTION_CHANGED' });
+        this.cancelCoordinatedUpdate({ releaseKey, reason: 'UPDATE_GROUP_PROTECTION_CHANGED' });
+        this.stats.groupDeferrals += 1;
+        return { applied: false, reason: 'UPDATE_GROUP_PROTECTION_CHANGED', group: rechecked };
+      }
+
+      const applyAtMs = Date.now() + this.config.groupApplyDelayMs;
+      const commitPayload = { ...payload, applyAtMs };
+
+      // Arm remote peers first and wait for their COMMIT settlements. The local
+      // coordinator is armed last so it can still cancel the group if any peer
+      // rejects the cutover.
+      const remoteCommit = await this._dispatchGroup('requestUpdateCommit', remoteNames, commitPayload);
+      if (!remoteCommit.ok) {
+        await this._cancelGroup(remoteNames, { ...payload, reason: remoteCommit.reason });
+        this.cancelCoordinatedUpdate({ releaseKey, reason: remoteCommit.reason });
+        return this._coordinationFailure(remoteCommit.reason, { phase: 'COMMIT', remoteCommit });
+      }
+
+      const localCommit = this.commitCoordinatedUpdate(commitPayload, {});
+      if (!localCommit || localCommit.accepted !== true) {
+        await this._cancelGroup(remoteNames, { ...payload, reason: localCommit && localCommit.reason || 'LOCAL_COMMIT_FAILED' });
+        this.cancelCoordinatedUpdate({ releaseKey, reason: localCommit && localCommit.reason || 'LOCAL_COMMIT_FAILED' });
+        return this._coordinationFailure(localCommit && localCommit.reason || 'UPDATE_GROUP_LOCAL_COMMIT_FAILED', { phase: 'COMMIT', localCommit, remoteCommit });
+      }
+
+      this.lastCoordination = {
+        at: new Date().toISOString(),
+        state: 'COMMITTED',
+        releaseKey,
+        coordinator: group.coordinator,
+        participants: group.participants.slice(),
+        applyAt: new Date(applyAtMs).toISOString(),
+        applyAtMs
+      };
+      return {
+        applied: false,
+        reason: 'UPDATE_GROUP_COMMITTED',
+        coordination: clone(this.lastCoordination)
+      };
+    }
+
+    _activeRelease() {
+      const bootstrap = this._bootstrap();
+      if (!bootstrap || typeof bootstrap.activeRelease !== 'function') return null;
+      try {
+        const release = bootstrap.activeRelease();
+        const checked = validateManifest(release);
+        return checked.ok ? checked.manifest : null;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    async _executeVerifiedRelease(manifest, bundle) {
+      const check = this._bootstrapCompatibility(manifest);
+      if (!check.ok) throw new Error(check.reason);
+      return check.bootstrap.executeVerifiedRelease(manifest, bundle);
+    }
+
+    async _confirmActiveRelease(manifest) {
+      const check = this._bootstrapCompatibility(manifest);
+      if (!check.ok) throw new Error(check.reason);
+      return check.bootstrap.confirmActiveRelease(manifest);
+    }
+
+    async _rollbackToRelease(previousRelease, failedApi, previousBootCount, rearmIntent) {
+      const checked = validateManifest(previousRelease);
+      if (!checked.ok) return { ok: false, reason: 'ROLLBACK_RELEASE_INVALID:' + checked.reason };
+      const bootstrapCheck = this._bootstrapCompatibility(checked.manifest);
+      if (!bootstrapCheck.ok) return { ok: false, reason: bootstrapCheck.reason };
+
+      try {
+        const loaded = await bootstrapCheck.bootstrap.loadRelease(checked.manifest);
+        if (!loaded || !loaded.manifest || typeof loaded.bundle !== 'string') {
+          return { ok: false, reason: 'ROLLBACK_RELEASE_LOAD_INVALID' };
+        }
+        await bootstrapCheck.bootstrap.executeVerifiedRelease(loaded.manifest, loaded.bundle);
+        const handshake = await this._waitHandshake(failedApi, checked.manifest.version, { previousBootCount });
+        if (!handshake.ok) {
+          this.stats.rollbackFailures += 1;
+          return { ok: false, reason: 'ROLLBACK_HANDSHAKE_FAILED:' + handshake.reason, handshake };
+        }
+
+        const rearm = await this._rearmApi(this.root && this.root.ALBot, rearmIntent);
+        if (!rearm.accepted) {
+          this.stats.rollbackFailures += 1;
+          return { ok: false, reason: 'ROLLBACK_REARM_FAILED:' + (rearm.reason || 'UNKNOWN'), handshake, rearm };
+        }
+
+        await this._confirmActiveRelease(checked.manifest);
+        return {
+          ok: true,
+          release: this._releaseDescriptor(checked.manifest),
+          handshake,
+          rearm
+        };
+      } catch (error) {
+        this.stats.rollbackFailures += 1;
+        return { ok: false, reason: clean(error && error.message || error, 240) };
+      }
     }
 
     _sleep(ms) {
@@ -19480,10 +20221,18 @@
       return { ok: false, reason: last };
     }
 
-    async applyPending() {
-      if (!this.pending || !this.pending.manifest || typeof this.pending.bundle !== 'string') return { applied: false, reason: 'UPDATE_NOT_DOWNLOADED' };
+    async applyPending(options = {}) {
+      if (!this.pending) this._loadPending();
+      if (!this.pending || !this.pending.manifest) return { applied: false, reason: 'UPDATE_NOT_DOWNLOADED' };
       if (!this.config.autoApply) return { applied: false, reason: 'UPDATE_AUTO_APPLY_DISABLED' };
       if (this.busy) return { applied: false, reason: 'UPDATE_BUSY' };
+
+      if (typeof this.pending.bundle !== 'string') {
+        const refreshed = await this.checkAndDownload();
+        if (!refreshed || refreshed.accepted !== true || !this.pending || typeof this.pending.bundle !== 'string') {
+          return { applied: false, reason: refreshed && refreshed.reason || 'UPDATE_NOT_DOWNLOADED' };
+        }
+      }
 
       const checkedManifest = validateManifest(this.pending.manifest);
       if (!checkedManifest.ok) {
@@ -19492,13 +20241,13 @@
         return { applied: false, reason: checkedManifest.reason };
       }
       const manifest = checkedManifest.manifest;
+      const bootstrapCheck = this._bootstrapCompatibility(manifest);
+      if (!bootstrapCheck.ok) return { applied: false, reason: bootstrapCheck.reason };
+
       if (compareVersions(manifest.version, this.runtime.version) <= 0) {
         this.pending = null;
         this._persistPending();
         return { applied: false, reason: 'UPDATE_NOT_NEWER_THAN_RUNTIME' };
-      }
-      if (manifest.minBootstrapVersion && compareVersions(this.runtime.version, manifest.minBootstrapVersion) < 0) {
-        return { applied: false, reason: 'UPDATE_BOOTSTRAP_TOO_OLD' };
       }
       const quarantine = this._quarantineState(manifest);
       if (quarantine.blocked) {
@@ -19506,15 +20255,36 @@
       }
 
       const safety = this.safety();
-      if (!safety.stable) {
+      if (!safety.safe) {
         this.stats.safeDeferrals += 1;
-        return { applied: false, reason: 'UPDATE_SAFE_WINDOW_REQUIRED', safety };
+        return { applied: false, reason: 'UPDATE_EVENT_OR_BOSS_ACTIVE', safety };
       }
 
-      const activeSlot = this._activeSlot();
-      const stagingSlot = this._stagingSlot(activeSlot);
-      if (activeSlot == null) return { applied: false, reason: 'UPDATE_ACTIVE_SLOT_UNKNOWN' };
-      if (stagingSlot == null) return { applied: false, reason: 'UPDATE_STAGING_SLOT_REQUIRED', activeSlot };
+      const releaseKey = this._releaseKey(manifest);
+      if (options.releaseKey && String(options.releaseKey) !== String(releaseKey)) {
+        return { applied: false, reason: 'UPDATE_GROUP_RELEASE_MISMATCH' };
+      }
+      if (!options.localOnly && this.config.coordinatedApply) {
+        return this._coordinatePending(manifest);
+      }
+
+      const rollout = clone(this.preparedUpdate);
+      if (options.localOnly && options.coordinated === true) {
+        if (!rollout || rollout.state !== 'COMMITTED' || rollout.releaseKey !== releaseKey) {
+          return { applied: false, reason: 'UPDATE_GROUP_COMMIT_REQUIRED' };
+        }
+        if (Date.now() + 50 < finite(rollout.applyAtMs, 0)) {
+          return { applied: false, reason: 'UPDATE_GROUP_APPLY_NOT_DUE', rollout };
+        }
+
+        const finalGroup = this._groupState({ acceptedVersions: [manifest.version] });
+        const expectedParticipants = Array.isArray(rollout.participants) ? rollout.participants.slice().sort() : [];
+        const actualParticipants = Array.isArray(finalGroup.participants) ? finalGroup.participants.slice().sort() : [];
+        if (!finalGroup.ready || JSON.stringify(expectedParticipants) !== JSON.stringify(actualParticipants)) {
+          this.stats.groupDeferrals += 1;
+          return { applied: false, reason: 'UPDATE_GROUP_PROTECTION_CHANGED', group: finalGroup };
+        }
+      }
 
       const bytes = this._utf8Bytes(this.pending.bundle);
       const sha256 = await this._sha256(this.pending.bundle);
@@ -19528,75 +20298,109 @@
         return { applied: false, reason: 'UPDATE_PENDING_REVALIDATION_FAILED' };
       }
 
+      const activeRelease = this._activeRelease();
+      const previousRelease = rollout && rollout.previousRelease || activeRelease;
+      if (!previousRelease || !activeRelease) {
+        return { applied: false, reason: 'UPDATE_PREVIOUS_RELEASE_UNKNOWN' };
+      }
+      if (rollout && !this._releaseMatches(activeRelease, previousRelease)) {
+        return { applied: false, reason: 'UPDATE_GROUP_ROLLBACK_RELEASE_MISMATCH' };
+      }
+
       const previousApi = this.root && this.root.ALBot;
       let previousStatus = null;
       try { previousStatus = previousApi && typeof previousApi.status === 'function' ? previousApi.status() : null; } catch (_) {}
-      const previousVersion = String(previousStatus && previousStatus.version || this.runtime.version || '');
+      const previousVersion = String(previousStatus && previousStatus.version || previousRelease.version || this.runtime.version || '');
       const previousBootCount = Math.max(0, finite(previousStatus && previousStatus.bootCount, this.runtime.bootCount || 0));
-      const rearmIntent = this._captureRearmIntent();
+      const rearmIntent = rollout && rollout.rearmIntent || this._captureRearmIntent();
+
       this.busy = true;
       let failureRecorded = false;
       try {
-        const save = await this._saveCode(stagingSlot, this.pending.bundle, manifest.version);
-        if (save && (save.failed === true || save.success === false)) throw new Error('UPDATE_SAVE_CODE_REJECTED');
-
         await this.runtime.stop('PLANNED_AUTO_UPDATE');
-        const load = this._binding('load_code');
-        if (!load) throw new Error('UPDATE_LOAD_CODE_UNAVAILABLE');
-
-        const loaded = load.fn.call(load.owner, stagingSlot);
-        if (loaded && typeof loaded.then === 'function') await loaded;
+        try {
+          await this._executeVerifiedRelease(manifest, this.pending.bundle);
+        } catch (executionError) {
+          this.stats.rollbacks += 1;
+          const failedApi = this.root && this.root.ALBot;
+          let failedStatus = null;
+          try { failedStatus = failedApi && typeof failedApi.status === 'function' ? failedApi.status() : null; } catch (_) {}
+          const rollbackBaseBootCount = Math.max(previousBootCount, finite(failedStatus && failedStatus.bootCount, 0));
+          const rollback = await this._rollbackToRelease(previousRelease, failedApi, rollbackBaseBootCount, rearmIntent);
+          const executionReason = clean(executionError && executionError.message || executionError, 240);
+          if (rollout) this._recordGroupOutcome(rollout, 'FAILED', { phase: 'EXECUTE', reason: executionReason });
+          this._recordReleaseFailure(
+            manifest,
+            'UPDATE_EXECUTION_FAILED:' + executionReason,
+            { executionReason, rollback, previousRelease: this._releaseDescriptor(previousRelease) }
+          );
+          failureRecorded = true;
+          throw new Error('UPDATE_EXECUTION_FAILED:' + executionReason + ':ROLLBACK_' + (rollback.ok ? 'OK' : 'FAILED'));
+        }
 
         const handshake = await this._waitHandshake(previousApi, manifest.version, { previousBootCount });
         if (!handshake.ok) {
           this.stats.rollbacks += 1;
           const failedApi = this.root && this.root.ALBot;
-          let rollbackHandshake = { ok: false, reason: 'ROLLBACK_NOT_ATTEMPTED' };
-          try {
-            const rollback = load.fn.call(load.owner, activeSlot);
-            if (rollback && typeof rollback.then === 'function') await rollback;
-            rollbackHandshake = await this._waitHandshake(failedApi, previousVersion, { previousBootCount });
-            if (!rollbackHandshake.ok) this.stats.rollbackFailures += 1;
-          } catch (rollbackError) {
-            this.stats.rollbackFailures += 1;
-            rollbackHandshake = { ok: false, reason: clean(rollbackError && rollbackError.message || rollbackError, 240) };
-          }
-          let rollbackRearm = null;
-          if (rollbackHandshake.ok) rollbackRearm = await this._rearmApi(this.root && this.root.ALBot, rearmIntent);
-          const quarantineRow = this._recordReleaseFailure(
+          let failedStatus = null;
+          try { failedStatus = failedApi && typeof failedApi.status === 'function' ? failedApi.status() : null; } catch (_) {}
+          const rollbackBaseBootCount = Math.max(previousBootCount, finite(failedStatus && failedStatus.bootCount, 0));
+          const rollback = await this._rollbackToRelease(previousRelease, failedApi, rollbackBaseBootCount, rearmIntent);
+          if (rollout) this._recordGroupOutcome(rollout, 'FAILED', { phase: 'HANDSHAKE', reason: handshake.reason });
+          this._recordReleaseFailure(
             manifest,
             'UPDATE_HANDSHAKE_FAILED:' + handshake.reason,
-            { handshake, rollbackHandshake, rollbackRearm, activeSlot, stagingSlot }
+            { handshake, rollback, previousRelease: this._releaseDescriptor(previousRelease) }
           );
           failureRecorded = true;
-          throw new Error('UPDATE_HANDSHAKE_FAILED:' + handshake.reason + ':ROLLBACK_' + (rollbackHandshake.ok ? 'OK' : 'FAILED'));
+          throw new Error('UPDATE_HANDSHAKE_FAILED:' + handshake.reason + ':ROLLBACK_' + (rollback.ok ? 'OK' : 'FAILED'));
         }
 
         const rearm = await this._rearmApi(this.root && this.root.ALBot, rearmIntent);
         if (!rearm.accepted) {
           this.stats.rollbacks += 1;
           const failedApi = this.root && this.root.ALBot;
-          let rollbackHandshake = { ok: false, reason: 'ROLLBACK_NOT_ATTEMPTED' };
-          try {
-            const rollback = load.fn.call(load.owner, activeSlot);
-            if (rollback && typeof rollback.then === 'function') await rollback;
-            rollbackHandshake = await this._waitHandshake(failedApi, previousVersion, { previousBootCount });
-            if (!rollbackHandshake.ok) this.stats.rollbackFailures += 1;
-          } catch (rollbackError) {
-            this.stats.rollbackFailures += 1;
-            rollbackHandshake = { ok: false, reason: clean(rollbackError && rollbackError.message || rollbackError, 240) };
-          }
-          let rollbackRearm = null;
-          if (rollbackHandshake.ok) rollbackRearm = await this._rearmApi(this.root && this.root.ALBot, rearmIntent);
+          let failedStatus = null;
+          try { failedStatus = failedApi && typeof failedApi.status === 'function' ? failedApi.status() : null; } catch (_) {}
+          const rollbackBaseBootCount = Math.max(previousBootCount, finite(failedStatus && failedStatus.bootCount, 0));
+          const rollback = await this._rollbackToRelease(previousRelease, failedApi, rollbackBaseBootCount, rearmIntent);
+          if (rollout) this._recordGroupOutcome(rollout, 'FAILED', { phase: 'REARM', reason: rearm.reason || 'UNKNOWN' });
           this._recordReleaseFailure(
             manifest,
             'UPDATE_REARM_FAILED:' + (rearm.reason || 'UNKNOWN'),
-            { handshake, rearm, rollbackHandshake, rollbackRearm, activeSlot, stagingSlot }
+            { handshake, rearm, rollback, previousRelease: this._releaseDescriptor(previousRelease) }
           );
           failureRecorded = true;
-          throw new Error('UPDATE_REARM_FAILED:' + (rearm.reason || 'UNKNOWN'));
+          throw new Error('UPDATE_REARM_FAILED:' + (rearm.reason || 'UNKNOWN') + ':ROLLBACK_' + (rollback.ok ? 'OK' : 'FAILED'));
         }
 
+        let groupBarrier = null;
+        if (rollout) {
+          groupBarrier = await this._waitGroupReady(rollout, {
+            phase: 'HEALTHY',
+            version: manifest.version,
+            handshake,
+            rearm
+          });
+          if (!groupBarrier.ok) {
+            this.stats.rollbacks += 1;
+            this._recordGroupOutcome(rollout, 'FAILED', { phase: 'BARRIER', reason: groupBarrier.reason });
+            const failedApi = this.root && this.root.ALBot;
+            let failedStatus = null;
+            try { failedStatus = failedApi && typeof failedApi.status === 'function' ? failedApi.status() : null; } catch (_) {}
+            const rollbackBaseBootCount = Math.max(previousBootCount, finite(failedStatus && failedStatus.bootCount, 0));
+            const rollback = await this._rollbackToRelease(previousRelease, failedApi, rollbackBaseBootCount, rearmIntent);
+            this._recordReleaseFailure(
+              manifest,
+              groupBarrier.reason,
+              { groupBarrier, rollback, previousRelease: this._releaseDescriptor(previousRelease) }
+            );
+            failureRecorded = true;
+            throw new Error(groupBarrier.reason + ':ROLLBACK_' + (rollback.ok ? 'OK' : 'FAILED'));
+          }
+        }
+
+        await this._confirmActiveRelease(manifest);
         this.stats.applies += 1;
         this.stats.reloads += 1;
         this._clearReleaseFailure(manifest);
@@ -19604,21 +20408,35 @@
           at: new Date().toISOString(),
           from: previousVersion,
           to: manifest.version,
-          commitSha: manifest.commitSha,
-          activeSlot,
-          stagingSlot,
+          releaseKey,
+          previousRelease: this._releaseDescriptor(previousRelease),
+          release: this._releaseDescriptor(manifest),
           handshake,
-          rearm
+          rearm,
+          groupBarrier,
+          transport: 'verified-bootstrap-runtime-loader'
         };
         this.pending = null;
         this._persistPending();
+        if (this.rolloutTimer != null) {
+          try {
+            const clear = this.root && this.root.clearTimeout || clearTimeout;
+            clear(this.rolloutTimer);
+          } catch (_) {}
+        }
+        this.rolloutTimer = null;
+        this.preparedUpdate = null;
+        this.coordinationRetryAtMs = 0;
         this.lastError = null;
         return { applied: true, ...clone(this.lastApply) };
       } catch (error) {
         this.stats.failures += 1;
         this.lastError = { at: new Date().toISOString(), reason: clean(error && error.message || error, 240) };
         if (!failureRecorded) {
-          this._recordReleaseFailure(manifest, this.lastError.reason, { activeSlot, stagingSlot });
+          this._recordReleaseFailure(manifest, this.lastError.reason, {
+            previousRelease: this._releaseDescriptor(previousRelease),
+            release: this._releaseDescriptor(manifest)
+          });
         }
         return { applied: false, reason: this.lastError.reason };
       } finally {
@@ -19651,10 +20469,11 @@
     }
 
     status() {
-      const activeSlot = this._activeSlot();
+      const bootstrap = this._bootstrap();
+      const activeRelease = this._activeRelease();
       return {
         schemaVersion: 1,
-        mode: 'h22-github-safe-auto-updater',
+        mode: 'h22-github-bootstrap-auto-updater',
         active: this.active,
         enabled: this.config.enabled,
         localVersion: this.runtime.version,
@@ -19663,15 +20482,19 @@
         applyIntervalMs: this.config.applyIntervalMs,
         safeHoldMs: this.config.safeHoldMs,
         handshakeTimeoutMs: this.config.handshakeTimeoutMs,
+        groupApplyDelayMs: this.config.groupApplyDelayMs,
+        coordinationRetryMs: this.config.coordinationRetryMs,
         autoDownload: this.config.autoDownload,
         autoApply: this.config.autoApply,
-        stagingSlots: this.config.stagingSlots.slice(),
-        activeSlot,
-        applyReady: !!(this.config.autoApply && activeSlot != null && this._stagingSlot(activeSlot) != null),
+        coordinatedApply: this.config.coordinatedApply,
+        bootstrapVersion: bootstrap && bootstrap.version || null,
+        activeRelease: this._releaseDescriptor(activeRelease),
+        applyReady: !!(this.config.autoApply && bootstrap),
         pending: this.pending ? {
           downloadedAt: this.pending.downloadedAt,
           manifest: clone(this.pending.manifest),
-          cachedBytes: this._utf8Bytes(this.pending.bundle)
+          cachedBytes: typeof this.pending.bundle === 'string' ? this._utf8Bytes(this.pending.bundle) : 0,
+          cachedInWindow: typeof this.pending.bundle === 'string'
         } : null,
         busy: this.busy,
         safeSince: this.safeSince || null,
@@ -19681,6 +20504,10 @@
         lastError: clone(this.lastError),
         lastApply: clone(this.lastApply),
         lastIncident: clone(this.lastIncident),
+        lastCoordination: clone(this.lastCoordination),
+        preparedUpdate: clone(this.preparedUpdate),
+        localProtection: this.localProtection(),
+        coordinationRetryAt: this.coordinationRetryAtMs ? new Date(this.coordinationRetryAtMs).toISOString() : null,
         quarantine: clone(this.quarantine),
         stats: { ...this.stats },
         policies: {
@@ -19692,10 +20519,22 @@
           bundleRevalidatedBeforeApply: true,
           downgradeForbidden: true,
           automaticDownload: true,
-          automaticApplyRequiresExplicitStagingSlots: true,
-          safeWindowRequiredBeforeApply: true,
-          activeSlotNeverOverwrittenBeforeHandshake: true,
-          rollbackLoadsPreviousSlot: true,
+          automaticApplyEnabledByDefault: true,
+          automaticApplyRequiresVerifiedBootstrap: true,
+          bootstrapOwnsTransportNotUpdateAuthority: true,
+          fullBundleNeverSavedToAdventureLandCodeSlot: true,
+          coordinatedAllOnlineCharacters: true,
+          twoPhasePrepareCommit: true,
+          bundleCachedAndVerifiedBeforeGroupCommit: true,
+          finalProtectionRecheckBeforeExecution: true,
+          coordinatedHealthBarrierBeforeReleaseConfirm: true,
+          coordinatedRollbackOnAnyMemberFailure: true,
+          ordinaryCombatDoesNotBlockApply: true,
+          ordinaryGameplayDoesNotBlockApply: true,
+          eventOrBossDefersApply: true,
+          safeWindowRequiredBeforeApply: false,
+          rollbackLoadsPreviousPinnedRelease: true,
+          rollbackRevalidatesBytesHashAndBanner: true,
           rollbackHandshakeRequired: true,
           failedReleaseQuarantineWithBackoff: true,
           fullAutonomyRearmAfterHealthyBoot: true,
@@ -21021,7 +21860,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.22.3-h22';
+      this.version = options.version || '0.22.4-h22';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -21226,12 +22065,33 @@
             lifecycleAutonomyEnabled: this.lifecycle ? this.lifecycle.status().autonomyEnabled === true : null,
             version: this.version,
             profile: this.accountStrategy ? this.accountStrategy.localProfile() : null,
-            observation: this.observer ? this.observer.summary() : null
+            observation: this.observer ? this.observer.summary() : null,
+            updateProtection: this.safeUpdater && typeof this.safeUpdater.localProtection === 'function'
+              ? this.safeUpdater.localProtection()
+              : null
           };
         },
         getPartyState: () => this.party.snapshot(),
         leavePartyLocal: () => dispatchH19CrossWindowPartyAction('leave_party', []),
         requestPartyJoinLocal: leaderName => dispatchH19CrossWindowPartyAction('send_party_request', [leaderName]),
+        prepareUpdateLocal: (payload, sender) => {
+          if (!this.safeUpdater || typeof this.safeUpdater.prepareCoordinatedUpdate !== 'function') {
+            throw new Error('H22_SAFE_UPDATER_PREPARE_UNAVAILABLE');
+          }
+          return this.safeUpdater.prepareCoordinatedUpdate(payload || {}, { sender });
+        },
+        commitUpdateLocal: (payload, sender) => {
+          if (!this.safeUpdater || typeof this.safeUpdater.commitCoordinatedUpdate !== 'function') {
+            throw new Error('H22_SAFE_UPDATER_COMMIT_UNAVAILABLE');
+          }
+          return this.safeUpdater.commitCoordinatedUpdate(payload || {}, { sender });
+        },
+        cancelUpdateLocal: (payload, sender) => {
+          if (!this.safeUpdater || typeof this.safeUpdater.cancelCoordinatedUpdate !== 'function') {
+            return { accepted: true, cancelled: false, reason: 'H22_SAFE_UPDATER_CANCEL_UNAVAILABLE' };
+          }
+          return this.safeUpdater.cancelCoordinatedUpdate(payload || {}, { sender });
+        },
         startRuntime: async () => {
           const status = await this.start();
           const intent = this._h19FullAutonomyRearmIntent;
@@ -21562,7 +22422,7 @@
       this.modules.register({
         id: 'known-recovery',
         title: 'H22 Known Recovery Coordinator',
-        version: '0.22.3',
+        version: '0.22.4',
         watchdogMs: 5000,
         start: context => this.knownRecovery.start(context),
         stop: reason => this.knownRecovery.stop(reason),
@@ -28671,7 +29531,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.22.3-h22',
+    version: '0.22.4-h22',
     bootCount,
     replacedPrevious: !!previous
   });
