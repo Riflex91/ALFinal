@@ -466,10 +466,28 @@
         const desiredPeer = desiredName && this.crossWindow && typeof this.crossWindow.freshPeer === 'function'
           ? this.crossWindow.freshPeer(desiredName)
           : null;
-        if (oldGone && (desiredPresent || desiredPeer)) {
-          return { confirmed: true, evidence: desiredPeer ? 'STALE_BROWSER_SWAP_NEW_PEER' : 'STALE_BROWSER_SWAP_NEW_CHARACTER_PRESENT' };
+        const desiredRuntimeRunning = !!(desiredPeer && desiredPeer.running === true);
+        const desiredFullAutonomyEnabled = !!(desiredPeer && desiredPeer.fullAutonomyEnabled === true);
+        if (oldGone && desiredRuntimeRunning && desiredFullAutonomyEnabled) {
+          return {
+            confirmed: true,
+            evidence: 'STALE_BROWSER_SWAP_NEW_RUNTIME_READY',
+            desiredCharacterPresent: desiredPresent,
+            desiredRuntimeRunning: true,
+            desiredFullAutonomyEnabled: true,
+            desiredSessionId: desiredPeer.sessionId || null
+          };
         }
-        return { confirmed: false, reason: 'H25_STALE_BROWSER_SWAP_OUTCOME_UNVERIFIED' };
+        return {
+          confirmed: false,
+          reason: desiredPresent
+            ? desiredPeer
+              ? desiredRuntimeRunning
+                ? 'H26_STALE_BROWSER_SWAP_FULL_AUTONOMY_NOT_READY'
+                : 'H26_STALE_BROWSER_SWAP_RUNTIME_NOT_RUNNING'
+              : 'H26_STALE_BROWSER_SWAP_RUNTIME_NOT_LOADED'
+            : 'H25_STALE_BROWSER_SWAP_OUTCOME_UNVERIFIED'
+        };
       }
       if (kind === 'START' || kind === 'STOP') {
         if (pending.transport === 'cross-window-runtime') {
@@ -1421,12 +1439,18 @@
           const desiredPeer = desiredName && this.crossWindow && typeof this.crossWindow.freshPeer === 'function'
             ? this.crossWindow.freshPeer(desiredName)
             : null;
-          if (oldGone && (desiredPresent || desiredPeer)) {
+          const desiredRuntimeRunning = !!(desiredPeer && desiredPeer.running === true);
+          const desiredFullAutonomyEnabled = !!(desiredPeer && desiredPeer.fullAutonomyEnabled === true);
+          if (oldGone && desiredRuntimeRunning && desiredFullAutonomyEnabled) {
             this.metrics.crossWindowConfirms += 1;
             return this._confirmCurrent({
-              evidence: desiredPeer ? 'BROWSER_SWAP_NEW_PEER_PRESENT' : 'BROWSER_SWAP_NEW_CHARACTER_PRESENT',
+              evidence: 'BROWSER_SWAP_NEW_RUNTIME_READY',
               oldCharacterOffline: true,
-              desiredCharacterPresent: true
+              desiredCharacterPresent: desiredPresent,
+              desiredRuntimeLoaded: true,
+              desiredRuntimeRunning: true,
+              desiredFullAutonomyEnabled: true,
+              desiredSessionId: desiredPeer.sessionId || null
             });
           }
         }

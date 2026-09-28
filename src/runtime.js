@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.25.0-h25';
+      this.version = options.version || '0.26.0-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -286,6 +286,7 @@
             runEpoch: this.runEpoch,
             emergencyStopLatched: this.stopLatch.status().latched,
             lifecycleAutonomyEnabled: this.lifecycle ? this.lifecycle.status().autonomyEnabled === true : null,
+            fullAutonomyEnabled: this.fullAutonomy ? this.fullAutonomy.status().enabled === true : null,
             characterDisconnectCapable: this.actions.available('disconnect') === true,
             characterNavigateCapable: h25BrowserNavigationCapability(),
             version: this.version,

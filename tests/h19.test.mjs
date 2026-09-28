@@ -142,6 +142,7 @@ function fixture(options = {}) {
       sessionId: String(peer.sessionId || ('session-' + peer.name)),
       running: peer.running === true,
       runEpoch: Number(peer.runEpoch || 1),
+      fullAutonomyEnabled: peer.fullAutonomyEnabled === true,
       characterDisconnectCapable: peer.characterDisconnectCapable === true,
       characterNavigateCapable: peer.characterNavigateCapable === true
     }
@@ -764,8 +765,8 @@ test('H19 separate-window lifecycle uses fresh CM peer instead of runner-active 
   assert.equal(controller.status().metrics.crossWindowDispatches, 2);
 });
 
-test('H25 catch-up rotation navigates the separate browser window directly to the weak character', async () => {
-  const { controller, state } = fixture({
+test('H26 browser swap waits for the replacement bot runtime to load and start', async () => {
+  const { controller, state, runtimePeers } = fixture({
     onlineNames: ['My_Merchant', 'My_Ranger', 'My_Priest', 'My_Warrior'],
     runnerActiveNames: ['My_Ranger'],
     freezeRunnerActive: true,
@@ -810,11 +811,37 @@ test('H25 catch-up rotation navigates the separate browser window directly to th
   assert.equal(state.dispatches.filter(row => row.name === 'start_character').length, 0);
 
   await flush();
+  const characterOnly = controller.tick();
+  assert.equal(characterOnly.state, 'PENDING', 'character presence alone must not confirm the browser swap');
+  assert.equal(controller.status().metrics.browserSwapsConfirmed, 0);
+
+  runtimePeers.set('My_Mage', {
+    name: 'My_Mage',
+    sessionId: 'mage-window-session',
+    running: false,
+    runEpoch: 1,
+    fullAutonomyEnabled: false,
+    characterDisconnectCapable: true,
+    characterNavigateCapable: true
+  });
+  const loadedButStopped = controller.tick();
+  assert.equal(loadedButStopped.state, 'PENDING', 'a loaded but stopped bot runtime must not confirm the browser swap');
+
+  runtimePeers.get('My_Mage').running = true;
+  runtimePeers.get('My_Mage').runEpoch = 2;
+  const runtimeOnly = controller.tick();
+  assert.equal(runtimeOnly.state, 'PENDING', 'runtime running without Full Autonomy must not confirm the browser swap');
+
+  runtimePeers.get('My_Mage').fullAutonomyEnabled = true;
   const confirmed = controller.tick();
   assert.equal(confirmed.state, 'CONFIRMED');
   assert.equal(confirmed.kind, 'BROWSER_SWAP');
   assert.equal(confirmed.desiredName, 'My_Mage');
-  assert.equal(confirmed.details.evidence, 'BROWSER_SWAP_NEW_CHARACTER_PRESENT');
+  assert.equal(confirmed.details.evidence, 'BROWSER_SWAP_NEW_RUNTIME_READY');
+  assert.equal(confirmed.details.desiredRuntimeLoaded, true);
+  assert.equal(confirmed.details.desiredRuntimeRunning, true);
+  assert.equal(confirmed.details.desiredFullAutonomyEnabled, true);
+  assert.equal(confirmed.details.desiredSessionId, 'mage-window-session');
   assert.equal(controller.status().metrics.browserSwapsConfirmed, 1);
   assert.equal(state.dispatches.filter(row => row.name === 'start_character').length, 0);
 });
@@ -1073,7 +1100,7 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(runtime, /rejectedDelta === 0/);
   assert.match(runtime, /unknownDelta === 0/);
   assert.match(runtime, /H19_REMOTE_TARGET_NOT_RESTORED/);
-  assert.match(runtime, /options\.version \|\| '0\.25\.0-h25'/);
+  assert.match(runtime, /options\.version \|\| '0\.26\.0-h26'/);
   assert.match(entry, /runtime\.lifecycle\.queueStart/);
   assert.match(entry, /runtime\.lifecycle\.queueStop/);
   assert.match(entry, /runtime\.lifecycle\.queueRespawn/);
@@ -1121,8 +1148,8 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.doesNotMatch(fullAutonomy, /fallbackUsesExactOnlineQuartet/);
   assert.match(build, /src\/cross-window-lifecycle\.js/);
   assert.match(build, /src\/lifecycle-recovery\.js/);
-  assert.match(build, /const runtimeVersion = '0\.25\.0-h25'/);
-  assert.match(dist, /AL Bot 0\.25\.0-h25/);
+  assert.match(build, /const runtimeVersion = '0\.26\.0-h26'/);
+  assert.match(dist, /AL Bot 0\.26\.0-h26/);
   assert.match(dist, /class H19CrossWindowLifecycleTransport/);
   assert.match(dist, /albot-h19-cross-window-v1/);
   assert.match(dist, /h19-cross-window-readiness/);
@@ -1132,7 +1159,7 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(dist, /class CharacterLifecycleController/);
   assert.match(dist, /H19_REMOTE_TARGET_NOT_RUNNER_CONTROLLABLE/);
   assert.match(dist, /H19_REMOTE_CONTROLLABLE_TARGET_UNAVAILABLE/);
-  assert.equal(pkg.version, '0.25.0');
+  assert.equal(pkg.version, '0.26.0');
 });
 
 

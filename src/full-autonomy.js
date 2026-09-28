@@ -176,9 +176,11 @@
       const local = this._local();
       const online = this._onlineNames();
       const ready = new Set(profiles.filter(row => row && row.online
-        && (row.local ? (this.runtime && this.runtime.running === true) : (row.peerFresh && row.running === true)))
+        && (row.local
+          ? (this.runtime && this.runtime.running === true && this.enabled === true)
+          : (row.peerFresh && row.running === true && row.fullAutonomyEnabled === true)))
         .map(row => String(row.name)));
-      if (local && local.name && this.runtime && this.runtime.running === true) ready.add(String(local.name));
+      if (local && local.name && this.runtime && this.runtime.running === true && this.enabled === true) ready.add(String(local.name));
       const desired = this.desiredCharacterNames.length ? this.desiredCharacterNames.slice() : [];
       const desiredSet = new Set(desired.map(String));
       const missing = this.config.requireAllOnlineProfiles
@@ -188,12 +190,23 @@
         .filter(row => row && desiredSet.has(String(row.name)) && !row.local && row.peerFresh && row.running !== true)
         .map(row => String(row.name))
         .sort();
+      const inactiveAutonomyNames = profiles
+        .filter(row => row && desiredSet.has(String(row.name)) && !row.local
+          && row.peerFresh && row.running === true && row.fullAutonomyEnabled !== true)
+        .map(row => String(row.name))
+        .sort();
+      const missingPeerNames = profiles
+        .filter(row => row && desiredSet.has(String(row.name)) && row.online === true && !row.local && row.peerFresh !== true)
+        .map(row => String(row.name))
+        .sort();
       const unexpectedOnlineNames = online.filter(name => !desiredSet.has(String(name))).sort();
       return {
         profiles,
         online,
         missing,
         stoppedNames,
+        inactiveAutonomyNames,
+        missingPeerNames,
         unexpectedOnlineNames,
         readyNames: [...ready].sort(),
         onlineLimitExceeded: online.length > 4
@@ -800,11 +813,17 @@
               ? 'FULL_AUTONOMY_ROTATING_ACTIVITY_GROUP'
               : (lifecycle.rosterRecoveryRequired
                 ? 'FULL_AUTONOMY_RECOVERING_EXPECTED_ROSTER'
-                : 'FULL_AUTONOMY_RECOVERING_STOPPED_OR_STALE_PEER'),
+                : (readiness.missingPeerNames && readiness.missingPeerNames.length
+                  ? 'FULL_AUTONOMY_WAITING_REMOTE_BOT'
+                  : (readiness.inactiveAutonomyNames && readiness.inactiveAutonomyNames.length
+                    ? 'FULL_AUTONOMY_WAITING_REMOTE_FULL_AUTONOMY'
+                    : 'FULL_AUTONOMY_RECOVERING_STOPPED_OR_STALE_PEER'))),
             expectedOnlineCount: 4,
             desiredCharacterNames: nextDesired,
             onlineCharacterNames: readiness.online,
             missingProfiles: readiness.missing,
+            missingPeerNames: readiness.missingPeerNames || [],
+            inactiveFullAutonomyNames: readiness.inactiveAutonomyNames || [],
             unexpectedOnlineNames: lifecycle.unexpectedOnlineNames || readiness.unexpectedOnlineNames,
             lifecycleRecoveryRequired: lifecycle.recoveryRequired === true,
             runtimeRecoveryRequired: lifecycle.runtimeRecoveryRequired === true,
