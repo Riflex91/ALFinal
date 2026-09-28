@@ -307,9 +307,10 @@ test('task optimizer can expand FARM to three members when the third member adds
   });
   const plan = controller.optimizeTask({ type: 'FARM' });
   assert.equal(plan.status, 'SELECTION_READY');
-  assert.ok(plan.selected.memberNames.length >= 1 && plan.selected.memberNames.length <= 3);
+  assert.equal(plan.selected.memberNames.length, 3);
   assert.equal(plan.selected.memberNames.includes('My_Merchant'), false);
-  assert.ok(plan.ranking.some(row => row.memberNames.length !== plan.selected.memberNames.length));
+  assert.ok(plan.ranking.some(row => row.memberNames.length === 1));
+  assert.ok(plan.ranking.some(row => row.memberNames.length === 2));
 });
 
 test('BOSS remains capability-driven and requires a tank healer and DPS rather than named characters', () => {
