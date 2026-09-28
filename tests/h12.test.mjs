@@ -342,15 +342,15 @@ test('H12 runtime, API, UI, build, adapter and ActionBoundary are wired', () => 
   assert.match(runtime, /H12_LIVE_TEST_REQUIRES_MERCHANT/);
   assert.match(bankSource, /queueMount\(\)/);
   assert.match(bankSource, /type: 'BANK_MOUNTED'/);
-  assert.match(entry, /0\.22\.7-h22/);
+  assert.match(entry, /0\.23\.0-h23/);
   assert.match(entry, /runtime\.bank\.queueDeposit/);
   assert.match(ui, /data-tab="bank"/);
   assert.match(ui, /H12 Bank/);
   assert.match(build, /src\/bank\.js/);
-  assert.match(build, /const runtimeVersion = '0\.22\.7-h22'/);
+  assert.match(build, /const runtimeVersion = '0\.23\.0-h23'/);
   assert.match(boundary, /bank_store: Object\.freeze\(\{ publicName: 'bank_store'/);
   assert.match(boundary, /bank_retrieve: Object\.freeze\(\{ publicName: 'bank_retrieve'/);
   assert.match(adapter, /bankSnapshot\(\)/);
   assert.match(adapter, /bankPackDefinitions\(\)/);
-  assert.equal(pkg.version, '0.22.7');
+  assert.equal(pkg.version, '0.23.0');
 });
