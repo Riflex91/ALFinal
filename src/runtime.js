@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.22.0-h22';
+      this.version = options.version || '0.22.1-h22';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -209,7 +209,8 @@
             emergencyStopLatched: this.stopLatch.status().latched,
             lifecycleAutonomyEnabled: this.lifecycle ? this.lifecycle.status().autonomyEnabled === true : null,
             version: this.version,
-            profile: this.accountStrategy ? this.accountStrategy.localProfile() : null
+            profile: this.accountStrategy ? this.accountStrategy.localProfile() : null,
+            observation: this.observer ? this.observer.summary() : null
           };
         },
         getPartyState: () => this.party.snapshot(),
@@ -279,6 +280,12 @@
         root: this.root,
         logger: this.logger,
         storage: this.storage,
+        runtime: this
+      });
+      this.observer = new ns.AutonomousObservationCoordinator({
+        root: this.root,
+        logger: this.logger,
+        bus: this.bus,
         runtime: this
       });
       this.inventory.partyLogistics = this.partyLogistics;
@@ -517,6 +524,16 @@
         start: context => this.safeUpdater.start(context),
         stop: reason => this.safeUpdater.stop(reason),
         status: () => this.safeUpdater.status()
+      });
+
+      this.modules.register({
+        id: 'autonomous-observer',
+        title: 'H22 Local Observation Coordinator',
+        version: '0.22.1',
+        watchdogMs: 4000,
+        start: context => this.observer.start(context),
+        stop: reason => this.observer.stop(reason),
+        status: () => this.observer.status()
       });
     }
 
@@ -5523,6 +5540,7 @@
         accountStrategy: this.accountStrategy.status(),
         fullAutonomy: this.fullAutonomy.status(),
         safeUpdater: this.safeUpdater.status(),
+        observation: this.observer.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
         roster,
@@ -5561,6 +5579,9 @@
         accountStrategy: this.accountStrategy.status(),
         fullAutonomy: this.fullAutonomy.status(),
         safeUpdater: this.safeUpdater.status(),
+        observation: this.observer.status(),
+        observationEvents: this.observer.listEvents(200),
+        observationIncidents: this.observer.listIncidents(12),
         liveTests: this.liveTests.status(),
         knowledgeSnapshot: this.knowledge.snapshot(),
         logs: this.logger.list(160),
@@ -5610,6 +5631,14 @@
         && updaterStatus.policies.bundleUrlMustPinCommitSha === true
         && typeof this.safeUpdater.checkAndDownload === 'function'
         && typeof this.safeUpdater.applyPending === 'function', updaterStatus);
+      const observerStatus = this.observer.status();
+      push('h22-autonomous-observer', !!observerStatus
+        && observerStatus.policies
+        && observerStatus.policies.deterministicLocalClassification === true
+        && observerStatus.policies.gameplayActionAuthority === false
+        && typeof this.observer.tick === 'function'
+        && typeof this.observer.listEvents === 'function'
+        && typeof this.observer.listIncidents === 'function', observerStatus);
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
       push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);

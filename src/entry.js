@@ -51,7 +51,7 @@
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.22.0-h22',
+    version: '0.22.1-h22',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -215,6 +215,14 @@
       tick: () => runtime.safeUpdater.cycle(),
       apply: () => runtime.safeUpdater.applyPending(),
       discard: reason => runtime.safeUpdater.discardPending(reason || 'API_UPDATE_DISCARD')
+    },
+
+    observation: {
+      status: () => runtime.observer.status(),
+      assessment: () => runtime.observer.status().assessment,
+      tick: () => runtime.observer.tick(),
+      events: limit => runtime.observer.listEvents(limit),
+      incidents: limit => runtime.observer.listIncidents(limit)
     },
 
     // Backwards-compatible alias for the first H22 branch iterations.
@@ -397,6 +405,7 @@
   Object.freeze(api.accountStrategy);
   Object.freeze(api.fullAutonomy);
   Object.freeze(api.updater);
+  Object.freeze(api.observation);
   Object.freeze(api.updates);
   Object.freeze(api.farming);
   Object.freeze(api.farmIntelligence);

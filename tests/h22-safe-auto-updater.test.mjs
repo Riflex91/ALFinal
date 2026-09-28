@@ -52,7 +52,7 @@ function runtimeFixture(options = {}) {
   };
   const emptyStatus = () => ({ active: false, suspended: false });
   const runtime = {
-    version: options.version || '0.22.0-h22',
+    version: options.version || '0.22.1-h22',
     bootCount: 1,
     running: true,
     root,
@@ -102,15 +102,15 @@ function manifestFor(version, body, sha256 = 'a'.repeat(64), commitSha = '1'.rep
 
 test('H22 version comparison rejects downgrade and accepts newer release', () => {
   const { helpers } = loadUpdater();
-  assert.equal(helpers.compareVersions('0.22.0-h22', '0.21.0-h21') > 0, true);
-  assert.equal(helpers.compareVersions('0.21.0-h21', '0.22.0-h22') < 0, true);
-  assert.equal(helpers.compareVersions('0.22.0-h22', '0.22.0-h22'), 0);
+  assert.equal(helpers.compareVersions('0.22.1-h22', '0.21.0-h21') > 0, true);
+  assert.equal(helpers.compareVersions('0.21.0-h21', '0.22.1-h22') < 0, true);
+  assert.equal(helpers.compareVersions('0.22.1-h22', '0.22.1-h22'), 0);
 });
 
 test('H22 automatically downloads and caches a newer GitHub bundle only after SHA verification', async () => {
   const { Controller } = loadUpdater();
-  const body = bundle('0.22.1-h22');
-  const manifest = manifestFor('0.22.1-h22', body);
+  const body = bundle('0.22.2-h22');
+  const manifest = manifestFor('0.22.2-h22', body);
   let calls = 0;
   const fixture = runtimeFixture({
     fetch: async url => {
@@ -132,7 +132,7 @@ test('H22 automatically downloads and caches a newer GitHub bundle only after SH
   assert.equal(result.downloaded, true);
   assert.equal(result.verified, true);
   assert.equal(calls, 2);
-  assert.equal(updater.status().pending.manifest.version, '0.22.1-h22');
+  assert.equal(updater.status().pending.manifest.version, '0.22.2-h22');
   assert.equal(updater.status().stats.verifiedDownloads, 1);
   assert.ok(fixture.storage.get('albot:auto-update:pending:v1'));
 });
@@ -158,8 +158,8 @@ test('H22 never downloads an equal or older release bundle', async () => {
 
 test('H22 rejects a downloaded bundle when SHA-256 does not match the manifest', async () => {
   const { Controller } = loadUpdater();
-  const body = bundle('0.22.1-h22');
-  const manifest = manifestFor('0.22.1-h22', body, 'a'.repeat(64));
+  const body = bundle('0.22.2-h22');
+  const manifest = manifestFor('0.22.2-h22', body, 'a'.repeat(64));
   const fixture = runtimeFixture({
     fetch: async url => String(url).includes('release/al-bot-release.json')
       ? { ok: true, status: 200, json: async () => manifest }
@@ -180,10 +180,10 @@ test('H22 rejects a downloaded bundle when SHA-256 does not match the manifest',
 
 test('H22 defers auto-apply while combat is active', async () => {
   const { Controller } = loadUpdater();
-  const body = bundle('0.22.1-h22');
+  const body = bundle('0.22.2-h22');
   const fixture = runtimeFixture({ combatActive: true, config: { autoApply: true, stagingSlots: ['2'] } });
   const updater = new Controller({ runtime: fixture.runtime, root: fixture.root, storage: fixture.storage, sha256: async () => 'a'.repeat(64) });
-  updater.pending = { downloadedAt: new Date().toISOString(), manifest: manifestFor('0.22.1-h22', body), bundle: body };
+  updater.pending = { downloadedAt: new Date().toISOString(), manifest: manifestFor('0.22.2-h22', body), bundle: body };
   const result = await updater.applyPending();
   assert.equal(result.applied, false);
   assert.equal(result.reason, 'UPDATE_SAFE_WINDOW_REQUIRED');
@@ -193,11 +193,11 @@ test('H22 defers auto-apply while combat is active', async () => {
 
 test('H22 requires a separate staging slot before any automatic install', async () => {
   const { Controller } = loadUpdater();
-  const body = bundle('0.22.1-h22');
+  const body = bundle('0.22.2-h22');
   const fixture = runtimeFixture({ config: { autoApply: true, safeHoldMs: 3000 } });
   fixture.root.get_active_code_slot = () => '1';
   const updater = new Controller({ runtime: fixture.runtime, root: fixture.root, storage: fixture.storage, sha256: async () => 'a'.repeat(64) });
-  updater.pending = { downloadedAt: new Date().toISOString(), manifest: manifestFor('0.22.1-h22', body), bundle: body };
+  updater.pending = { downloadedAt: new Date().toISOString(), manifest: manifestFor('0.22.2-h22', body), bundle: body };
   updater.safeSince = Date.now() - 4000;
   const result = await updater.applyPending();
   assert.equal(result.applied, false);
@@ -207,25 +207,25 @@ test('H22 requires a separate staging slot before any automatic install', async 
 
 test('H22 applies a verified update through a separate slot and requires the new runtime handshake', async () => {
   const { Controller } = loadUpdater();
-  const body = bundle('0.22.1-h22');
+  const body = bundle('0.22.2-h22');
   const fixture = runtimeFixture({ config: { autoApply: true, safeHoldMs: 3000, stagingSlots: ['2', '3'] } });
   fixture.root.get_active_code_slot = () => '1';
   fixture.root.upload_code = async (slot, name, code) => {
     fixture.state.uploads.push({ slot: String(slot), name, bytes: code.length });
     return { success: true };
   };
-  const oldApi = { version: '0.22.0-h22', status: () => ({ running: true, version: '0.22.0-h22', bootCount: 1 }) };
+  const oldApi = { version: '0.22.1-h22', status: () => ({ running: true, version: '0.22.1-h22', bootCount: 1 }) };
   fixture.root.ALBot = oldApi;
   fixture.root.load_code = async slot => {
     fixture.state.loads.push(String(slot));
     fixture.root.ALBot = {
-      version: '0.22.1-h22',
-      status: () => ({ running: true, version: '0.22.1-h22', bootCount: 2 })
+      version: '0.22.2-h22',
+      status: () => ({ running: true, version: '0.22.2-h22', bootCount: 2 })
     };
   };
 
   const updater = new Controller({ runtime: fixture.runtime, root: fixture.root, storage: fixture.storage, sha256: async () => 'a'.repeat(64) });
-  updater.pending = { downloadedAt: new Date().toISOString(), manifest: manifestFor('0.22.1-h22', body), bundle: body };
+  updater.pending = { downloadedAt: new Date().toISOString(), manifest: manifestFor('0.22.2-h22', body), bundle: body };
   updater.safeSince = Date.now() - 4000;
 
   const result = await updater.applyPending();
@@ -241,14 +241,14 @@ test('H22 applies a verified update through a separate slot and requires the new
 
 test('H22 rejects mutable main bundle URLs and requires immutable commit pinning', () => {
   const { helpers } = loadUpdater();
-  const body = bundle('0.22.1-h22');
-  const manifest = manifestFor('0.22.1-h22', body);
+  const body = bundle('0.22.2-h22');
+  const manifest = manifestFor('0.22.2-h22', body);
   manifest.bundleUrl = 'https://raw.githubusercontent.com/Riflex91/ALFinal/main/dist/al-bot.js';
   const result = helpers.validateManifest(manifest);
   assert.equal(result.ok, false);
   assert.equal(result.reason, 'UPDATE_MANIFEST_BUNDLE_NOT_COMMIT_PINNED');
 
-  const missingCommit = manifestFor('0.22.1-h22', body);
+  const missingCommit = manifestFor('0.22.2-h22', body);
   delete missingCommit.commitSha;
   const result2 = helpers.validateManifest(missingCommit);
   assert.equal(result2.ok, false);
@@ -270,25 +270,25 @@ test('H22 safe point blocks H19 remote work and active economy transitions', () 
 
 test('H22 failed release is quarantined after verified rollback and is not immediately retried', async () => {
   const { Controller } = loadUpdater();
-  const body = bundle('0.22.1-h22');
-  const manifest = manifestFor('0.22.1-h22', body);
+  const body = bundle('0.22.2-h22');
+  const manifest = manifestFor('0.22.2-h22', body);
   const fixture = runtimeFixture({ config: { autoApply: true, safeHoldMs: 3000, stagingSlots: ['2'] } });
   fixture.root.get_active_code_slot = () => '1';
   fixture.root.upload_code = async () => ({ success: true });
 
-  const oldApi = { version: '0.22.0-h22', status: () => ({ running: true, version: '0.22.0-h22', bootCount: 1 }) };
+  const oldApi = { version: '0.22.1-h22', status: () => ({ running: true, version: '0.22.1-h22', bootCount: 1 }) };
   fixture.root.ALBot = oldApi;
   fixture.root.load_code = async slot => {
     fixture.state.loads.push(String(slot));
     fixture.root.ALBot = slot === '2'
-      ? { version: '0.22.1-h22', status: () => ({ running: false, version: '0.22.1-h22', bootCount: 2 }) }
-      : { version: '0.22.0-h22', status: () => ({ running: true, version: '0.22.0-h22', bootCount: 3 }) };
+      ? { version: '0.22.2-h22', status: () => ({ running: false, version: '0.22.2-h22', bootCount: 2 }) }
+      : { version: '0.22.1-h22', status: () => ({ running: true, version: '0.22.1-h22', bootCount: 3 }) };
   };
 
   const updater = new Controller({ runtime: fixture.runtime, root: fixture.root, storage: fixture.storage, sha256: async () => manifest.sha256 });
   updater.pending = { downloadedAt: new Date().toISOString(), manifest, bundle: body };
   updater.safeSince = Date.now() - 4000;
-  updater._waitHandshake = async (_previousApi, version) => version === '0.22.1-h22'
+  updater._waitHandshake = async (_previousApi, version) => version === '0.22.2-h22'
     ? { ok: false, reason: 'RUNTIME_HEARTBEAT_MISSING' }
     : { ok: true, version, bootCount: 3, heartbeatActive: true };
 
@@ -311,12 +311,12 @@ test('H22 failed release is quarantined after verified rollback and is not immed
 
 test('H22 rejects a legacy persisted pending manifest before touching runtime or code slots', async () => {
   const { Controller } = loadUpdater();
-  const body = bundle('0.22.1-h22');
+  const body = bundle('0.22.2-h22');
   const fixture = runtimeFixture({ config: { autoApply: true, safeHoldMs: 3000, stagingSlots: ['2'] } });
   fixture.root.get_active_code_slot = () => '1';
   fixture.root.upload_code = async () => { throw new Error('MUST_NOT_UPLOAD'); };
   const updater = new Controller({ runtime: fixture.runtime, root: fixture.root, storage: fixture.storage, sha256: async () => 'a'.repeat(64) });
-  const legacy = manifestFor('0.22.1-h22', body);
+  const legacy = manifestFor('0.22.2-h22', body);
   delete legacy.commitSha;
   legacy.bundleUrl = 'https://raw.githubusercontent.com/Riflex91/ALFinal/main/dist/al-bot.js';
   updater.pending = { downloadedAt: new Date().toISOString(), manifest: legacy, bundle: body };
