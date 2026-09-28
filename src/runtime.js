@@ -5635,8 +5635,10 @@
       push('h22-autonomous-observer', !!observerStatus
         && observerStatus.policies
         && observerStatus.policies.deterministicLocalClassification === true
+        && observerStatus.policies.externalHostDeadManCompatible === true
         && observerStatus.policies.gameplayActionAuthority === false
         && typeof this.observer.tick === 'function'
+        && typeof this.observer.hostBeacon === 'function'
         && typeof this.observer.listEvents === 'function'
         && typeof this.observer.listIncidents === 'function', observerStatus);
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
