@@ -38,17 +38,41 @@ function makeContext(name, names, network, state, nowRef) {
   const intervals = new Map();
   let intervalSeq = 0;
   const timeouts = new Set();
+  const characterListeners = new Map();
+  let characterListenerSeq = 0;
+  const character = {
+    name,
+    on(event, fn) {
+      const id = ++characterListenerSeq;
+      characterListeners.set(id, { event: String(event), fn });
+      return id;
+    },
+    remove(id) {
+      characterListeners.delete(id);
+    },
+    __emit(event, payload) {
+      for (const row of characterListeners.values()) {
+        if (row.event === String(event)) row.fn(clone(payload));
+      }
+    }
+  };
   const ctx = {
     console, Date, Math, JSON, Map, Set, Promise, Object, Array, String, Number, Boolean, Error,
-    character: { name },
+    character,
     server_region: 'EU',
     server_identifier: 'I',
     parent: null,
     on_cm: null,
     send_cm(target, payload) {
       const peer = network.get(String(target));
-      if (!peer || typeof peer.on_cm !== 'function') throw new Error('TARGET_UNAVAILABLE:' + target);
-      peer.on_cm(name, clone(payload));
+      if (!peer) throw new Error('TARGET_UNAVAILABLE:' + target);
+      if (peer.character && typeof peer.character.__emit === 'function') {
+        peer.character.__emit('cm', { name, message: clone(payload) });
+      } else if (typeof peer.on_cm === 'function') {
+        peer.on_cm(name, clone(payload));
+      } else {
+        throw new Error('TARGET_UNAVAILABLE:' + target);
+      }
       return { receivers: [String(target)] };
     },
     setInterval(fn, ms) {
@@ -123,7 +147,7 @@ function makeContext(name, names, network, state, nowRef) {
     }
   });
   network.set(name, ctx);
-  return { ctx, transport, intervals, timeouts };
+  return { ctx, transport, intervals, timeouts, characterListeners };
 }
 
 async function flush() {
@@ -132,6 +156,22 @@ async function flush() {
   await Promise.resolve();
   await Promise.resolve();
 }
+
+test('H26 cross-window transport prefers the current character cm event and removes it on destroy', () => {
+  const names = ['My_Ranger1'];
+  const network = new Map();
+  const nowRef = { value: 800 };
+  const state = { running: true, runEpoch: 1, emergencyStopLatched: false };
+  const setup = makeContext('My_Ranger1', names, network, state, nowRef);
+
+  setup.transport.install();
+  assert.equal(setup.transport.status().receiveMode, 'character-event');
+  assert.equal(setup.characterListeners.size, 1);
+  assert.equal(setup.ctx.on_cm, null, 'legacy on_cm must remain untouched when character events are available');
+
+  setup.transport.destroy();
+  assert.equal(setup.characterListeners.size, 0);
+});
 
 test('H19 cross-window heartbeat timer unrefs when the host timer supports it', () => {
   const names = ['My_Ranger1'];
