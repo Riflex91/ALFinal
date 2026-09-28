@@ -39,6 +39,7 @@
     auto_craft: Object.freeze({ publicName: 'auto_craft', family: 'exchange-craft' }),
     start_character: Object.freeze({ publicName: 'start_character', family: 'character-lifecycle' }),
     stop_character: Object.freeze({ publicName: 'stop_character', family: 'character-lifecycle' }),
+    disconnect: Object.freeze({ publicName: 'disconnect', family: 'character-lifecycle' }),
     respawn: Object.freeze({ publicName: 'respawn', family: 'character-recovery' }),
     send_party_invite: Object.freeze({ publicName: 'send_party_invite', family: 'party-recovery' }),
     send_party_request: Object.freeze({ publicName: 'send_party_request', family: 'party-recovery' }),
