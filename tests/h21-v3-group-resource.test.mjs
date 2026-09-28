@@ -104,6 +104,19 @@ test('resource topoff preserves unverified potion ownership across module stop a
   assert.equal(f.state.dispatches.length, 1);
 });
 
+test('resource topoff does not confirm a pending potion from unrelated MP regeneration alone', () => {
+  const f = resourceFixture({ mp: 100, maxMp: 1000, pending: true });
+  const first = f.controller.tick();
+  assert.equal(first.state, 'DISPATCHED');
+  assert.equal(f.state.dispatches.length, 1);
+  f.state.character.mp += 150;
+  const next = f.controller.tick();
+  assert.equal(next.state, 'PENDING');
+  assert.equal(f.controller.status().metrics.confirmed, 0);
+  assert.ok(f.controller.status().pending);
+  assert.equal(f.state.dispatches.length, 1);
+});
+
 test('resource topoff keeps V3 utilization protection for tiny non-operational deficits', () => {
   const f = resourceFixture({ mp: 950, maxMp: 1000 });
   const result = f.controller.tick();
@@ -123,9 +136,9 @@ test('resource topoff suspends on UNKNOWN and never blindly retries', () => {
   assert.equal(f.state.dispatches.length, 1);
 });
 
-function h9FollowerFixture({ leaderX = 300, farmActive = false, combatActive = false } = {}) {
+function h9FollowerFixture({ leaderX = 300, leaderMap = 'main', farmActive = false, combatActive = false } = {}) {
   const { Controller } = loadController('src/farm-intelligence.js', 'FarmIntelligenceController');
-  const state = { moves: [], farmStarts: [], activeOrder: null, farmActive, combatActive, leaderVisible: true };
+  const state = { moves: [], farmStarts: [], farmGroupConfigs: [], activeOrder: null, farmActive, combatActive, leaderVisible: true };
   const character = { name: 'My_Ranger1', ctype: 'ranger', map: 'main', x: 0, y: 0, hp: 2500, maxHp: 2500, mp: 700, maxMp: 900, rip: false };
   const game = {
     snapshot: () => ({ available: true, character: clone(character) }),
@@ -139,7 +152,7 @@ function h9FollowerFixture({ leaderX = 300, farmActive = false, combatActive = f
         ownedMemberNames: ['My_Ranger1', 'My_Priest', 'My_Warrior'],
         ownedMembers: [
           { name: 'My_Ranger1', local: true, map: 'main', x: 0, y: 0 },
-          ...(state.leaderVisible ? [{ name: 'My_Warrior', local: false, map: 'main', x: leaderX, y: 0 }] : []),
+          ...(state.leaderVisible ? [{ name: 'My_Warrior', local: false, map: leaderMap, x: leaderX, y: 0 }] : []),
           { name: 'My_Priest', local: false, map: 'main', x: Math.min(leaderX, 40), y: 20 }
         ]
       }
@@ -170,7 +183,11 @@ function h9FollowerFixture({ leaderX = 300, farmActive = false, combatActive = f
       state.farmActive = true;
       return { accepted: true, session: { id: 'farm-1' } };
     },
-    stopSession: () => { state.farmActive = false; return { stopped: true }; }
+    stopSession: () => { state.farmActive = false; return { stopped: true }; },
+    configureGroup: options => {
+      state.farmGroupConfigs.push(clone(options));
+      return { changed: true, ...clone(options) };
+    }
   };
   const combat = {
     status: () => ({ active: state.combatActive }),
@@ -212,6 +229,38 @@ test('active regroup is cancelled when the leader position disappears', () => {
   assert.equal(next.reason, 'H9_GROUP_LEADER_POSITION_UNAVAILABLE');
   assert.equal(f.state.activeOrder, null);
   assert.equal(f.controller.groupMove, null);
+});
+
+test('group follower refuses regroup when the leader map is unknown', () => {
+  const f = h9FollowerFixture({ leaderX: 300, leaderMap: null });
+  const started = f.controller.startAutonomy({
+    owner: 'full-autonomy',
+    groupLeaderName: 'My_Warrior',
+    groupMemberNames: ['My_Priest', 'My_Ranger1', 'My_Warrior']
+  });
+  assert.equal(started.accepted, true);
+  assert.equal(started.tick.state, 'WAITING');
+  assert.equal(started.tick.reason, 'H9_GROUP_LEADER_POSITION_UNAVAILABLE');
+  assert.equal(f.state.moves.length, 0);
+  assert.equal(f.state.farmStarts.length, 0);
+});
+
+test('H9 propagates a changed group policy into an already-owned H8 session', () => {
+  const f = h9FollowerFixture({ leaderX: 80, farmActive: true, combatActive: true });
+  const started = f.controller.startAutonomy({
+    owner: 'full-autonomy',
+    groupLeaderName: 'My_Warrior',
+    groupMemberNames: ['My_Priest', 'My_Ranger1', 'My_Warrior']
+  });
+  assert.equal(started.accepted, true);
+  const updated = f.controller.configureGroup({
+    groupLeaderName: 'My_Priest',
+    groupMemberNames: ['My_Mage', 'My_Priest', 'My_Ranger1']
+  });
+  assert.equal(updated.changed, true);
+  assert.equal(f.state.farmGroupConfigs.length, 1);
+  assert.equal(f.state.farmGroupConfigs[0].groupLeaderName, 'My_Priest');
+  assert.deepEqual([...f.state.farmGroupConfigs[0].groupMemberNames], ['My_Mage', 'My_Priest', 'My_Ranger1']);
 });
 
 test('group follower starts mirror-only farming when already inside formation', () => {
@@ -289,6 +338,47 @@ function combatFixture({ ctype = 'ranger', partyRows = [] } = {}) {
   assert.equal(start.accepted, true);
   return { controller, state, character };
 }
+
+test('active H8 group policy updates the farming-owned H5 combat session in place', () => {
+  const { Controller } = loadController('src/farming.js', 'AdaptiveFarmingController');
+  const state = { combatActive: false, combatGroup: null };
+  const game = {
+    snapshot: () => ({ available: true, character: { name: 'My_Ranger1', ctype: 'ranger', rip: false } })
+  };
+  const combat = {
+    status: () => state.combatActive
+      ? { active: true, session: { id: 'combat-1', owner: 'farming-h8' } }
+      : { active: false, session: null },
+    startSession: () => {
+      state.combatActive = true;
+      return { accepted: true, session: { id: 'combat-1', owner: 'farming-h8' } };
+    },
+    configureGroup: options => {
+      state.combatGroup = clone(options);
+      return { changed: true };
+    },
+    stopSession: () => { state.combatActive = false; return { stopped: true }; }
+  };
+  const controller = new Controller({ game, combat, actions: {} });
+  controller.start({});
+  const started = controller.startSession({
+    owner: 'farm-intelligence-h9',
+    groupLeaderName: 'My_Warrior',
+    groupMemberNames: ['My_Priest', 'My_Ranger1', 'My_Warrior'],
+    leaderOwnedPulls: true
+  });
+  assert.equal(started.accepted, true);
+  const changed = controller.configureGroup({
+    groupLeaderName: 'My_Priest',
+    groupMemberNames: ['My_Mage', 'My_Priest', 'My_Ranger1'],
+    leaderOwnedPulls: true
+  });
+  assert.equal(changed.changed, true);
+  assert.equal(controller.status().session.groupLeaderName, 'My_Priest');
+  assert.deepEqual([...controller.status().session.groupMemberNames], ['My_Mage', 'My_Priest', 'My_Ranger1']);
+  assert.equal(state.combatGroup.groupLeaderName, 'My_Priest');
+  assert.deepEqual([...state.combatGroup.groupMemberNames], ['My_Mage', 'My_Priest', 'My_Ranger1']);
+});
 
 test('Warrior remains the stable melee anchor and never enters routine kite movement', () => {
   const f = combatFixture({ ctype: 'warrior' });
