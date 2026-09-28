@@ -74,6 +74,7 @@
     status: () => runtime.status(),
     selfTest: () => runtime.selfTest(),
     diagnostics: () => runtime.diagnostics(),
+    performance_trick: () => runtime.performanceTrick(),
 
     scheduler: {
       status: () => runtime.scheduler.status(),
