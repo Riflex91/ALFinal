@@ -1,4 +1,4 @@
-/* AL Bot 0.24.0-h24 | generated file | do not edit dist directly */
+/* AL Bot 0.24.1-h24 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -24427,7 +24427,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.24.0-h24';
+      this.version = options.version || '0.24.1-h24';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -32411,7 +32411,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.24.0-h24',
+    version: '0.24.1-h24',
     bootCount,
     replacedPrevious: !!previous
   });
