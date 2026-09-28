@@ -272,12 +272,41 @@
         && [...desiredSetForLeader].every(name => memberNames.has(name))
         && !!currentLeader
         && desiredSetForLeader.has(String(currentLeader));
-      const leader = completeCurrentParty ? String(currentLeader) : preferredLeader;
+
+      const observedPartyLeaders = new Set();
+      const observeParty = snapshot => {
+        if (!snapshot || snapshot.available === false || !snapshot.partyId) return;
+        const foreign = Array.isArray(snapshot.foreignMemberNames)
+          ? snapshot.foreignMemberNames.map(String)
+          : [];
+        const members = Array.isArray(snapshot.memberNames)
+          ? snapshot.memberNames.map(String)
+          : [];
+        const observedLeader = cleanText(snapshot.leader || '', 120) || null;
+        if (foreign.length || !observedLeader || !desiredSetForLeader.has(observedLeader)) return;
+        if (!members.length || members.some(name => !desiredSetForLeader.has(String(name)))) return;
+        observedPartyLeaders.add(observedLeader);
+      };
+      observeParty(party);
+      try {
+        const peers = this.runtime.lifecycleTransport
+          && typeof this.runtime.lifecycleTransport.freshPeers === 'function'
+          ? this.runtime.lifecycleTransport.freshPeers()
+          : [];
+        for (const peer of peers || []) observeParty(peer && peer.party);
+      } catch (_) {}
+      const sharedObservedLeader = observedPartyLeaders.size === 1
+        ? [...observedPartyLeaders][0]
+        : null;
+      const leader = completeCurrentParty
+        ? String(currentLeader)
+        : (sharedObservedLeader || preferredLeader);
       if (!leader) return { ok: false, reason: 'FULL_AUTONOMY_PARTY_LEADER_UNAVAILABLE' };
 
-      // A complete healthy party may retain its established leader. For every
-      // incomplete/missing topology the coordinator comes only from the shared
-      // strategy plan + account-wide roster, never from a partial local snapshot.
+      // A complete healthy party retains its established leader. An incomplete
+      // owned-only party may also keep one account-wide observed leader, but
+      // that observation is shared over H19 heartbeats so every window reaches
+      // the same coordinator instead of trusting its local partial snapshot.
       const coordinatorName = onlineDesired.includes(String(leader || ''))
         ? String(leader)
         : (onlineDesired[0] || localName);
@@ -322,8 +351,12 @@
       const runtimeRecoveryRequired = coordinator && stoppedDesiredNames.length > 0;
       const rosterRecoveryRequired = coordinator && offlineDesiredNames.length > 0;
       const rotationRequired = coordinator && unexpectedOnlineNames.length > 0;
+      const partyRecoveryReady = Array.isArray(readiness.missing) && readiness.missing.length === 0;
       const shouldRunLifecycle = coordinator
-        && (!partyTopologyHealthy || runtimeRecoveryRequired || rosterRecoveryRequired || rotationRequired);
+        && (runtimeRecoveryRequired
+          || rosterRecoveryRequired
+          || rotationRequired
+          || (!partyTopologyHealthy && partyRecoveryReady));
       const current = lifecycle.status();
       const recoverySafetyBlocked = current.suspended === true
         || !!(current.currentAction && current.currentAction.unknownRecorded === true);
@@ -370,6 +403,8 @@
         runtimeRecoveryRequired,
         rosterRecoveryRequired,
         rotationRequired,
+        partyRecoveryReady,
+        observedPartyLeaders: [...observedPartyLeaders].sort((a, b) => a.localeCompare(b)),
         stoppedDesiredNames,
         offlineDesiredNames,
         unexpectedOnlineNames,
