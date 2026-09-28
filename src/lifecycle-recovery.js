@@ -28,6 +28,10 @@
       this.party = options.party || null;
       this.storage = options.storage || null;
       this.crossWindow = options.crossWindow || null;
+      this.sessionId = cleanText(
+        options.sessionId || this.crossWindow && this.crossWindow.sessionId || '',
+        240
+      ) || ('h19-session-' + Date.now());
       this.canAct = typeof options.canAct === 'function' ? options.canAct : () => true;
 
       this.config = {
@@ -93,7 +97,10 @@
         ownershipBlocks: 0,
         safetyBlocks: 0,
         crossWindowDispatches: 0,
-        crossWindowConfirms: 0
+        crossWindowConfirms: 0,
+        rotationCapabilityBlocks: 0,
+        stalePendingDiscarded: 0,
+        stalePendingReconciled: 0
       };
     }
 
@@ -273,6 +280,7 @@
     _persistCurrent() {
       if (!this.currentAction) return this._removeStorage('pending');
       const row = clone(this.currentAction);
+      row.ownerSessionId = this.sessionId;
       delete row.response;
       delete row.errorObject;
       this._writeStorage('pending', row);
@@ -307,21 +315,54 @@
 
       const pending = this._readStorage('pending');
       if (pending && pending.kind && pending.id) {
-        this.currentAction = {
-          ...pending,
-          settlement: 'RESTORED',
-          restored: true,
-          response: null,
-          error: null
-        };
-        this.metrics.reconciliations += 1;
-        this.lastAction = {
-          at: nowIso(),
-          type: 'PENDING_RESTORED',
-          actionId: pending.id,
-          kind: pending.kind,
-          targetName: pending.targetName || null
-        };
+        const sameSession = !!pending.ownerSessionId && String(pending.ownerSessionId) === String(this.sessionId);
+        if (!sameSession) {
+          const liveOutcome = this._pendingLiveOutcome(pending);
+          this._removeStorage('pending');
+          this.metrics.reconciliations += 1;
+          if (liveOutcome.confirmed) {
+            this.metrics.stalePendingReconciled += 1;
+            this.lastAction = {
+              at: nowIso(),
+              type: 'STALE_PENDING_RECONCILED',
+              actionId: pending.id,
+              kind: pending.kind,
+              targetName: pending.targetName || null,
+              evidence: liveOutcome.evidence || null,
+              previousSessionId: pending.ownerSessionId || null,
+              currentSessionId: this.sessionId
+            };
+          } else {
+            this.metrics.stalePendingDiscarded += 1;
+            this.lastAction = {
+              at: nowIso(),
+              type: 'STALE_PENDING_DISCARDED',
+              actionId: pending.id,
+              kind: pending.kind,
+              targetName: pending.targetName || null,
+              reason: liveOutcome.reason || 'H19_STALE_PENDING_NO_LIVE_OUTCOME',
+              previousSessionId: pending.ownerSessionId || null,
+              currentSessionId: this.sessionId
+            };
+          }
+        } else {
+          this.currentAction = {
+            ...pending,
+            settlement: 'RESTORED',
+            restored: true,
+            response: null,
+            error: null
+          };
+          this.metrics.reconciliations += 1;
+          this.lastAction = {
+            at: nowIso(),
+            type: 'PENDING_RESTORED',
+            actionId: pending.id,
+            kind: pending.kind,
+            targetName: pending.targetName || null,
+            ownerSessionId: pending.ownerSessionId
+          };
+        }
       }
     }
 
@@ -389,7 +430,112 @@
       return new Set(names.map(String));
     }
 
-    _validateRemoteTarget(name, mode) {
+    _actionAvailable(actionName) {
+      if (!this.actions) return false;
+      if (typeof this.actions.available === 'function') {
+        try { return this.actions.available(actionName) === true; } catch (_) { return false; }
+      }
+      return typeof this.actions.dispatch === 'function';
+    }
+
+    _pendingLiveOutcome(pending) {
+      if (!pending || !pending.kind) return { confirmed: false, reason: 'H19_STALE_PENDING_INVALID' };
+      const kind = String(pending.kind);
+      const targetName = cleanText(pending.targetName || '', 120);
+      if (kind === 'START' || kind === 'STOP') {
+        if (pending.transport === 'cross-window-runtime') {
+          const peer = this.crossWindow && typeof this.crossWindow.freshPeer === 'function'
+            ? this.crossWindow.freshPeer(targetName)
+            : null;
+          const desiredRunning = kind === 'START';
+          if (peer && peer.running === desiredRunning) {
+            return { confirmed: true, evidence: 'STALE_CROSS_WINDOW_RUNTIME_STATE' };
+          }
+          return { confirmed: false, reason: 'H19_STALE_RUNTIME_OUTCOME_UNVERIFIED' };
+        }
+        const roster = this._roster();
+        if (!roster || roster.onlineStateAvailable !== true) {
+          return { confirmed: false, reason: 'H19_STALE_ROSTER_UNAVAILABLE' };
+        }
+        const online = this._onlineSet(roster).has(targetName);
+        if (kind === 'START' && online) return { confirmed: true, evidence: 'STALE_ACTIVE_ROSTER_PRESENT' };
+        if (kind === 'STOP' && !online) return { confirmed: true, evidence: 'STALE_ACTIVE_ROSTER_ABSENT' };
+        return { confirmed: false, reason: 'H19_STALE_CHARACTER_OUTCOME_UNVERIFIED' };
+      }
+      if (kind === 'RESPAWN') {
+        const local = this._local();
+        if (local && local.rip !== true) return { confirmed: true, evidence: 'STALE_LOCAL_CHARACTER_ALIVE' };
+        return { confirmed: false, reason: 'H19_STALE_RESPAWN_OUTCOME_UNVERIFIED' };
+      }
+      if (['PARTY_INVITE', 'PARTY_REQUEST', 'PARTY_ACCEPT_INVITE', 'PARTY_ACCEPT_REQUEST'].includes(kind)) {
+        const party = this._partySnapshot();
+        const members = this._partyMemberSet(party);
+        const localName = this._localName();
+        if (party && party.partyId && members.has(targetName) && members.has(localName)) {
+          return { confirmed: true, evidence: 'STALE_PARTY_SNAPSHOT_MEMBERSHIP' };
+        }
+        return { confirmed: false, reason: 'H19_STALE_PARTY_OUTCOME_UNVERIFIED' };
+      }
+      return { confirmed: false, reason: 'H19_STALE_PENDING_KIND_UNSUPPORTED' };
+    }
+
+    characterRotationReadiness(desiredNames = []) {
+      const roster = this._roster();
+      const desired = [...new Set((Array.isArray(desiredNames) ? desiredNames : [])
+        .map(name => cleanText(name, 120))
+        .filter(Boolean))].sort((a, b) => a.localeCompare(b));
+      if (!roster || roster.accountStateAvailable !== true || roster.onlineStateAvailable !== true) {
+        this.metrics.rotationCapabilityBlocks += 1;
+        return { ready: false, reason: 'H19_ROTATION_ROSTER_UNAVAILABLE', desiredCharacterNames: desired };
+      }
+      if (roster.activeStateAvailable !== true) {
+        this.metrics.rotationCapabilityBlocks += 1;
+        return { ready: false, reason: 'H19_ROTATION_RUNNER_STATE_UNAVAILABLE', desiredCharacterNames: desired };
+      }
+
+      const owned = new Set((roster.accountCharacters || []).map(row => String(row && row.name || '')).filter(Boolean));
+      if (desired.some(name => !owned.has(name))) {
+        this.metrics.rotationCapabilityBlocks += 1;
+        return { ready: false, reason: 'H19_ROTATION_TARGET_NOT_OWNED', desiredCharacterNames: desired };
+      }
+
+      const online = this._onlineSet(roster);
+      const runnerActive = this._runnerActiveSet(roster);
+      const localName = this._localName();
+      const unexpectedOnlineNames = [...online]
+        .filter(name => owned.has(String(name)) && !desired.includes(String(name)))
+        .sort((a, b) => a.localeCompare(b));
+      const missingDesiredNames = desired.filter(name => !online.has(String(name))).sort((a, b) => a.localeCompare(b));
+      const blockers = [];
+
+      if (unexpectedOnlineNames.length && !this._actionAvailable('stop_character')) {
+        blockers.push('H19_ROTATION_STOP_ACTION_UNAVAILABLE');
+      }
+      if (missingDesiredNames.length && !this._actionAvailable('start_character')) {
+        blockers.push('H19_ROTATION_START_ACTION_UNAVAILABLE');
+      }
+      for (const name of unexpectedOnlineNames) {
+        if (String(name) === String(localName)) blockers.push('H19_ROTATION_WOULD_STOP_LOCAL:' + name);
+        else if (!runnerActive.has(String(name))) blockers.push('H19_ROTATION_STOP_NOT_RUNNER_CONTROLLABLE:' + name);
+      }
+
+      const ready = blockers.length === 0;
+      if (!ready) this.metrics.rotationCapabilityBlocks += 1;
+      return {
+        ready,
+        reason: ready ? 'H19_ROTATION_CHARACTER_CONTROL_READY' : blockers[0],
+        blockers,
+        desiredCharacterNames: desired,
+        onlineCharacterNames: [...online].sort((a, b) => a.localeCompare(b)),
+        runnerActiveCharacterNames: [...runnerActive].sort((a, b) => a.localeCompare(b)),
+        unexpectedOnlineNames,
+        missingDesiredNames,
+        stopActionAvailable: this._actionAvailable('stop_character'),
+        startActionAvailable: this._actionAvailable('start_character')
+      };
+    }
+
+    _validateRemoteTarget(name, mode, options = {}) {
       const roster = this._roster();
       if (!roster || roster.accountStateAvailable !== true || roster.onlineStateAvailable !== true) {
         return { ok: false, reason: 'H19_ROSTER_LIVE_STATE_UNAVAILABLE' };
@@ -413,6 +559,12 @@
 
       if (mode === 'STOP') {
         if (!active) return { ok: false, reason: 'H19_TARGET_ALREADY_STOPPED' };
+        if (options.requireCharacterStateChange === true) {
+          if (!this._actionAvailable('stop_character')) return { ok: false, reason: 'H19_ROTATION_STOP_ACTION_UNAVAILABLE' };
+          if (roster.activeStateAvailable !== true) return { ok: false, reason: 'H19_ROTATION_RUNNER_STATE_UNAVAILABLE' };
+          if (!runnerActive) return { ok: false, reason: 'H19_ROTATION_STOP_NOT_RUNNER_CONTROLLABLE' };
+          return { ok: true, roster, owned, active, runnerActive, peer, transport: 'child-character' };
+        }
         if (roster.activeStateAvailable === true && runnerActive) {
           return { ok: true, roster, owned, active, runnerActive, peer, transport: 'child-character' };
         }
@@ -427,6 +579,11 @@
       }
 
       if (mode === 'START') {
+        if (options.requireCharacterStateChange === true) {
+          if (active) return { ok: false, reason: 'H19_TARGET_ALREADY_ACTIVE' };
+          if (!this._actionAvailable('start_character')) return { ok: false, reason: 'H19_ROTATION_START_ACTION_UNAVAILABLE' };
+          return { ok: true, roster, owned, active, runnerActive, peer, transport: 'child-character' };
+        }
         if (peer) {
           if (peer.running === true) return { ok: false, reason: 'H19_TARGET_ALREADY_ACTIVE' };
           return { ok: true, roster, owned, active, runnerActive, peer, transport: 'cross-window-runtime' };
@@ -444,7 +601,9 @@
       if (this.queue.length >= this.config.maxQueue) return { accepted: false, reason: 'H19_QUEUE_FULL' };
 
       if (kind === 'START' || kind === 'STOP') {
-        const check = this._validateRemoteTarget(targetName, kind);
+        const check = this._validateRemoteTarget(targetName, kind, {
+          requireCharacterStateChange: details.requireCharacterStateChange === true
+        });
         if (!check.ok) return { accepted: false, reason: check.reason };
       }
 
@@ -721,7 +880,8 @@
             kind: 'STOP',
             targetName: name,
             queuedAt: nowIso(),
-            automatic: true
+            automatic: true,
+            requireCharacterStateChange: true
           }
         };
       }
@@ -769,7 +929,8 @@
               kind: 'START',
               targetName: name,
               queuedAt: nowIso(),
-              automatic: true
+              automatic: true,
+              requireCharacterStateChange: true
             }
           };
         }
@@ -884,7 +1045,9 @@
       let args;
       let before = {};
       if (request.kind === 'START' || request.kind === 'STOP') {
-        const check = this._validateRemoteTarget(request.targetName, request.kind);
+        const check = this._validateRemoteTarget(request.targetName, request.kind, {
+          requireCharacterStateChange: request.requireCharacterStateChange === true
+        });
         if (!check.ok) return { accepted: false, reason: check.reason };
         actionName = request.kind === 'START' ? 'start_character' : 'stop_character';
         args = [request.targetName];
@@ -893,7 +1056,8 @@
           targetWasActive: check.active,
           transport: check.transport || 'child-character',
           targetSessionId: check.peer && check.peer.sessionId || null,
-          targetRuntimeWasRunning: check.peer ? check.peer.running === true : null
+          targetRuntimeWasRunning: check.peer ? check.peer.running === true : null,
+          requireCharacterStateChange: request.requireCharacterStateChange === true
         };
       } else if (request.kind === 'RESPAWN') {
         const readiness = this._respawnReadiness();
@@ -955,6 +1119,7 @@
         kind: request.kind,
         targetName: request.targetName || null,
         automatic: request.automatic === true,
+        requireCharacterStateChange: request.requireCharacterStateChange === true,
         signalId: request.signalId || null,
         preparedAt: nowIso(),
         preparedAtMs: nowMs,
