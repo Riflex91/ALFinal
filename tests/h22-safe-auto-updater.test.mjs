@@ -450,6 +450,33 @@ test('H22 coordinator prepares every online peer before one shared group commit'
   assert.equal(cancelled.accepted, true);
 });
 
+test('H22 final cutover accepts a peer that already reached exactly the planned new version', () => {
+  const { Controller } = loadUpdater();
+  const peerProtection = {
+    schemaVersion: 1,
+    protocol: 'h22-synchronized-update-v1',
+    coordinatedUpdateCapable: true,
+    blocked: false,
+    event: false,
+    boss: false,
+    observedAtMs: Date.now()
+  };
+  const fixture = runtimeFixture({
+    localName: 'Alpha',
+    rosterSnapshot: { onlineStateAvailable: true, onlineCharacterNames: ['Alpha', 'Bravo'] },
+    freshPeers: [{ name: 'Bravo', running: true, version: '0.22.4-h22', updateProtection: peerProtection }]
+  });
+  const updater = new Controller({ runtime: fixture.runtime, root: fixture.root, storage: fixture.storage, sha256: async () => 'a'.repeat(64) });
+
+  const strict = updater._groupState();
+  assert.equal(strict.ready, false);
+  assert.ok(strict.reasons.includes('UPDATE_GROUP_PEER_VERSION_MISMATCH:Bravo'));
+
+  const cutover = updater._groupState({ acceptedVersions: ['0.22.4-h22'] });
+  assert.equal(cutover.ready, true);
+  assert.equal(cutover.reasons.length, 0);
+});
+
 test('H22 mismatched rollback identity or release key prevents coordinated commit', async () => {
   const { Controller } = loadUpdater();
   const body = bundle('0.22.4-h22');
