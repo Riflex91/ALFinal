@@ -227,6 +227,7 @@
         const profile = this._normalizeProfile({ ...raw, name: peer.name });
         if (!profile) continue;
         profile.running = peer.running === true;
+        profile.fullAutonomyEnabled = peer.fullAutonomyEnabled === true;
         profile.emergencyStopLatched = peer.emergencyStopLatched === true;
         profile.sessionId = peer.sessionId || null;
         profile.peerFresh = true;
