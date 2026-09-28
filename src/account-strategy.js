@@ -28,33 +28,34 @@
 
   const TASK_DEFAULTS = Object.freeze({
     FARM: {
-      minMembers: 3, maxMembers: 3, required: ['DPS'], combatOnly: true,
-      progressionWeight: 0.30, catchUpRequired: true,
+      minMembers: 1, maxMembers: 3, required: ['DPS'], combatOnly: true,
+      progressionWeight: 0.30, catchUpRequired: true, extraMemberCost: 0.90, offlineActivationCost: 0.08,
       capabilityWeights: { DPS: 0.06, AOE: 0.10, RANGED: 0.035, HEALER: 0.04, TANK: 0.025, SUPPORT: 0.025 }
     },
     QUEST: {
-      minMembers: 3, maxMembers: 3, required: ['DPS'], combatOnly: true,
-      progressionWeight: 0.16, catchUpRequired: false,
+      minMembers: 1, maxMembers: 3, required: ['DPS'], combatOnly: true,
+      progressionWeight: 0.16, catchUpRequired: false, extraMemberCost: 0.78, offlineActivationCost: 0.10,
       capabilityWeights: { DPS: 0.07, RANGED: 0.04, HEALER: 0.04, SUPPORT: 0.035, TANK: 0.02 }
     },
     BOSS: {
-      minMembers: 3, maxMembers: 3, required: ['TANK', 'HEALER', 'DPS'], combatOnly: true,
-      progressionWeight: 0.02, catchUpRequired: false,
+      minMembers: 2, maxMembers: 3, required: ['TANK', 'HEALER', 'DPS'], combatOnly: true,
+      progressionWeight: 0.02, catchUpRequired: false, extraMemberCost: 0.10, offlineActivationCost: 0.12,
       capabilityWeights: { TANK: 0.10, HEALER: 0.10, DPS: 0.06, SUPPORT: 0.04, RANGED: 0.02 }
     },
     EVENT: {
-      minMembers: 3, maxMembers: 3, required: ['TANK', 'HEALER', 'DPS'], combatOnly: true,
-      progressionWeight: 0.04, catchUpRequired: false,
+      minMembers: 2, maxMembers: 3, required: ['TANK', 'HEALER', 'DPS'], combatOnly: true,
+      progressionWeight: 0.04, catchUpRequired: false, extraMemberCost: 0.08, offlineActivationCost: 0.10,
       capabilityWeights: { AOE: 0.10, DPS: 0.06, HEALER: 0.08, TANK: 0.07, SUPPORT: 0.035 }
     },
     SPECIAL: {
-      minMembers: 3, maxMembers: 3, required: ['HEALER', 'DPS'], combatOnly: true,
-      progressionWeight: 0.06, catchUpRequired: false,
+      minMembers: 2, maxMembers: 3, required: ['HEALER', 'DPS'], combatOnly: true,
+      progressionWeight: 0.06, catchUpRequired: false, extraMemberCost: 0.32, offlineActivationCost: 0.10,
       capabilityWeights: { HEALER: 0.09, DPS: 0.06, SUPPORT: 0.05, TANK: 0.04, RANGED: 0.025 }
     },
     ECONOMY: {
       minMembers: 1, maxMembers: 1, required: ['ECONOMY'], combatOnly: false,
-      progressionWeight: 0, catchUpRequired: false, capabilityWeights: { ECONOMY: 0.1, LOGISTICS: 0.05 }
+      progressionWeight: 0, catchUpRequired: false, extraMemberCost: 0, offlineActivationCost: 0,
+      capabilityWeights: { ECONOMY: 0.1, LOGISTICS: 0.05 }
     }
   });
 
@@ -373,7 +374,10 @@
         const progressionBonus = containsProgression ? defaults.progressionWeight : 0;
         const onlineReadyCount = members.filter(member => member.online && member.running === true).length;
         const readinessBonus = onlineReadyCount * 0.005;
-        const score = baseStrength + activityBonus + progressionBonus + readinessBonus;
+        const offlineCount = members.length - onlineReadyCount;
+        const coordinationCost = Math.max(0, members.length - 1) * Math.max(0, Number(defaults.extraMemberCost) || 0);
+        const activationCost = offlineCount * Math.max(0, Number(defaults.offlineActivationCost) || 0);
+        const score = baseStrength + activityBonus + progressionBonus + readinessBonus - coordinationCost - activationCost;
         ranking.push({
           taskType,
           memberNames,
@@ -383,6 +387,8 @@
           progressionBonus,
           activityBonus: Number(activityBonus.toFixed(6)),
           readinessBonus: Number(readinessBonus.toFixed(6)),
+          coordinationCost: Number(coordinationCost.toFixed(6)),
+          activationCost: Number(activationCost.toFixed(6)),
           capabilities: [...capabilities].sort(),
           members: clone(members)
         });
@@ -423,6 +429,8 @@
           progressionBonus: selected.progressionBonus,
           activityBonus: selected.activityBonus,
           readinessBonus: selected.readinessBonus,
+          coordinationCost: selected.coordinationCost,
+          activationCost: selected.activationCost,
           capabilities: selected.capabilities
         } : null,
         leaderName,
@@ -436,6 +444,8 @@
           progressionBonus: row.progressionBonus,
           activityBonus: row.activityBonus,
           readinessBonus: row.readinessBonus,
+          coordinationCost: row.coordinationCost,
+          activationCost: row.activationCost,
           capabilities: row.capabilities
         }))
       };
