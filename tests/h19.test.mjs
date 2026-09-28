@@ -836,7 +836,7 @@ test('H25 rotation blocks rather than falling back to reconnect-prone disconnect
   assert.equal(state.crossWindowDispatches.length, 0);
 });
 
-test('H24 surplus-window disconnect remains fail-closed when the separate window cannot self-disconnect', () => {
+test('H24 surplus-window disconnect remains fail-closed when no replacement is needed and self-disconnect is unavailable', () => {
   const { controller, state } = fixture({
     onlineNames: ['My_Merchant', 'My_Ranger', 'My_Priest', 'My_Warrior'],
     runnerActiveNames: ['My_Ranger'],
@@ -845,8 +845,7 @@ test('H24 surplus-window disconnect remains fail-closed when the separate window
       { name: 'My_Priest', sessionId: 'priest-window-session', running: true, runEpoch: 4, characterDisconnectCapable: false }
     ]
   });
-  state.account.push({ name: 'My_Mage', ctype: 'mage', online: false });
-  const desired = ['My_Mage', 'My_Merchant', 'My_Ranger', 'My_Warrior'];
+  const desired = ['My_Merchant', 'My_Ranger', 'My_Warrior'];
   const readiness = controller.characterRotationReadiness(desired);
   assert.equal(readiness.ready, false);
   assert.ok(readiness.blockers.includes('H19_ROTATION_STOP_NOT_RUNNER_CONTROLLABLE:My_Priest'));
