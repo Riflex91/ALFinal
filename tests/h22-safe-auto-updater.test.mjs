@@ -603,6 +603,42 @@ test('H22 failed release is quarantined and rollback reloads the previous immuta
 });
 
 
+test('H22 direct execution failure quarantines candidate and rolls back to the previous immutable release', async () => {
+  const { Controller } = loadUpdater();
+  const body = bundle('0.22.4-h22');
+  const manifest = manifestFor('0.22.4-h22', body);
+  const fixture = runtimeFixture({
+    config: { autoApply: true, coordinatedApply: false },
+    executeRelease: (release, _code, { root }) => {
+      if (release.version === '0.22.4-h22') throw new Error('BUNDLE_BOOT_THROW');
+      root.ALBot = {
+        version: release.version,
+        status: () => ({ running: true, version: release.version, bootCount: 3 }),
+        fullAutonomy: { start: async () => ({ accepted: true }) }
+      };
+      return { executed: true, manifest: release };
+    }
+  });
+
+  fixture.root.ALBot = {
+    version: '0.22.3-h22',
+    status: () => ({ running: true, version: '0.22.3-h22', bootCount: 1 })
+  };
+  const updater = new Controller({ runtime: fixture.runtime, root: fixture.root, storage: fixture.storage, sha256: async () => manifest.sha256 });
+  updater.pending = { downloadedAt: new Date().toISOString(), manifest, bundle: body };
+  updater._waitHandshake = async (_previousApi, version) => ({ ok: true, version, bootCount: 3, heartbeatActive: true });
+
+  const previousUrl = fixture.state.activeRelease.bundleUrl;
+  const result = await updater.applyPending();
+  assert.equal(result.applied, false);
+  assert.match(result.reason, /UPDATE_EXECUTION_FAILED:BUNDLE_BOOT_THROW:ROLLBACK_OK/);
+  assert.deepEqual(fixture.state.executes.map(row => row.version), ['0.22.4-h22', '0.22.3-h22']);
+  assert.deepEqual(fixture.state.rollbackLoads, [previousUrl]);
+  assert.equal(fixture.state.activeRelease.version, '0.22.3-h22');
+  assert.equal(updater.status().stats.rollbacks, 1);
+  assert.equal(updater.status().stats.quarantines, 1);
+});
+
 test('H22 rejects a legacy persisted pending manifest before touching runtime or code slots', async () => {
   const { Controller } = loadUpdater();
   const body = bundle('0.22.4-h22');
