@@ -202,10 +202,21 @@
         const offScheduler = this.bus.on('scheduler-error', details => {
           this._record('SCHEDULER_ERROR', 'ERROR', 'scheduler', details && details.error && details.error.message || 'SCHEDULER_CALLBACK_FAILED', details);
         });
+        const offRecovery = this.bus.on('h22-known-recovery', row => {
+          const severity = String(row && row.severity || 'INFO').toUpperCase();
+          this._record(
+            'KNOWN_RECOVERY',
+            severity,
+            'known-recovery',
+            row && (row.reason || row.type) || 'KNOWN_RECOVERY_EVENT',
+            row
+          );
+        });
         if (this.scope && typeof this.scope.cleanup === 'function') {
           this.scope.cleanup('observer-bus-unsubscribe', () => {
             try { offLog(); } catch (_) {}
             try { offScheduler(); } catch (_) {}
+            try { offRecovery(); } catch (_) {}
           });
         }
       }
