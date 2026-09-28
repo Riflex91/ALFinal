@@ -164,17 +164,18 @@ function fixture(options = {}) {
         peer.running = desired;
         if (desired) peer.runEpoch += 1;
       }
+      const response = {
+        success: options.crossWindowReject !== true,
+        reason: options.crossWindowReject ? 'CROSS_WINDOW_REJECTED_TEST' : 'CROSS_WINDOW_SETTLED_TEST',
+        target: String(name),
+        targetSessionId: peer.sessionId,
+        state: { running: peer.running, runEpoch: peer.runEpoch }
+      };
       return {
         id: 'cm-' + state.crossWindowDispatches.length,
         state: 'DISPATCHED',
         dispatched: true,
-        value: Promise.resolve({
-          success: options.crossWindowReject !== true,
-          reason: options.crossWindowReject ? 'CROSS_WINDOW_REJECTED_TEST' : 'CROSS_WINDOW_SETTLED_TEST',
-          target: String(name),
-          targetSessionId: peer.sessionId,
-          state: { running: peer.running, runEpoch: peer.runEpoch }
-        })
+        value: options.crossWindowNeverSettle ? new Promise(() => {}) : Promise.resolve(response)
       };
     }
   } : null;
@@ -1011,13 +1012,13 @@ test('H22 live regression: non-coordinator accepts a validated owned-party invit
   assert.equal(f.controller.status().metrics.partyAcceptsConfirmed, 1);
 });
 
-test('H22 live regression: replaced remote runtime session satisfies an in-flight START without false H19 suspension', async () => {
+test('H22 live regression: replacement runtime heartbeat confirms even when the old session transport never settles', () => {
   const f = fixture({
     onlineNames: ['My_Ranger', 'My_Priest'],
     runnerActiveNames: ['My_Ranger', 'My_Priest'],
     crossWindowPeers: [{ name: 'My_Priest', sessionId: 'old-session', running: false, runEpoch: 1 }],
     crossWindowNoMutation: true,
-    crossWindowReject: true
+    crossWindowNeverSettle: true
   });
   const policy = f.controller.setPolicy({
     desiredActiveNames: ['My_Ranger', 'My_Priest'],
@@ -1031,6 +1032,7 @@ test('H22 live regression: replaced remote runtime session satisfies an in-fligh
   const dispatched = f.controller.tick();
   assert.equal(dispatched.state, 'DISPATCHED');
   assert.equal(f.controller.status().currentAction.before.targetSessionId, 'old-session');
+  assert.equal(f.controller.status().currentAction.settlement, 'PENDING');
 
   f.runtimePeers.set('My_Priest', {
     name: 'My_Priest',
@@ -1038,7 +1040,6 @@ test('H22 live regression: replaced remote runtime session satisfies an in-fligh
     running: true,
     runEpoch: 1
   });
-  await flush();
 
   const reconciled = f.controller.tick();
   assert.equal(reconciled.state, 'CONFIRMED');
