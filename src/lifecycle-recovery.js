@@ -1162,7 +1162,21 @@
       let actionName;
       let args;
       let before = {};
-      if (request.kind === 'START' || request.kind === 'STOP') {
+      if (request.kind === 'BROWSER_SWAP') {
+        const check = this._validateRemoteTarget(request.targetName, 'BROWSER_SWAP', {
+          desiredName: request.desiredName
+        });
+        if (!check.ok) return { accepted: false, reason: check.reason };
+        actionName = null;
+        args = [];
+        before = {
+          onlineStateAvailable: true,
+          targetWasActive: check.active,
+          desiredWasPresent: this._startEvidenceSet(check.roster).has(String(check.desiredName)),
+          transport: check.transport,
+          targetSessionId: check.peer && check.peer.sessionId || null
+        };
+      } else if (request.kind === 'START' || request.kind === 'STOP') {
         const check = this._validateRemoteTarget(request.targetName, request.kind, {
           requireCharacterStateChange: request.requireCharacterStateChange === true
         });
@@ -1236,12 +1250,17 @@
         requestId: request.id,
         kind: request.kind,
         targetName: request.targetName || null,
+        desiredName: request.desiredName || null,
         automatic: request.automatic === true,
         requireCharacterStateChange: request.requireCharacterStateChange === true,
         signalId: request.signalId || null,
         preparedAt: nowIso(),
         preparedAtMs: nowMs,
-        deadlineAtMs: nowMs + this.config.outcomeTimeoutMs,
+        deadlineAtMs: nowMs + (request.kind === 'BROWSER_SWAP'
+          ? this.config.browserSwapTimeoutMs
+          : request.kind === 'START'
+            ? this.config.startOutcomeTimeoutMs
+            : this.config.outcomeTimeoutMs),
         settlement: 'PREPARED',
         restored: false,
         response: null,
@@ -1254,7 +1273,14 @@
 
       let dispatched;
       try {
-        if ((request.kind === 'START' || request.kind === 'STOP')
+        if (request.kind === 'BROWSER_SWAP' && action.transport === 'cross-window-browser-navigation') {
+          if (!this.crossWindow || typeof this.crossWindow.requestCharacterNavigation !== 'function') {
+            throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TRANSPORT_UNAVAILABLE');
+          }
+          dispatched = this.crossWindow.requestCharacterNavigation(request.targetName, request.desiredName);
+          this.metrics.crossWindowDispatches += 1;
+          this.metrics.browserSwapsDispatched += 1;
+        } else if ((request.kind === 'START' || request.kind === 'STOP')
             && action.transport === 'cross-window-runtime') {
           if (!this.crossWindow || typeof this.crossWindow.requestRuntimeState !== 'function') {
             throw new Error('H19_CROSS_WINDOW_TRANSPORT_UNAVAILABLE');
@@ -1323,6 +1349,7 @@
       this.actionsThisSession += 1;
       if (current.kind === 'START') this.metrics.startsConfirmed += 1;
       if (current.kind === 'STOP') this.metrics.stopsConfirmed += 1;
+      if (current.kind === 'BROWSER_SWAP') this.metrics.browserSwapsConfirmed += 1;
       if (current.kind === 'RESPAWN') this.metrics.respawnsConfirmed += 1;
       if (current.kind === 'PARTY_INVITE') this.metrics.partyInvitesConfirmed += 1;
       if (current.kind === 'PARTY_REQUEST') this.metrics.partyRequestsConfirmed += 1;
@@ -1332,8 +1359,32 @@
         this._persistPolicy();
       }
       if (current.signalId) this.partySignals = this.partySignals.filter(row => String(row.id) !== String(current.signalId));
-      this.lastAction = { at: nowIso(), type: current.kind + '_CONFIRMED', targetName: current.targetName, ...clone(details) };
-      return { state: 'CONFIRMED', kind: current.kind, targetName: current.targetName, details: clone(details) };
+      const timeoutReason = 'H19_' + current.kind + '_UNVERIFIED_TIMEOUT';
+      const lateConfirmed = current.unknownRecorded === true
+        && this.suspended === true
+        && this.suspendedReason === timeoutReason;
+      if (lateConfirmed) {
+        this.suspended = false;
+        this.suspendedReason = null;
+        if (current.automatic === true) this.autonomyEnabled = true;
+        this.metrics.lateOutcomeRecoveries += 1;
+      }
+      this.lastAction = {
+        at: nowIso(),
+        type: current.kind + '_CONFIRMED',
+        targetName: current.targetName,
+        desiredName: current.desiredName || null,
+        lateConfirmed,
+        ...clone(details)
+      };
+      return {
+        state: 'CONFIRMED',
+        kind: current.kind,
+        targetName: current.targetName,
+        desiredName: current.desiredName || null,
+        lateConfirmed,
+        details: clone(details)
+      };
     }
 
     _suspend(reason, details = {}) {
@@ -1349,7 +1400,7 @@
         this._persistCurrent();
       }
       this.lastAction = { at: nowIso(), type: 'SUSPENDED', reason: this.suspendedReason, repeated: alreadyRecorded, ...clone(details) };
-      if (this.logger) this.logger.error('H19 Lifecycle Recovery suspendiert', this.lastAction);
+      if (!alreadyRecorded && this.logger) this.logger.error('H19 Lifecycle Recovery suspendiert', this.lastAction);
       return { state: 'UNKNOWN', reason: this.suspendedReason, currentAction: clone(this.currentAction) };
     }
 
@@ -1358,7 +1409,25 @@
       if (!current) return { state: 'IDLE' };
 
       const settlementFinished = current.settlement !== 'PENDING' && current.settlement !== 'PREPARED';
-      if (current.kind === 'START' || current.kind === 'STOP') {
+      if (current.kind === 'BROWSER_SWAP') {
+        const roster = this._roster();
+        if (roster && roster.onlineStateAvailable === true) {
+          const oldGone = !this._onlineSet(roster).has(String(current.targetName || ''));
+          const desiredName = String(current.desiredName || '');
+          const desiredPresent = !!desiredName && this._startEvidenceSet(roster).has(desiredName);
+          const desiredPeer = desiredName && this.crossWindow && typeof this.crossWindow.freshPeer === 'function'
+            ? this.crossWindow.freshPeer(desiredName)
+            : null;
+          if (oldGone && (desiredPresent || desiredPeer)) {
+            this.metrics.crossWindowConfirms += 1;
+            return this._confirmCurrent({
+              evidence: desiredPeer ? 'BROWSER_SWAP_NEW_PEER_PRESENT' : 'BROWSER_SWAP_NEW_CHARACTER_PRESENT',
+              oldCharacterOffline: true,
+              desiredCharacterPresent: true
+            });
+          }
+        }
+      } else if (current.kind === 'START' || current.kind === 'STOP') {
         if (current.transport === 'cross-window-character-disconnect') {
           const roster = this._roster();
           if (roster && roster.onlineStateAvailable === true) {
@@ -1411,8 +1480,9 @@
           const roster = this._roster();
           if (roster && roster.onlineStateAvailable === true) {
             const active = this._onlineSet(roster).has(String(current.targetName || ''));
-            if (settlementFinished && current.kind === 'START' && active) {
-              return this._confirmCurrent({ evidence: 'ACTIVE_ROSTER_PRESENT' });
+            const startPresent = this._startEvidenceSet(roster).has(String(current.targetName || ''));
+            if (settlementFinished && current.kind === 'START' && startPresent) {
+              return this._confirmCurrent({ evidence: active ? 'ACTIVE_ROSTER_PRESENT' : 'RUNNER_START_STATE_PRESENT' });
             }
             if (settlementFinished && current.kind === 'STOP' && !active && current.before && current.before.targetWasActive === true) {
               return this._confirmCurrent({ evidence: 'ACTIVE_ROSTER_ABSENT' });
