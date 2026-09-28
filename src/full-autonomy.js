@@ -25,19 +25,22 @@
         lifecycle: false,
         farming: false,
         economy: false,
-        partyLogistics: false
+        partyLogistics: false,
+        encounters: false
       };
       this.config = {
         taskType: 'FARM',
         keepSupportInParty: true,
         requireAllOnlineProfiles: true,
         logisticsProbeMs: 30000,
+        standProbeMs: 60000,
         lifecycleMaxActions: 20,
         economyMaxActions: 100,
         logisticsMaxActions: 10,
         expectedOnlineCount: 4
       };
       this.lastLogisticsProbeAtMs = 0;
+      this.lastStandProbeAtMs = 0;
       this.desiredCharacterNames = [];
       this.tickResourceId = null;
       this.lifecycleArmed = false;
@@ -66,6 +69,9 @@
       if (options.requireAllOnlineProfiles != null) this.config.requireAllOnlineProfiles = options.requireAllOnlineProfiles === true;
       if (options.logisticsProbeMs != null) {
         this.config.logisticsProbeMs = Math.max(5000, Math.min(300000, Math.floor(Number(options.logisticsProbeMs) || 30000)));
+      }
+      if (options.standProbeMs != null) {
+        this.config.standProbeMs = Math.max(15000, Math.min(600000, Math.floor(Number(options.standProbeMs) || 60000)));
       }
       // Adventure Land Full Live is always a four-character group: 3 farmers + 1 Merchant.
       this.config.expectedOnlineCount = 4;
@@ -131,6 +137,9 @@
         if (this.started.lifecycle) {
           try { runtime.lifecycle.stopAutonomy(reason); } catch (_) {}
         }
+        if (this.started.encounters && runtime.encounters) {
+          try { runtime.encounters.stopAutonomy(reason); } catch (_) {}
+        }
       }
       if (this.tickResourceId && this.scope && typeof this.scope.cancel === 'function') {
         try { this.scope.cancel(this.tickResourceId, reason); } catch (_) {}
@@ -139,7 +148,7 @@
       this.enabled = false;
       this.desiredCharacterNames = [];
       this.lifecycleArmed = false;
-      this.started = { lifecycle: false, farming: false, economy: false, partyLogistics: false };
+      this.started = { lifecycle: false, farming: false, economy: false, partyLogistics: false, encounters: false };
       this.lastDecision = { at: new Date().toISOString(), type: 'STOP', reason: cleanText(reason, 200) };
       return this.status();
     }
@@ -428,9 +437,14 @@
         const status = this.runtime.partyLogistics.status();
         if (this.started.partyLogistics && status && status.autonomyEnabled === true) this.runtime.partyLogistics.stopAutonomy(reason);
       } catch (_) {}
+      try {
+        const status = this.runtime.encounters && this.runtime.encounters.status ? this.runtime.encounters.status() : null;
+        if (this.started.encounters && status && status.autonomyEnabled === true) this.runtime.encounters.stopAutonomy(reason);
+      } catch (_) {}
       this.started.farming = false;
       this.started.economy = false;
       this.started.partyLogistics = false;
+      this.started.encounters = false;
     }
 
     _recoveryPlan(readiness) {
@@ -465,7 +479,49 @@
       const localName = String(local.name);
       const ctype = String(local.ctype || '').toLowerCase();
       const selected = new Set(plan && plan.selected ? plan.selected.memberNames : []);
-      const shouldFarm = ctype !== 'merchant' && selected.has(localName);
+      const encounterTask = ['BOSS', 'EVENT'].includes(String(plan && plan.taskType || '').toUpperCase());
+      const shouldEncounter = encounterTask && ctype !== 'merchant' && selected.has(localName);
+      const shouldFarm = !encounterTask && ctype !== 'merchant' && selected.has(localName);
+
+      if (encounterTask) {
+        const farmStatus = this.runtime.farmIntelligence.status();
+        if (farmStatus && farmStatus.active) {
+          const owner = farmStatus.session ? String(farmStatus.session.owner || '') : '';
+          if (owner && owner !== 'full-autonomy') return { ok: false, reason: 'FULL_AUTONOMY_FOREIGN_FARM_INTELLIGENCE_OWNERSHIP' };
+          try { this.runtime.farmIntelligence.stopAutonomy('FULL_AUTONOMY_ENCOUNTER_PRIORITY'); } catch (_) {}
+          this.started.farming = false;
+        }
+        const encounter = this.runtime.encounters;
+        const encounterStatus = encounter && encounter.status ? encounter.status() : null;
+        if (!encounter || !encounterStatus) return { ok: false, reason: 'FULL_AUTONOMY_ENCOUNTER_CONTROLLER_UNAVAILABLE' };
+        if (encounterStatus.suspended) return { ok: false, reason: encounterStatus.suspendedReason || 'FULL_AUTONOMY_ENCOUNTER_SUSPENDED' };
+        if (shouldEncounter) {
+          if (encounterStatus.autonomyEnabled !== true) {
+            const started = encounter.startAutonomy({
+              owner: 'full-autonomy',
+              taskType: String(plan.taskType).toUpperCase(),
+              groupLeaderName: plan && plan.leaderName || null,
+              groupMemberNames: plan && plan.selected ? plan.selected.memberNames : []
+            });
+            if (!started || started.accepted !== true) return { ok: false, reason: started && started.reason || 'FULL_AUTONOMY_ENCOUNTER_START_REJECTED' };
+          } else if (typeof encounter.configureGroup === 'function') {
+            encounter.configureGroup({
+              groupLeaderName: plan && plan.leaderName || null,
+              groupMemberNames: plan && plan.selected ? plan.selected.memberNames : []
+            });
+          }
+          this.started.encounters = true;
+        } else if (encounterStatus.autonomyEnabled === true && this.started.encounters) {
+          try { encounter.stopAutonomy('FULL_AUTONOMY_NOT_SELECTED_FOR_ENCOUNTER'); } catch (_) {}
+          this.started.encounters = false;
+        }
+        return { ok: true, shouldFarm: false, shouldEncounter, selected: [...selected].sort() };
+      }
+
+      if (this.started.encounters && this.runtime.encounters) {
+        try { this.runtime.encounters.stopAutonomy('FULL_AUTONOMY_RETURN_TO_BASE_TASK'); } catch (_) {}
+        this.started.encounters = false;
+      }
       const status = this.runtime.farmIntelligence.status();
       const sessionOwner = status && status.session ? String(status.session.owner || '') : '';
       const fullAutonomyOwns = status && status.active && sessionOwner === 'full-autonomy';
@@ -516,16 +572,44 @@
       if (!local || String(local.ctype || '').toLowerCase() !== 'merchant') return { ok: true, merchant: false };
       const economy = this.runtime.economy;
       const logistics = this.runtime.partyLogistics;
+      const stand = this.runtime.merchantStand || null;
       const economyStatus = economy.status();
       const logisticsStatus = logistics.status();
-      if (economyStatus.suspendedReason || logisticsStatus.suspendedReason) {
+      let standStatus = stand && typeof stand.status === 'function' ? stand.status() : null;
+      if (economyStatus.suspendedReason || logisticsStatus.suspendedReason
+          || (standStatus && standStatus.autoManage && standStatus.suspendedReason)) {
         return {
           ok: false,
-          reason: economyStatus.suspendedReason || logisticsStatus.suspendedReason || 'FULL_AUTONOMY_MERCHANT_SUSPENDED'
+          reason: economyStatus.suspendedReason
+            || logisticsStatus.suspendedReason
+            || standStatus && standStatus.suspendedReason
+            || 'FULL_AUTONOMY_MERCHANT_SUSPENDED'
         };
       }
 
       const now = Date.now();
+
+      // An already-started stand mutation owns the Merchant until it reaches live evidence.
+      if (standStatus && standStatus.autoManage && standStatus.pending) {
+        const currentEconomy = economy.status();
+        const currentLogistics = logistics.status();
+        if (currentEconomy.currentAction || currentLogistics.currentAction) {
+          return { ok: false, reason: 'FULL_AUTONOMY_MERCHANT_STAND_OWNERSHIP_CONFLICT' };
+        }
+        if (this.started.economy && currentEconomy.autonomyEnabled) {
+          try { economy.stopAutonomy('FULL_AUTONOMY_MERCHANT_STAND_PENDING'); } catch (_) {}
+          this.started.economy = false;
+        }
+        if (this.started.partyLogistics && currentLogistics.autonomyEnabled) {
+          try { logistics.stopAutonomy('FULL_AUTONOMY_MERCHANT_STAND_PENDING'); } catch (_) {}
+          this.started.partyLogistics = false;
+        }
+        const step = stand.tick();
+        standStatus = stand.status();
+        if (standStatus.suspendedReason) return { ok: false, reason: standStatus.suspendedReason };
+        return { ok: true, merchant: true, owner: 'merchant-stand', plan: clone(step) };
+      }
+
       const logisticsActive = logisticsStatus.autonomyEnabled === true;
       if (logisticsActive) {
         const plan = logistics.plan();
@@ -555,6 +639,28 @@
             this.started.partyLogistics = true;
             return { ok: true, merchant: true, owner: 'party-logistics', plan: clone(logisticsPlan) };
           }
+        }
+      }
+
+      // Auto-stand is opt-in. Probe it in a bounded window so it never races Economy.
+      standStatus = stand && typeof stand.status === 'function' ? stand.status() : null;
+      const economyBeforeStand = economy.status();
+      const logisticsBeforeStand = logistics.status();
+      if (standStatus && standStatus.autoManage
+          && now - this.lastStandProbeAtMs >= this.config.standProbeMs
+          && !economyBeforeStand.currentAction
+          && !logisticsBeforeStand.currentAction
+          && !logisticsBeforeStand.autonomyEnabled) {
+        this.lastStandProbeAtMs = now;
+        if (this.started.economy && economyBeforeStand.autonomyEnabled) {
+          try { economy.stopAutonomy('FULL_AUTONOMY_MERCHANT_STAND_PROBE'); } catch (_) {}
+          this.started.economy = false;
+        }
+        const standStep = stand.tick();
+        standStatus = stand.status();
+        if (standStatus.suspendedReason) return { ok: false, reason: standStatus.suspendedReason };
+        if (standStatus.pending || (standStep && ['DISPATCHED', 'PENDING', 'CONFIRMED'].includes(String(standStep.state || '')))) {
+          return { ok: true, merchant: true, owner: 'merchant-stand', plan: clone(standStep) };
         }
       }
 
@@ -613,7 +719,11 @@
           };
         }
 
-        let plan = this.strategy.optimizeTask({ type: this.config.taskType });
+        const encounterPriority = this.runtime.encounters && typeof this.runtime.encounters.preferredTask === 'function'
+          ? this.runtime.encounters.preferredTask()
+          : null;
+        const effectiveTaskType = encounterPriority && encounterPriority.taskType || this.config.taskType;
+        let plan = this.strategy.optimizeTask({ type: effectiveTaskType });
         this.lastPlan = clone(plan);
         if (!plan || plan.status !== 'SELECTION_READY') {
           this.strategy.recordTraining(false);
@@ -656,7 +766,7 @@
           if (!rotationReadiness || rotationReadiness.ready !== true) {
             const fallbackPlan = readiness.online.length === 4
               ? this.strategy.optimizeTask({
-                type: this.config.taskType,
+                type: effectiveTaskType,
                 allowedCharacterNames: readiness.online.slice()
               })
               : null;
@@ -779,7 +889,7 @@
           local: local.name,
           localRole: String(local.ctype || '').toLowerCase() === 'merchant'
             ? merchant.owner
-            : (combat.shouldFarm ? 'combat-farm' : 'standby'),
+            : (combat.shouldEncounter ? 'combat-encounter' : (combat.shouldFarm ? 'combat-farm' : 'standby')),
           taskType: plan.taskType,
           executionMembers: plan.selected.memberNames,
           supportMembers: plan.supportMemberNames,
