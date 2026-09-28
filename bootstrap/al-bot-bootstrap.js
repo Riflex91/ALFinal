@@ -174,13 +174,22 @@
 
   async function executeVerifiedRelease(rawManifest, bundle) {
     const verified = await verifyRelease(rawManifest, bundle);
+    const previousCandidate = candidateRelease();
     root.__ALBOT_CANDIDATE_RELEASE__ = clone(verified.manifest);
 
     const Runner = root && root.Function || Function;
-    if (typeof Runner !== 'function') throw new Error('BOOTSTRAP_EXECUTION_UNAVAILABLE');
+    if (typeof Runner !== 'function') {
+      root.__ALBOT_CANDIDATE_RELEASE__ = previousCandidate;
+      throw new Error('BOOTSTRAP_EXECUTION_UNAVAILABLE');
+    }
     const source = verified.bundle + '\n//# sourceURL=al-bot-' + verified.manifest.commitSha + '.js';
-    const fn = Runner(source);
-    fn.call(root);
+    try {
+      const fn = Runner(source);
+      fn.call(root);
+    } catch (error) {
+      root.__ALBOT_CANDIDATE_RELEASE__ = previousCandidate;
+      throw error;
+    }
     return {
       executed: true,
       manifest: clone(verified.manifest),
