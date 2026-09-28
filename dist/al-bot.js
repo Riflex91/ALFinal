@@ -1,4 +1,4 @@
-/* AL Bot 0.22.5-h22 | generated file | do not edit dist directly */
+/* AL Bot 0.23.0-h23 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -2797,6 +2797,9 @@
     sell: Object.freeze({ publicName: 'sell', family: 'npc-trade' }),
     trade_buy: Object.freeze({ publicName: 'trade_buy', family: 'player-trade' }),
     trade_sell: Object.freeze({ publicName: 'trade_sell', family: 'player-trade' }),
+    open_stand: Object.freeze({ publicName: 'open_stand', family: 'merchant-stand' }),
+    close_stand: Object.freeze({ publicName: 'close_stand', family: 'merchant-stand' }),
+    trade: Object.freeze({ publicName: 'trade', family: 'merchant-stand' }),
     equip: Object.freeze({ publicName: 'equip', family: 'gear' }),
     unequip: Object.freeze({ publicName: 'unequip', family: 'gear' }),
     upgrade: Object.freeze({ publicName: 'upgrade', family: 'upgrade-compound' }),
@@ -9079,6 +9082,510 @@
   const clone = ns.helpers.clone;
   const cleanText = ns.helpers.cleanText;
 
+  function finite(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function nowIso() { return new Date().toISOString(); }
+  function bool(value) {
+    return value === true || value === 1 || String(value || '').toLowerCase() === 'true';
+  }
+
+  class EncounterController {
+    constructor(options = {}) {
+      this.root = options.root || root;
+      this.logger = options.logger || null;
+      this.storage = options.storage || null;
+      this.game = options.game || null;
+      this.movement = options.movement || null;
+      this.combat = options.combat || null;
+      this.party = options.party || null;
+      this.canAct = typeof options.canAct === 'function' ? options.canAct : () => true;
+      this.moduleActive = false;
+      this.scope = null;
+      this.heartbeat = null;
+      this.autonomyEnabled = false;
+      this.suspendedReason = null;
+      this.session = null;
+      this.lastPlan = null;
+      this.lastAction = null;
+      this.announcements = new Map();
+      this.knownEvents = new Map();
+      this.disabled = { boss: new Set(), event: new Set() };
+      this.config = {
+        tickMs: Math.max(250, Math.min(5000, Number(options.tickMs) || 750)),
+        eventTtlMs: Math.max(60000, Math.min(21600000, Number(options.eventTtlMs) || 1800000)),
+        approachDistance: Math.max(100, Math.min(1200, Number(options.approachDistance) || 650)),
+        maxAttackToHpRatio: Math.max(0.05, Math.min(0.8, Number(options.maxAttackToHpRatio) || 0.32))
+      };
+      this.metrics = { ticks: 0, plans: 0, combatStarts: 0, travelOrders: 0, suspensions: 0 };
+      this._loadPreferences();
+    }
+
+    _prefKey() { return 'albot:encounter-preferences:v1'; }
+
+    _loadPreferences() {
+      if (!this.storage || typeof this.storage.get !== 'function') return;
+      try {
+        const raw = this.storage.get(this._prefKey());
+        if (!raw) return;
+        const value = JSON.parse(raw);
+        for (const kind of ['boss', 'event']) {
+          const rows = Array.isArray(value && value.disabled && value.disabled[kind]) ? value.disabled[kind] : [];
+          this.disabled[kind] = new Set(rows.map(x => cleanText(x, 160)).filter(Boolean));
+        }
+        const known = value && value.knownEvents && typeof value.knownEvents === 'object' ? value.knownEvents : {};
+        for (const [id, row] of Object.entries(known)) this.knownEvents.set(id, clone(row));
+      } catch (_) {}
+    }
+
+    _persistPreferences() {
+      if (!this.storage || typeof this.storage.set !== 'function') return;
+      const knownEvents = {};
+      for (const [id, row] of this.knownEvents.entries()) knownEvents[id] = clone(row);
+      this.storage.set(this._prefKey(), JSON.stringify({
+        schemaVersion: 1,
+        disabled: {
+          boss: [...this.disabled.boss].sort(),
+          event: [...this.disabled.event].sort()
+        },
+        knownEvents
+      }));
+    }
+
+    _roots() {
+      const out = [];
+      let current = this.root;
+      for (let depth = 0; depth < 8 && current; depth += 1) {
+        if (!out.includes(current)) out.push(current);
+        let next = null;
+        try {
+          next = current.parent && current.parent !== current ? current.parent : null;
+          if (next) void next.document;
+        } catch (_) { next = null; }
+        if (!next) break;
+        current = next;
+      }
+      return out;
+    }
+
+    _read(name) {
+      for (const candidate of this._roots()) {
+        try { if (candidate && candidate[name] != null) return candidate[name]; } catch (_) {}
+      }
+      return null;
+    }
+
+    _eventEmitter() {
+      for (const candidate of this._roots()) {
+        try {
+          if (candidate && candidate.game && typeof candidate.game.on === 'function') return candidate.game;
+        } catch (_) {}
+      }
+      return null;
+    }
+
+    _onAnnouncement(payload) {
+      const raw = payload && typeof payload === 'object' ? payload : {};
+      const id = cleanText(raw.name || raw.event || raw.id || raw.type || '', 160);
+      if (!id) return;
+      const row = {
+        id,
+        name: cleanText(raw.name || id, 160) || id,
+        map: cleanText(raw.map || '', 120) || null,
+        x: finite(raw.x),
+        y: finite(raw.y),
+        active: raw.live === false || raw.active === false ? false : true,
+        source: 'game-event',
+        observedAt: nowIso(),
+        observedAtMs: Date.now()
+      };
+      this.announcements.set(id, row);
+      this.knownEvents.set(id, row);
+      this._persistPreferences();
+      if (this.logger) this.logger.info('Encounter-Event erkannt', row);
+    }
+
+    start(context = {}) {
+      this.moduleActive = true;
+      this.scope = context.scope || null;
+      this.heartbeat = typeof context.heartbeat === 'function' ? context.heartbeat : null;
+      if (this.scope && typeof this.scope.interval === 'function') {
+        this.scope.interval('encounter-tick', () => this.tick(), this.config.tickMs, { immediate: false });
+      }
+      const emitter = this._eventEmitter();
+      if (emitter) {
+        const handler = payload => this._onAnnouncement(payload);
+        try {
+          emitter.on('event', handler);
+          if (this.scope && typeof this.scope.cleanup === 'function') {
+            this.scope.cleanup('encounter-game-event', () => {
+              try {
+                if (typeof emitter.off === 'function') emitter.off('event', handler);
+                else if (typeof emitter.removeListener === 'function') emitter.removeListener('event', handler);
+              } catch (_) {}
+            });
+          }
+        } catch (_) {}
+      }
+      return this.status();
+    }
+
+    stop(reason = 'ENCOUNTER_MODULE_STOP') {
+      this.stopAutonomy(reason);
+      this.moduleActive = false;
+      this.scope = null;
+      this.heartbeat = null;
+      return this.status();
+    }
+
+    _serverEvents() {
+      const S = this._read('S');
+      if (!S || typeof S !== 'object') return [];
+      const rows = [];
+      for (const [id, raw] of Object.entries(S)) {
+        if (!raw || typeof raw !== 'object') continue;
+        const active = bool(raw.live) || bool(raw.active) || bool(raw.running);
+        const looksEvent = active || raw.map != null || raw.x != null || raw.y != null;
+        if (!looksEvent) continue;
+        rows.push({
+          id: cleanText(id, 160),
+          name: cleanText(raw.name || id, 160) || cleanText(id, 160),
+          map: cleanText(raw.map || '', 120) || null,
+          x: finite(raw.x),
+          y: finite(raw.y),
+          active,
+          source: 'server-state',
+          observedAt: nowIso(),
+          observedAtMs: Date.now()
+        });
+      }
+      return rows;
+    }
+
+    _visibleBosses() {
+      const monsters = this.game && typeof this.game.visibleMonsters === 'function' ? this.game.visibleMonsters() : [];
+      return (monsters || []).filter(row => {
+        if (!row || !row.mtype) return false;
+        const def = this.game && typeof this.game.monsterDefinition === 'function' ? this.game.monsterDefinition(row.mtype) : null;
+        return !!(def && def.boss === true);
+      });
+    }
+
+    _bossCatalog() {
+      const G = this._read('G');
+      const defs = G && G.monsters && typeof G.monsters === 'object' ? G.monsters : {};
+      const visible = this._visibleBosses();
+      const visibleByType = new Map();
+      for (const row of visible) {
+        const key = String(row.mtype);
+        const current = visibleByType.get(key);
+        if (!current || Number(row.distance || Infinity) < Number(current.distance || Infinity)) visibleByType.set(key, row);
+      }
+      const rows = [];
+      for (const [id, raw] of Object.entries(defs)) {
+        if (!raw || raw.boss !== true) continue;
+        const seen = visibleByType.get(String(id)) || null;
+        rows.push({
+          kind: 'boss',
+          id: String(id),
+          name: cleanText(raw.name || id, 160) || String(id),
+          enabled: !this.disabled.boss.has(String(id)),
+          active: !!seen,
+          visible: !!seen,
+          map: seen && seen.map || null,
+          x: seen && finite(seen.x),
+          y: seen && finite(seen.y),
+          distance: seen && finite(seen.distance),
+          cooperative: raw.cooperative === true,
+          hp: seen && finite(seen.hp),
+          maxHp: seen && finite(seen.maxHp),
+          source: seen ? 'live-visible' : 'game-data'
+        });
+      }
+      rows.sort((a, b) => Number(b.active) - Number(a.active) || a.name.localeCompare(b.name));
+      return rows;
+    }
+
+    _eventCatalog() {
+      const now = Date.now();
+      const merged = new Map();
+      for (const [id, row] of this.knownEvents.entries()) merged.set(id, { ...clone(row), active: false, source: 'known' });
+      for (const row of this._serverEvents()) {
+        merged.set(row.id, { ...(merged.get(row.id) || {}), ...row });
+        this.knownEvents.set(row.id, clone(row));
+      }
+      for (const [id, row] of this.announcements.entries()) {
+        const fresh = now - Number(row.observedAtMs || 0) <= this.config.eventTtlMs;
+        merged.set(id, { ...(merged.get(id) || {}), ...clone(row), active: row.active !== false && fresh });
+      }
+      const rows = [];
+      for (const [id, raw] of merged.entries()) {
+        rows.push({
+          kind: 'event',
+          id,
+          name: cleanText(raw.name || id, 160) || id,
+          enabled: !this.disabled.event.has(id),
+          active: raw.active === true,
+          map: raw.map || null,
+          x: finite(raw.x),
+          y: finite(raw.y),
+          source: raw.source || 'known',
+          observedAt: raw.observedAt || null
+        });
+      }
+      this._persistPreferences();
+      rows.sort((a, b) => Number(b.active) - Number(a.active) || a.name.localeCompare(b.name));
+      return rows;
+    }
+
+    catalog() {
+      return { schemaVersion: 1, bosses: this._bossCatalog(), events: this._eventCatalog(), defaultEnabled: true };
+    }
+
+    setEnabled(kind, id, enabled) {
+      const key = String(kind || '').toLowerCase();
+      const name = cleanText(id, 160);
+      if (!['boss', 'event'].includes(key) || !name) return { accepted: false, reason: 'ENCOUNTER_PREFERENCE_INVALID' };
+      if (enabled === false) this.disabled[key].add(name);
+      else this.disabled[key].delete(name);
+      this._persistPreferences();
+      return { accepted: true, kind: key, id: name, enabled: !this.disabled[key].has(name) };
+    }
+
+    setAll(kind, enabled) {
+      const key = String(kind || '').toLowerCase();
+      if (!['boss', 'event'].includes(key)) return { accepted: false, reason: 'ENCOUNTER_KIND_INVALID' };
+      const rows = key === 'boss' ? this._bossCatalog() : this._eventCatalog();
+      if (enabled === false) for (const row of rows) this.disabled[key].add(row.id);
+      else this.disabled[key].clear();
+      this._persistPreferences();
+      return { accepted: true, kind: key, enabled: enabled !== false, count: rows.length };
+    }
+
+    preferredTask() {
+      const catalog = this.catalog();
+      const event = catalog.events.find(row => row.active && row.enabled);
+      if (event) return { taskType: 'EVENT', encounter: clone(event) };
+      const boss = catalog.bosses.find(row => row.active && row.enabled);
+      if (boss) return { taskType: 'BOSS', encounter: clone(boss) };
+      return null;
+    }
+
+    _monsterTypeFor(row) {
+      if (!row) return null;
+      if (row.kind === 'boss') return row.id;
+      const def = this.game && typeof this.game.monsterDefinition === 'function' ? this.game.monsterDefinition(row.id) : null;
+      return def ? row.id : null;
+    }
+
+    plan(options = {}) {
+      this.metrics.plans += 1;
+      const catalog = this.catalog();
+      const requested = cleanText(options.taskType || this.session && this.session.taskType || '', 40).toUpperCase();
+      const candidates = requested === 'BOSS'
+        ? catalog.bosses.filter(row => row.active && row.enabled)
+        : requested === 'EVENT'
+          ? catalog.events.filter(row => row.active && row.enabled)
+          : [...catalog.events.filter(row => row.active && row.enabled), ...catalog.bosses.filter(row => row.active && row.enabled)];
+      const selected = candidates[0] || null;
+      if (!selected) {
+        this.lastPlan = { state: 'WAITING', reason: 'NO_ENABLED_ACTIVE_ENCOUNTER', taskType: requested || null, selected: null };
+        return clone(this.lastPlan);
+      }
+      const monsterType = this._monsterTypeFor(selected);
+      const visible = monsterType && this.game && typeof this.game.visibleMonsters === 'function'
+        ? this.game.visibleMonsters({ type: monsterType })
+        : [];
+      const target = (visible || []).sort((a, b) => Number(a.distance || Infinity) - Number(b.distance || Infinity))[0] || null;
+      const hp = finite(target && target.hp);
+      const maxHp = finite(target && (target.maxHp || target.max_hp));
+      const ratio = hp != null && maxHp != null && maxHp > 0 ? hp / maxHp : null;
+      const phase = ratio == null ? null : ratio > 0.75 ? 1 : ratio > 0.5 ? 2 : ratio > 0.25 ? 3 : 4;
+      this.lastPlan = {
+        state: 'READY',
+        reason: 'ENCOUNTER_ACTIVE',
+        taskType: selected.kind === 'event' ? 'EVENT' : 'BOSS',
+        selected: clone(selected),
+        monsterType,
+        location: { map: selected.map || target && target.map || null, x: finite(selected.x), y: finite(selected.y) },
+        visibleTargetId: target && target.id || null,
+        visible: !!target,
+        phase,
+        hpRatio: ratio
+      };
+      return clone(this.lastPlan);
+    }
+
+    configureGroup(options = {}) {
+      if (!this.session) return { changed: false, reason: 'ENCOUNTER_SESSION_NOT_ACTIVE' };
+      this.session.groupLeaderName = cleanText(options.groupLeaderName || '', 120) || null;
+      this.session.groupMemberNames = [...new Set((Array.isArray(options.groupMemberNames) ? options.groupMemberNames : []).map(String))].sort();
+      return { changed: true, groupLeaderName: this.session.groupLeaderName, groupMemberNames: clone(this.session.groupMemberNames) };
+    }
+
+    startAutonomy(options = {}) {
+      if (!this.moduleActive) return { accepted: false, reason: 'ENCOUNTER_MODULE_NOT_ACTIVE' };
+      if (this.suspendedReason) return { accepted: false, reason: this.suspendedReason };
+      const taskType = cleanText(options.taskType || '', 40).toUpperCase();
+      if (!['BOSS', 'EVENT'].includes(taskType)) return { accepted: false, reason: 'ENCOUNTER_TASK_TYPE_INVALID' };
+      this.autonomyEnabled = true;
+      this.session = {
+        owner: cleanText(options.owner || 'manual', 80) || 'manual',
+        taskType,
+        groupLeaderName: cleanText(options.groupLeaderName || '', 120) || null,
+        groupMemberNames: [...new Set((Array.isArray(options.groupMemberNames) ? options.groupMemberNames : []).map(String))].sort(),
+        startedAt: nowIso()
+      };
+      return { accepted: true, status: this.status() };
+    }
+
+    _ownedMovement() {
+      const status = this.movement && typeof this.movement.status === 'function' ? this.movement.status() : null;
+      const order = status && (status.activeOrder || status.active);
+      return order && String(order.owner || '').startsWith('encounter-h23') ? order : null;
+    }
+
+    stopAutonomy(reason = 'ENCOUNTER_AUTONOMY_STOP') {
+      const owner = this.session && this.session.owner;
+      this.autonomyEnabled = false;
+      if (this.combat && typeof this.combat.status === 'function') {
+        const status = this.combat.status();
+        if (status && status.session && String(status.session.owner || '').startsWith('encounter-h23')) {
+          try { this.combat.stopSession(reason); } catch (_) {}
+        }
+      }
+      if (this._ownedMovement() && this.movement && typeof this.movement.cancel === 'function') {
+        try { this.movement.cancel(reason); } catch (_) {}
+      }
+      this.session = null;
+      this.lastAction = { at: nowIso(), type: 'STOP', reason: cleanText(reason, 200), owner: owner || null };
+      return this.status();
+    }
+
+    resetSafety(reason = 'ENCOUNTER_EXPLICIT_RESET') {
+      this.suspendedReason = null;
+      this.lastAction = { at: nowIso(), type: 'RESET', reason: cleanText(reason, 200) };
+      return this.status();
+    }
+
+    _suspend(reason) {
+      this.suspendedReason = cleanText(reason || 'ENCOUNTER_SUSPENDED', 240);
+      this.metrics.suspensions += 1;
+      this.stopAutonomy(this.suspendedReason);
+      return { state: 'SUSPENDED', reason: this.suspendedReason };
+    }
+
+    tick() {
+      this.metrics.ticks += 1;
+      if (this.heartbeat) {
+        try { this.heartbeat({ phase: 'encounter', enabled: this.autonomyEnabled, taskType: this.session && this.session.taskType || null }); } catch (_) {}
+      }
+      if (!this.moduleActive || !this.autonomyEnabled || !this.session) return { state: 'IDLE', reason: 'ENCOUNTER_AUTONOMY_DISABLED' };
+      if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason };
+      if (this.canAct('encounter') !== true) return { state: 'BLOCKED', reason: 'ENCOUNTER_RUNTIME_ACTION_BLOCKED' };
+
+      const game = this.game && typeof this.game.snapshot === 'function' ? this.game.snapshot() : null;
+      const character = game && game.character;
+      if (!character || character.rip === true) return { state: 'BLOCKED', reason: character && character.rip ? 'CHARACTER_DEAD' : 'CHARACTER_UNAVAILABLE' };
+      if (String(character.ctype || '').toLowerCase() === 'merchant') return { state: 'OBSERVER_ONLY', reason: 'MERCHANT_NO_ENCOUNTER_COMBAT' };
+
+      const plan = this.plan({ taskType: this.session.taskType });
+      if (!plan || plan.state !== 'READY') return plan;
+
+      const combatStatus = this.combat && typeof this.combat.status === 'function' ? this.combat.status() : null;
+      const combatSession = combatStatus && combatStatus.session;
+      if (combatStatus && combatStatus.lastSession && String(combatStatus.lastSession.owner || '').startsWith('encounter-h23')
+          && combatStatus.lastSession.state === 'UNKNOWN') {
+        return this._suspend(combatStatus.lastSession.reason || 'ENCOUNTER_COMBAT_UNKNOWN');
+      }
+
+      if (plan.monsterType && plan.visible) {
+        if (!combatSession) {
+          const definition = this.game && typeof this.game.monsterDefinition === 'function'
+            ? this.game.monsterDefinition(plan.monsterType)
+            : null;
+          const started = this.combat.startSession({
+            owner: 'encounter-h23:' + plan.taskType.toLowerCase(),
+            monsterType: plan.monsterType,
+            maxAcquireDistance: this.config.approachDistance,
+            maxAttackToHpRatio: this.config.maxAttackToHpRatio,
+            allowContested: !!(definition && definition.cooperative === true),
+            partyAssist: true,
+            kiting: false,
+            leaderOwnedPulls: true,
+            groupLeaderName: this.session.groupLeaderName,
+            groupMemberNames: this.session.groupMemberNames
+          });
+          if (!started || started.accepted !== true) return { state: 'BLOCKED', reason: started && started.reason || 'ENCOUNTER_COMBAT_START_REJECTED' };
+          this.metrics.combatStarts += 1;
+          this.lastAction = { at: nowIso(), type: 'COMBAT_START', encounter: plan.selected.id, monsterType: plan.monsterType };
+        } else if (String(combatSession.owner || '').startsWith('encounter-h23') && typeof this.combat.configureGroup === 'function') {
+          this.combat.configureGroup({
+            groupLeaderName: this.session.groupLeaderName,
+            groupMemberNames: this.session.groupMemberNames
+          });
+        }
+        return { state: 'ENGAGED', reason: 'ENCOUNTER_VISIBLE_COMBAT', plan };
+      }
+
+      const location = plan.location || {};
+      const sameMap = !location.map || String(location.map) === String(character.map || '');
+      const distance = sameMap && location.x != null && location.y != null && finite(character.x) != null && finite(character.y) != null
+        ? Math.hypot(Number(character.x) - Number(location.x), Number(character.y) - Number(location.y))
+        : null;
+      if ((!sameMap || distance == null || distance > 90) && !this._ownedMovement()) {
+        const destination = location.map && location.x != null && location.y != null
+          ? { map: location.map, x: location.x, y: location.y }
+          : location.map || plan.monsterType;
+        if (destination) {
+          const moved = this.movement.smartMove(destination, { owner: 'encounter-h23-travel' });
+          if (moved && moved.accepted === true) {
+            this.metrics.travelOrders += 1;
+            this.lastAction = { at: nowIso(), type: 'TRAVEL', encounter: plan.selected.id, destination: clone(destination) };
+            return { state: 'TRAVELLING', reason: 'ENCOUNTER_TRAVEL', plan };
+          }
+          if (moved && moved.state === 'UNKNOWN') return this._suspend(moved.reason || 'ENCOUNTER_MOVEMENT_UNKNOWN');
+        }
+      }
+      return { state: 'WAITING', reason: 'ENCOUNTER_TARGET_NOT_VISIBLE', plan };
+    }
+
+    status() {
+      return {
+        schemaVersion: 1,
+        moduleActive: this.moduleActive,
+        autonomyEnabled: this.autonomyEnabled,
+        suspended: !!this.suspendedReason,
+        suspendedReason: this.suspendedReason,
+        session: clone(this.session),
+        lastPlan: clone(this.lastPlan),
+        lastAction: clone(this.lastAction),
+        catalog: this.catalog(),
+        metrics: clone(this.metrics),
+        policies: {
+          allNewBossesAndEventsEnabledByDefault: true,
+          liveStateBeatsPersistedKnowledge: true,
+          unknownSuspendsWithoutBlindRetry: true
+        }
+      };
+    }
+  }
+
+  ns.EncounterController = EncounterController;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+
+(function (root) {
+  'use strict';
+
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns) throw new Error('ALBOT_INTERNALS_MISSING');
+
+  const clone = ns.helpers.clone;
+  const cleanText = ns.helpers.cleanText;
+
   class FullAutonomyController {
     constructor(options = {}) {
       this.root = options.root || root;
@@ -9097,7 +9604,8 @@
         lifecycle: false,
         farming: false,
         economy: false,
-        partyLogistics: false
+        partyLogistics: false,
+        encounters: false
       };
       this.config = {
         taskType: 'FARM',
@@ -9203,6 +9711,9 @@
         if (this.started.lifecycle) {
           try { runtime.lifecycle.stopAutonomy(reason); } catch (_) {}
         }
+        if (this.started.encounters && runtime.encounters) {
+          try { runtime.encounters.stopAutonomy(reason); } catch (_) {}
+        }
       }
       if (this.tickResourceId && this.scope && typeof this.scope.cancel === 'function') {
         try { this.scope.cancel(this.tickResourceId, reason); } catch (_) {}
@@ -9211,7 +9722,7 @@
       this.enabled = false;
       this.desiredCharacterNames = [];
       this.lifecycleArmed = false;
-      this.started = { lifecycle: false, farming: false, economy: false, partyLogistics: false };
+      this.started = { lifecycle: false, farming: false, economy: false, partyLogistics: false, encounters: false };
       this.lastDecision = { at: new Date().toISOString(), type: 'STOP', reason: cleanText(reason, 200) };
       return this.status();
     }
@@ -9500,9 +10011,14 @@
         const status = this.runtime.partyLogistics.status();
         if (this.started.partyLogistics && status && status.autonomyEnabled === true) this.runtime.partyLogistics.stopAutonomy(reason);
       } catch (_) {}
+      try {
+        const status = this.runtime.encounters && this.runtime.encounters.status ? this.runtime.encounters.status() : null;
+        if (this.started.encounters && status && status.autonomyEnabled === true) this.runtime.encounters.stopAutonomy(reason);
+      } catch (_) {}
       this.started.farming = false;
       this.started.economy = false;
       this.started.partyLogistics = false;
+      this.started.encounters = false;
     }
 
     _recoveryPlan(readiness) {
@@ -9537,7 +10053,49 @@
       const localName = String(local.name);
       const ctype = String(local.ctype || '').toLowerCase();
       const selected = new Set(plan && plan.selected ? plan.selected.memberNames : []);
-      const shouldFarm = ctype !== 'merchant' && selected.has(localName);
+      const encounterTask = ['BOSS', 'EVENT'].includes(String(plan && plan.taskType || '').toUpperCase());
+      const shouldEncounter = encounterTask && ctype !== 'merchant' && selected.has(localName);
+      const shouldFarm = !encounterTask && ctype !== 'merchant' && selected.has(localName);
+
+      if (encounterTask) {
+        const farmStatus = this.runtime.farmIntelligence.status();
+        if (farmStatus && farmStatus.active) {
+          const owner = farmStatus.session ? String(farmStatus.session.owner || '') : '';
+          if (owner && owner !== 'full-autonomy') return { ok: false, reason: 'FULL_AUTONOMY_FOREIGN_FARM_INTELLIGENCE_OWNERSHIP' };
+          try { this.runtime.farmIntelligence.stopAutonomy('FULL_AUTONOMY_ENCOUNTER_PRIORITY'); } catch (_) {}
+          this.started.farming = false;
+        }
+        const encounter = this.runtime.encounters;
+        const encounterStatus = encounter && encounter.status ? encounter.status() : null;
+        if (!encounter || !encounterStatus) return { ok: false, reason: 'FULL_AUTONOMY_ENCOUNTER_CONTROLLER_UNAVAILABLE' };
+        if (encounterStatus.suspended) return { ok: false, reason: encounterStatus.suspendedReason || 'FULL_AUTONOMY_ENCOUNTER_SUSPENDED' };
+        if (shouldEncounter) {
+          if (encounterStatus.autonomyEnabled !== true) {
+            const started = encounter.startAutonomy({
+              owner: 'full-autonomy',
+              taskType: String(plan.taskType).toUpperCase(),
+              groupLeaderName: plan && plan.leaderName || null,
+              groupMemberNames: plan && plan.selected ? plan.selected.memberNames : []
+            });
+            if (!started || started.accepted !== true) return { ok: false, reason: started && started.reason || 'FULL_AUTONOMY_ENCOUNTER_START_REJECTED' };
+          } else if (typeof encounter.configureGroup === 'function') {
+            encounter.configureGroup({
+              groupLeaderName: plan && plan.leaderName || null,
+              groupMemberNames: plan && plan.selected ? plan.selected.memberNames : []
+            });
+          }
+          this.started.encounters = true;
+        } else if (encounterStatus.autonomyEnabled === true && this.started.encounters) {
+          try { encounter.stopAutonomy('FULL_AUTONOMY_NOT_SELECTED_FOR_ENCOUNTER'); } catch (_) {}
+          this.started.encounters = false;
+        }
+        return { ok: true, shouldFarm: false, shouldEncounter, selected: [...selected].sort() };
+      }
+
+      if (this.started.encounters && this.runtime.encounters) {
+        try { this.runtime.encounters.stopAutonomy('FULL_AUTONOMY_RETURN_TO_BASE_TASK'); } catch (_) {}
+        this.started.encounters = false;
+      }
       const status = this.runtime.farmIntelligence.status();
       const sessionOwner = status && status.session ? String(status.session.owner || '') : '';
       const fullAutonomyOwns = status && status.active && sessionOwner === 'full-autonomy';
@@ -9685,7 +10243,11 @@
           };
         }
 
-        let plan = this.strategy.optimizeTask({ type: this.config.taskType });
+        const encounterPriority = this.runtime.encounters && typeof this.runtime.encounters.preferredTask === 'function'
+          ? this.runtime.encounters.preferredTask()
+          : null;
+        const effectiveTaskType = encounterPriority && encounterPriority.taskType || this.config.taskType;
+        let plan = this.strategy.optimizeTask({ type: effectiveTaskType });
         this.lastPlan = clone(plan);
         if (!plan || plan.status !== 'SELECTION_READY') {
           this.strategy.recordTraining(false);
@@ -9728,7 +10290,7 @@
           if (!rotationReadiness || rotationReadiness.ready !== true) {
             const fallbackPlan = readiness.online.length === 4
               ? this.strategy.optimizeTask({
-                type: this.config.taskType,
+                type: effectiveTaskType,
                 allowedCharacterNames: readiness.online.slice()
               })
               : null;
@@ -9851,7 +10413,7 @@
           local: local.name,
           localRole: String(local.ctype || '').toLowerCase() === 'merchant'
             ? merchant.owner
-            : (combat.shouldFarm ? 'combat-farm' : 'standby'),
+            : (combat.shouldEncounter ? 'combat-encounter' : (combat.shouldFarm ? 'combat-farm' : 'standby')),
           taskType: plan.taskType,
           executionMembers: plan.selected.memberNames,
           supportMembers: plan.supportMemberNames,
@@ -18916,6 +19478,742 @@
   const clone = ns.helpers.clone;
   const cleanText = ns.helpers.cleanText;
 
+  function finite(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function median(values) {
+    const rows = values.map(Number).filter(Number.isFinite).sort((a, b) => a - b);
+    if (!rows.length) return null;
+    const middle = Math.floor(rows.length / 2);
+    return rows.length % 2 ? rows[middle] : (rows[middle - 1] + rows[middle]) / 2;
+  }
+
+  function percentile(values, p) {
+    const rows = values.map(Number).filter(Number.isFinite).sort((a, b) => a - b);
+    if (!rows.length) return null;
+    const index = Math.max(0, Math.min(rows.length - 1, Math.round((rows.length - 1) * p)));
+    return rows[index];
+  }
+
+  class ALDataMarketIntelligence {
+    constructor(options = {}) {
+      this.root = options.root || root;
+      this.logger = options.logger || null;
+      this.storage = options.storage || null;
+      this.game = options.game || null;
+      this.trade = options.trade || null;
+      this.baseUrl = 'https://aldata.earthiverse.ca';
+      this.moduleActive = false;
+      this.scope = null;
+      this.snapshot = null;
+      this.history = {};
+      this.lastError = null;
+      this.config = {
+        refreshMs: Math.max(60000, Math.min(3600000, Number(options.refreshMs) || 300000)),
+        historyDays: Math.max(7, Math.min(365, Number(options.historyDays) || 90)),
+        maxHistoryPerItem: Math.max(24, Math.min(2000, Number(options.maxHistoryPerItem) || 480))
+      };
+      this._loadHistory();
+    }
+
+    _key() { return 'albot:market-intelligence-history:v1'; }
+
+    _loadHistory() {
+      if (!this.storage || typeof this.storage.get !== 'function') return;
+      try {
+        const raw = this.storage.get(this._key());
+        const value = raw ? JSON.parse(raw) : null;
+        this.history = value && typeof value.items === 'object' ? value.items : {};
+      } catch (_) { this.history = {}; }
+    }
+
+    _saveHistory() {
+      if (!this.storage || typeof this.storage.set !== 'function') return;
+      try { this.storage.set(this._key(), JSON.stringify({ schemaVersion: 1, items: this.history })); } catch (_) {}
+    }
+
+    start(context = {}) {
+      this.moduleActive = true;
+      this.scope = context.scope || null;
+      if (this.scope && typeof this.scope.interval === 'function') {
+        this.scope.interval('aldata-market-refresh', () => this.refresh(), this.config.refreshMs, { immediate: true });
+      }
+      return this.status();
+    }
+
+    stop() {
+      this.moduleActive = false;
+      this.scope = null;
+      return this.status();
+    }
+
+    _timestamp(raw, fallbackMs) {
+      for (const key of ['lastSeen', 'last_seen', 'updatedAt', 'updated_at', 'lastUpdate', 'date', 'timestamp']) {
+        const value = raw && raw[key];
+        if (value == null) continue;
+        const numeric = Number(value);
+        if (Number.isFinite(numeric) && numeric > 1000000000) return numeric < 100000000000 ? numeric * 1000 : numeric;
+        const parsed = Date.parse(String(value));
+        if (Number.isFinite(parsed)) return parsed;
+      }
+      return fallbackMs;
+    }
+
+    _walk(value, context, out, fetchedAtMs, depth = 0) {
+      if (depth > 9 || value == null) return;
+      if (Array.isArray(value)) {
+        for (const row of value) this._walk(row, context, out, fetchedAtMs, depth + 1);
+        return;
+      }
+      if (typeof value !== 'object') return;
+      const owner = cleanText(value.owner || value.character || value.player || value.merchant || context.owner || '', 120) || null;
+      const seenAtMs = this._timestamp(value, context.seenAtMs || fetchedAtMs);
+      const name = cleanText(value.name || value.item || value.itemName || '', 160);
+      const price = finite(value.price);
+      if (name && price != null && price > 0) {
+        out.push({
+          itemName: name,
+          level: Math.max(0, Math.floor(finite(value.level) || 0)),
+          price,
+          quantity: Math.max(1, Math.floor(finite(value.q != null ? value.q : value.quantity) || 1)),
+          buying: value.b === true || value.buying === true || String(value.type || '').toLowerCase() === 'buy',
+          owner,
+          seenAtMs,
+          source: 'aldata'
+        });
+      }
+      for (const [key, child] of Object.entries(value)) {
+        if (['price', 'level', 'quantity', 'q'].includes(key)) continue;
+        this._walk(child, { owner, seenAtMs }, out, fetchedAtMs, depth + 1);
+      }
+    }
+
+    _recordHistory(listings, fetchedAtMs) {
+      const groups = new Map();
+      for (const row of listings) {
+        const key = row.itemName + '|' + String(row.level || 0);
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(row);
+      }
+      const cutoff = fetchedAtMs - this.config.historyDays * 86400000;
+      for (const [key, rows] of groups.entries()) {
+        const asks = rows.filter(row => !row.buying).map(row => row.price);
+        const bids = rows.filter(row => row.buying).map(row => row.price);
+        const sample = {
+          atMs: fetchedAtMs,
+          asks: asks.length,
+          bids: bids.length,
+          askMedian: median(asks),
+          bidMedian: median(bids),
+          bestAsk: asks.length ? Math.min(...asks) : null,
+          bestBid: bids.length ? Math.max(...bids) : null
+        };
+        const history = Array.isArray(this.history[key]) ? this.history[key] : [];
+        history.push(sample);
+        this.history[key] = history.filter(row => Number(row.atMs) >= cutoff).slice(-this.config.maxHistoryPerItem);
+      }
+      this._saveHistory();
+    }
+
+    async refresh() {
+      if (!this.moduleActive) return { accepted: false, reason: 'MARKET_INTELLIGENCE_MODULE_NOT_ACTIVE' };
+      const fetchFn = this.root && typeof this.root.fetch === 'function' ? this.root.fetch.bind(this.root) : null;
+      if (!fetchFn) return { accepted: false, reason: 'MARKET_INTELLIGENCE_FETCH_UNAVAILABLE' };
+      const fetchedAtMs = Date.now();
+      try {
+        const response = await fetchFn(this.baseUrl + '/merchants', { method: 'GET', cache: 'no-store', credentials: 'omit' });
+        if (!response || response.ok !== true) throw new Error('ALDATA_HTTP_' + String(response && response.status || 'FAILED'));
+        const payload = await response.json();
+        const listings = [];
+        this._walk(payload, {}, listings, fetchedAtMs);
+        const deduped = [];
+        const seen = new Set();
+        for (const row of listings) {
+          const key = [row.owner || '', row.itemName, row.level, row.price, row.quantity, row.buying].join('|');
+          if (seen.has(key)) continue;
+          seen.add(key);
+          deduped.push(row);
+        }
+        this.snapshot = {
+          schemaVersion: 1,
+          fetchedAt: new Date(fetchedAtMs).toISOString(),
+          fetchedAtMs,
+          endpoint: this.baseUrl + '/merchants',
+          advisoryOnly: true,
+          listings: deduped
+        };
+        this._recordHistory(deduped, fetchedAtMs);
+        this.lastError = null;
+        if (this.logger) this.logger.info('ALData Markt-Snapshot aktualisiert', { listings: deduped.length });
+        return { accepted: true, listings: deduped.length, fetchedAt: this.snapshot.fetchedAt };
+      } catch (error) {
+        this.lastError = { at: new Date().toISOString(), reason: cleanText(error && error.message || error, 300) };
+        if (this.logger) this.logger.warn('ALData Markt-Refresh fehlgeschlagen', this.lastError);
+        return { accepted: false, reason: this.lastError.reason };
+      }
+    }
+
+    _localMarket(itemName, level) {
+      try {
+        return this.trade && typeof this.trade.marketAnalysis === 'function'
+          ? this.trade.marketAnalysis(itemName, { level })
+          : null;
+      } catch (_) { return null; }
+    }
+
+    item(itemName, options = {}) {
+      const name = cleanText(itemName, 160);
+      const level = Math.max(0, Math.floor(finite(options.level) || 0));
+      if (!name) return { available: false, reason: 'MARKET_ITEM_REQUIRED' };
+      const rows = this.snapshot && Array.isArray(this.snapshot.listings)
+        ? this.snapshot.listings.filter(row => row.itemName === name && Number(row.level || 0) === level)
+        : [];
+      const asks = rows.filter(row => !row.buying).sort((a, b) => a.price - b.price);
+      const bids = rows.filter(row => row.buying).sort((a, b) => b.price - a.price);
+      const local = this._localMarket(name, level);
+      const history = Array.isArray(this.history[name + '|' + level]) ? this.history[name + '|' + level] : [];
+      const historicalAsks = history.map(row => row.askMedian).filter(Number.isFinite);
+      return {
+        available: !!this.snapshot,
+        advisoryOnly: true,
+        itemName: name,
+        level,
+        fetchedAt: this.snapshot && this.snapshot.fetchedAt || null,
+        dataAgeMs: this.snapshot ? Math.max(0, Date.now() - this.snapshot.fetchedAtMs) : null,
+        sampleCount: rows.length,
+        bestAsk: asks[0] ? clone(asks[0]) : null,
+        bestBid: bids[0] ? clone(bids[0]) : null,
+        medianAsk: median(asks.map(row => row.price)),
+        p25Ask: percentile(asks.map(row => row.price), 0.25),
+        p75Ask: percentile(asks.map(row => row.price), 0.75),
+        historicalMedianAsk: median(historicalAsks),
+        localVisibleMarket: clone(local)
+      };
+    }
+
+    priceBand(itemName, options = {}) {
+      const level = Math.max(0, Math.floor(finite(options.level) || 0));
+      const info = this.item(itemName, { level });
+      const definition = this.game && typeof this.game.itemDefinition === 'function' ? this.game.itemDefinition(itemName) : null;
+      const npcValue = finite(definition && definition.g);
+      const floor = npcValue != null && npcValue > 0 ? Math.ceil(npcValue * 1.10) : null;
+      const localAsk = finite(info.localVisibleMarket && info.localVisibleMarket.bestAsk && info.localVisibleMarket.bestAsk.price);
+      const externalAsk = finite(info.bestAsk && info.bestAsk.price);
+      const reference = localAsk || externalAsk || finite(info.medianAsk) || finite(info.historicalMedianAsk);
+      let recommendedAsk = reference == null ? null : Math.max(1, Math.floor(reference - Math.max(1, reference * 0.002)));
+      if (floor != null && recommendedAsk != null) recommendedAsk = Math.max(floor, recommendedAsk);
+      return {
+        ...info,
+        npcValue,
+        minimumSafeAsk: floor,
+        recommendedAsk,
+        confidence: localAsk != null ? 'LIVE_VISIBLE' : info.sampleCount >= 8 ? 'ALDATA_SAMPLE' : info.historicalMedianAsk != null ? 'HISTORY' : 'INSUFFICIENT',
+        liveTruthRequiredBeforeMutation: true
+      };
+    }
+
+    overview(limit = 40) {
+      const rows = this.snapshot && Array.isArray(this.snapshot.listings) ? this.snapshot.listings : [];
+      const counts = new Map();
+      for (const row of rows) {
+        const key = row.itemName + '|' + String(row.level || 0);
+        counts.set(key, (counts.get(key) || 0) + 1);
+      }
+      return [...counts.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, Math.max(1, Math.min(200, Number(limit) || 40)))
+        .map(([key, samples]) => {
+          const split = key.lastIndexOf('|');
+          const itemName = key.slice(0, split);
+          const level = Number(key.slice(split + 1)) || 0;
+          return { ...this.priceBand(itemName, { level }), samples };
+        });
+    }
+
+    status() {
+      return {
+        schemaVersion: 1,
+        moduleActive: this.moduleActive,
+        provider: 'ALData',
+        endpoint: this.baseUrl,
+        readOnly: true,
+        advisoryOnly: true,
+        fetchedAt: this.snapshot && this.snapshot.fetchedAt || null,
+        dataAgeMs: this.snapshot ? Math.max(0, Date.now() - this.snapshot.fetchedAtMs) : null,
+        listings: this.snapshot && this.snapshot.listings ? this.snapshot.listings.length : 0,
+        historyItems: Object.keys(this.history).length,
+        lastError: clone(this.lastError),
+        policies: {
+          externalDataNeverProvesMutationSafety: true,
+          localLiveListingRevalidatedByTradeController: true
+        }
+      };
+    }
+  }
+
+  class MerchantStandController {
+    constructor(options = {}) {
+      this.root = options.root || root;
+      this.logger = options.logger || null;
+      this.game = options.game || null;
+      this.actions = options.actions || null;
+      this.inventory = options.inventory || null;
+      this.market = options.market || null;
+      this.combat = options.combat || null;
+      this.movement = options.movement || null;
+      this.economy = options.economy || null;
+      this.partyLogistics = options.partyLogistics || null;
+      this.canAct = typeof options.canAct === 'function' ? options.canAct : () => true;
+      this.moduleActive = false;
+      this.scope = null;
+      this.autoManage = false;
+      this.pending = null;
+      this.suspendedReason = null;
+      this.lastPlan = null;
+      this.lastAction = null;
+      this.config = { tickMs: 2000, maxListingsPerSession: 20 };
+      this.listingsThisSession = 0;
+    }
+
+    start(context = {}) {
+      this.moduleActive = true;
+      this.scope = context.scope || null;
+      if (this.scope && typeof this.scope.interval === 'function') {
+        this.scope.interval('merchant-stand-tick', () => this.tick(), this.config.tickMs, { immediate: false });
+      }
+      return this.status();
+    }
+
+    stop(reason = 'MERCHANT_STAND_MODULE_STOP') {
+      this.autoManage = false;
+      this.moduleActive = false;
+      this.scope = null;
+      this.lastAction = { at: new Date().toISOString(), type: 'STOP', reason: cleanText(reason, 180) };
+      return this.status();
+    }
+
+    configure(options = {}) {
+      if (options.autoManage != null) this.autoManage = options.autoManage === true;
+      return this.status();
+    }
+
+    resetSafety(reason = 'MERCHANT_STAND_EXPLICIT_RESET') {
+      this.suspendedReason = null;
+      this.pending = null;
+      this.lastAction = { at: new Date().toISOString(), type: 'RESET', reason: cleanText(reason, 180) };
+      return this.status();
+    }
+
+    _rawCharacter() {
+      let current = this.root;
+      for (let depth = 0; depth < 8 && current; depth += 1) {
+        try { if (current.character) return current.character; } catch (_) {}
+        try {
+          if (current.parent && current.parent !== current) current = current.parent;
+          else break;
+        } catch (_) { break; }
+      }
+      return null;
+    }
+
+    _standOpen(character) {
+      return !!(character && (character.stand === true || character.stand != null && character.stand !== false));
+    }
+
+    _safeSellRows() {
+      const plan = this.inventory && typeof this.inventory.plan === 'function' ? this.inventory.plan() : null;
+      return plan && Array.isArray(plan.items) ? plan.items.filter(row => row.disposition === 'SELL' && row.protected !== true) : [];
+    }
+
+    _emptyTradeSlot(character) {
+      const slots = character && character.slots && typeof character.slots === 'object' ? character.slots : {};
+      for (let index = 1; index <= 30; index += 1) {
+        const key = 'trade' + index;
+        if (!slots[key]) return { key, index };
+      }
+      return null;
+    }
+
+    _standItemSlot() {
+      const inv = this.game && typeof this.game.inventorySnapshot === 'function' ? this.game.inventorySnapshot() : null;
+      const row = inv && Array.isArray(inv.items) ? inv.items.find(item => item.name === 'stand0') : null;
+      return row ? Number(row.slot) : null;
+    }
+
+    _busy() {
+      const combat = this.combat && this.combat.status ? this.combat.status() : null;
+      if (combat && combat.active) return 'COMBAT_ACTIVE';
+      const movement = this.movement && this.movement.status ? this.movement.status() : null;
+      if (movement && (movement.active || movement.activeOrder)) return 'MOVEMENT_ACTIVE';
+      const economy = this.economy && this.economy.status ? this.economy.status() : null;
+      if (economy && (economy.currentAction || economy.autonomyEnabled)) return 'ECONOMY_ACTIVE';
+      const logistics = this.partyLogistics && this.partyLogistics.status ? this.partyLogistics.status() : null;
+      if (logistics && (logistics.currentAction || logistics.autonomyEnabled)) return 'PARTY_LOGISTICS_ACTIVE';
+      return null;
+    }
+
+    plan() {
+      const character = this._rawCharacter();
+      if (!character || String(character.ctype || '').toLowerCase() !== 'merchant') {
+        return this.lastPlan = { state: 'BLOCKED', reason: 'MERCHANT_STAND_REQUIRES_MERCHANT', selected: null };
+      }
+      if (character.rip === true) return this.lastPlan = { state: 'BLOCKED', reason: 'CHARACTER_DEAD', selected: null };
+      const busy = this._busy();
+      if (busy) return this.lastPlan = { state: 'BLOCKED', reason: busy, selected: null };
+      if (!this._standOpen(character)) {
+        const standSlot = this._standItemSlot();
+        return this.lastPlan = standSlot == null
+          ? { state: 'BLOCKED', reason: 'MERCHANT_STAND_ITEM_MISSING', selected: null }
+          : { state: 'READY', reason: 'MERCHANT_STAND_OPEN_READY', selected: { kind: 'OPEN_STAND', inventorySlot: standSlot } };
+      }
+
+      const tradeSlot = this._emptyTradeSlot(character);
+      if (!tradeSlot) return this.lastPlan = { state: 'IDLE', reason: 'MERCHANT_STAND_FULL', selected: null };
+      for (const row of this._safeSellRows()) {
+        const band = this.market && typeof this.market.priceBand === 'function'
+          ? this.market.priceBand(row.name, { level: Number(row.level) || 0 })
+          : null;
+        const price = finite(band && band.recommendedAsk);
+        if (price == null || price <= 0 || band.confidence === 'INSUFFICIENT') continue;
+        return this.lastPlan = {
+          state: 'READY',
+          reason: 'MERCHANT_STAND_LISTING_READY',
+          selected: {
+            kind: 'LIST',
+            inventorySlot: Number(row.slot),
+            tradeSlot: tradeSlot.key,
+            tradeIndex: tradeSlot.index,
+            itemName: row.name,
+            level: Number(row.level) || 0,
+            quantity: Math.max(1, Math.floor(Number(row.quantity) || 1)),
+            price,
+            priceBand: clone(band)
+          }
+        };
+      }
+      return this.lastPlan = { state: 'IDLE', reason: 'NO_SAFE_SELL_LISTING_WITH_PRICE_SIGNAL', selected: null };
+    }
+
+    _watch(value, pending) {
+      if (!value || typeof value.then !== 'function') {
+        pending.settlement = 'RETURNED';
+        return;
+      }
+      Promise.resolve(value).then(response => {
+        if (this.pending && this.pending.id === pending.id) {
+          pending.settlement = 'RESOLVED';
+          pending.response = response == null ? null : clone(response);
+        }
+      }, error => {
+        if (this.pending && this.pending.id === pending.id) {
+          pending.settlement = 'REJECTED';
+          pending.error = cleanText(error && error.message || error, 300);
+        }
+      }).catch(() => {});
+    }
+
+    _observePending() {
+      if (!this.pending) return null;
+      const character = this._rawCharacter();
+      const pending = this.pending;
+      if (pending.kind === 'OPEN_STAND' && this._standOpen(character)) {
+        this.pending = null;
+        this.lastAction = { at: new Date().toISOString(), type: 'CONFIRMED', kind: pending.kind, evidence: 'LIVE_STAND_OPEN' };
+        return { state: 'CONFIRMED', kind: pending.kind };
+      }
+      if (pending.kind === 'LIST') {
+        const live = character && character.slots && character.slots[pending.tradeSlot];
+        if (live && String(live.name || '') === String(pending.itemName) && Number(live.price) === Number(pending.price)) {
+          this.pending = null;
+          this.listingsThisSession += 1;
+          this.lastAction = { at: new Date().toISOString(), type: 'CONFIRMED', kind: pending.kind, evidence: 'LIVE_TRADE_SLOT' };
+          return { state: 'CONFIRMED', kind: pending.kind };
+        }
+      }
+      if (pending.settlement === 'REJECTED') {
+        this.pending = null;
+        this.lastAction = { at: new Date().toISOString(), type: 'REJECTED', kind: pending.kind, reason: pending.error || 'MERCHANT_STAND_REJECTED' };
+        return { state: 'REJECTED', reason: this.lastAction.reason };
+      }
+      if (Date.now() >= pending.deadlineAtMs) {
+        this.pending = null;
+        this.suspendedReason = 'MERCHANT_STAND_OUTCOME_UNKNOWN';
+        this.autoManage = false;
+        this.lastAction = { at: new Date().toISOString(), type: 'UNKNOWN', kind: pending.kind, reason: this.suspendedReason };
+        return { state: 'UNKNOWN', reason: this.suspendedReason };
+      }
+      return { state: 'PENDING', kind: pending.kind };
+    }
+
+    tick() {
+      const observed = this._observePending();
+      if (observed) return observed;
+      if (!this.moduleActive || !this.autoManage) return { state: 'IDLE', reason: 'MERCHANT_STAND_AUTO_MANAGE_DISABLED' };
+      if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason };
+      if (this.canAct('merchant-stand') !== true) return { state: 'BLOCKED', reason: 'MERCHANT_STAND_RUNTIME_ACTION_BLOCKED' };
+      if (this.listingsThisSession >= this.config.maxListingsPerSession) return { state: 'BLOCKED', reason: 'MERCHANT_STAND_SESSION_BUDGET' };
+      const plan = this.plan();
+      if (!plan || plan.state !== 'READY' || !plan.selected) return plan;
+      const selected = plan.selected;
+      const action = selected.kind === 'OPEN_STAND' ? 'open_stand' : 'trade';
+      const args = selected.kind === 'OPEN_STAND'
+        ? [selected.inventorySlot]
+        : [selected.inventorySlot, selected.tradeIndex, selected.price, selected.quantity];
+      let dispatched;
+      try { dispatched = this.actions.dispatch(action, args); }
+      catch (error) { return { state: 'BLOCKED', reason: cleanText(error && error.message || error, 300) }; }
+      if (!dispatched || dispatched.state !== 'DISPATCHED') {
+        if (dispatched && dispatched.state === 'UNKNOWN') {
+          this.suspendedReason = 'MERCHANT_STAND_DISPATCH_UNKNOWN';
+          this.autoManage = false;
+          return { state: 'UNKNOWN', reason: this.suspendedReason };
+        }
+        return { state: 'REJECTED', reason: dispatched && dispatched.error && dispatched.error.message || 'MERCHANT_STAND_DISPATCH_REJECTED' };
+      }
+      const pending = {
+        id: 'merchant-stand-' + Date.now(),
+        kind: selected.kind,
+        tradeSlot: selected.tradeSlot || null,
+        itemName: selected.itemName || null,
+        price: selected.price || null,
+        deadlineAtMs: Date.now() + 6000,
+        settlement: 'PENDING'
+      };
+      this.pending = pending;
+      this._watch(dispatched.value, pending);
+      this.lastAction = { at: new Date().toISOString(), type: 'DISPATCHED', kind: selected.kind, itemName: selected.itemName || null, price: selected.price || null };
+      return { state: 'DISPATCHED', selected: clone(selected) };
+    }
+
+    status() {
+      return {
+        schemaVersion: 1,
+        moduleActive: this.moduleActive,
+        autoManage: this.autoManage,
+        suspended: !!this.suspendedReason,
+        suspendedReason: this.suspendedReason,
+        pending: clone(this.pending),
+        lastPlan: clone(this.lastPlan),
+        lastAction: clone(this.lastAction),
+        listingsThisSession: this.listingsThisSession,
+        policies: {
+          autoManageDefaultOff: true,
+          onlyExplicitH10SellItems: true,
+          externalMarketDataAdvisoryOnly: true,
+          existingListingsNotAutoRepricedUntilLiveRemovalContractValidated: true,
+          unknownSuspendsWithoutBlindRetry: true
+        }
+      };
+    }
+  }
+
+  ns.ALDataMarketIntelligence = ALDataMarketIntelligence;
+  ns.MerchantStandController = MerchantStandController;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+
+(function (root) {
+  'use strict';
+
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns) throw new Error('ALBOT_INTERNALS_MISSING');
+
+  const clone = ns.helpers.clone;
+  const cleanText = ns.helpers.cleanText;
+
+  class HostTelemetryClient {
+    constructor(options = {}) {
+      this.root = options.root || root;
+      this.logger = options.logger || null;
+      this.runtime = options.runtime || null;
+      this.endpoint = cleanText(options.endpoint || 'http://127.0.0.1:17391/v1/telemetry', 300);
+      this.moduleActive = false;
+      this.scope = null;
+      this.enabled = options.enabled !== false;
+      this.queue = [];
+      this.lastSuccessAt = null;
+      this.lastError = null;
+      this.backoffUntilMs = 0;
+      this.config = {
+        sampleMs: Math.max(1000, Math.min(60000, Number(options.sampleMs) || 5000)),
+        flushMs: Math.max(1000, Math.min(60000, Number(options.flushMs) || 5000)),
+        maxQueue: Math.max(20, Math.min(1000, Number(options.maxQueue) || 240))
+      };
+      this.metrics = { samples: 0, batchesSent: 0, recordsSent: 0, failures: 0, dropped: 0 };
+    }
+
+    start(context = {}) {
+      this.moduleActive = true;
+      this.scope = context.scope || null;
+      if (this.scope && typeof this.scope.interval === 'function') {
+        this.scope.interval('telemetry-sample', () => this.sample(), this.config.sampleMs, { immediate: true });
+        this.scope.interval('telemetry-flush', () => this.flush(), this.config.flushMs, { immediate: false });
+      }
+      return this.status();
+    }
+
+    stop() {
+      this.moduleActive = false;
+      this.scope = null;
+      return this.status();
+    }
+
+    configure(options = {}) {
+      if (options.enabled != null) this.enabled = options.enabled === true;
+      if (options.endpoint != null) this.endpoint = cleanText(options.endpoint, 300);
+      return this.status();
+    }
+
+    _read(name) {
+      try {
+        const controller = this.runtime && this.runtime[name];
+        return controller && typeof controller.status === 'function' ? controller.status() : null;
+      } catch (_) { return null; }
+    }
+
+    sample() {
+      if (!this.moduleActive || !this.enabled || !this.runtime) return null;
+      let game = null;
+      try { game = this.runtime.game.snapshot(); } catch (_) {}
+      const character = game && game.character || null;
+      const full = this._read('fullAutonomy');
+      const encounter = this._read('encounters');
+      const combat = this._read('combat');
+      const farming = this._read('farmIntelligence');
+      const economy = this._read('economy');
+      const observer = this._read('observer');
+      const scheduler = this.runtime.scheduler && this.runtime.scheduler.status ? this.runtime.scheduler.status() : null;
+      const row = {
+        schemaVersion: 1,
+        at: new Date().toISOString(),
+        atMs: Date.now(),
+        runtime: {
+          version: this.runtime.version,
+          runEpoch: this.runtime.runEpoch,
+          running: this.runtime.running === true
+        },
+        character: character ? {
+          name: character.name || null,
+          ctype: character.ctype || null,
+          level: character.level || null,
+          map: character.map || null,
+          x: character.x == null ? null : Number(character.x),
+          y: character.y == null ? null : Number(character.y),
+          hp: character.hp == null ? null : Number(character.hp),
+          maxHp: character.maxHp == null ? null : Number(character.maxHp),
+          mp: character.mp == null ? null : Number(character.mp),
+          maxMp: character.maxMp == null ? null : Number(character.maxMp),
+          gold: character.gold == null ? null : Number(character.gold),
+          rip: character.rip === true
+        } : null,
+        fullAutonomy: full ? {
+          enabled: full.enabled === true,
+          taskType: full.lastDecision && full.lastDecision.taskType || full.config && full.config.taskType || null,
+          state: full.lastDecision && full.lastDecision.state || null,
+          reason: full.lastDecision && full.lastDecision.reason || null
+        } : null,
+        encounter: encounter ? {
+          autonomyEnabled: encounter.autonomyEnabled === true,
+          selected: encounter.lastPlan && encounter.lastPlan.selected && encounter.lastPlan.selected.id || null,
+          taskType: encounter.lastPlan && encounter.lastPlan.taskType || null,
+          phase: encounter.lastPlan && encounter.lastPlan.phase || null,
+          state: encounter.lastPlan && encounter.lastPlan.state || null
+        } : null,
+        combat: combat ? {
+          active: combat.active === true,
+          state: combat.session && combat.session.state || null,
+          targetType: combat.session && combat.session.targetType || null,
+          attacksConfirmed: combat.metrics && combat.metrics.attacksConfirmed || 0,
+          attackUnknown: combat.metrics && combat.metrics.attackUnknown || 0
+        } : null,
+        farming: farming ? {
+          active: farming.active === true,
+          selection: farming.currentSelection && farming.currentSelection.mtype || null,
+          score: farming.currentSelection && farming.currentSelection.score || null
+        } : null,
+        economy: economy ? {
+          autonomyEnabled: economy.autonomyEnabled === true,
+          currentAction: economy.currentAction && economy.currentAction.kind || null,
+          confirmed: economy.metrics && economy.metrics.actionsConfirmed || 0,
+          unknown: economy.metrics && economy.metrics.actionsUnknown || 0
+        } : null,
+        health: observer && observer.summary ? clone(observer.summary) : null,
+        scheduler: scheduler ? { enabled: scheduler.enabled === true, totalResources: scheduler.totalResources } : null
+      };
+      this.queue.push(row);
+      this.metrics.samples += 1;
+      while (this.queue.length > this.config.maxQueue) {
+        this.queue.shift();
+        this.metrics.dropped += 1;
+      }
+      return clone(row);
+    }
+
+    async flush() {
+      if (!this.moduleActive || !this.enabled || !this.queue.length) return { accepted: false, reason: 'TELEMETRY_NOTHING_TO_FLUSH' };
+      if (Date.now() < this.backoffUntilMs) return { accepted: false, reason: 'TELEMETRY_BACKOFF' };
+      const fetchFn = this.root && typeof this.root.fetch === 'function' ? this.root.fetch.bind(this.root) : null;
+      if (!fetchFn) return { accepted: false, reason: 'TELEMETRY_FETCH_UNAVAILABLE' };
+      const batch = this.queue.slice(0, 40);
+      try {
+        const response = await fetchFn(this.endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+          body: JSON.stringify({ schemaVersion: 1, records: batch }),
+          cache: 'no-store',
+          credentials: 'omit'
+        });
+        if (!response || response.ok !== true) throw new Error('TELEMETRY_HTTP_' + String(response && response.status || 'FAILED'));
+        this.queue.splice(0, batch.length);
+        this.metrics.batchesSent += 1;
+        this.metrics.recordsSent += batch.length;
+        this.lastSuccessAt = new Date().toISOString();
+        this.lastError = null;
+        this.backoffUntilMs = 0;
+        return { accepted: true, sent: batch.length };
+      } catch (error) {
+        this.metrics.failures += 1;
+        this.lastError = { at: new Date().toISOString(), reason: cleanText(error && error.message || error, 240) };
+        this.backoffUntilMs = Date.now() + 60000;
+        return { accepted: false, reason: this.lastError.reason };
+      }
+    }
+
+    status() {
+      return {
+        schemaVersion: 1,
+        moduleActive: this.moduleActive,
+        enabled: this.enabled,
+        endpoint: this.endpoint,
+        queueLength: this.queue.length,
+        lastSuccessAt: this.lastSuccessAt,
+        lastError: clone(this.lastError),
+        backoffUntilMs: this.backoffUntilMs,
+        metrics: clone(this.metrics),
+        hostStorageContract: {
+          defaultRoot: 'D:/ALBot/telemetry',
+          shortTerm: 'raw NDJSON',
+          longTerm: 'daily JSON summaries'
+        }
+      };
+    }
+  }
+
+  ns.HostTelemetryClient = HostTelemetryClient;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+
+(function (root) {
+  'use strict';
+
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns) throw new Error('ALBOT_INTERNALS_MISSING');
+
+  const clone = ns.helpers.clone;
+  const cleanText = ns.helpers.cleanText;
+
   function errorDetails(error) {
     return {
       name: cleanText(error && error.name || 'Error', 80),
@@ -22155,7 +23453,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.22.5-h22';
+      this.version = options.version || '0.23.0-h23';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -22442,6 +23740,16 @@
         crossWindow: this.lifecycleTransport,
         gear: this.gear
       });
+      this.encounters = new ns.EncounterController({
+        root: this.root,
+        logger: this.logger,
+        storage: this.storage,
+        game: this.game,
+        movement: this.movement,
+        combat: this.combat,
+        party: this.party,
+        canAct: action => this.actionAllowed(action)
+      });
       this.fullAutonomy = new ns.FullAutonomyController({
         root: this.root,
         logger: this.logger,
@@ -22471,6 +23779,31 @@
       this.merchant.partyLogistics = this.partyLogistics;
       this.merchant.economy = this.economy;
       this.economy.partyLogistics = this.partyLogistics;
+      this.marketIntelligence = new ns.ALDataMarketIntelligence({
+        root: this.root,
+        logger: this.logger,
+        storage: this.storage,
+        game: this.game,
+        trade: this.trade
+      });
+      this.merchantStand = new ns.MerchantStandController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        inventory: this.inventory,
+        market: this.marketIntelligence,
+        combat: this.combat,
+        movement: this.movement,
+        economy: this.economy,
+        partyLogistics: this.partyLogistics,
+        canAct: action => this.actionAllowed(action)
+      });
+      this.telemetry = new ns.HostTelemetryClient({
+        root: this.root,
+        logger: this.logger,
+        runtime: this
+      });
       this.liveTests = new ns.LiveTestRunner({
         runtime: this,
         logger: this.logger,
@@ -22685,6 +24018,42 @@
         start: context => this.accountStrategy.start(context),
         stop: reason => this.accountStrategy.stop(reason),
         status: () => this.accountStrategy.status()
+      });
+
+      this.modules.register({
+        id: 'encounters',
+        title: 'Boss & Event Encounters',
+        version: '0.23.0',
+        start: context => this.encounters.start(context),
+        stop: reason => this.encounters.stop(reason),
+        status: () => this.encounters.status()
+      });
+
+      this.modules.register({
+        id: 'market-intelligence',
+        title: 'Market Intelligence',
+        version: '0.23.0',
+        start: context => this.marketIntelligence.start(context),
+        stop: reason => this.marketIntelligence.stop(reason),
+        status: () => this.marketIntelligence.status()
+      });
+
+      this.modules.register({
+        id: 'merchant-stand',
+        title: 'Merchant Stand',
+        version: '0.23.0',
+        start: context => this.merchantStand.start(context),
+        stop: reason => this.merchantStand.stop(reason),
+        status: () => this.merchantStand.status()
+      });
+
+      this.modules.register({
+        id: 'host-telemetry',
+        title: 'Host Telemetry',
+        version: '0.23.0',
+        start: context => this.telemetry.start(context),
+        stop: reason => this.telemetry.stop(reason),
+        status: () => this.telemetry.status()
       });
 
       this.modules.register({
@@ -27727,6 +29096,10 @@
         lifecycleTransport: this.lifecycleTransport.status(),
         lifecycle: this.lifecycle.status(),
         accountStrategy: this.accountStrategy.status(),
+        encounters: this.encounters.status(),
+        marketIntelligence: this.marketIntelligence.status(),
+        merchantStand: this.merchantStand.status(),
+        telemetry: this.telemetry.status(),
         fullAutonomy: this.fullAutonomy.status(),
         safeUpdater: this.safeUpdater.status(),
         observation: this.observer.status(),
@@ -27767,6 +29140,10 @@
         lifecycleTransport: this.lifecycleTransport.status(),
         lifecycle: this.lifecycle.status(),
         accountStrategy: this.accountStrategy.status(),
+        encounters: this.encounters.status(),
+        marketIntelligence: this.marketIntelligence.status(),
+        merchantStand: this.merchantStand.status(),
+        telemetry: this.telemetry.status(),
         fullAutonomy: this.fullAutonomy.status(),
         safeUpdater: this.safeUpdater.status(),
         observation: this.observer.status(),
@@ -27814,6 +29191,21 @@
         && typeof this.lifecycleTransport.requestRuntimeState === 'function', this.lifecycleTransport.status());
       push('character-lifecycle-controller', !!this.lifecycle.status() && typeof this.lifecycle.plan === 'function' && typeof this.lifecycle.queueStart === 'function' && typeof this.lifecycle.queueRespawn === 'function', this.lifecycle.status());
       push('account-strategy-controller', !!this.accountStrategy.status() && typeof this.accountStrategy.optimizeTask === 'function' && typeof this.accountStrategy.progressionPlan === 'function', this.accountStrategy.status());
+      push('encounter-controller', !!this.encounters.status()
+        && this.encounters.status().policies
+        && this.encounters.status().policies.allNewBossesAndEventsEnabledByDefault === true
+        && typeof this.encounters.catalog === 'function'
+        && typeof this.encounters.setEnabled === 'function', this.encounters.status());
+      push('market-intelligence', !!this.marketIntelligence.status()
+        && this.marketIntelligence.status().readOnly === true
+        && this.marketIntelligence.status().advisoryOnly === true
+        && typeof this.marketIntelligence.priceBand === 'function', this.marketIntelligence.status());
+      push('merchant-stand-controller', !!this.merchantStand.status()
+        && this.merchantStand.status().policies
+        && this.merchantStand.status().policies.autoManageDefaultOff === true, this.merchantStand.status());
+      push('host-telemetry-client', !!this.telemetry.status()
+        && this.telemetry.status().hostStorageContract
+        && this.telemetry.status().hostStorageContract.defaultRoot === 'D:/ALBot/telemetry', this.telemetry.status());
       push('full-autonomy-controller', !!this.fullAutonomy.status() && typeof this.fullAutonomy.startAutonomy === 'function' && typeof this.fullAutonomy.stopAutonomy === 'function', this.fullAutonomy.status());
       const updaterStatus = this.safeUpdater.status();
       push('h22-safe-auto-updater', !!updaterStatus
@@ -29776,6 +31168,131 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
 (function (root) {
   'use strict';
+
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns || !ns.ControlCenter) return;
+
+  const Base = ns.ControlCenter;
+
+  function esc(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
+  }
+
+  class AdvancedControlCenter extends Base {
+    _shell() {
+      let html = super._shell();
+      html = html.replace(
+        '<button class="albot-tab" data-tab="full-autonomy">Full Live</button>',
+        '<button class="albot-tab" data-tab="full-autonomy">Full Live</button><button class="albot-tab" data-tab="encounters">Bosse & Events</button><button class="albot-tab" data-tab="market-intelligence">Markt</button>'
+      );
+      html = html.replace(
+        '<section id="albot-panel-live-test" class="albot-panel"></section>',
+        '<section id="albot-panel-encounters" class="albot-panel"></section><section id="albot-panel-market-intelligence" class="albot-panel"></section><section id="albot-panel-live-test" class="albot-panel"></section>'
+      );
+      return html;
+    }
+
+    _bind() {
+      super._bind();
+      const encounterPanel = this.host.querySelector('#albot-panel-encounters');
+      if (encounterPanel) {
+        encounterPanel.addEventListener('change', event => {
+          const target = event.target;
+          if (!target || !target.dataset || !target.dataset.encounterId) return;
+          this.runtime.encounters.setEnabled(target.dataset.encounterKind, target.dataset.encounterId, target.checked === true);
+          this.renderEncounters();
+        });
+        encounterPanel.addEventListener('click', event => {
+          const target = event.target;
+          if (!target || !target.dataset || !target.dataset.encounterAll) return;
+          this.runtime.encounters.setAll(target.dataset.encounterKind, target.dataset.encounterAll === 'on');
+          this.renderEncounters();
+        });
+      }
+
+      const marketPanel = this.host.querySelector('#albot-panel-market-intelligence');
+      if (marketPanel) {
+        marketPanel.addEventListener('click', async event => {
+          const target = event.target;
+          if (!target || !target.dataset) return;
+          if (target.dataset.marketRefresh === '1') {
+            await this.runtime.marketIntelligence.refresh();
+            this.renderMarketIntelligence();
+          }
+          if (target.dataset.standToggle === '1') {
+            const current = this.runtime.merchantStand.status();
+            this.runtime.merchantStand.configure({ autoManage: current.autoManage !== true });
+            this.renderMarketIntelligence();
+          }
+        });
+      }
+    }
+
+    _tick() {
+      super._tick();
+      if (this.activeTab === 'encounters') this.renderEncounters();
+      if (this.activeTab === 'market-intelligence') this.renderMarketIntelligence();
+    }
+
+    render() {
+      super.render();
+      this.renderEncounters();
+      this.renderMarketIntelligence();
+    }
+
+    renderEncounters() {
+      if (!this.host || !this.runtime.encounters) return;
+      const panel = this.host.querySelector('#albot-panel-encounters');
+      if (!panel) return;
+      const status = this.runtime.encounters.status();
+      const catalog = status.catalog || { bosses: [], events: [] };
+      const renderRows = (kind, rows) => {
+        if (!rows.length) return '<div class="albot-small">Noch keine Einträge erkannt.</div>';
+        return rows.map(row => '<label class="albot-row" style="align-items:flex-start">'
+          + '<input type="checkbox" style="flex:0 0 auto;margin-top:2px" data-encounter-kind="' + esc(kind) + '" data-encounter-id="' + esc(row.id) + '"' + (row.enabled ? ' checked' : '') + '>'
+          + '<span><b>' + esc(row.name || row.id) + '</b> <span class="' + (row.active ? 'albot-ok' : 'albot-muted') + '">' + (row.active ? 'AKTIV' : 'inaktiv') + '</span>'
+          + '<div class="albot-small">' + esc(row.id) + (row.map ? ' · ' + esc(row.map) : '') + ' · ' + esc(row.source || '-') + '</div></span></label>').join('');
+      };
+
+      panel.innerHTML = '<div class="albot-card"><b>Encounter-Steuerung</b>'
+        + '<div class="albot-small" style="margin-top:5px">Neue Bosse und Events sind standardmäßig eingeschaltet. Die Auswahl wird lokal gespeichert.</div>'
+        + '<div class="albot-grid" style="margin-top:8px"><div><span class="albot-k">Autonomie</span><div class="albot-v">' + esc(status.autonomyEnabled ? 'AKTIV' : 'Bereit') + '</div></div>'
+        + '<div><span class="albot-k">Aktueller Plan</span><div class="albot-v">' + esc(status.lastPlan && (status.lastPlan.taskType + ' / ' + (status.lastPlan.selected && status.lastPlan.selected.name || status.lastPlan.reason)) || '-') + '</div></div></div></div>'
+        + '<div class="albot-card"><div class="albot-row"><b style="flex:1">Events</b><button class="albot-btn" data-encounter-kind="event" data-encounter-all="on">Alle an</button><button class="albot-btn" data-encounter-kind="event" data-encounter-all="off">Alle aus</button></div>'
+        + renderRows('event', catalog.events || []) + '</div>'
+        + '<div class="albot-card"><div class="albot-row"><b style="flex:1">Bosse</b><button class="albot-btn" data-encounter-kind="boss" data-encounter-all="on">Alle an</button><button class="albot-btn" data-encounter-kind="boss" data-encounter-all="off">Alle aus</button></div>'
+        + renderRows('boss', catalog.bosses || []) + '</div>';
+    }
+
+    renderMarketIntelligence() {
+      if (!this.host || !this.runtime.marketIntelligence || !this.runtime.merchantStand) return;
+      const panel = this.host.querySelector('#albot-panel-market-intelligence');
+      if (!panel) return;
+      const market = this.runtime.marketIntelligence.status();
+      const stand = this.runtime.merchantStand.status();
+      const telemetry = this.runtime.telemetry ? this.runtime.telemetry.status() : null;
+      const overview = this.runtime.marketIntelligence.overview(12);
+      const rows = overview.map(row => '<tr><td>' + esc(row.itemName) + (row.level ? ' +' + esc(row.level) : '') + '</td><td>' + esc(row.sampleCount || 0) + '</td><td>' + esc(row.bestAsk && row.bestAsk.price || '-') + '</td><td>' + esc(row.bestBid && row.bestBid.price || '-') + '</td><td>' + esc(row.recommendedAsk || '-') + '</td><td>' + esc(row.confidence) + '</td></tr>').join('');
+
+      panel.innerHTML = '<div class="albot-card"><b>Market Intelligence</b><div class="albot-grid" style="margin-top:6px">'
+        + '<div><span class="albot-k">Quelle</span><div class="albot-v">ALData · read-only/advisory</div></div>'
+        + '<div><span class="albot-k">Letzter Snapshot</span><div class="albot-v">' + esc(market.fetchedAt || 'noch keiner') + '</div></div>'
+        + '<div><span class="albot-k">Listings</span><div class="albot-v">' + esc(market.listings) + '</div></div>'
+        + '<div><span class="albot-k">Fehler</span><div class="albot-v">' + esc(market.lastError && market.lastError.reason || '-') + '</div></div></div>'
+        + '<div class="albot-row"><button class="albot-btn" data-market-refresh="1">ALData jetzt aktualisieren</button></div></div>'
+        + '<div class="albot-card"><b>Merchant-Stand</b><div class="albot-small">Automatische Mutationen sind absichtlich standardmäßig AUS. Es werden ausschließlich H10-SELL-Items mit belastbarem Preis-Signal neu gelistet; bestehende Listings werden noch nicht automatisch entfernt/repriced.</div>'
+        + '<div class="albot-row"><button class="albot-btn ' + (stand.autoManage ? 'warn' : '') + '" data-stand-toggle="1">' + (stand.autoManage ? 'Auto-Stand ausschalten' : 'Auto-Stand einschalten') + '</button><span>' + esc(stand.suspendedReason || stand.lastPlan && stand.lastPlan.reason || 'bereit') + '</span></div></div>'
+        + '<div class="albot-card"><b>Preis-Signale</b><div style="overflow:auto;margin-top:6px"><table style="width:100%;border-collapse:collapse"><thead><tr><th align="left">Item</th><th>Samples</th><th>Ask</th><th>Bid</th><th>Empfehlung</th><th>Signal</th></tr></thead><tbody>' + (rows || '<tr><td colspan="6" class="albot-muted">Noch keine Marktdaten.</td></tr>') + '</tbody></table></div></div>'
+        + '<div class="albot-card"><b>Telemetry Host</b><div class="albot-grid" style="margin-top:6px"><div><span class="albot-k">Endpoint</span><div class="albot-v">' + esc(telemetry && telemetry.endpoint || '-') + '</div></div><div><span class="albot-k">SSD-Ziel</span><div class="albot-v">D:/ALBot/telemetry</div></div><div><span class="albot-k">Queue</span><div class="albot-v">' + esc(telemetry && telemetry.queueLength || 0) + '</div></div><div><span class="albot-k">Letzter Erfolg</span><div class="albot-v">' + esc(telemetry && telemetry.lastSuccessAt || '-') + '</div></div></div></div>';
+    }
+  }
+
+  ns.ControlCenter = AdvancedControlCenter;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+
+(function (root) {
+  'use strict';
   const ns = root.__ALBOT_INTERNALS__;
   if (!ns || !ns.ALBotRuntime) throw new Error('ALBOT_RUNTIME_MISSING');
   const cleanText = ns.helpers && ns.helpers.cleanText ? ns.helpers.cleanText : (value => String(value == null ? '' : value));
@@ -29827,7 +31344,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.22.5-h22',
+    version: '0.23.0-h23',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -29971,6 +31488,42 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
       profiles: () => runtime.accountStrategy.profiles(),
       progression: () => runtime.accountStrategy.progressionPlan(),
       optimize: task => runtime.accountStrategy.optimizeTask(task || {})
+    },
+
+    encounters: {
+      status: () => runtime.encounters.status(),
+      catalog: () => runtime.encounters.catalog(),
+      plan: options => runtime.encounters.plan(options || {}),
+      preferredTask: () => runtime.encounters.preferredTask(),
+      setEnabled: (kind, id, enabled) => runtime.encounters.setEnabled(kind, id, enabled),
+      setAll: (kind, enabled) => runtime.encounters.setAll(kind, enabled),
+      start: options => runtime.encounters.startAutonomy(options || {}),
+      stop: reason => runtime.encounters.stopAutonomy(reason || 'API_ENCOUNTER_STOP'),
+      tick: () => runtime.encounters.tick(),
+      reset: reason => runtime.encounters.resetSafety(reason || 'API_ENCOUNTER_RESET')
+    },
+
+    marketIntelligence: {
+      status: () => runtime.marketIntelligence.status(),
+      refresh: () => runtime.marketIntelligence.refresh(),
+      item: (itemName, options) => runtime.marketIntelligence.item(itemName, options || {}),
+      priceBand: (itemName, options) => runtime.marketIntelligence.priceBand(itemName, options || {}),
+      overview: limit => runtime.marketIntelligence.overview(limit)
+    },
+
+    merchantStand: {
+      status: () => runtime.merchantStand.status(),
+      plan: () => runtime.merchantStand.plan(),
+      tick: () => runtime.merchantStand.tick(),
+      configure: options => runtime.merchantStand.configure(options || {}),
+      reset: reason => runtime.merchantStand.resetSafety(reason || 'API_MERCHANT_STAND_RESET')
+    },
+
+    telemetry: {
+      status: () => runtime.telemetry.status(),
+      configure: options => runtime.telemetry.configure(options || {}),
+      sample: () => runtime.telemetry.sample(),
+      flush: () => runtime.telemetry.flush()
     },
 
     fullAutonomy: {
@@ -30187,6 +31740,10 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
   Object.freeze(api.partyLogistics);
   Object.freeze(api.lifecycle);
   Object.freeze(api.accountStrategy);
+  Object.freeze(api.encounters);
+  Object.freeze(api.marketIntelligence);
+  Object.freeze(api.merchantStand);
+  Object.freeze(api.telemetry);
   Object.freeze(api.fullAutonomy);
   Object.freeze(api.updater);
   Object.freeze(api.observation);
@@ -30219,7 +31776,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
     };
   } catch (_) {}
 
-  runtime.logger.info('AL Bot H22 geladen', {
+  runtime.logger.info('AL Bot H23 geladen', {
     version: api.version,
     bootCount,
     hotReload: !!previous,
