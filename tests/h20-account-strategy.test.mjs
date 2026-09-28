@@ -104,7 +104,7 @@ test('account progression identifies the weaker combat character for catch-up tr
 });
 
 
-test('FARM chooses a smaller execution group when extra members do not justify their coordination cost', () => {
+test('FARM always selects exactly three combat farmers even when one is weaker', () => {
   const { controller } = loadStrategy({
     peers: [
       {
@@ -123,15 +123,14 @@ test('FARM chooses a smaller execution group when extra members do not justify t
   });
   const plan = controller.optimizeTask({ type: 'FARM' });
   assert.equal(plan.status, 'SELECTION_READY');
-  assert.deepEqual([...plan.selected.memberNames], ['My_Priest', 'My_Ranger1']);
+  assert.equal(plan.selected.memberNames.length, 3);
+  assert.deepEqual([...plan.selected.memberNames], ['My_Priest', 'My_Ranger1', 'My_Warrior']);
   assert.equal(plan.selected.memberNames.includes('My_Merchant'), false);
   assert.deepEqual([...plan.supportMemberNames], ['My_Merchant']);
-  assert.ok(plan.selected.coordinationCost > 0);
-  assert.ok(plan.ranking.some(row => row.memberNames.length === 1));
-  assert.ok(plan.ranking.some(row => row.memberNames.length === 3));
+  assert.ok(plan.ranking.every(row => row.memberNames.length === 3));
 });
 
-test('FARM can expand to three combat members when all three add enough task value', () => {
+test('FARM remains exactly three combat farmers when all candidates are strong', () => {
   const { controller } = loadStrategy({
     local: {
       name: 'My_Warrior', ctype: 'warrior', level: 80, hp: 4000, maxHp: 4000,
@@ -163,17 +162,17 @@ test('FARM can expand to three combat members when all three add enough task val
   assert.equal(plan.status, 'SELECTION_READY');
   assert.equal(plan.selected.memberNames.length, 3);
   assert.equal(plan.selected.memberNames.includes('My_Merchant'), false);
-  assert.ok(plan.ranking.some(row => row.memberNames.length === 1));
-  assert.ok(plan.ranking.some(row => row.memberNames.length === 2));
+  assert.ok(plan.ranking.length > 0);
+  assert.ok(plan.ranking.every(row => row.memberNames.length === 3));
 });
 
-test('offline catch-up candidates may rotate into a dynamic FARM execution group without forcing group size three', () => {
+test('offline catch-up candidates may rotate into the exact three-farmer FARM group', () => {
   const { controller } = loadStrategy({
     accountRows: [
       { name: 'My_Warrior', ctype: 'warrior', level: 80, online: true },
       { name: 'My_Priest', ctype: 'priest', level: 80, online: true },
       { name: 'My_Ranger1', ctype: 'ranger', level: 80, online: true },
-      { name: 'My_Mage', ctype: 'mage', level: 60, online: false },
+      { name: 'My_Mage', ctype: 'mage', level: 40, online: false },
       { name: 'My_Rogue', ctype: 'rogue', level: 80, online: false },
       { name: 'My_Merchant', ctype: 'merchant', level: 70, online: true }
     ]
@@ -183,12 +182,12 @@ test('offline catch-up candidates may rotate into a dynamic FARM execution group
   const plan = controller.optimizeTask({ type: 'FARM' });
   assert.equal(plan.status, 'SELECTION_READY');
   assert.ok(plan.selected.memberNames.includes('My_Mage'));
-  assert.ok(plan.selected.memberNames.length >= 1 && plan.selected.memberNames.length <= 3);
+  assert.equal(plan.selected.memberNames.length, 3);
   assert.equal(plan.selected.memberNames.includes('My_Merchant'), false);
   assert.deepEqual([...plan.supportMemberNames], ['My_Merchant']);
 });
 
-test('activity requirements change group composition without hardcoding class names or a fixed FARM size', () => {
+test('activity requirements change the exact three-farmer composition without hardcoding class names', () => {
   const { controller } = loadStrategy({
     accountRows: [
       { name: 'My_Warrior', ctype: 'warrior', level: 80, online: true },
@@ -201,8 +200,8 @@ test('activity requirements change group composition without hardcoding class na
   });
   const farm = controller.optimizeTask({ type: 'FARM' });
   const boss = controller.optimizeTask({ type: 'BOSS' });
-  assert.ok(farm.selected.memberNames.length >= 1 && farm.selected.memberNames.length <= 3);
-  assert.ok(boss.selected.memberNames.length >= 2 && boss.selected.memberNames.length <= 3);
+  assert.equal(farm.selected.memberNames.length, 3);
+  assert.equal(boss.selected.memberNames.length, 3);
   assert.ok(boss.selected.capabilities.includes('TANK'));
   assert.ok(boss.selected.capabilities.includes('HEALER'));
   assert.ok(boss.selected.capabilities.includes('DPS'));
