@@ -7754,11 +7754,30 @@
         return { state: 'BLOCKED', reason: 'H19_ROSTER_LIVE_STATE_UNAVAILABLE' };
       }
 
-      const signalProposal = this._proposalPartySignal(roster);
-      if (signalProposal) return signalProposal;
-
       const active = this._onlineSet(roster);
       const localName = this._localName();
+      const desiredActive = new Set(this.policyState.desiredActiveNames.map(String));
+
+      // Rotation is deliberately stop-before-start. This check must happen
+      // before party-leader reconciliation: the current leader itself may be
+      // the farmer that is being rotated out.
+      const undesiredActive = [...active]
+        .filter(name => this._ownedRow(name, roster) && !desiredActive.has(String(name)))
+        .sort((a, b) => a.localeCompare(b));
+      for (const name of undesiredActive) {
+        if (String(name) === String(localName)) continue;
+        return {
+          state: 'READY',
+          reason: 'H19_UNDESIRED_CHARACTER_ACTIVE',
+          request: {
+            id: 'h19-auto-stop-' + name,
+            kind: 'STOP',
+            targetName: name,
+            queuedAt: nowIso(),
+            automatic: true
+          }
+        };
+      }
 
       for (const name of this.policyState.desiredRuntimeRunningNames) {
         if (name === localName) continue;
@@ -7808,6 +7827,12 @@
           };
         }
       }
+
+      // Only reconcile party invitations/leader topology after the desired
+      // four-character active/runtime set is healthy. During a farmer rotation
+      // the old party leader may still be visible in a stale party snapshot.
+      const signalProposal = this._proposalPartySignal(roster);
+      if (signalProposal) return signalProposal;
 
       const desiredPartyMembers = this.policyState.desiredPartyMemberNames;
       const leader = this.policyState.desiredPartyLeader;
@@ -8285,12 +8310,36 @@
   });
 
   const TASK_DEFAULTS = Object.freeze({
-    FARM: { minMembers: 1, maxMembers: 3, required: ['DPS'], combatOnly: true, progressionWeight: 0.20, extraMemberCost: 0.90, diversityWeight: 0.02 },
-    QUEST: { minMembers: 1, maxMembers: 3, required: ['DPS'], combatOnly: true, progressionWeight: 0.16, extraMemberCost: 0.75, diversityWeight: 0.025 },
-    BOSS: { minMembers: 3, maxMembers: 4, required: ['TANK', 'HEALER', 'DPS'], combatOnly: true, progressionWeight: 0, extraMemberCost: 0.08, diversityWeight: 0.035 },
-    EVENT: { minMembers: 3, maxMembers: 4, required: ['TANK', 'HEALER', 'DPS'], combatOnly: true, progressionWeight: 0, extraMemberCost: 0.06, diversityWeight: 0.035 },
-    SPECIAL: { minMembers: 2, maxMembers: 4, required: ['HEALER', 'DPS'], combatOnly: true, progressionWeight: 0.04, extraMemberCost: 0.35, diversityWeight: 0.03 },
-    ECONOMY: { minMembers: 1, maxMembers: 1, required: ['ECONOMY'], combatOnly: false, progressionWeight: 0, extraMemberCost: 0, diversityWeight: 0 }
+    FARM: {
+      minMembers: 3, maxMembers: 3, required: ['DPS'], combatOnly: true,
+      progressionWeight: 0.30, catchUpRequired: true, extraMemberCost: 0.90, offlineActivationCost: 0.08,
+      capabilityWeights: { DPS: 0.06, AOE: 0.10, RANGED: 0.035, HEALER: 0.04, TANK: 0.025, SUPPORT: 0.025 }
+    },
+    QUEST: {
+      minMembers: 3, maxMembers: 3, required: ['DPS'], combatOnly: true,
+      progressionWeight: 0.16, catchUpRequired: false, extraMemberCost: 0.78, offlineActivationCost: 0.10,
+      capabilityWeights: { DPS: 0.07, RANGED: 0.04, HEALER: 0.04, SUPPORT: 0.035, TANK: 0.02 }
+    },
+    BOSS: {
+      minMembers: 3, maxMembers: 3, required: ['TANK', 'HEALER', 'DPS'], combatOnly: true,
+      progressionWeight: 0.02, catchUpRequired: false, extraMemberCost: 0.10, offlineActivationCost: 0.12,
+      capabilityWeights: { TANK: 0.10, HEALER: 0.10, DPS: 0.06, SUPPORT: 0.04, RANGED: 0.02 }
+    },
+    EVENT: {
+      minMembers: 3, maxMembers: 3, required: ['TANK', 'HEALER', 'DPS'], combatOnly: true,
+      progressionWeight: 0.04, catchUpRequired: false, extraMemberCost: 0.08, offlineActivationCost: 0.10,
+      capabilityWeights: { AOE: 0.10, DPS: 0.06, HEALER: 0.08, TANK: 0.07, SUPPORT: 0.035 }
+    },
+    SPECIAL: {
+      minMembers: 3, maxMembers: 3, required: ['HEALER', 'DPS'], combatOnly: true,
+      progressionWeight: 0.06, catchUpRequired: false, extraMemberCost: 0.32, offlineActivationCost: 0.10,
+      capabilityWeights: { HEALER: 0.09, DPS: 0.06, SUPPORT: 0.05, TANK: 0.04, RANGED: 0.025 }
+    },
+    ECONOMY: {
+      minMembers: 1, maxMembers: 1, required: ['ECONOMY'], combatOnly: false,
+      progressionWeight: 0, catchUpRequired: false, extraMemberCost: 0, offlineActivationCost: 0,
+      capabilityWeights: { ECONOMY: 0.1, LOGISTICS: 0.05 }
+    }
   });
 
   function combinations(rows, minSize, maxSize) {
@@ -8330,7 +8379,7 @@
       this.config = {
         targetCorridor: clamp(options.targetCorridor == null ? 0.08 : options.targetCorridor, 0, 0.5),
         maxProfileAgeMs: Math.max(1500, Math.min(30000, Number(options.maxProfileAgeMs) || 9000)),
-        maxCandidates: Math.max(4, Math.min(12, Math.floor(Number(options.maxCandidates) || 8)))
+        maxCandidates: Math.max(4, Math.min(32, Math.floor(Number(options.maxCandidates) || 16)))
       };
     }
 
@@ -8515,7 +8564,7 @@
 
     _scoredProfiles() {
       const rows = this.profiles();
-      const usable = rows.filter(row => row.online && row.running === true && row.rip !== true && row.emergencyStopLatched !== true);
+      const usable = rows.filter(row => row.rip !== true && row.emergencyStopLatched !== true);
       const maxLevel = Math.max(1, ...usable.map(row => finite(row.level) || 1));
       const maxGear = Math.max(1, ...usable.map(row => finite(row.gearScore) || 0));
       const combatRaw = row => {
@@ -8532,7 +8581,9 @@
         const gearProgress = clamp((finite(row.gearScore) || 0) / maxGear);
         const combatProgress = clamp(combatRaw(row) / maxCombat);
         const survival = row.maxHp && row.hp != null ? clamp(Number(row.hp) / Number(row.maxHp)) : 0.75;
-        const strength = clamp(levelProgress * 0.42 + gearProgress * 0.23 + combatProgress * 0.27 + survival * 0.08);
+        const strength = row.fallback === true
+          ? clamp(levelProgress * 0.82 + survival * 0.18)
+          : clamp(levelProgress * 0.42 + gearProgress * 0.23 + combatProgress * 0.27 + survival * 0.08);
         const trainingShare = totalTraining > 0 ? Math.max(0, finite(row.trainingMs) || 0) / totalTraining : 0;
         return {
           ...row,
@@ -8548,9 +8599,8 @@
 
     progressionPlan() {
       const combat = this._scoredProfiles().filter(row =>
-        row.online
-        && row.running === true
-        && row.rip !== true
+        row.rip !== true
+        && row.emergencyStopLatched !== true
         && row.ctype !== 'merchant'
         && row.capabilities.includes('DPS')
       );
@@ -8558,7 +8608,7 @@
       const ranking = combat.map(row => {
         const gap = Math.max(0, strongest - row.strength - this.config.targetCorridor);
         const trainingDeficit = Math.max(0, 1 - row.trainingShare);
-        const catchUp = clamp(gap * 0.72 + trainingDeficit * 0.28);
+        const catchUp = gap > 0 ? clamp(gap * 0.90 + trainingDeficit * 0.10) : 0;
         return { name: row.name, strength: row.strength, gap, trainingShare: row.trainingShare, catchUp, ctype: row.ctype };
       }).sort((a, b) => b.catchUp - a.catchUp || a.strength - b.strength || a.name.localeCompare(b.name));
       const result = {
@@ -8575,14 +8625,18 @@
     optimizeTask(input = {}) {
       const taskType = cleanText(input.type || input.taskType || 'FARM', 40).toUpperCase();
       const defaults = TASK_DEFAULTS[taskType] || TASK_DEFAULTS.FARM;
-      const minMembers = Math.max(1, Math.min(4, Math.floor(Number(input.minMembers) || defaults.minMembers)));
-      const maxMembers = Math.max(minMembers, Math.min(4, Math.floor(Number(input.maxMembers) || defaults.maxMembers)));
+      const minMembers = defaults.combatOnly
+        ? 3
+        : Math.max(1, Math.min(4, Math.floor(Number(input.minMembers) || defaults.minMembers)));
+      const maxMembers = defaults.combatOnly
+        ? 3
+        : Math.max(minMembers, Math.min(4, Math.floor(Number(input.maxMembers) || defaults.maxMembers)));
       const required = Array.isArray(input.requiredCapabilities) && input.requiredCapabilities.length
         ? [...new Set(input.requiredCapabilities.map(value => cleanText(value, 40).toUpperCase()).filter(Boolean))]
         : defaults.required.slice();
       const progression = this.progressionPlan();
       const scored = this._scoredProfiles()
-        .filter(row => row.online && row.running === true && row.rip !== true && row.emergencyStopLatched !== true)
+        .filter(row => row.rip !== true && row.emergencyStopLatched !== true)
         .filter(row => !defaults.combatOnly || row.ctype !== 'merchant')
         .slice(0, this.config.maxCandidates);
 
@@ -8592,20 +8646,25 @@
         const capabilities = new Set(members.flatMap(member => member.capabilities || []));
         if (!required.every(capability => capabilities.has(capability))) continue;
         const memberNameSet = new Set(members.map(member => String(member.name)));
-        const progressionRequired = (taskType === 'FARM' || taskType === 'QUEST')
+        const progressionRequired = defaults.catchUpRequired === true
           && progression.selectedCharacterName
           && scored.some(row => String(row.name) === String(progression.selectedCharacterName));
         if (progressionRequired && !memberNameSet.has(String(progression.selectedCharacterName))) continue;
         const memberNames = members.map(member => member.name).sort();
         const baseStrength = members.reduce((sum, member) => sum + member.strength, 0);
         const averageStrength = members.length ? baseStrength / members.length : 0;
-        const roleDiversityBonus = capabilities.size * Math.max(0, Number(defaults.diversityWeight) || 0);
+        const capabilityWeights = defaults.capabilityWeights || {};
+        const activityBonus = [...capabilities].reduce((sum, capability) => sum + Math.max(0, Number(capabilityWeights[capability]) || 0), 0);
         const containsProgression = progression.selectedCharacterName
           ? memberNames.includes(progression.selectedCharacterName)
           : false;
         const progressionBonus = containsProgression ? defaults.progressionWeight : 0;
+        const onlineReadyCount = members.filter(member => member.online && member.running === true).length;
+        const readinessBonus = onlineReadyCount * 0.005;
+        const offlineCount = members.length - onlineReadyCount;
         const coordinationCost = Math.max(0, members.length - 1) * Math.max(0, Number(defaults.extraMemberCost) || 0);
-        const score = baseStrength + roleDiversityBonus + progressionBonus - coordinationCost;
+        const activationCost = offlineCount * Math.max(0, Number(defaults.offlineActivationCost) || 0);
+        const score = baseStrength + activityBonus + progressionBonus + readinessBonus - coordinationCost - activationCost;
         ranking.push({
           taskType,
           memberNames,
@@ -8613,8 +8672,10 @@
           baseStrength: Number(baseStrength.toFixed(6)),
           averageStrength: Number(averageStrength.toFixed(6)),
           progressionBonus,
-          roleDiversityBonus: Number(roleDiversityBonus.toFixed(6)),
+          activityBonus: Number(activityBonus.toFixed(6)),
+          readinessBonus: Number(readinessBonus.toFixed(6)),
           coordinationCost: Number(coordinationCost.toFixed(6)),
+          activationCost: Number(activationCost.toFixed(6)),
           capabilities: [...capabilities].sort(),
           members: clone(members)
         });
@@ -8631,23 +8692,32 @@
         const strongest = selected.members.slice().sort((a,b) => b.strength - a.strength)[0];
         leaderName = tank && tank.name || healer && healer.name || strongest && strongest.name || null;
       }
-      const supportMemberNames = this._scoredProfiles()
-        .filter(row => row.online && row.running === true && row.rip !== true && row.ctype === 'merchant')
-        .map(row => row.name)
-        .sort();
+      const merchants = this._scoredProfiles()
+        .filter(row => row.rip !== true && row.emergencyStopLatched !== true && row.ctype === 'merchant')
+        .sort((a, b) =>
+          Number(b.online && b.running === true) - Number(a.online && a.running === true)
+          || b.strength - a.strength
+          || (finite(b.level) || 0) - (finite(a.level) || 0)
+          || a.name.localeCompare(b.name));
+      const supportMemberNames = merchants.length ? [merchants[0].name] : [];
+      const supportReady = !defaults.combatOnly || supportMemberNames.length === 1;
       const result = {
         schemaVersion: 1,
         taskType,
         requiredCapabilities: required,
-        status: selected ? 'SELECTION_READY' : 'NO_ALLOWED_COMBINATION',
+        status: selected && supportReady
+          ? 'SELECTION_READY'
+          : (selected && !supportReady ? 'NO_MERCHANT_SUPPORT' : 'NO_ALLOWED_COMBINATION'),
         selected: selected ? {
           memberNames: selected.memberNames,
           score: selected.score,
           baseStrength: selected.baseStrength,
           averageStrength: selected.averageStrength,
           progressionBonus: selected.progressionBonus,
-          roleDiversityBonus: selected.roleDiversityBonus,
+          activityBonus: selected.activityBonus,
+          readinessBonus: selected.readinessBonus,
           coordinationCost: selected.coordinationCost,
+          activationCost: selected.activationCost,
           capabilities: selected.capabilities
         } : null,
         leaderName,
@@ -8659,8 +8729,10 @@
           baseStrength: row.baseStrength,
           averageStrength: row.averageStrength,
           progressionBonus: row.progressionBonus,
-          roleDiversityBonus: row.roleDiversityBonus,
+          activityBonus: row.activityBonus,
+          readinessBonus: row.readinessBonus,
           coordinationCost: row.coordinationCost,
+          activationCost: row.activationCost,
           capabilities: row.capabilities
         }))
       };
@@ -8749,14 +8821,14 @@
 
     configure(options = {}) {
       if (options.taskType != null) this.config.taskType = cleanText(options.taskType, 40).toUpperCase() || 'FARM';
-      if (options.keepSupportInParty != null) this.config.keepSupportInParty = options.keepSupportInParty === true;
+      // Full Live invariant: one Merchant is always the fourth party member.
+      this.config.keepSupportInParty = true;
       if (options.requireAllOnlineProfiles != null) this.config.requireAllOnlineProfiles = options.requireAllOnlineProfiles === true;
       if (options.logisticsProbeMs != null) {
         this.config.logisticsProbeMs = Math.max(5000, Math.min(300000, Math.floor(Number(options.logisticsProbeMs) || 30000)));
       }
-      if (options.expectedOnlineCount != null) {
-        this.config.expectedOnlineCount = Math.max(1, Math.min(4, Math.floor(Number(options.expectedOnlineCount) || 4)));
-      }
+      // Adventure Land Full Live is always a four-character group: 3 farmers + 1 Merchant.
+      this.config.expectedOnlineCount = 4;
       return clone(this.config);
     }
 
@@ -8768,32 +8840,30 @@
       }
       this.configure(options);
       const initialOnline = this._onlineNames();
-      const waitForRoster = options.waitForRoster === true;
       const requestedDesired = Array.isArray(options.desiredCharacterNames)
         ? [...new Set(options.desiredCharacterNames.map(value => cleanText(value, 120)).filter(Boolean))].sort()
         : [];
-      if (requestedDesired.length && requestedDesired.length !== this.config.expectedOnlineCount) {
+      if (requestedDesired.length && requestedDesired.length !== 4) {
         return {
           accepted: false,
           reason: 'FULL_AUTONOMY_DESIRED_ROSTER_INVALID',
-          expectedOnlineCount: this.config.expectedOnlineCount,
+          expectedOnlineCount: 4,
           desiredCharacterNames: requestedDesired,
           status: this.status()
         };
       }
-      if (initialOnline.length > this.config.expectedOnlineCount
-          || (!waitForRoster && initialOnline.length !== this.config.expectedOnlineCount)) {
+      if (initialOnline.length > 4) {
         return {
           accepted: false,
-          reason: 'FULL_AUTONOMY_EXPECTED_ONLINE_COUNT_MISMATCH',
-          expectedOnlineCount: this.config.expectedOnlineCount,
+          reason: 'FULL_AUTONOMY_ONLINE_CHARACTER_LIMIT_EXCEEDED',
+          expectedOnlineCount: 4,
           onlineCharacterNames: initialOnline,
           status: this.status()
         };
       }
-      this.desiredCharacterNames = requestedDesired.length === this.config.expectedOnlineCount
-        ? requestedDesired.slice()
-        : (initialOnline.length === this.config.expectedOnlineCount ? initialOnline.slice().sort() : []);
+      // A supplied desired quartet is only a bootstrap hint (for H19 re-arm).
+      // The strategy recomputes 3 farmers + 1 merchant on every tick.
+      this.desiredCharacterNames = requestedDesired.slice();
       this.lifecycleArmed = false;
       this.enabled = true;
       this.startedAt = new Date().toISOString();
@@ -8860,21 +8930,61 @@
         && (row.local ? (this.runtime && this.runtime.running === true) : (row.peerFresh && row.running === true)))
         .map(row => String(row.name)));
       if (local && local.name && this.runtime && this.runtime.running === true) ready.add(String(local.name));
-      const desired = this.desiredCharacterNames.length ? this.desiredCharacterNames.slice() : online.slice();
+      const desired = this.desiredCharacterNames.length ? this.desiredCharacterNames.slice() : [];
+      const desiredSet = new Set(desired.map(String));
       const missing = this.config.requireAllOnlineProfiles
-        ? [...new Set([...online, ...desired].filter(name => !ready.has(String(name))))].sort()
+        ? desired.filter(name => !ready.has(String(name))).sort()
         : [];
       const stoppedNames = profiles
-        .filter(row => row && desired.includes(String(row.name)) && !row.local && row.peerFresh && row.running !== true)
+        .filter(row => row && desiredSet.has(String(row.name)) && !row.local && row.peerFresh && row.running !== true)
         .map(row => String(row.name))
         .sort();
+      const unexpectedOnlineNames = online.filter(name => !desiredSet.has(String(name))).sort();
       return {
         profiles,
         online,
         missing,
         stoppedNames,
+        unexpectedOnlineNames,
         readyNames: [...ready].sort(),
         onlineLimitExceeded: online.length > 4
+      };
+    }
+
+    _desiredQuartet(plan) {
+      const selected = [...new Set(plan && plan.selected && Array.isArray(plan.selected.memberNames)
+        ? plan.selected.memberNames.map(String)
+        : [])];
+      const support = this.config.keepSupportInParty
+        ? [...new Set(Array.isArray(plan && plan.supportMemberNames) ? plan.supportMemberNames.map(String) : [])]
+        : [];
+
+      if (selected.length !== 3 || support.length !== 1) {
+        return {
+          ok: false,
+          reason: 'FULL_AUTONOMY_REQUIRES_THREE_FARMERS_AND_ONE_MERCHANT',
+          selected: selected.slice().sort(),
+          support: support.slice().sort()
+        };
+      }
+
+      const names = [...new Set([...selected, ...support])].sort();
+      if (names.length !== 4) {
+        return {
+          ok: false,
+          reason: 'FULL_AUTONOMY_DESIRED_QUARTET_INVALID',
+          selected: selected.slice().sort(),
+          support: support.slice().sort(),
+          desiredCharacterNames: names
+        };
+      }
+
+      return {
+        ok: true,
+        selected: selected.slice().sort(),
+        support: support.slice().sort(),
+        standby: [],
+        names
       };
     }
 
@@ -8883,17 +8993,22 @@
       const local = this._local();
       if (!local || !local.name) return { ok: false, reason: 'CHARACTER_UNAVAILABLE' };
       const localName = String(local.name);
-      const selected = plan && plan.selected ? plan.selected.memberNames.slice() : [];
-      const support = this.config.keepSupportInParty ? (plan.supportMemberNames || []) : [];
-      const stableDesired = this.desiredCharacterNames.length
-        ? this.desiredCharacterNames.slice()
-        : readiness.online.slice();
-      const desiredPartyAll = (this.config.keepSupportInParty
-        ? stableDesired.slice()
-        : [...new Set([...selected, ...support])])
-        .filter(name => stableDesired.includes(String(name)))
-        .slice(0, 4)
-        .sort();
+      const selected = plan && plan.selected && Array.isArray(plan.selected.memberNames)
+        ? [...new Set(plan.selected.memberNames.map(String))]
+        : [];
+      const support = this.config.keepSupportInParty
+        ? [...new Set(Array.isArray(plan && plan.supportMemberNames) ? plan.supportMemberNames.map(String) : [])]
+        : [];
+      if (selected.length !== 3 || support.length !== 1) {
+        return { ok: false, reason: 'FULL_AUTONOMY_REQUIRES_THREE_FARMERS_AND_ONE_MERCHANT' };
+      }
+      const stableDesired = this.desiredCharacterNames.slice().sort();
+      if (stableDesired.length !== 4
+          || !selected.every(name => stableDesired.includes(String(name)))
+          || !support.every(name => stableDesired.includes(String(name)))) {
+        return { ok: false, reason: 'FULL_AUTONOMY_DESIRED_QUARTET_INVALID' };
+      }
+      const desiredPartyAll = stableDesired.slice();
 
       let party = null;
       try { party = this.runtime.party && this.runtime.party.snapshot ? this.runtime.party.snapshot() : null; } catch (_) {}
@@ -8902,24 +9017,26 @@
         ? party.foreignMemberNames.map(String)
         : [];
       const currentLeader = cleanText(party && party.leader || '', 120) || null;
+      const onlineSet = new Set(readiness.online.map(String));
+      const onlineDesired = desiredPartyAll.filter(name => onlineSet.has(String(name)));
       const preferredLeader = plan.leaderName && desiredPartyAll.includes(plan.leaderName)
         ? plan.leaderName
-        : (desiredPartyAll[0] || null);
+        : (support[0] || desiredPartyAll[0] || null);
       const leader = currentLeader
         && desiredPartyAll.includes(currentLeader)
         && foreignNames.length === 0
         ? currentLeader
-        : preferredLeader;
+        : (onlineDesired.includes(preferredLeader)
+          ? preferredLeader
+          : (onlineDesired.includes(support[0]) ? support[0] : (onlineDesired[0] || preferredLeader)));
       if (!leader) return { ok: false, reason: 'FULL_AUTONOMY_PARTY_LEADER_UNAVAILABLE' };
 
-      const coordinator = localName === String(leader);
-      const onlineSet = new Set(readiness.online.map(String));
-      const desiredActiveNames = coordinator
-        ? stableDesired.slice().sort()
-        : stableDesired.filter(name => onlineSet.has(String(name))).sort();
-      const desiredPartyMembers = desiredPartyAll
-        .filter(name => coordinator || onlineSet.has(String(name)))
-        .sort();
+      const coordinatorName = onlineSet.has(String(leader))
+        ? leader
+        : (onlineDesired.includes(support[0]) ? support[0] : (onlineDesired[0] || currentLeader || localName));
+      const coordinator = localName === String(coordinatorName);
+      const desiredActiveNames = stableDesired.slice();
+      const desiredPartyMembers = desiredPartyAll.slice();
       const desiredRuntimeRunningNames = coordinator
         ? readiness.profiles
           .filter(row => row && row.peerFresh && !row.local && stableDesired.includes(String(row.name)))
@@ -8927,9 +9044,7 @@
           .sort()
         : [];
 
-      const effectiveLeader = desiredPartyMembers.includes(leader)
-        ? leader
-        : (desiredPartyMembers[0] || null);
+      const effectiveLeader = leader;
       const policy = lifecycle.setPolicy({
         desiredActiveNames,
         desiredRuntimeRunningNames,
@@ -8956,11 +9071,12 @@
         .map(row => String(row.name))
         .sort();
       const offlineDesiredNames = stableDesired.filter(name => !onlineSet.has(String(name))).sort();
+      const unexpectedOnlineNames = readiness.online.filter(name => !stableDesired.includes(String(name))).sort();
       const runtimeRecoveryRequired = coordinator && stoppedDesiredNames.length > 0;
       const rosterRecoveryRequired = coordinator && offlineDesiredNames.length > 0;
+      const rotationRequired = coordinator && unexpectedOnlineNames.length > 0;
       const shouldRunLifecycle = coordinator
-        ? (!partyTopologyHealthy || runtimeRecoveryRequired || rosterRecoveryRequired)
-        : !localInParty;
+        && (!partyTopologyHealthy || runtimeRecoveryRequired || rosterRecoveryRequired || rotationRequired);
       const current = lifecycle.status();
       const recoverySafetyBlocked = current.suspended === true
         || !!(current.currentAction && current.currentAction.unknownRecorded === true);
@@ -8997,7 +9113,7 @@
       return {
         ok: true,
         coordinator,
-        coordinatorName: leader,
+        coordinatorName,
         desiredActiveNames,
         desiredRuntimeRunningNames,
         partyNames: desiredPartyMembers,
@@ -9006,8 +9122,10 @@
         recoveryRequired: shouldRunLifecycle,
         runtimeRecoveryRequired,
         rosterRecoveryRequired,
+        rotationRequired,
         stoppedDesiredNames,
         offlineDesiredNames,
+        unexpectedOnlineNames,
         recoverySafetyBlocked,
         recoveryBlockReason
       };
@@ -9167,63 +9285,16 @@
       }
 
       try {
-        const readiness = this._profileReadiness();
+        const initialReadiness = this._profileReadiness();
         const local = this._local();
         if (!local) return { state: 'BLOCKED', reason: 'CHARACTER_UNAVAILABLE' };
-        if (readiness.onlineLimitExceeded) {
+        if (initialReadiness.onlineLimitExceeded) {
           this.strategy.recordTraining(false);
           return this.lastDecision = {
             at: new Date().toISOString(),
             state: 'BLOCKED',
             reason: 'FULL_AUTONOMY_ONLINE_CHARACTER_LIMIT_EXCEEDED',
-            onlineCharacterNames: readiness.online
-          };
-        }
-        if (readiness.online.length < this.config.expectedOnlineCount && !this.desiredCharacterNames.length) {
-          this.strategy.recordTraining(false);
-          this._pauseOwnedRoleWork('FULL_AUTONOMY_INITIAL_ROSTER_WARMING');
-          return this.lastDecision = {
-            at: new Date().toISOString(),
-            state: 'WARMING',
-            reason: 'FULL_AUTONOMY_WAITING_FOR_EXPECTED_ONLINE_COUNT',
-            expectedOnlineCount: this.config.expectedOnlineCount,
-            onlineCharacterNames: readiness.online
-          };
-        }
-        if (!this.desiredCharacterNames.length && readiness.online.length === this.config.expectedOnlineCount) {
-          this.desiredCharacterNames = readiness.online.slice().sort();
-        }
-        if (readiness.online.length < this.config.expectedOnlineCount || readiness.missing.length) {
-          this.strategy.recordTraining(false);
-          this._pauseOwnedRoleWork('FULL_AUTONOMY_LIFECYCLE_RECOVERY');
-          const recoveryPlan = this._recoveryPlan(readiness);
-          const lifecycle = this._ensureLifecycle(recoveryPlan, readiness);
-          if (!lifecycle.ok) {
-            return this.lastDecision = {
-              at: new Date().toISOString(),
-              state: 'BLOCKED',
-              reason: lifecycle.reason,
-              expectedOnlineCount: this.config.expectedOnlineCount,
-              onlineCharacterNames: readiness.online,
-              missingProfiles: readiness.missing
-            };
-          }
-          return this.lastDecision = {
-            at: new Date().toISOString(),
-            state: 'WARMING',
-            reason: readiness.online.length < this.config.expectedOnlineCount
-              ? 'FULL_AUTONOMY_RECOVERING_EXPECTED_ROSTER'
-              : 'FULL_AUTONOMY_RECOVERING_STOPPED_OR_STALE_PEER',
-            expectedOnlineCount: this.config.expectedOnlineCount,
-            onlineCharacterNames: readiness.online,
-            missingProfiles: readiness.missing,
-            stoppedDesiredNames: readiness.stoppedNames,
-            lifecycleRecoveryRequired: lifecycle.recoveryRequired === true,
-            runtimeRecoveryRequired: lifecycle.runtimeRecoveryRequired === true,
-            rosterRecoveryRequired: lifecycle.rosterRecoveryRequired === true,
-            stoppedDesiredNames: lifecycle.stoppedDesiredNames || readiness.stoppedNames,
-            offlineDesiredNames: lifecycle.offlineDesiredNames || [],
-            lifecycleCoordinator: lifecycle.coordinatorName
+            onlineCharacterNames: initialReadiness.online
           };
         }
 
@@ -9236,6 +9307,70 @@
             state: 'BLOCKED',
             reason: 'FULL_AUTONOMY_NO_ALLOWED_TASK_PARTY',
             plan: clone(plan)
+          };
+        }
+        const quartet = this._desiredQuartet(plan);
+        if (!quartet.ok) {
+          this.strategy.recordTraining(false);
+          return this.lastDecision = {
+            at: new Date().toISOString(),
+            state: 'BLOCKED',
+            reason: quartet.reason,
+            executionMembers: quartet.selected || [],
+            supportMembers: quartet.support || [],
+            standbyMembers: quartet.standby || [],
+            desiredCharacterNames: quartet.desiredCharacterNames || [],
+            plan: clone(plan)
+          };
+        }
+
+        const nextDesired = quartet.names.slice();
+        const selectionChanged = nextDesired.join('|') !== this.desiredCharacterNames.slice().sort().join('|');
+        this.desiredCharacterNames = nextDesired;
+        const readiness = this._profileReadiness();
+        const desiredSet = new Set(nextDesired);
+        const onlineDesiredCount = readiness.online.filter(name => desiredSet.has(String(name))).length;
+        const requiresRotation = readiness.unexpectedOnlineNames.length > 0
+          || onlineDesiredCount !== 4
+          || readiness.missing.length > 0;
+
+        if (requiresRotation) {
+          this.strategy.recordTraining(false);
+          this._pauseOwnedRoleWork(selectionChanged ? 'FULL_AUTONOMY_SELECTION_ROTATION' : 'FULL_AUTONOMY_LIFECYCLE_RECOVERY');
+          const lifecycle = this._ensureLifecycle(plan, readiness);
+          if (!lifecycle.ok) {
+            return this.lastDecision = {
+              at: new Date().toISOString(),
+              state: 'BLOCKED',
+              reason: lifecycle.reason,
+              expectedOnlineCount: 4,
+              desiredCharacterNames: nextDesired,
+              onlineCharacterNames: readiness.online,
+              missingProfiles: readiness.missing,
+              unexpectedOnlineNames: readiness.unexpectedOnlineNames
+            };
+          }
+          return this.lastDecision = {
+            at: new Date().toISOString(),
+            state: 'WARMING',
+            reason: lifecycle.rotationRequired
+              ? 'FULL_AUTONOMY_ROTATING_ACTIVITY_GROUP'
+              : (lifecycle.rosterRecoveryRequired
+                ? 'FULL_AUTONOMY_RECOVERING_EXPECTED_ROSTER'
+                : 'FULL_AUTONOMY_RECOVERING_STOPPED_OR_STALE_PEER'),
+            expectedOnlineCount: 4,
+            desiredCharacterNames: nextDesired,
+            onlineCharacterNames: readiness.online,
+            missingProfiles: readiness.missing,
+            unexpectedOnlineNames: lifecycle.unexpectedOnlineNames || readiness.unexpectedOnlineNames,
+            lifecycleRecoveryRequired: lifecycle.recoveryRequired === true,
+            runtimeRecoveryRequired: lifecycle.runtimeRecoveryRequired === true,
+            rosterRecoveryRequired: lifecycle.rosterRecoveryRequired === true,
+            rotationRequired: lifecycle.rotationRequired === true,
+            stoppedDesiredNames: lifecycle.stoppedDesiredNames || readiness.stoppedNames,
+            offlineDesiredNames: lifecycle.offlineDesiredNames || [],
+            lifecycleCoordinator: lifecycle.coordinatorName,
+            progressionTarget: plan.progression && plan.progression.selectedCharacterName || null
           };
         }
 
@@ -9276,7 +9411,9 @@
           taskType: plan.taskType,
           executionMembers: plan.selected.memberNames,
           supportMembers: plan.supportMemberNames,
+          standbyMembers: [],
           desiredParty: lifecycle.partyNames,
+          executionLeader: plan.leaderName || null,
           leader: lifecycle.leader,
           lifecycleCoordinator: lifecycle.coordinatorName,
           localLifecycleCoordinator: lifecycle.coordinator === true,
