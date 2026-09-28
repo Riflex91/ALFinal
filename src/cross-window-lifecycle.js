@@ -882,7 +882,9 @@
       return this._requestCommand(target, commandType, {
         peer,
         payload,
-        settlementTimeoutMs: Math.min(this.config.settlementTimeoutMs, 4000)
+        settlementTimeoutMs: commandType === 'PREPARE_UPDATE'
+          ? this.config.settlementTimeoutMs
+          : Math.min(this.config.settlementTimeoutMs, 4000)
       });
     }
 
