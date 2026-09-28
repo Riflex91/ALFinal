@@ -596,6 +596,25 @@
     }
 
     status() {
+      const openIncident = this.openIncident ? {
+        id: this.openIncident.id,
+        detectedAt: this.openIncident.detectedAt,
+        state: this.openIncident.state,
+        verdict: this.openIncident.verdict,
+        reasons: clone(this.openIncident.reasons),
+        postUntilMs: this.openIncident.postUntilMs
+      } : null;
+      const last = this.incidents.length ? this.incidents[this.incidents.length - 1] : null;
+      const lastIncident = last ? {
+        id: last.id,
+        detectedAt: last.detectedAt,
+        finalizedAt: last.finalizedAt,
+        state: last.state,
+        verdict: last.verdict,
+        reasons: clone(last.reasons),
+        finalizeReason: last.finalizeReason,
+        eventCount: Array.isArray(last.events) ? last.events.length : 0
+      } : null;
       return {
         schemaVersion: 1,
         mode: 'h22-local-deterministic-observation',
@@ -605,9 +624,9 @@
         assessment: clone(this.lastAssessment),
         summary: this.summary(),
         recorder: this.events.status(),
-        openIncident: sanitize(this.openIncident),
+        openIncident,
         incidents: this.incidents.length,
-        lastIncident: this.incidents.length ? clone(this.incidents[this.incidents.length - 1]) : null,
+        lastIncident,
         lastTickAtMs: this.lastTickAtMs,
         config: clone(this.config),
         stats: clone(this.stats),
