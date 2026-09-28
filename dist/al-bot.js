@@ -6280,6 +6280,10 @@
       this.installed = false;
       this.previousOnCm = null;
       this.onCmHandler = null;
+      this.characterCmEmitter = null;
+      this.characterCmHandler = null;
+      this.characterCmListenerId = null;
+      this.receiveMode = null;
       this.heartbeatTimer = null;
       this.sequence = 0;
       this.peers = new Map();
@@ -6410,6 +6414,16 @@
           if (candidate && typeof candidate.send_cm === 'function') {
             return { owner: candidate, fn: candidate.send_cm };
           }
+        } catch (_) {}
+      }
+      return null;
+    }
+
+    _resolveCharacterCmEmitter() {
+      for (const candidate of this._roots()) {
+        try {
+          const character = candidate && candidate.character;
+          if (character && typeof character.on === 'function') return character;
         } catch (_) {}
       }
       return null;
@@ -7216,15 +7230,39 @@
     install() {
       if (this.installed) return this.status();
       if (!this.root) throw new Error('H19_CROSS_WINDOW_ROOT_UNAVAILABLE');
-      this.previousOnCm = typeof this.root.on_cm === 'function' ? this.root.on_cm : null;
       const self = this;
-      this.onCmHandler = function h19CrossWindowOnCm(sender, data) {
-        const handled = self._receive(sender, data);
-        if (handled !== null) return handled;
-        if (self.previousOnCm) return self.previousOnCm.apply(this, arguments);
-        return undefined;
-      };
-      this.root.on_cm = this.onCmHandler;
+      const characterEmitter = this._resolveCharacterCmEmitter();
+      if (characterEmitter) {
+        try {
+          this.characterCmHandler = function h26CrossWindowCharacterCm(packet) {
+            const data = asObject(packet);
+            const sender = cleanText(data && data.name || '', 120);
+            if (!sender || !data || !Object.prototype.hasOwnProperty.call(data, 'message')) return undefined;
+            return self._receive(sender, data.message);
+          };
+          this.characterCmListenerId = characterEmitter.on('cm', this.characterCmHandler);
+          this.characterCmEmitter = characterEmitter;
+          this.receiveMode = 'character-event';
+        } catch (error) {
+          this.characterCmEmitter = null;
+          this.characterCmHandler = null;
+          this.characterCmListenerId = null;
+          this._log('warn', 'H26 Character-CM-Listener konnte nicht installiert werden', {
+            reason: errorReason(error, 'H26_CHARACTER_CM_LISTENER_INSTALL_FAILED')
+          });
+        }
+      }
+      if (!this.receiveMode) {
+        this.previousOnCm = typeof this.root.on_cm === 'function' ? this.root.on_cm : null;
+        this.onCmHandler = function h19CrossWindowOnCm(sender, data) {
+          const handled = self._receive(sender, data);
+          if (handled !== null) return handled;
+          if (self.previousOnCm) return self.previousOnCm.apply(this, arguments);
+          return undefined;
+        };
+        this.root.on_cm = this.onCmHandler;
+        this.receiveMode = 'legacy-on_cm';
+      }
       this.installed = true;
       try { this.broadcastHeartbeat(); } catch (_) {}
       if (this.setIntervalFn) {
@@ -7248,12 +7286,25 @@
       } catch (_) {}
       this.heartbeatTimer = null;
       try {
+        if (this.characterCmEmitter && this.characterCmListenerId != null
+            && typeof this.characterCmEmitter.remove === 'function') {
+          this.characterCmEmitter.remove(this.characterCmListenerId);
+        } else if (this.characterCmEmitter && this.characterCmHandler
+            && typeof this.characterCmEmitter.off === 'function') {
+          this.characterCmEmitter.off('cm', this.characterCmHandler);
+        }
+      } catch (_) {}
+      this.characterCmEmitter = null;
+      this.characterCmHandler = null;
+      this.characterCmListenerId = null;
+      try {
         if (this.root && this.root.on_cm === this.onCmHandler) {
           this.root.on_cm = this.previousOnCm || undefined;
         }
       } catch (_) {}
       this.onCmHandler = null;
       this.previousOnCm = null;
+      this.receiveMode = null;
 
       for (const pending of this.pending.values()) {
         try {
@@ -7279,6 +7330,7 @@
         schemaVersion: 1,
         protocol: PROTOCOL,
         installed: this.installed,
+        receiveMode: this.receiveMode,
         sessionId: this.sessionId,
         localName: this._localName(),
         server: this._serverIdentity(),
