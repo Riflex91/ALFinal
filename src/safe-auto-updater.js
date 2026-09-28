@@ -1442,7 +1442,7 @@
           noGitHubWriteCredentialInBot: true
         }
       };
-
+    }
   }
 
   ns.SafeAutoUpdater = SafeAutoUpdater;
