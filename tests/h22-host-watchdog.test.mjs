@@ -275,7 +275,13 @@ test('H22 newly configured expected characters receive their own startup grace',
   assert.equal(watchdog.acceptBeacon(beacon('A', now)).accepted, true);
 
   now = 100000;
-  watchdog.configure({ expectedCharacters: ['A', 'B'] });
+  assert.equal(watchdog.acceptBeacon(beacon('A', now, { seq: 2 })).accepted, true);
+  const reconfigured = watchdog.configure({
+    expectedCharacters: ['A', 'B'],
+    enabled: true,
+    ack: HOST_RESTART_ACK
+  });
+  assert.equal(reconfigured.accepted, true);
 
   let status = await watchdog.tick();
   const bDuringGrace = status.characters.find(row => row.name === 'B');
