@@ -24,10 +24,8 @@ AL Bot ist die finale, neu aufgebaute Adventure-Land-Bot-Codebasis. Intern darf 
 
 ## Aktueller Stand
 
-- Architektur: **abgesprochen und freigegeben**
-- Roadmap: **abgesprochen und freigegeben**
-- Prioritäten-/Goal-System: **abgesprochen und freigegeben**
-- Bot-Implementierung: **noch nicht begonnen**
-- Nächster Entwicklungsschritt: **H1 / PR1 – AL Bot Foundation & Control Center**
+AL Bot besitzt inzwischen die produktive H1–H22-Basis mit Combat, Party, Farming, Inventory, Merchant/Economy, Lifecycle/Recovery, Account-Strategie, Full Live, Safe Updater und autonomer Beobachtung. Laufende PRs können bereits neuere Änderungen enthalten.
 
-Ein neuer Chat soll vor Änderungen zuerst die drei Dokumente unter `docs/` lesen und sie als verbindlichen Projektkontext behandeln.
+**Wichtig:** Dieses README ist nur eine Zusammenfassung und darf niemals als alleinige Quelle für den Implementierungsstand verwendet werden. Vor einer Capability-/Gap-Analyse müssen der aktuelle Zielbranch, offene relevante PRs, scripts/build.mjs, src/runtime.js, src/entry.js, die betroffenen Controller sowie Tests/Live-Evidence geprüft werden. Verbindliche Arbeitsregeln stehen zusätzlich in AGENTS.md.
+
+Der aktuell vorbereitete Folgeblock erweitert die vorhandene Architektur um Boss-/Event-Encounter-Steuerung, read-only Market Intelligence/ALData, sicheren Merchant-Stand-Grundbetrieb und lokale Host-Telemetrie.
