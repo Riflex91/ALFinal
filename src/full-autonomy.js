@@ -176,9 +176,11 @@
       const local = this._local();
       const online = this._onlineNames();
       const ready = new Set(profiles.filter(row => row && row.online
-        && (row.local ? (this.runtime && this.runtime.running === true) : (row.peerFresh && row.running === true)))
+        && (row.local
+          ? (this.runtime && this.runtime.running === true && this.enabled === true)
+          : (row.peerFresh && row.running === true && row.fullAutonomyEnabled === true)))
         .map(row => String(row.name)));
-      if (local && local.name && this.runtime && this.runtime.running === true) ready.add(String(local.name));
+      if (local && local.name && this.runtime && this.runtime.running === true && this.enabled === true) ready.add(String(local.name));
       const desired = this.desiredCharacterNames.length ? this.desiredCharacterNames.slice() : [];
       const desiredSet = new Set(desired.map(String));
       const missing = this.config.requireAllOnlineProfiles
@@ -188,12 +190,18 @@
         .filter(row => row && desiredSet.has(String(row.name)) && !row.local && row.peerFresh && row.running !== true)
         .map(row => String(row.name))
         .sort();
+      const inactiveAutonomyNames = profiles
+        .filter(row => row && desiredSet.has(String(row.name)) && !row.local
+          && row.peerFresh && row.running === true && row.fullAutonomyEnabled !== true)
+        .map(row => String(row.name))
+        .sort();
       const unexpectedOnlineNames = online.filter(name => !desiredSet.has(String(name))).sort();
       return {
         profiles,
         online,
         missing,
         stoppedNames,
+        inactiveAutonomyNames,
         unexpectedOnlineNames,
         readyNames: [...ready].sort(),
         onlineLimitExceeded: online.length > 4
