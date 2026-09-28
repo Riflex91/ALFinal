@@ -5603,6 +5603,13 @@
       push('character-lifecycle-controller', !!this.lifecycle.status() && typeof this.lifecycle.plan === 'function' && typeof this.lifecycle.queueStart === 'function' && typeof this.lifecycle.queueRespawn === 'function', this.lifecycle.status());
       push('account-strategy-controller', !!this.accountStrategy.status() && typeof this.accountStrategy.optimizeTask === 'function' && typeof this.accountStrategy.progressionPlan === 'function', this.accountStrategy.status());
       push('full-autonomy-controller', !!this.fullAutonomy.status() && typeof this.fullAutonomy.startAutonomy === 'function' && typeof this.fullAutonomy.stopAutonomy === 'function', this.fullAutonomy.status());
+      const updaterStatus = this.safeUpdater.status();
+      push('h22-safe-auto-updater', !!updaterStatus
+        && updaterStatus.policies
+        && updaterStatus.policies.githubReadOnly === true
+        && updaterStatus.policies.bundleUrlMustPinCommitSha === true
+        && typeof this.safeUpdater.checkAndDownload === 'function'
+        && typeof this.safeUpdater.applyPending === 'function', updaterStatus);
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
       push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);
