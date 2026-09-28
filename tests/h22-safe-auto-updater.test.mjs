@@ -75,7 +75,12 @@ function runtimeFixture(options = {}) {
       root.ALBot = {
         version: manifest.version,
         status: () => ({ running: true, version: manifest.version, bootCount: state.executes.length + 1, modules: [], scheduler: { enabled: true } }),
-        fullAutonomy: { start: async () => ({ accepted: true }) }
+        fullAutonomy: {
+          start: async value => {
+            state.fullAutonomyStarts.push(value);
+            return { accepted: true };
+          }
+        }
       };
       return { executed: true, manifest };
     },
@@ -308,7 +313,14 @@ test('H22 large bundle apply never calls Adventure Land upload_code or save_code
   const { Controller } = loadUpdater();
   const body = '/* AL Bot 0.22.4-h22 | generated file | do not edit dist directly */\n' + 'x'.repeat(1400000);
   const manifest = manifestFor('0.22.4-h22', body);
-  const fixture = runtimeFixture({ config: { autoApply: true, coordinatedApply: false } });
+  const fixture = runtimeFixture({
+    config: { autoApply: true, coordinatedApply: false },
+    fullAutonomyStatus: {
+      enabled: true,
+      config: { taskType: 'FARM' },
+      desiredCharacterNames: ['My_Ranger1']
+    }
+  });
   fixture.root.upload_code = async () => { throw new Error('MUST_NOT_UPLOAD_CODE'); };
   fixture.root.parent = {
     api_call: async name => { throw new Error('MUST_NOT_API_CALL:' + name); }
@@ -348,6 +360,8 @@ test('H22 applies a verified release through the bootstrap runtime loader and re
   assert.equal(fixture.state.stops, 1);
   assert.equal(fixture.state.activeRelease.version, '0.22.4-h22');
   assert.equal(fixture.state.confirmations.at(-1), '0.22.4-h22');
+  assert.equal(fixture.state.fullAutonomyStarts.length, 1);
+  assert.equal(fixture.state.fullAutonomyStarts[0].taskType, 'FARM');
   assert.equal(updater.status().pending, null);
   assert.equal(updater.status().stats.reloads, 1);
 });
@@ -386,8 +400,12 @@ test('H22 coordinator prepares every online peer before one shared group commit'
   const fixture = runtimeFixture({
     localName: 'Alpha',
     config: { autoApply: true, coordinatedApply: true, groupApplyDelayMs: 6500 },
-    rosterSnapshot: { onlineStateAvailable: true, onlineCharacterNames: ['Alpha', 'Bravo'] },
-    freshPeers: [{ name: 'Bravo', running: true, version: '0.22.3-h22', updateProtection: peerProtection }],
+    rosterSnapshot: { onlineStateAvailable: true, onlineCharacterNames: ['Alpha', 'Bravo', 'Charlie', 'Delta'] },
+    freshPeers: [
+      { name: 'Bravo', running: true, version: '0.22.3-h22', updateProtection: peerProtection },
+      { name: 'Charlie', running: true, version: '0.22.3-h22', updateProtection: peerProtection },
+      { name: 'Delta', running: true, version: '0.22.3-h22', updateProtection: peerProtection }
+    ],
     requestUpdatePrepare: (name, payload) => {
       calls.push({ type: 'PREPARE', name, payload });
       return { id: 'prepare-1', state: 'DISPATCHED', dispatched: true, value: Promise.resolve({ success: true }) };
@@ -407,19 +425,79 @@ test('H22 coordinator prepares every online peer before one shared group commit'
   const result = await updater.applyPending();
   assert.equal(result.applied, false);
   assert.equal(result.reason, 'UPDATE_GROUP_COMMITTED');
-  assert.deepEqual(calls.map(row => row.type), ['PREPARE', 'COMMIT']);
-  assert.equal(calls[0].name, 'Bravo');
-  assert.equal(calls[1].name, 'Bravo');
-  assert.equal(calls[0].payload.releaseKey, calls[1].payload.releaseKey);
+  assert.deepEqual(calls.map(row => row.type), ['PREPARE', 'PREPARE', 'PREPARE', 'COMMIT', 'COMMIT', 'COMMIT']);
+  assert.deepEqual(calls.slice(0, 3).map(row => row.name), ['Bravo', 'Charlie', 'Delta']);
+  assert.deepEqual(calls.slice(3).map(row => row.name), ['Bravo', 'Charlie', 'Delta']);
+  assert.equal(calls[0].payload.releaseKey, calls[3].payload.releaseKey);
   assert.equal(calls[0].payload.coordinator, 'Alpha');
-  assert.deepEqual(Array.from(calls[0].payload.participants), ['Alpha', 'Bravo']);
-  assert.ok(Number(calls[1].payload.applyAtMs) > Date.now());
+  assert.deepEqual(Array.from(calls[0].payload.participants), ['Alpha', 'Bravo', 'Charlie', 'Delta']);
+  assert.equal(calls[0].payload.previousRelease.bundleUrl, fixture.state.activeRelease.bundleUrl);
+  const applyTimes = new Set(calls.filter(row => row.type === 'COMMIT').map(row => row.payload.applyAtMs));
+  assert.equal(applyTimes.size, 1);
+  assert.ok(Number(calls[3].payload.applyAtMs) > Date.now());
   assert.equal(fixture.state.executes.length, 0);
   assert.equal(fixture.state.stops, 0);
   assert.equal(updater.status().preparedUpdate.cachedInWindow, true);
   assert.equal(updater.status().preparedUpdate.bundleUrl, manifest.bundleUrl);
   const cancelled = updater.cancelCoordinatedUpdate({ releaseKey: calls[0].payload.releaseKey });
   assert.equal(cancelled.accepted, true);
+});
+
+test('H22 mismatched rollback identity or release key prevents coordinated commit', async () => {
+  const { Controller } = loadUpdater();
+  const body = bundle('0.22.4-h22');
+  const manifest = manifestFor('0.22.4-h22', body);
+  const fixture = runtimeFixture({
+    localName: 'Alpha',
+    config: { autoApply: true, coordinatedApply: true },
+    rosterSnapshot: { onlineStateAvailable: true, onlineCharacterNames: ['Alpha'] }
+  });
+  const updater = new Controller({ runtime: fixture.runtime, root: fixture.root, storage: fixture.storage, sha256: async () => manifest.sha256 });
+  updater.pending = { downloadedAt: new Date().toISOString(), manifest, bundle: body };
+  const releaseKey = manifest.version + '@' + manifest.commitSha + ':' + manifest.sha256;
+  const release = {
+    version: manifest.version,
+    commitSha: manifest.commitSha,
+    sha256: manifest.sha256,
+    bytes: manifest.bytes,
+    bundleUrl: manifest.bundleUrl
+  };
+
+  const badRollback = {
+    ...fixture.state.activeRelease,
+    commitSha: '3'.repeat(40),
+    bundleUrl: 'https://raw.githubusercontent.com/Riflex91/ALFinal/' + '3'.repeat(40) + '/dist/al-bot.js'
+  };
+  const rejected = await updater.prepareCoordinatedUpdate({
+    releaseKey,
+    release,
+    previousRelease: badRollback,
+    coordinator: 'Alpha',
+    participants: ['Alpha']
+  });
+  assert.equal(rejected.accepted, false);
+  assert.equal(rejected.reason, 'UPDATE_GROUP_ROLLBACK_RELEASE_MISMATCH');
+
+  const prepared = await updater.prepareCoordinatedUpdate({
+    releaseKey,
+    release,
+    previousRelease: fixture.state.activeRelease,
+    coordinator: 'Alpha',
+    participants: ['Alpha']
+  });
+  assert.equal(prepared.accepted, true);
+
+  const committed = updater.commitCoordinatedUpdate({
+    releaseKey: releaseKey + ':different',
+    release,
+    previousRelease: fixture.state.activeRelease,
+    coordinator: 'Alpha',
+    participants: ['Alpha'],
+    applyAtMs: Date.now() + 6500
+  });
+  assert.equal(committed.accepted, false);
+  assert.equal(committed.reason, 'UPDATE_GROUP_RELEASE_MISMATCH');
+  updater.cancelCoordinatedUpdate({ releaseKey });
 });
 
 test('H22 group rollout is deferred when any online peer reports event or boss protection', async () => {
@@ -447,7 +525,6 @@ test('H22 group rollout is deferred when any online peer reports event or boss p
     }],
     requestUpdatePrepare: () => { dispatches += 1; throw new Error('MUST_NOT_DISPATCH'); }
   });
-  fixture.root.get_active_code_slot = () => '1';
   const updater = new Controller({ runtime: fixture.runtime, root: fixture.root, storage: fixture.storage, sha256: async () => manifest.sha256 });
   updater.pending = { downloadedAt: new Date().toISOString(), manifest, bundle: body };
 
@@ -464,10 +541,24 @@ test('H22 failed release is quarantined and rollback reloads the previous immuta
   const manifest = manifestFor('0.22.4-h22', body);
   const fixture = runtimeFixture({
     config: { autoApply: true, coordinatedApply: false },
-    executeRelease: (release, _code, { root }) => {
+    fullAutonomyStatus: {
+      enabled: true,
+      config: { taskType: 'FARM' },
+      desiredCharacterNames: ['My_Ranger1']
+    },
+    executeRelease: (release, _code, { root, state }) => {
       root.ALBot = release.version === '0.22.4-h22'
         ? { version: release.version, status: () => ({ running: false, version: release.version, bootCount: 2 }) }
-        : { version: release.version, status: () => ({ running: true, version: release.version, bootCount: 3 }), fullAutonomy: { start: async () => ({ accepted: true }) } };
+        : {
+            version: release.version,
+            status: () => ({ running: true, version: release.version, bootCount: 3 }),
+            fullAutonomy: {
+              start: async value => {
+                state.fullAutonomyStarts.push(value);
+                return { accepted: true };
+              }
+            }
+          };
       return { executed: true, manifest: release };
     }
   });
@@ -488,6 +579,8 @@ test('H22 failed release is quarantined and rollback reloads the previous immuta
   assert.equal(fixture.state.executes[1].version, '0.22.3-h22');
   assert.deepEqual(fixture.state.rollbackLoads, [fixture.state.activeRelease.bundleUrl]);
   assert.equal(fixture.state.activeRelease.version, '0.22.3-h22');
+  assert.equal(fixture.state.fullAutonomyStarts.length, 1);
+  assert.equal(fixture.state.fullAutonomyStarts[0].taskType, 'FARM');
 
   const status = updater.status();
   assert.equal(status.stats.rollbacks, 1);
