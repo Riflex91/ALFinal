@@ -803,6 +803,7 @@
           if (before.characterNavigateCapable !== true) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_CAPABILITY_MISSING');
           if (!desiredCharacterName || desiredCharacterName === this._localName()) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_INVALID');
           if (!this._ownedNames().has(desiredCharacterName)) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_NOT_OWNED');
+          if (this._onlineOwnedNames().has(desiredCharacterName)) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_ALREADY_ONLINE');
           if (!this.setTimeoutFn) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TIMER_UNAVAILABLE');
           // Send the settlement first. The actual page navigation destroys this
           // runtime and therefore cannot be used as its own transport ACK.
@@ -948,8 +949,11 @@
       const desired = cleanText(desiredCharacterName || '', 120);
       const peer = this.freshPeer(target);
       if (!peer) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H25_CROSS_WINDOW_CHARACTER_PEER_NOT_FRESH' } };
-      if (!desired || desired === target || !this._ownedNames().has(desired)) {
+      if (!desired || desired === target || desired === this._localName() || !this._ownedNames().has(desired)) {
         return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_INVALID' } };
+      }
+      if (this._onlineOwnedNames().has(desired)) {
+        return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_ALREADY_ONLINE' } };
       }
       if (peer.running !== true) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H25_CROSS_WINDOW_CHARACTER_RUNTIME_NOT_RUNNING' } };
       if (peer.emergencyStopLatched === true) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H25_CROSS_WINDOW_CHARACTER_EMERGENCY_STOP_LATCHED' } };
