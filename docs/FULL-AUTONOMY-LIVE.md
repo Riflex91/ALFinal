@@ -55,9 +55,13 @@ FULL_AUTONOMY_ROLE_PLAN_ACTIVE
 - alle normalen Runtime-Module sind aktiv;
 - der Account-Optimizer bewertet Level, Gear, Combat-/Survivalwerte und Trainingszeit;
 - ein zurueckliegender Combat-Character erhaelt Catch-up-Prioritaet;
-- FARM verwendet maximal zwei aktive Combat-Characters und muss das aktuelle Catch-up-Ziel enthalten;
-- der staerkste geeignete Partner kann das Catch-up-Ziel unterstuetzen;
-- nicht ausgewaehlte Combat-Characters bleiben als sichere Standby-/Party-Mitglieder verfuegbar und koennen spaeter durch den Progressionsplan rotieren;
+- die FARM-Ausfuehrungsgruppe wird pro Planung dynamisch aus 1 bis 3 Combat-Characters gewaehlt;
+- die Auswahl bewertet aktuelle Staerke, Progression/Catch-up, benoetigte Faehigkeiten, Rollenvielfalt und den Koordinationsaufwand zusaetzlicher Mitglieder;
+- ein weiterer Character wird nur aufgenommen, wenn sein Nutzen fuer die aktuelle Aufgabe den zusaetzlichen Gruppen-Overhead rechtfertigt;
+- die Namen und die konkrete Klassenkombination sind nicht fest vorgegeben;
+- nur die ausgewaehlte Combat-Gruppe reist und kaempft koordiniert; ihr Leader besitzt Farmrichtung und neue Pulls, Followers spiegeln das Gruppenziel und regroupen bei echter Trennung;
+- nicht ausgewaehlte Combat-Characters bleiben als sichere Standby-/Party-Mitglieder verfuegbar und koennen bei einer spaeteren Strategieentscheidung in die Ausfuehrungsgruppe wechseln;
+- BOSS/EVENT/SPECIAL koennen strengere Capability-Anforderungen wie Tank, Healer und DPS verlangen;
 - Merchant fuehrt Economy-Autonomie aus;
 - Party Logistics darf auf dem Merchant Economy bounded abloesen, wenn echte Logistikarbeit vorliegt;
 - Lifecycle Recovery haelt das beim Start gepinnte Vierer-Desired-Set;
