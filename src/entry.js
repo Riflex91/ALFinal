@@ -220,6 +220,7 @@
     observation: {
       status: () => runtime.observer.status(),
       assessment: () => runtime.observer.status().assessment,
+      beacon: () => runtime.observer.hostBeacon(),
       tick: () => runtime.observer.tick(),
       events: limit => runtime.observer.listEvents(limit),
       incidents: limit => runtime.observer.listIncidents(limit)
