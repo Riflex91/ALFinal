@@ -4,11 +4,11 @@
   "channel": "stable",
   "version": "0.22.3-h22",
   "packageVersion": "0.22.3",
-  "commitSha": "0869361d252e8a3585586dbc68f2613cc9aa6d8a",
-  "bundleUrl": "https://raw.githubusercontent.com/Riflex91/ALFinal/0869361d252e8a3585586dbc68f2613cc9aa6d8a/dist/al-bot.js",
-  "sha256": "69df9bc9d7cfb0f72417cf6fb96ca8d6b57831ae882b5ef174464a237b481f75",
-  "bytes": 1357082,
-  "sourceRef": "0869361d252e8a3585586dbc68f2613cc9aa6d8a",
-  "releasedAt": "2026-09-28T14:47:09Z",
+  "commitSha": "f929172dd9403b01ee46fcc4360061e3f8603e90",
+  "bundleUrl": "https://raw.githubusercontent.com/Riflex91/ALFinal/f929172dd9403b01ee46fcc4360061e3f8603e90/dist/al-bot.js",
+  "sha256": "5527ff8feceab61e58f49c810c9dfb181c5b65bf0c5010a56e967c7c81e5a72c",
+  "bytes": 1357166,
+  "sourceRef": "f929172dd9403b01ee46fcc4360061e3f8603e90",
+  "releasedAt": "2026-09-28T14:54:27Z",
   "minBootstrapVersion": "0.22.2-h22"
 }
