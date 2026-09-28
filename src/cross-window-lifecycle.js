@@ -318,6 +318,17 @@
         emergencyStopLatched: row.emergencyStopLatched === true,
         lifecycleAutonomyEnabled: typeof row.lifecycleAutonomyEnabled === 'boolean' ? row.lifecycleAutonomyEnabled : null,
         version: cleanText(row.version || '', 80) || null,
+        party: row.party && typeof row.party === 'object' ? {
+          available: row.party.available !== false,
+          partyId: cleanText(row.party.partyId || '', 160) || null,
+          leader: cleanText(row.party.leader || '', 120) || null,
+          memberNames: Array.isArray(row.party.memberNames)
+            ? [...new Set(row.party.memberNames.map(name => cleanText(name, 120)).filter(Boolean))].slice(0, 8)
+            : [],
+          foreignMemberNames: Array.isArray(row.party.foreignMemberNames)
+            ? [...new Set(row.party.foreignMemberNames.map(name => cleanText(name, 120)).filter(Boolean))].slice(0, 8)
+            : []
+        } : null,
         profile: row.profile && typeof row.profile === 'object' ? {
           schemaVersion: 1,
           name: cleanText(row.profile.name || target, 120) || target,
@@ -375,6 +386,8 @@
     _localStatePayload() {
       let state = {};
       try { state = this.getLocalState() || {}; } catch (_) {}
+      let party = null;
+      try { party = this._partySnapshot(); } catch (_) {}
       return {
         sessionId: this.sessionId,
         running: state.running === true,
@@ -382,6 +395,17 @@
         emergencyStopLatched: state.emergencyStopLatched === true,
         lifecycleAutonomyEnabled: typeof state.lifecycleAutonomyEnabled === 'boolean' ? state.lifecycleAutonomyEnabled : null,
         version: cleanText(state.version || '', 80) || null,
+        party: party && typeof party === 'object' ? {
+          available: party.available !== false,
+          partyId: cleanText(party.partyId || '', 160) || null,
+          leader: cleanText(party.leader || '', 120) || null,
+          memberNames: Array.isArray(party.memberNames)
+            ? [...new Set(party.memberNames.map(name => cleanText(name, 120)).filter(Boolean))].slice(0, 8)
+            : [],
+          foreignMemberNames: Array.isArray(party.foreignMemberNames)
+            ? [...new Set(party.foreignMemberNames.map(name => cleanText(name, 120)).filter(Boolean))].slice(0, 8)
+            : []
+        } : null,
         profile: state.profile && typeof state.profile === 'object' ? clone(state.profile) : null,
         observation: state.observation && typeof state.observation === 'object' ? {
           schemaVersion: 1,
