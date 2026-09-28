@@ -28,27 +28,27 @@
 
   const TASK_DEFAULTS = Object.freeze({
     FARM: {
-      minMembers: 1, maxMembers: 3, required: ['DPS'], combatOnly: true,
+      minMembers: 3, maxMembers: 3, required: ['DPS'], combatOnly: true,
       progressionWeight: 0.30, catchUpRequired: true, extraMemberCost: 0.90, offlineActivationCost: 0.08,
       capabilityWeights: { DPS: 0.06, AOE: 0.10, RANGED: 0.035, HEALER: 0.04, TANK: 0.025, SUPPORT: 0.025 }
     },
     QUEST: {
-      minMembers: 1, maxMembers: 3, required: ['DPS'], combatOnly: true,
+      minMembers: 3, maxMembers: 3, required: ['DPS'], combatOnly: true,
       progressionWeight: 0.16, catchUpRequired: false, extraMemberCost: 0.78, offlineActivationCost: 0.10,
       capabilityWeights: { DPS: 0.07, RANGED: 0.04, HEALER: 0.04, SUPPORT: 0.035, TANK: 0.02 }
     },
     BOSS: {
-      minMembers: 2, maxMembers: 3, required: ['TANK', 'HEALER', 'DPS'], combatOnly: true,
+      minMembers: 3, maxMembers: 3, required: ['TANK', 'HEALER', 'DPS'], combatOnly: true,
       progressionWeight: 0.02, catchUpRequired: false, extraMemberCost: 0.10, offlineActivationCost: 0.12,
       capabilityWeights: { TANK: 0.10, HEALER: 0.10, DPS: 0.06, SUPPORT: 0.04, RANGED: 0.02 }
     },
     EVENT: {
-      minMembers: 2, maxMembers: 3, required: ['TANK', 'HEALER', 'DPS'], combatOnly: true,
+      minMembers: 3, maxMembers: 3, required: ['TANK', 'HEALER', 'DPS'], combatOnly: true,
       progressionWeight: 0.04, catchUpRequired: false, extraMemberCost: 0.08, offlineActivationCost: 0.10,
       capabilityWeights: { AOE: 0.10, DPS: 0.06, HEALER: 0.08, TANK: 0.07, SUPPORT: 0.035 }
     },
     SPECIAL: {
-      minMembers: 2, maxMembers: 3, required: ['HEALER', 'DPS'], combatOnly: true,
+      minMembers: 3, maxMembers: 3, required: ['HEALER', 'DPS'], combatOnly: true,
       progressionWeight: 0.06, catchUpRequired: false, extraMemberCost: 0.32, offlineActivationCost: 0.10,
       capabilityWeights: { HEALER: 0.09, DPS: 0.06, SUPPORT: 0.05, TANK: 0.04, RANGED: 0.025 }
     },
@@ -342,8 +342,12 @@
     optimizeTask(input = {}) {
       const taskType = cleanText(input.type || input.taskType || 'FARM', 40).toUpperCase();
       const defaults = TASK_DEFAULTS[taskType] || TASK_DEFAULTS.FARM;
-      const minMembers = Math.max(1, Math.min(4, Math.floor(Number(input.minMembers) || defaults.minMembers)));
-      const maxMembers = Math.max(minMembers, Math.min(4, Math.floor(Number(input.maxMembers) || defaults.maxMembers)));
+      const minMembers = defaults.combatOnly
+        ? 3
+        : Math.max(1, Math.min(4, Math.floor(Number(input.minMembers) || defaults.minMembers)));
+      const maxMembers = defaults.combatOnly
+        ? 3
+        : Math.max(minMembers, Math.min(4, Math.floor(Number(input.maxMembers) || defaults.maxMembers)));
       const required = Array.isArray(input.requiredCapabilities) && input.requiredCapabilities.length
         ? [...new Set(input.requiredCapabilities.map(value => cleanText(value, 40).toUpperCase()).filter(Boolean))]
         : defaults.required.slice();
