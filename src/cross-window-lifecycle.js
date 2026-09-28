@@ -794,10 +794,14 @@
       if (!this._ownedNames().has(target)) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H19_CROSS_WINDOW_TARGET_NOT_OWNED' } };
       const peer = options.peer || this.freshPeer(target);
       if (!peer) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H19_CROSS_WINDOW_PEER_NOT_FRESH' } };
+      const settlementTimeoutMs = Math.max(1000, Math.min(
+        this.config.settlementTimeoutMs,
+        Number(options.settlementTimeoutMs) || this.config.settlementTimeoutMs
+      ));
       const envelope = this._baseEnvelope('COMMAND', target, {
         commandType: cleanText(commandType || '', 80),
         targetSessionId: peer.sessionId,
-        validUntilMs: this.now() + this.config.settlementTimeoutMs,
+        validUntilMs: this.now() + settlementTimeoutMs,
         ...(options.payload && typeof options.payload === 'object' ? { payload: clone(options.payload) } : {})
       });
       const messageId = envelope.messageId;
@@ -816,7 +820,7 @@
           this.pending.delete(messageId);
           this.metrics.transportFailures += 1;
           rejectPromise(new Error('H19_CROSS_WINDOW_SETTLEMENT_TIMEOUT'));
-        }, this.config.settlementTimeoutMs);
+        }, settlementTimeoutMs);
       }
       let transportValue;
       try {
@@ -875,7 +879,11 @@
       if (!peer.updateProtection || peer.updateProtection.coordinatedUpdateCapable !== true) {
         return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H22_CROSS_WINDOW_UPDATE_CAPABILITY_MISSING' } };
       }
-      return this._requestCommand(target, commandType, { peer, payload });
+      return this._requestCommand(target, commandType, {
+        peer,
+        payload,
+        settlementTimeoutMs: Math.min(this.config.settlementTimeoutMs, 4000)
+      });
     }
 
     requestUpdatePrepare(targetName, payload = {}) {
