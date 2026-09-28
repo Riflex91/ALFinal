@@ -27,10 +27,10 @@ function fixture() {
     { at: '2026-09-28T12:00:00.000Z', level: 'INFO', message: 'boot', data: { ok: true } }
   ];
   const runtime = {
-    version: '0.24.0-h24',
+    version: '0.24.1-h24',
     logger: { list: () => logs },
     bus,
-    status: () => ({ product: 'AL Bot', version: '0.24.0-h24', running: true }),
+    status: () => ({ product: 'AL Bot', version: '0.24.1-h24', running: true }),
     diagnostics: () => ({ schemaVersion: 3, runtime: { running: true } }),
     game: { snapshot: () => ({ character: { name: 'FarmerA', ctype: 'ranger' } }) },
     observer: { hostBeacon: () => ({ alive: true, seq: 7 }) }
@@ -47,7 +47,7 @@ test('V6 bridge identity is generation locked and transport-only', () => {
   assert.equal(identity.product, 'AL Bot');
   assert.equal(identity.generation, 6);
   assert.equal(identity.bridgeProtocol, 'albot-v6-bridge-v1');
-  assert.equal(identity.runtimeVersion, '0.24.0-h24');
+  assert.equal(identity.runtimeVersion, '0.24.1-h24');
   assert.equal(identity.transportOnly, true);
   assert.equal(identity.gameplayActionAuthority, false);
   assert.equal(identity.acceptsLegacyGenerations, false);
