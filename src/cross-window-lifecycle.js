@@ -330,6 +330,19 @@
           trainingMs: Number.isFinite(Number(row.profile.trainingMs)) ? Math.max(0, Number(row.profile.trainingMs)) : 0,
           observedAtMs: Number.isFinite(Number(row.profile.observedAtMs)) ? Number(row.profile.observedAtMs) : Number(observedAtMs) || this.now()
         } : null,
+        observation: row.observation && typeof row.observation === 'object' ? {
+          schemaVersion: 1,
+          observedAt: cleanText(row.observation.observedAt || '', 80) || null,
+          observedAtMs: Number.isFinite(Number(row.observation.observedAtMs)) ? Number(row.observation.observedAtMs) : Number(observedAtMs) || this.now(),
+          state: cleanText(row.observation.state || '', 24).toUpperCase() || null,
+          verdict: cleanText(row.observation.verdict || '', 16).toUpperCase() || null,
+          reasons: Array.isArray(row.observation.reasons)
+            ? row.observation.reasons.map(value => cleanText(value, 180)).filter(Boolean).slice(0, 8)
+            : [],
+          seq: Number.isFinite(Number(row.observation.seq)) ? Math.max(0, Number(row.observation.seq)) : 0,
+          classificationOnly: true,
+          actionAuthority: false
+        } : null,
         observedAtMs: Number(observedAtMs) || this.now(),
         aliveUntilMs: (Number(observedAtMs) || this.now()) + this.config.staleMs
       };
@@ -347,7 +360,20 @@
         emergencyStopLatched: state.emergencyStopLatched === true,
         lifecycleAutonomyEnabled: typeof state.lifecycleAutonomyEnabled === 'boolean' ? state.lifecycleAutonomyEnabled : null,
         version: cleanText(state.version || '', 80) || null,
-        profile: state.profile && typeof state.profile === 'object' ? clone(state.profile) : null
+        profile: state.profile && typeof state.profile === 'object' ? clone(state.profile) : null,
+        observation: state.observation && typeof state.observation === 'object' ? {
+          schemaVersion: 1,
+          observedAt: cleanText(state.observation.observedAt || '', 80) || null,
+          observedAtMs: Number.isFinite(Number(state.observation.observedAtMs)) ? Number(state.observation.observedAtMs) : this.now(),
+          state: cleanText(state.observation.state || '', 24).toUpperCase() || null,
+          verdict: cleanText(state.observation.verdict || '', 16).toUpperCase() || null,
+          reasons: Array.isArray(state.observation.reasons)
+            ? state.observation.reasons.map(value => cleanText(value, 180)).filter(Boolean).slice(0, 8)
+            : [],
+          seq: Number.isFinite(Number(state.observation.seq)) ? Math.max(0, Number(state.observation.seq)) : 0,
+          classificationOnly: true,
+          actionAuthority: false
+        } : null
       };
     }
 
