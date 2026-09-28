@@ -209,7 +209,7 @@ test('activity requirements change the exact three-farmer composition without ha
 });
 
 
-function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, localName = 'My_Warrior', partyHealthy = true, partyLeader = 'My_Warrior', partyMembers = null, profileRows: customProfileRows = null, selectedMembers = ['My_Priest', 'My_Ranger1', 'My_Warrior'], supportMembers = ['My_Merchant'], leaderName = 'My_Warrior', lifecycleSuspended = false, lifecycleSuspendedReason = null, farmSuspended = false, farmSuspendedReason = null, farmOwner = 'full-autonomy', onlineNames = ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior'] } = {}) {
+function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, inactiveFullAutonomyName = null, localName = 'My_Warrior', partyHealthy = true, partyLeader = 'My_Warrior', partyMembers = null, profileRows: customProfileRows = null, selectedMembers = ['My_Priest', 'My_Ranger1', 'My_Warrior'], supportMembers = ['My_Merchant'], leaderName = 'My_Warrior', lifecycleSuspended = false, lifecycleSuspendedReason = null, farmSuspended = false, farmSuspendedReason = null, farmOwner = 'full-autonomy', onlineNames = ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior'] } = {}) {
   const source = fs.readFileSync(path.resolve(here, '../src/full-autonomy.js'), 'utf8');
   const clone = value => value == null ? value : JSON.parse(JSON.stringify(value));
   const ctx = {
@@ -263,7 +263,8 @@ function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, localNa
       online: state.onlineNames.includes(row.name),
       local: row.name === localName,
       peerFresh: row.name === localName || state.onlineNames.includes(row.name),
-      running: row.name === localName || state.onlineNames.includes(row.name)
+      running: row.name === localName || state.onlineNames.includes(row.name),
+      fullAutonomyEnabled: row.name === localName || row.name !== inactiveFullAutonomyName
     }));
   const strategy = {
     profiles: () => clone(profiles.map(row => {
@@ -275,7 +276,8 @@ function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, localNa
         ...row,
         online,
         peerFresh: row.local || online,
-        running
+        running,
+        fullAutonomyEnabled: row.local || row.name !== inactiveFullAutonomyName
       };
     })),
     optimizeTask: () => ({
@@ -391,6 +393,19 @@ test('full autonomy waits fail-closed until every online character has a fresh b
   assert.equal(started.tick.state, 'WARMING');
   assert.deepEqual([...started.tick.missingProfiles], ['My_Merchant']);
   assert.equal(state.lifecycleStarts, 0);
+  assert.equal(state.farmStarts, 0);
+});
+
+test('H26 party recovery waits until every desired remote bot has Full Autonomy active', () => {
+  const { controller, state } = loadFullAutonomy({
+    partyHealthy: false,
+    inactiveFullAutonomyName: 'My_Priest'
+  });
+  const started = controller.startAutonomy({ taskType: 'FARM' });
+  assert.equal(started.accepted, true);
+  assert.equal(started.tick.state, 'WARMING');
+  assert.deepEqual([...started.tick.missingProfiles], ['My_Priest']);
+  assert.equal(state.lifecycleStarts, 0, 'leader must not invite a bot that cannot accept the desired-party policy yet');
   assert.equal(state.farmStarts, 0);
 });
 
