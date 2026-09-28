@@ -280,6 +280,7 @@
         party: this.party,
         storage: this.storage,
         crossWindow: this.lifecycleTransport,
+        sessionId: this.lifecycleTransport && this.lifecycleTransport.sessionId || null,
         canAct: action => this.actionAllowed(action)
       });
       this.accountStrategy = new ns.AccountStrategyController({
