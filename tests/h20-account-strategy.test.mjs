@@ -164,7 +164,7 @@ test('activity requirements change the three-farmer composition without hardcodi
 });
 
 
-function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, localName = 'My_Warrior', partyHealthy = true, partyLeader = 'My_Warrior', selectedMembers = ['My_Priest', 'My_Ranger1', 'My_Warrior'], leaderName = 'My_Warrior', lifecycleSuspended = false, lifecycleSuspendedReason = null, farmSuspended = false, farmSuspendedReason = null, onlineNames = ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior'] } = {}) {
+function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, localName = 'My_Warrior', partyHealthy = true, partyLeader = 'My_Warrior', partyMembers = null, profileRows: customProfileRows = null, selectedMembers = ['My_Priest', 'My_Ranger1', 'My_Warrior'], supportMembers = ['My_Merchant'], leaderName = 'My_Warrior', lifecycleSuspended = false, lifecycleSuspendedReason = null, farmSuspended = false, farmSuspendedReason = null, onlineNames = ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior'] } = {}) {
   const source = fs.readFileSync(path.resolve(here, '../src/full-autonomy.js'), 'utf8');
   const clone = value => value == null ? value : JSON.parse(JSON.stringify(value));
   const ctx = {
@@ -202,20 +202,21 @@ function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, localNa
     broadcasts: 0,
     training: []
   };
-  const profileRows = [
+  const profileRows = customProfileRows || [
     { name: 'My_Warrior', ctype: 'warrior' },
     { name: 'My_Priest', ctype: 'priest' },
     { name: 'My_Ranger1', ctype: 'ranger' },
     { name: 'My_Merchant', ctype: 'merchant' }
   ];
+  const resolvedPartyMembers = partyMembers || ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior'];
   const profiles = profileRows
     .filter(row => !missingPeer || row.name !== 'My_Merchant')
     .map(row => ({
       ...row,
-      online: true,
+      online: state.onlineNames.includes(row.name),
       local: row.name === localName,
-      peerFresh: true,
-      running: true
+      peerFresh: row.name === localName || state.onlineNames.includes(row.name),
+      running: row.name === localName || state.onlineNames.includes(row.name)
     }));
   const strategy = {
     profiles: () => clone(profiles.map(row => ({
@@ -226,7 +227,7 @@ function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, localNa
       status: 'SELECTION_READY',
       taskType: 'FARM',
       selected: { memberNames: selectedMembers.slice() },
-      supportMemberNames: ['My_Merchant'],
+      supportMemberNames: supportMembers.slice(),
       leaderName,
       progression: { selectedCharacterName: 'My_Ranger1' }
     }),
@@ -293,8 +294,8 @@ function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, localNa
         ? {
           available: true,
           leader: partyLeader,
-          memberNames: ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior'],
-          size: 4
+          memberNames: resolvedPartyMembers.slice(),
+          size: resolvedPartyMembers.length
         }
         : { available: false, leader: null, memberNames: [], size: 0 }
     },
@@ -427,6 +428,35 @@ test('autostart can arm safely before all four characters are online and waits w
   const next = controller.tick();
   assert.equal(next.state, 'RUNNING');
   assert.equal(state.farmStarts, 1);
+});
+
+test('Full Autonomy rotates an old farmer out when strategy selects a different account farmer', () => {
+  const { controller, state } = loadFullAutonomy({
+    localName: 'My_Warrior',
+    partyLeader: 'My_Warrior',
+    partyMembers: ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior'],
+    profileRows: [
+      { name: 'My_Warrior', ctype: 'warrior' },
+      { name: 'My_Priest', ctype: 'priest' },
+      { name: 'My_Ranger1', ctype: 'ranger' },
+      { name: 'My_Mage', ctype: 'mage' },
+      { name: 'My_Merchant', ctype: 'merchant' }
+    ],
+    selectedMembers: ['My_Mage', 'My_Ranger1', 'My_Warrior'],
+    onlineNames: ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior']
+  });
+
+  const started = controller.startAutonomy({ taskType: 'FARM' });
+  assert.equal(started.accepted, true);
+  assert.equal(started.tick.state, 'WARMING');
+  assert.equal(started.tick.reason, 'FULL_AUTONOMY_ROTATING_ACTIVITY_GROUP');
+  assert.equal(started.tick.rotationRequired, true);
+  assert.deepEqual(started.tick.desiredCharacterNames, ['My_Mage', 'My_Merchant', 'My_Ranger1', 'My_Warrior']);
+  assert.deepEqual(started.tick.unexpectedOnlineNames, ['My_Priest']);
+  assert.equal(state.lifecycleStarts, 1);
+  assert.deepEqual(state.lifecyclePolicy.desiredActiveNames, ['My_Mage', 'My_Merchant', 'My_Ranger1', 'My_Warrior']);
+  assert.deepEqual(state.lifecyclePolicy.desiredPartyMemberNames, ['My_Mage', 'My_Merchant', 'My_Ranger1', 'My_Warrior']);
+  assert.equal(state.farmStarts, 0);
 });
 
 test('full autonomy honors a lifecycle self-stop and does not restart it on the next tick', () => {
