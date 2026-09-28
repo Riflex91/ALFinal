@@ -1,4 +1,4 @@
-/* AL Bot 0.20.0-h20 | generated file | do not edit dist directly */
+/* AL Bot 0.21.0-h21 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -2781,6 +2781,8 @@
     smart_move: Object.freeze({ publicName: 'smart_move', family: 'movement' }),
     stop: Object.freeze({ publicName: 'stop', family: 'movement-cleanup' }),
     use_skill: Object.freeze({ publicName: 'use_skill', family: 'skill' }),
+    use_hp: Object.freeze({ publicName: 'use_hp', family: 'recovery' }),
+    use_mp: Object.freeze({ publicName: 'use_mp', family: 'recovery' }),
     attack: Object.freeze({ publicName: 'attack', family: 'combat' }),
     heal: Object.freeze({ publicName: 'heal', family: 'party-heal' }),
     change_target: Object.freeze({ publicName: 'change_target', family: 'combat-target' }),
@@ -2857,17 +2859,56 @@
     }
 
     _resolve(publicName) {
-      for (const candidate of this._roots()) {
+      const roots = this._roots();
+      for (const candidate of roots) {
         try {
           if (candidate && typeof candidate[publicName] === 'function') {
-            return { owner: candidate, fn: candidate[publicName] };
+            return { owner: candidate, fn: candidate[publicName], resolvedName: publicName };
           }
         } catch (_) {}
         try {
           if (candidate && candidate.parent && typeof candidate.parent[publicName] === 'function') {
-            return { owner: candidate.parent, fn: candidate.parent[publicName] };
+            return { owner: candidate.parent, fn: candidate.parent[publicName], resolvedName: publicName };
           }
         } catch (_) {}
+      }
+
+      if (publicName === 'use_hp' || publicName === 'use_mp') {
+        for (const candidate of roots) {
+          try {
+            if (candidate && typeof candidate.use === 'function') {
+              const use = candidate.use;
+              return {
+                owner: candidate,
+                resolvedName: 'use',
+                fn: function () { return use.call(candidate, publicName); }
+              };
+            }
+          } catch (_) {}
+          try {
+            if (candidate && candidate.parent && typeof candidate.parent.use === 'function') {
+              const owner = candidate.parent;
+              const use = owner.use;
+              return {
+                owner,
+                resolvedName: 'use',
+                fn: function () { return use.call(owner, publicName); }
+              };
+            }
+          } catch (_) {}
+        }
+        for (const candidate of roots) {
+          try {
+            if (candidate && typeof candidate.use_hp_or_mp === 'function') {
+              return { owner: candidate, fn: candidate.use_hp_or_mp, resolvedName: 'use_hp_or_mp' };
+            }
+          } catch (_) {}
+          try {
+            if (candidate && candidate.parent && typeof candidate.parent.use_hp_or_mp === 'function') {
+              return { owner: candidate.parent, fn: candidate.parent.use_hp_or_mp, resolvedName: 'use_hp_or_mp' };
+            }
+          } catch (_) {}
+        }
       }
       return null;
     }
@@ -4326,6 +4367,457 @@
   }
 
   ns.ClassSkillController = ClassSkillController;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+
+(function (root) {
+  'use strict';
+
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns) throw new Error('ALBOT_INTERNALS_MISSING');
+
+  const clone = ns.helpers.clone;
+  const cleanText = ns.helpers.cleanText;
+
+  const RELEVANT_SKILLS = Object.freeze({
+    warrior: Object.freeze(['hardshell', 'charge', 'taunt', 'warcry', 'cleave', 'stomp']),
+    priest: Object.freeze(['heal', 'partyheal', 'revive', 'curse', 'darkblessing']),
+    ranger: Object.freeze(['huntersmark', 'supershot', '5shot', '3shot']),
+    mage: Object.freeze(['burst', 'cburst']),
+    rogue: Object.freeze(['invis', 'mentalburst', 'quickpunch', 'fanofknives']),
+    paladin: Object.freeze(['selfheal', 'smash']),
+    merchant: Object.freeze(['mluck'])
+  });
+
+  function finite(value) {
+    if (value == null || value === '') return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function ratio(value, max) {
+    const current = finite(value);
+    const total = finite(max);
+    if (current == null || total == null || total <= 0) return null;
+    return Math.max(0, Math.min(1, current / total));
+  }
+
+  function restoreAmount(meta, resource) {
+    const gives = meta && meta.gives;
+    if (Array.isArray(gives)) {
+      let best = null;
+      for (const row of gives) {
+        if (!Array.isArray(row) || String(row[0] || '').toLowerCase() !== resource) continue;
+        const amount = finite(row[1]);
+        if (amount != null && amount > 0) best = best == null ? amount : Math.max(best, amount);
+      }
+      return best;
+    }
+    if (gives && typeof gives === 'object') {
+      const amount = finite(gives[resource]);
+      return amount != null && amount > 0 ? amount : null;
+    }
+    return null;
+  }
+
+  class ResourceTopoffController {
+    constructor(options = {}) {
+      this.root = options.root || root;
+      this.logger = options.logger || null;
+      this.game = options.game || null;
+      this.actions = options.actions || null;
+      this.classSkills = options.classSkills || null;
+      this.now = typeof options.now === 'function' ? options.now : () => Date.now();
+      this.config = {
+        tickMs: Math.max(100, Math.min(1000, Number(options.tickMs) || 250)),
+        targetRatio: Math.max(0.90, Math.min(1, Number(options.targetRatio) || 1)),
+        criticalHpRatio: Math.max(0.40, Math.min(0.90, Number(options.criticalHpRatio) || 0.72)),
+        operationalHpRatio: Math.max(0.40, Math.min(0.95, Number(options.operationalHpRatio) || 0.75)),
+        baseMpRatio: Math.max(0.10, Math.min(0.80, Number(options.baseMpRatio) || 0.28)),
+        skillReserveRatio: Math.max(0, Math.min(0.50, Number(options.skillReserveRatio) || 0.10)),
+        minPotionUtilization: Math.max(0.25, Math.min(1, Number(options.minPotionUtilization) || 0.50)),
+        cooldownMs: Math.max(500, Math.min(3000, Number(options.cooldownMs) || 650)),
+        outcomeTimeoutMs: Math.max(1000, Math.min(10000, Number(options.outcomeTimeoutMs) || 3000))
+      };
+      this.moduleActive = false;
+      this.scope = null;
+      this.heartbeat = null;
+      this.lastAttemptAtMs = -Infinity;
+      this.backoffUntilMs = 0;
+      this.pending = null;
+      this.suspendedReason = null;
+      this.lastDecision = null;
+      this.lastUse = null;
+      this.lastSupply = null;
+      this.metrics = {
+        ticks: 0,
+        evaluations: 0,
+        hpRequests: 0,
+        mpRequests: 0,
+        confirmed: 0,
+        rejected: 0,
+        unknown: 0,
+        cooldownWaits: 0,
+        potionUnavailable: 0,
+        overhealAvoided: 0,
+        operationalBypasses: 0,
+        skillReserveTriggers: 0
+      };
+    }
+
+    start(context = {}) {
+      this.moduleActive = true;
+      this.scope = context.scope || null;
+      this.heartbeat = typeof context.heartbeat === 'function' ? context.heartbeat : null;
+      if (this.scope && typeof this.scope.interval === 'function') {
+        this.scope.interval('resource-topoff-loop', () => this.tick(), this.config.tickMs, { immediate: true });
+      }
+      return this.status();
+    }
+
+    stop(reason = 'RESOURCE_TOPOFF_MODULE_STOP') {
+      this.moduleActive = false;
+      this.scope = null;
+      this.heartbeat = null;
+      this.lastDecision = {
+        at: new Date().toISOString(),
+        state: this.pending ? 'STOPPED_WITH_PENDING_PRESERVED' : 'STOPPED',
+        reason: cleanText(reason, 240),
+        pending: this.pending ? clone(this.pending) : null
+      };
+      return this.status();
+    }
+
+    resetSafety(reason = 'RESOURCE_TOPOFF_EXPLICIT_RESET') {
+      if (this.pending) {
+        return {
+          ...this.status(),
+          reset: false,
+          reason: 'RESOURCE_TOPOFF_PENDING_OUTCOME_REQUIRES_RECONCILIATION'
+        };
+      }
+      this.suspendedReason = null;
+      this.backoffUntilMs = 0;
+      this.lastDecision = { at: new Date().toISOString(), state: 'RESET', reason: cleanText(reason, 240) };
+      return { ...this.status(), reset: true };
+    }
+
+    _gameData() {
+      try {
+        if (this.game && typeof this.game._gameData === 'function') return this.game._gameData() || {};
+      } catch (_) {}
+      try {
+        const value = this.root && (this.root.G || this.root.parent && this.root.parent.G);
+        return value && typeof value === 'object' ? value : {};
+      } catch (_) {
+        return {};
+      }
+    }
+
+    _snapshot() {
+      try { return this.game && this.game.snapshot ? this.game.snapshot() : null; } catch (_) { return null; }
+    }
+
+    _inventory() {
+      try { return this.game && this.game.inventorySnapshot ? this.game.inventorySnapshot() : null; } catch (_) { return null; }
+    }
+
+    _supply(inventory = this._inventory()) {
+      const items = inventory && inventory.available !== false && Array.isArray(inventory.items) ? inventory.items : [];
+      const hpRows = items.filter(row => row && /^hpot/i.test(String(row.name || '')));
+      const mpRows = items.filter(row => row && /^mpot/i.test(String(row.name || '')));
+      const count = rows => rows.reduce((sum, row) => sum + Math.max(1, Math.floor(Number(row.quantity) || 1)), 0);
+      const status = {
+        hpPotions: count(hpRows),
+        mpPotions: count(mpRows),
+        hpReady: hpRows.length > 0,
+        mpReady: mpRows.length > 0,
+        hpItems: hpRows.map(row => ({ name: row.name, quantity: row.quantity })),
+        mpItems: mpRows.map(row => ({ name: row.name, quantity: row.quantity }))
+      };
+      status.ready = status.hpReady && status.mpReady;
+      this.lastSupply = clone(status);
+      return status;
+    }
+
+    supply() {
+      return clone(this._supply());
+    }
+
+    _potionRestore(inventory, action) {
+      const resource = action === 'use_hp' ? 'hp' : action === 'use_mp' ? 'mp' : null;
+      if (!resource) return null;
+      const prefix = resource === 'hp' ? /^hpot/i : /^mpot/i;
+      const items = inventory && Array.isArray(inventory.items) ? inventory.items : [];
+      const definitions = this._gameData().items || {};
+      let best = null;
+      for (const row of items) {
+        if (!row || !prefix.test(String(row.name || ''))) continue;
+        const amount = restoreAmount(definitions[row.name], resource);
+        if (amount != null) best = best == null ? amount : Math.max(best, amount);
+      }
+      return best;
+    }
+
+    _skillReserve(character) {
+      const ctype = cleanText(character && character.ctype || '', 60).toLowerCase();
+      const maxMp = Math.max(0, finite(character && character.maxMp) || 0);
+      const ids = RELEVANT_SKILLS[ctype] || [];
+      const rows = [];
+      let maxCost = 0;
+      for (const id of ids) {
+        let definition = null;
+        try { definition = this.game && this.game.skillDefinition ? this.game.skillDefinition(id) : null; } catch (_) {}
+        if (!definition) continue;
+        const cost = Math.max(0, finite(definition.mp) || 0);
+        rows.push({ id, mp: cost });
+        maxCost = Math.max(maxCost, cost);
+      }
+      const requiredMp = maxMp > 0
+        ? Math.min(maxMp, Math.max(maxMp * this.config.baseMpRatio, maxCost + maxMp * this.config.skillReserveRatio))
+        : maxCost;
+      return {
+        ctype,
+        maxSkillCost: maxCost,
+        requiredMp: Math.ceil(requiredMp),
+        requiredRatio: maxMp > 0 ? Math.min(1, requiredMp / maxMp) : null,
+        skills: rows
+      };
+    }
+
+    _resourceEvidence(action) {
+      const snap = this._snapshot();
+      const character = snap && snap.character;
+      const inventory = this._inventory();
+      const supply = this._supply(inventory);
+      return {
+        hp: finite(character && character.hp),
+        mp: finite(character && character.mp),
+        hpPotions: supply.hpPotions,
+        mpPotions: supply.mpPotions
+      };
+    }
+
+    _watch(value, pending) {
+      if (!value || typeof value.then !== 'function') {
+        pending.settlement = 'RETURNED';
+        pending.response = value == null ? null : clone(value);
+        return;
+      }
+      Promise.resolve(value).then(response => {
+        if (!this.pending || this.pending.id !== pending.id) return;
+        pending.settlement = 'RESOLVED';
+        pending.response = response == null ? null : clone(response);
+      }, error => {
+        if (!this.pending || this.pending.id !== pending.id) return;
+        pending.settlement = 'REJECTED';
+        pending.error = cleanText(error && error.message || error || 'RESOURCE_TOPOFF_REJECTED', 500);
+      }).catch(() => {});
+    }
+
+    _knownRejection(value) {
+      const text = cleanText(value && (value.reason || value.message) || value || '', 300).toLowerCase();
+      return /cooldown|safet|no_mp|no_hp|full|not_ready|cant_use|cannot_use|unavailable/.test(text);
+    }
+
+    _observePending() {
+      const pending = this.pending;
+      if (!pending) return false;
+      const after = this._resourceEvidence(pending.action);
+      const resourceIncreased = pending.resource === 'hp'
+        ? after.hp != null && pending.before.hp != null && after.hp > pending.before.hp
+        : after.mp != null && pending.before.mp != null && after.mp > pending.before.mp;
+      const potionDecreased = pending.resource === 'hp'
+        ? after.hpPotions < pending.before.hpPotions
+        : after.mpPotions < pending.before.mpPotions;
+
+      if (resourceIncreased || potionDecreased) {
+        this.pending = null;
+        this.metrics.confirmed += 1;
+        this.lastUse = {
+          at: new Date().toISOString(),
+          action: pending.action,
+          state: 'CONFIRMED',
+          resourceIncreased,
+          potionDecreased
+        };
+        return true;
+      }
+
+      if (pending.settlement === 'REJECTED' || (pending.response && (pending.response.failed === true || pending.response.success === false || pending.response.used === false))) {
+        const detail = pending.error || pending.response || 'RESOURCE_TOPOFF_REJECTED';
+        if (this._knownRejection(detail)) {
+          this.pending = null;
+          this.metrics.rejected += 1;
+          this.backoffUntilMs = this.now() + this.config.cooldownMs;
+          this.lastUse = { at: new Date().toISOString(), action: pending.action, state: 'REJECTED', reason: cleanText(detail && (detail.reason || detail.message) || detail, 240) };
+          return true;
+        }
+        this.pending = null;
+        this.suspendedReason = 'RESOURCE_TOPOFF_ACTION_UNKNOWN';
+        this.metrics.unknown += 1;
+        this.lastUse = { at: new Date().toISOString(), action: pending.action, state: 'UNKNOWN', reason: cleanText(detail && (detail.reason || detail.message) || detail, 240) };
+        return true;
+      }
+
+      if (this.now() >= pending.deadlineAtMs) {
+        this.pending = null;
+        this.suspendedReason = 'RESOURCE_TOPOFF_UNVERIFIED_TIMEOUT';
+        this.metrics.unknown += 1;
+        this.lastUse = { at: new Date().toISOString(), action: pending.action, state: 'UNKNOWN', reason: this.suspendedReason };
+        return true;
+      }
+      return false;
+    }
+
+    _candidate(action, character, inventory, skillReserve) {
+      const resource = action === 'use_hp' ? 'hp' : 'mp';
+      const current = Math.max(0, finite(character && character[resource]) || 0);
+      const maximum = Math.max(current, finite(character && character[resource === 'hp' ? 'maxHp' : 'maxMp']) || current);
+      const observedRatio = maximum > 0 ? current / maximum : 1;
+      const deficit = Math.max(0, maximum - current);
+      const restore = this._potionRestore(inventory, action);
+      const utilization = restore != null && restore > 0 ? Math.min(1, deficit / restore) : null;
+      const operationalRatio = action === 'use_hp'
+        ? this.config.operationalHpRatio
+        : Math.max(this.config.baseMpRatio, finite(skillReserve && skillReserve.requiredRatio) || 0);
+      const critical = action === 'use_hp' && observedRatio <= this.config.criticalHpRatio;
+      const operationalRequired = observedRatio < operationalRatio;
+      const viable = critical || operationalRequired || utilization == null || utilization >= this.config.minPotionUtilization;
+      return { action, resource, current, maximum, ratio: observedRatio, deficit, restore, utilization, operationalRatio, critical, operationalRequired, viable };
+    }
+
+    tick() {
+      this.metrics.ticks += 1;
+      if (this.heartbeat) {
+        try { this.heartbeat({ phase: 'resource-topoff', pending: !!this.pending, suspended: !!this.suspendedReason }); } catch (_) {}
+      }
+      if (!this.moduleActive) return { state: 'IDLE', reason: 'RESOURCE_TOPOFF_MODULE_INACTIVE' };
+      if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason };
+      if (this.pending) {
+        this._observePending();
+        return this.pending ? { state: 'PENDING', pending: clone(this.pending) }
+          : (this.suspendedReason ? { state: 'SUSPENDED', reason: this.suspendedReason } : { state: 'OBSERVED' });
+      }
+      const now = this.now();
+      if (now < this.backoffUntilMs || now - this.lastAttemptAtMs < this.config.cooldownMs) {
+        this.metrics.cooldownWaits += 1;
+        return { state: 'WAITING', reason: 'RESOURCE_TOPOFF_COOLDOWN' };
+      }
+
+      const snap = this._snapshot();
+      const character = snap && snap.character;
+      if (!snap || !snap.available || !character) return { state: 'WAITING', reason: 'CHARACTER_UNAVAILABLE' };
+      if (character.rip === true) return { state: 'WAITING', reason: 'CHARACTER_DEAD' };
+
+      this.metrics.evaluations += 1;
+      const inventory = this._inventory();
+      const supply = this._supply(inventory);
+      const hpRatio = ratio(character.hp, character.maxHp);
+      const mpRatio = ratio(character.mp, character.maxMp);
+      const skillReserve = this._skillReserve(character);
+      const mpReserveRequired = finite(character.mp) != null && finite(skillReserve.requiredMp) != null
+        && Number(character.mp) < Number(skillReserve.requiredMp);
+      if (mpReserveRequired) this.metrics.skillReserveTriggers += 1;
+
+      const hpNeeded = hpRatio != null && hpRatio < this.config.targetRatio;
+      const mpNeeded = mpRatio != null && mpRatio < this.config.targetRatio;
+      if (!hpNeeded && !mpNeeded) {
+        this.lastDecision = { at: new Date().toISOString(), state: 'READY', reason: 'RESOURCE_TOPOFF_FULL', skillReserve };
+        return clone(this.lastDecision);
+      }
+
+      const hp = hpNeeded && supply.hpReady ? this._candidate('use_hp', character, inventory, skillReserve) : null;
+      const mp = mpNeeded && supply.mpReady ? this._candidate('use_mp', character, inventory, skillReserve) : null;
+      const ordered = [];
+      if (hp && hp.critical) ordered.push(hp);
+      if (mp && mpReserveRequired) ordered.push(mp);
+      if (hp && mp && !ordered.includes(hp) && !ordered.includes(mp)) {
+        if ((1 - mp.ratio) >= (1 - hp.ratio)) ordered.push(mp, hp);
+        else ordered.push(hp, mp);
+      } else {
+        if (hp && !ordered.includes(hp)) ordered.push(hp);
+        if (mp && !ordered.includes(mp)) ordered.push(mp);
+      }
+
+      const selected = ordered.find(row => row.viable) || null;
+      if (!selected) {
+        if ((hpNeeded && !supply.hpReady) || (mpReserveRequired && !supply.mpReady)) this.metrics.potionUnavailable += 1;
+        else this.metrics.overhealAvoided += 1;
+        const reason = mpReserveRequired && !supply.mpReady
+          ? 'RESOURCE_TOPOFF_MP_POTION_UNAVAILABLE'
+          : hpNeeded && !supply.hpReady && hpRatio <= this.config.operationalHpRatio
+            ? 'RESOURCE_TOPOFF_HP_POTION_UNAVAILABLE'
+            : 'RESOURCE_TOPOFF_UTILIZATION_HOLD';
+        this.lastDecision = { at: new Date().toISOString(), state: 'WAITING', reason, hpRatio, mpRatio, skillReserve, supply };
+        return clone(this.lastDecision);
+      }
+
+      if (selected.operationalRequired && selected.utilization != null && selected.utilization < this.config.minPotionUtilization) {
+        this.metrics.operationalBypasses += 1;
+      }
+
+      const before = this._resourceEvidence(selected.action);
+      let dispatch;
+      try { dispatch = this.actions && this.actions.dispatch ? this.actions.dispatch(selected.action, []) : null; }
+      catch (error) {
+        this.lastDecision = { at: new Date().toISOString(), state: 'BLOCKED', reason: cleanText(error && error.message || error, 300) };
+        return clone(this.lastDecision);
+      }
+      this.lastAttemptAtMs = now;
+      if (!dispatch || dispatch.state !== 'DISPATCHED') {
+        if (dispatch && dispatch.state === 'UNKNOWN') {
+          this.suspendedReason = 'RESOURCE_TOPOFF_DISPATCH_UNKNOWN';
+          this.metrics.unknown += 1;
+          this.lastUse = { at: new Date().toISOString(), action: selected.action, state: 'UNKNOWN', reason: dispatch.error && dispatch.error.message || this.suspendedReason };
+          return { state: 'SUSPENDED', reason: this.suspendedReason };
+        }
+        this.metrics.rejected += 1;
+        this.backoffUntilMs = now + this.config.cooldownMs;
+        return { state: 'WAITING', reason: dispatch && dispatch.state || 'RESOURCE_TOPOFF_NOT_DISPATCHED' };
+      }
+
+      const pending = {
+        id: dispatch.id,
+        action: selected.action,
+        resource: selected.resource,
+        before,
+        dispatchedAtMs: now,
+        deadlineAtMs: now + this.config.outcomeTimeoutMs,
+        settlement: 'PENDING',
+        response: null,
+        error: null,
+        decision: clone(selected),
+        skillReserve: clone(skillReserve)
+      };
+      this.pending = pending;
+      if (selected.action === 'use_hp') this.metrics.hpRequests += 1;
+      else this.metrics.mpRequests += 1;
+      this._watch(dispatch.value, pending);
+      this.lastDecision = { at: new Date().toISOString(), state: 'DISPATCHED', action: selected.action, reason: mpReserveRequired && selected.action === 'use_mp' ? 'SKILL_MP_RESERVE' : 'RESOURCE_TOPOFF', skillReserve };
+      return clone(this.lastDecision);
+    }
+
+    status() {
+      const snap = this._snapshot();
+      const character = snap && snap.character;
+      return {
+        schemaVersion: 1,
+        moduleActive: this.moduleActive,
+        suspended: !!this.suspendedReason,
+        suspendedReason: this.suspendedReason,
+        pending: clone(this.pending),
+        supply: clone(this.lastSupply || this._supply()),
+        skillReserve: character ? this._skillReserve(character) : null,
+        lastDecision: clone(this.lastDecision),
+        lastUse: clone(this.lastUse),
+        config: clone(this.config),
+        metrics: clone(this.metrics)
+      };
+    }
+  }
+
+  ns.ResourceTopoffController = ResourceTopoffController;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
 
 
@@ -7793,12 +8285,12 @@
   });
 
   const TASK_DEFAULTS = Object.freeze({
-    FARM: { minMembers: 1, maxMembers: 2, required: ['DPS'], combatOnly: true, progressionWeight: 0.20 },
-    QUEST: { minMembers: 1, maxMembers: 2, required: ['DPS'], combatOnly: true, progressionWeight: 0.16 },
-    BOSS: { minMembers: 3, maxMembers: 4, required: ['TANK', 'HEALER', 'DPS'], combatOnly: true, progressionWeight: 0 },
-    EVENT: { minMembers: 3, maxMembers: 4, required: ['TANK', 'HEALER', 'DPS'], combatOnly: true, progressionWeight: 0 },
-    SPECIAL: { minMembers: 2, maxMembers: 4, required: ['HEALER', 'DPS'], combatOnly: true, progressionWeight: 0.04 },
-    ECONOMY: { minMembers: 1, maxMembers: 1, required: ['ECONOMY'], combatOnly: false, progressionWeight: 0 }
+    FARM: { minMembers: 1, maxMembers: 3, required: ['DPS'], combatOnly: true, progressionWeight: 0.20, extraMemberCost: 0.90, diversityWeight: 0.02 },
+    QUEST: { minMembers: 1, maxMembers: 3, required: ['DPS'], combatOnly: true, progressionWeight: 0.16, extraMemberCost: 0.75, diversityWeight: 0.025 },
+    BOSS: { minMembers: 3, maxMembers: 4, required: ['TANK', 'HEALER', 'DPS'], combatOnly: true, progressionWeight: 0, extraMemberCost: 0.08, diversityWeight: 0.035 },
+    EVENT: { minMembers: 3, maxMembers: 4, required: ['TANK', 'HEALER', 'DPS'], combatOnly: true, progressionWeight: 0, extraMemberCost: 0.06, diversityWeight: 0.035 },
+    SPECIAL: { minMembers: 2, maxMembers: 4, required: ['HEALER', 'DPS'], combatOnly: true, progressionWeight: 0.04, extraMemberCost: 0.35, diversityWeight: 0.03 },
+    ECONOMY: { minMembers: 1, maxMembers: 1, required: ['ECONOMY'], combatOnly: false, progressionWeight: 0, extraMemberCost: 0, diversityWeight: 0 }
   });
 
   function combinations(rows, minSize, maxSize) {
@@ -8023,7 +8515,7 @@
 
     _scoredProfiles() {
       const rows = this.profiles();
-      const usable = rows.filter(row => row.online && row.rip !== true && row.emergencyStopLatched !== true);
+      const usable = rows.filter(row => row.online && row.running === true && row.rip !== true && row.emergencyStopLatched !== true);
       const maxLevel = Math.max(1, ...usable.map(row => finite(row.level) || 1));
       const maxGear = Math.max(1, ...usable.map(row => finite(row.gearScore) || 0));
       const combatRaw = row => {
@@ -8057,6 +8549,7 @@
     progressionPlan() {
       const combat = this._scoredProfiles().filter(row =>
         row.online
+        && row.running === true
         && row.rip !== true
         && row.ctype !== 'merchant'
         && row.capabilities.includes('DPS')
@@ -8089,7 +8582,7 @@
         : defaults.required.slice();
       const progression = this.progressionPlan();
       const scored = this._scoredProfiles()
-        .filter(row => row.online && row.rip !== true && row.emergencyStopLatched !== true)
+        .filter(row => row.online && row.running === true && row.rip !== true && row.emergencyStopLatched !== true)
         .filter(row => !defaults.combatOnly || row.ctype !== 'merchant')
         .slice(0, this.config.maxCandidates);
 
@@ -8105,18 +8598,23 @@
         if (progressionRequired && !memberNameSet.has(String(progression.selectedCharacterName))) continue;
         const memberNames = members.map(member => member.name).sort();
         const baseStrength = members.reduce((sum, member) => sum + member.strength, 0);
-        const roleDiversity = capabilities.size / 10;
+        const averageStrength = members.length ? baseStrength / members.length : 0;
+        const roleDiversityBonus = capabilities.size * Math.max(0, Number(defaults.diversityWeight) || 0);
         const containsProgression = progression.selectedCharacterName
           ? memberNames.includes(progression.selectedCharacterName)
           : false;
         const progressionBonus = containsProgression ? defaults.progressionWeight : 0;
-        const score = baseStrength + roleDiversity + progressionBonus;
+        const coordinationCost = Math.max(0, members.length - 1) * Math.max(0, Number(defaults.extraMemberCost) || 0);
+        const score = baseStrength + roleDiversityBonus + progressionBonus - coordinationCost;
         ranking.push({
           taskType,
           memberNames,
           score: Number(score.toFixed(6)),
           baseStrength: Number(baseStrength.toFixed(6)),
+          averageStrength: Number(averageStrength.toFixed(6)),
           progressionBonus,
+          roleDiversityBonus: Number(roleDiversityBonus.toFixed(6)),
+          coordinationCost: Number(coordinationCost.toFixed(6)),
           capabilities: [...capabilities].sort(),
           members: clone(members)
         });
@@ -8134,7 +8632,7 @@
         leaderName = tank && tank.name || healer && healer.name || strongest && strongest.name || null;
       }
       const supportMemberNames = this._scoredProfiles()
-        .filter(row => row.online && row.rip !== true && row.ctype === 'merchant')
+        .filter(row => row.online && row.running === true && row.rip !== true && row.ctype === 'merchant')
         .map(row => row.name)
         .sort();
       const result = {
@@ -8146,7 +8644,10 @@
           memberNames: selected.memberNames,
           score: selected.score,
           baseStrength: selected.baseStrength,
+          averageStrength: selected.averageStrength,
           progressionBonus: selected.progressionBonus,
+          roleDiversityBonus: selected.roleDiversityBonus,
+          coordinationCost: selected.coordinationCost,
           capabilities: selected.capabilities
         } : null,
         leaderName,
@@ -8156,7 +8657,10 @@
           memberNames: row.memberNames,
           score: row.score,
           baseStrength: row.baseStrength,
+          averageStrength: row.averageStrength,
           progressionBonus: row.progressionBonus,
+          roleDiversityBonus: row.roleDiversityBonus,
+          coordinationCost: row.coordinationCost,
           capabilities: row.capabilities
         }))
       };
@@ -8265,6 +8769,18 @@
       this.configure(options);
       const initialOnline = this._onlineNames();
       const waitForRoster = options.waitForRoster === true;
+      const requestedDesired = Array.isArray(options.desiredCharacterNames)
+        ? [...new Set(options.desiredCharacterNames.map(value => cleanText(value, 120)).filter(Boolean))].sort()
+        : [];
+      if (requestedDesired.length && requestedDesired.length !== this.config.expectedOnlineCount) {
+        return {
+          accepted: false,
+          reason: 'FULL_AUTONOMY_DESIRED_ROSTER_INVALID',
+          expectedOnlineCount: this.config.expectedOnlineCount,
+          desiredCharacterNames: requestedDesired,
+          status: this.status()
+        };
+      }
       if (initialOnline.length > this.config.expectedOnlineCount
           || (!waitForRoster && initialOnline.length !== this.config.expectedOnlineCount)) {
         return {
@@ -8275,9 +8791,9 @@
           status: this.status()
         };
       }
-      this.desiredCharacterNames = initialOnline.length === this.config.expectedOnlineCount
-        ? initialOnline.slice().sort()
-        : [];
+      this.desiredCharacterNames = requestedDesired.length === this.config.expectedOnlineCount
+        ? requestedDesired.slice()
+        : (initialOnline.length === this.config.expectedOnlineCount ? initialOnline.slice().sort() : []);
       this.lifecycleArmed = false;
       this.enabled = true;
       this.startedAt = new Date().toISOString();
@@ -8340,13 +8856,23 @@
       const profiles = this.strategy ? this.strategy.profiles() : [];
       const local = this._local();
       const online = this._onlineNames();
-      const ready = new Set(profiles.filter(row => row && row.online && (row.local || row.peerFresh)).map(row => String(row.name)));
-      if (local && local.name) ready.add(String(local.name));
-      const missing = this.config.requireAllOnlineProfiles ? online.filter(name => !ready.has(name)) : [];
+      const ready = new Set(profiles.filter(row => row && row.online
+        && (row.local ? (this.runtime && this.runtime.running === true) : (row.peerFresh && row.running === true)))
+        .map(row => String(row.name)));
+      if (local && local.name && this.runtime && this.runtime.running === true) ready.add(String(local.name));
+      const desired = this.desiredCharacterNames.length ? this.desiredCharacterNames.slice() : online.slice();
+      const missing = this.config.requireAllOnlineProfiles
+        ? [...new Set([...online, ...desired].filter(name => !ready.has(String(name))))].sort()
+        : [];
+      const stoppedNames = profiles
+        .filter(row => row && desired.includes(String(row.name)) && !row.local && row.peerFresh && row.running !== true)
+        .map(row => String(row.name))
+        .sort();
       return {
         profiles,
         online,
         missing,
+        stoppedNames,
         readyNames: [...ready].sort(),
         onlineLimitExceeded: online.length > 4
       };
@@ -8424,7 +8950,17 @@
         && !!effectiveLeader
         && String(party.leader || '') === String(effectiveLeader);
       const localInParty = memberNames.has(localName);
-      const shouldRunLifecycle = coordinator ? !partyTopologyHealthy : !localInParty;
+      const stoppedDesiredNames = readiness.profiles
+        .filter(row => row && stableDesired.includes(String(row.name)) && !row.local
+          && row.peerFresh && row.running !== true)
+        .map(row => String(row.name))
+        .sort();
+      const offlineDesiredNames = stableDesired.filter(name => !onlineSet.has(String(name))).sort();
+      const runtimeRecoveryRequired = coordinator && stoppedDesiredNames.length > 0;
+      const rosterRecoveryRequired = coordinator && offlineDesiredNames.length > 0;
+      const shouldRunLifecycle = coordinator
+        ? (!partyTopologyHealthy || runtimeRecoveryRequired || rosterRecoveryRequired)
+        : !localInParty;
       const current = lifecycle.status();
       const recoverySafetyBlocked = current.suspended === true
         || !!(current.currentAction && current.currentAction.unknownRecorded === true);
@@ -8468,8 +9004,58 @@
         leader: effectiveLeader,
         partyTopologyHealthy,
         recoveryRequired: shouldRunLifecycle,
+        runtimeRecoveryRequired,
+        rosterRecoveryRequired,
+        stoppedDesiredNames,
+        offlineDesiredNames,
         recoverySafetyBlocked,
         recoveryBlockReason
+      };
+    }
+
+    _pauseOwnedRoleWork(reason = 'FULL_AUTONOMY_RECOVERY_PAUSE') {
+      try {
+        const status = this.runtime.farmIntelligence.status();
+        if (status && status.active && status.session && String(status.session.owner || '') === 'full-autonomy') {
+          this.runtime.farmIntelligence.stopAutonomy(reason);
+        }
+      } catch (_) {}
+      try {
+        const status = this.runtime.economy.status();
+        if (this.started.economy && status && status.autonomyEnabled === true) this.runtime.economy.stopAutonomy(reason);
+      } catch (_) {}
+      try {
+        const status = this.runtime.partyLogistics.status();
+        if (this.started.partyLogistics && status && status.autonomyEnabled === true) this.runtime.partyLogistics.stopAutonomy(reason);
+      } catch (_) {}
+      this.started.farming = false;
+      this.started.economy = false;
+      this.started.partyLogistics = false;
+    }
+
+    _recoveryPlan(readiness) {
+      const stableDesired = this.desiredCharacterNames.length ? this.desiredCharacterNames.slice() : readiness.online.slice();
+      const profiles = readiness.profiles || [];
+      const combat = profiles
+        .filter(row => row && stableDesired.includes(String(row.name)) && String(row.ctype || '').toLowerCase() !== 'merchant')
+        .map(row => String(row.name))
+        .sort();
+      const support = profiles
+        .filter(row => row && stableDesired.includes(String(row.name)) && String(row.ctype || '').toLowerCase() === 'merchant')
+        .map(row => String(row.name))
+        .sort();
+      let party = null;
+      try { party = this.runtime.party && this.runtime.party.snapshot ? this.runtime.party.snapshot() : null; } catch (_) {}
+      const currentLeader = cleanText(party && party.leader || '', 120);
+      const warrior = profiles.find(row => row && stableDesired.includes(String(row.name)) && String(row.ctype || '').toLowerCase() === 'warrior');
+      const leaderName = currentLeader && stableDesired.includes(currentLeader)
+        ? currentLeader
+        : (warrior && String(warrior.name) || combat[0] || stableDesired[0] || null);
+      return {
+        taskType: this.config.taskType,
+        selected: { memberNames: combat },
+        supportMemberNames: support,
+        leaderName
       };
     }
 
@@ -8482,11 +9068,23 @@
       const shouldFarm = ctype !== 'merchant' && selected.has(localName);
       const status = this.runtime.farmIntelligence.status();
 
+      if (shouldFarm && status.suspended === true) {
+        return { ok: false, reason: status.suspendedReason || 'FULL_AUTONOMY_FARM_INTELLIGENCE_SUSPENDED' };
+      }
+      if (shouldFarm && typeof this.runtime.farmIntelligence.configureGroup === 'function') {
+        this.runtime.farmIntelligence.configureGroup({
+          groupLeaderName: plan && plan.leaderName || null,
+          groupMemberNames: plan && plan.selected ? plan.selected.memberNames : []
+        });
+      }
+
       if (shouldFarm) {
         if (!status.active) {
           const started = this.runtime.farmIntelligence.startAutonomy({
             owner: 'full-autonomy',
-            allowTravel: true
+            allowTravel: true,
+            groupLeaderName: plan && plan.leaderName || null,
+            groupMemberNames: plan && plan.selected ? plan.selected.memberNames : []
           });
           if (started && started.accepted === true) this.started.farming = true;
           else if (!started || !String(started.reason || '').includes('ALREADY')) {
@@ -8581,8 +9179,9 @@
             onlineCharacterNames: readiness.online
           };
         }
-        if (readiness.online.length < this.config.expectedOnlineCount) {
+        if (readiness.online.length < this.config.expectedOnlineCount && !this.desiredCharacterNames.length) {
           this.strategy.recordTraining(false);
+          this._pauseOwnedRoleWork('FULL_AUTONOMY_INITIAL_ROSTER_WARMING');
           return this.lastDecision = {
             at: new Date().toISOString(),
             state: 'WARMING',
@@ -8591,16 +9190,40 @@
             onlineCharacterNames: readiness.online
           };
         }
-        if (!this.desiredCharacterNames.length) {
+        if (!this.desiredCharacterNames.length && readiness.online.length === this.config.expectedOnlineCount) {
           this.desiredCharacterNames = readiness.online.slice().sort();
         }
-        if (readiness.missing.length) {
+        if (readiness.online.length < this.config.expectedOnlineCount || readiness.missing.length) {
           this.strategy.recordTraining(false);
+          this._pauseOwnedRoleWork('FULL_AUTONOMY_LIFECYCLE_RECOVERY');
+          const recoveryPlan = this._recoveryPlan(readiness);
+          const lifecycle = this._ensureLifecycle(recoveryPlan, readiness);
+          if (!lifecycle.ok) {
+            return this.lastDecision = {
+              at: new Date().toISOString(),
+              state: 'BLOCKED',
+              reason: lifecycle.reason,
+              expectedOnlineCount: this.config.expectedOnlineCount,
+              onlineCharacterNames: readiness.online,
+              missingProfiles: readiness.missing
+            };
+          }
           return this.lastDecision = {
             at: new Date().toISOString(),
             state: 'WARMING',
-            reason: 'FULL_AUTONOMY_WAITING_FOR_FRESH_PEERS',
-            missingProfiles: readiness.missing
+            reason: readiness.online.length < this.config.expectedOnlineCount
+              ? 'FULL_AUTONOMY_RECOVERING_EXPECTED_ROSTER'
+              : 'FULL_AUTONOMY_RECOVERING_STOPPED_OR_STALE_PEER',
+            expectedOnlineCount: this.config.expectedOnlineCount,
+            onlineCharacterNames: readiness.online,
+            missingProfiles: readiness.missing,
+            stoppedDesiredNames: readiness.stoppedNames,
+            lifecycleRecoveryRequired: lifecycle.recoveryRequired === true,
+            runtimeRecoveryRequired: lifecycle.runtimeRecoveryRequired === true,
+            rosterRecoveryRequired: lifecycle.rosterRecoveryRequired === true,
+            stoppedDesiredNames: lifecycle.stoppedDesiredNames || readiness.stoppedNames,
+            offlineDesiredNames: lifecycle.offlineDesiredNames || [],
+            lifecycleCoordinator: lifecycle.coordinatorName
           };
         }
 
@@ -8835,6 +9458,9 @@
         monsterType: options.monsterType || null,
         partyAssist: options.partyAssist !== false,
         kiting: true,
+        leaderOwnedPulls: options.leaderOwnedPulls === true,
+        groupLeaderName: cleanText(options.groupLeaderName || '', 120) || null,
+        groupMemberNames: Array.isArray(options.groupMemberNames) ? options.groupMemberNames.map(String) : [],
         allowContested: false,
         allowUnknownAttack: false,
         maxAcquireDistance: Number(options.maxAcquireDistance) || this.config.maxAcquireDistance,
@@ -8854,6 +9480,9 @@
         owner: cleanText(options.owner || 'adaptive-farming', 80) || 'adaptive-farming',
         combatSessionId: combatStart.session.id,
         monsterType: options.monsterType || null,
+        leaderOwnedPulls: options.leaderOwnedPulls === true,
+        groupLeaderName: cleanText(options.groupLeaderName || '', 120) || null,
+        groupMemberNames: Array.isArray(options.groupMemberNames) ? [...new Set(options.groupMemberNames.map(String))].sort() : [],
         startedAt: new Date().toISOString(),
         stoppedAt: null,
         reason: null
@@ -9090,6 +9719,9 @@
 
       const owned = this._ownedPartyNames(character.name);
       const engaged = safe.filter(monster => monster.targetId && owned.has(String(monster.targetId)));
+      const followerMirrorOnly = policy.leaderOwnedPulls === true
+        && policy.groupLeaderName
+        && String(character.name || '') !== String(policy.groupLeaderName);
       let primary = null;
       const targetId = combat && combat.session && combat.session.targetId;
       if (targetId != null) primary = safe.find(row => String(row.id) === String(targetId)) || null;
@@ -9097,15 +9729,29 @@
         const focus = this.party.preferredTargetId();
         if (focus != null) primary = safe.find(row => String(row.id) === String(focus)) || null;
       }
-      if (!primary) primary = engaged[0] || safe[0];
+      if (!primary) primary = engaged[0] || (followerMirrorOnly ? null : safe[0]);
+      if (!primary) {
+        this.metrics.singleTargetPlans += 1;
+        return this._rememberPlan({
+          state: 'SINGLE_TARGET',
+          reason: 'H8_GROUP_FOLLOWER_WAITING_FOR_LEADER_TARGET',
+          hpRatio,
+          capacity: 1,
+          aggregateAttack: 0,
+          pack: []
+        });
+      }
 
       const sameType = safe.filter(row => !primary.mtype || !row.mtype || String(row.mtype) === String(primary.mtype));
       const capacity = this._capacity(character, hpRatio);
       const maxAggregateAttack = Math.max(1, Number(character.maxHp || 0) * this.config.maxAggregateAttackToHpRatio);
-      const ordered = [
-        ...sameType.filter(row => row.targetId && owned.has(String(row.targetId))),
-        ...sameType.filter(row => !(row.targetId && owned.has(String(row.targetId))))
-      ].filter((row, index, array) => array.findIndex(other => String(other.id) === String(row.id)) === index);
+      const ordered = (followerMirrorOnly
+        ? sameType.filter(row => row.targetId && owned.has(String(row.targetId)))
+        : [
+          ...sameType.filter(row => row.targetId && owned.has(String(row.targetId))),
+          ...sameType.filter(row => !(row.targetId && owned.has(String(row.targetId))))
+        ])
+        .filter((row, index, array) => array.findIndex(other => String(other.id) === String(row.id)) === index);
 
       const pack = [];
       let aggregateAttack = 0;
@@ -9387,6 +10033,7 @@
       this.classSkills = options.classSkills || null;
       this.party = options.party || null;
       this.farming = options.farming || null;
+      this.farmIntelligence = options.farmIntelligence || null;
       this.now = typeof options.now === 'function' ? options.now : () => Date.now();
 
       this.config = {
@@ -9397,8 +10044,14 @@
         resumeHpRatio: Math.max(0.1, Math.min(1, Number(options.resumeHpRatio) || 0.65)),
         minMpRatio: Math.max(0, Math.min(0.9, Number(options.minMpRatio) || 0.05)),
         preferredRangeRatio: Math.max(0.25, Math.min(0.95, Number(options.preferredRangeRatio) || 0.78)),
-        kiteTriggerRatio: Math.max(0.05, Math.min(0.8, Number(options.kiteTriggerRatio) || 0.30)),
+        kiteTriggerRatio: Math.max(0.05, Math.min(0.8, Number(options.kiteTriggerRatio) || 0.62)),
         kiteStep: Math.max(10, Math.min(120, Number(options.kiteStep) || 35)),
+        kiteDesiredRangeRatio: Math.max(0.55, Math.min(0.90, Number(options.kiteDesiredRangeRatio) || 0.72)),
+        kiteMaxRangeRatio: Math.max(0.65, Math.min(0.95, Number(options.kiteMaxRangeRatio) || 0.82)),
+        kiteMonsterBuffer: Math.max(8, Math.min(80, Number(options.kiteMonsterBuffer) || 20)),
+        kiteSpeedBufferSeconds: Math.max(0.2, Math.min(1.5, Number(options.kiteSpeedBufferSeconds) || 0.50)),
+        kiteStepSeconds: Math.max(0.3, Math.min(1.2, Number(options.kiteStepSeconds) || 0.65)),
+        groupHardKiteTether: Math.max(150, Math.min(350, Number(options.groupHardKiteTether) || 195)),
         maxAcquireDistance: Math.max(50, Math.min(1200, Number(options.maxAcquireDistance) || 450)),
         maxAttackToHpRatio: Math.max(0.01, Math.min(0.5, Number(options.maxAttackToHpRatio) || 0.08)),
         minExpectedHitChance: Math.max(0.05, Math.min(0.95, Number(options.minExpectedHitChance) || 0.25))
@@ -9412,6 +10065,7 @@
       this.sequence = 0;
       this.pendingAttack = null;
       this.targetConfirmDeadlineMs = null;
+      this.orbitDirectionByCharacter = new Map();
       this.metrics = {
         sessions: 0,
         targetsAcquired: 0,
@@ -9425,7 +10079,12 @@
         retreats: 0,
         blockedByMovement: 0,
         lowMpWaits: 0,
-        rejected: 0
+        rejected: 0,
+        kiteNoAggroHolds: 0,
+        meleeKiteBypasses: 0,
+        kiteOrbitMoves: 0,
+        kiteTerrainBlocks: 0,
+        kiteGroupTetherBlocks: 0
       };
     }
 
@@ -9464,6 +10123,11 @@
         allowUnknownAttack: options.allowUnknownAttack === true,
         partyAssist: options.partyAssist !== false,
         kiting: options.kiting === true,
+        leaderOwnedPulls: options.leaderOwnedPulls === true,
+        groupLeaderName: cleanText(options.groupLeaderName || '', 120) || null,
+        groupMemberNames: Array.isArray(options.groupMemberNames)
+          ? [...new Set(options.groupMemberNames.map(value => cleanText(value, 120)).filter(Boolean))].sort()
+          : [],
         preferredRangeRatio: Math.max(0.25, Math.min(0.95, Number(options.preferredRangeRatio) || this.config.preferredRangeRatio)),
         retreatHpRatio: Math.max(0.05, Math.min(0.9, Number(options.retreatHpRatio) || this.config.retreatHpRatio)),
         resumeHpRatio: Math.max(0.1, Math.min(1, Number(options.resumeHpRatio) || this.config.resumeHpRatio)),
@@ -9621,6 +10285,9 @@
       if (this.farming && typeof this.farming.onCombatEnded === 'function') {
         try { this.farming.onCombatEnded(this.session.id, reason); } catch (_) {}
       }
+      if (state === 'UNKNOWN' && this.farmIntelligence && typeof this.farmIntelligence.suspendFromCombatUnknown === 'function') {
+        try { this.farmIntelligence.suspendFromCombatUnknown(reason, details || null); } catch (_) {}
+      }
       this.lastSession = this._publicSession(this.session);
       if (this.logger) this.logger.error('Combat fail-safe beendet', {
         id: this.session.id,
@@ -9708,9 +10375,30 @@
       const preferredId = this.session.policy.partyAssist && this.party && typeof this.party.preferredTargetId === 'function'
         ? this.party.preferredTargetId()
         : null;
-      const target = preferredId == null
-        ? candidates[0]
-        : (candidates.find(candidate => String(candidate.id) === String(preferredId)) || candidates[0]);
+      const localName = game && game.character && game.character.name ? String(game.character.name) : '';
+      const groupNames = new Set((this.session.policy.groupMemberNames || []).map(String));
+      const followerMirrorOnly = this.session.policy.leaderOwnedPulls === true
+        && this.session.policy.groupLeaderName
+        && localName
+        && localName !== String(this.session.policy.groupLeaderName);
+      const preferred = preferredId == null
+        ? null
+        : candidates.find(candidate => String(candidate.id) === String(preferredId)) || null;
+      const preferredSharedAggro = preferred && preferred.targetId && groupNames.has(String(preferred.targetId))
+        ? preferred
+        : null;
+      const sharedAggro = candidates.find(candidate => candidate.targetId && groupNames.has(String(candidate.targetId))) || null;
+      const target = followerMirrorOnly ? (preferredSharedAggro || sharedAggro) : (preferred || candidates[0]);
+      if (!target) {
+        this.session.state = 'WAITING_GROUP_TARGET';
+        this.session.lastDecision = {
+          at: new Date().toISOString(),
+          type: 'GROUP_FOLLOWER_WAIT',
+          leaderName: this.session.policy.groupLeaderName,
+          preferredTargetId: preferredId || null
+        };
+        return null;
+      }
       const raw = this.game.entityReference(target.id);
       if (!raw) {
         this.session.state = 'ACQUIRING';
@@ -9968,36 +10656,176 @@
       return true;
     }
 
+    _orbitDirection(character) {
+      const name = String(character && character.name || 'local');
+      if (this.orbitDirectionByCharacter.has(name)) return this.orbitDirectionByCharacter.get(name);
+      let hash = 0;
+      for (let index = 0; index < name.length; index += 1) hash = ((hash * 31) + name.charCodeAt(index)) | 0;
+      const direction = (Math.abs(hash) % 2) ? 1 : -1;
+      this.orbitDirectionByCharacter.set(name, direction);
+      return direction;
+    }
+
+    _segmentSafe(a, b, target, minimumDistance, options = {}) {
+      const ax = finite(a && a.x), ay = finite(a && a.y);
+      const bx = finite(b && b.x), by = finite(b && b.y);
+      const tx = finite(target && target.x), ty = finite(target && target.y);
+      if ([ax, ay, bx, by, tx, ty].some(value => value == null)) return false;
+      const startDistance = Math.hypot(ax - tx, ay - ty);
+      let previousDistance = startDistance;
+      const escapingFromInside = options.allowStartInside === true && startDistance < minimumDistance;
+      for (const t of [0.25, 0.5, 0.75, 1]) {
+        const x = ax + (bx - ax) * t;
+        const y = ay + (by - ay) * t;
+        const d = Math.hypot(x - tx, y - ty);
+        if (escapingFromInside) {
+          if (d <= previousDistance + 0.5) return false;
+          previousDistance = d;
+          continue;
+        }
+        if (d < minimumDistance) return false;
+      }
+      return escapingFromInside ? previousDistance > startDistance + 2 : true;
+    }
+
+    _groupTetherAllows(character, destination) {
+      const policy = this.session && this.session.policy || {};
+      if (policy.leaderOwnedPulls !== true || !Array.isArray(policy.groupMemberNames) || policy.groupMemberNames.length < 2) return true;
+      let status = null;
+      try { status = this.party && typeof this.party.status === 'function' ? this.party.status() : null; } catch (_) {}
+      const party = status && status.party || null;
+      const expectedNames = policy.groupMemberNames.map(String).filter(name => name !== String(character.name || ''));
+      const members = party && Array.isArray(party.ownedMembers)
+        ? party.ownedMembers.filter(row => row && expectedNames.includes(String(row.name)))
+        : [];
+      if (members.length !== expectedNames.length) return false;
+      for (const name of expectedNames) {
+        const row = members.find(member => String(member.name) === name);
+        if (!row || finite(row.x) == null || finite(row.y) == null) return false;
+        if (!row.map || !character.map || String(row.map) !== String(character.map)) return false;
+      }
+      const currentMax = Math.max(0, ...members.map(row => {
+        const x = finite(row.x), y = finite(row.y);
+        return Math.hypot(Number(character.x) - x, Number(character.y) - y);
+      }));
+      const proposedMax = Math.max(0, ...members.map(row => {
+        if (row.map && character.map && String(row.map) !== String(character.map)) return Number.POSITIVE_INFINITY;
+        const x = finite(row.x), y = finite(row.y);
+        return x == null || y == null ? Number.POSITIVE_INFINITY : Math.hypot(Number(destination.x) - x, Number(destination.y) - y);
+      }));
+      if (proposedMax <= this.config.groupHardKiteTether) return true;
+      return currentMax > this.config.groupHardKiteTether && proposedMax < currentMax;
+    }
+
+    _kiteWaypoint(character, target) {
+      const range = finite(character && character.range);
+      const cx = finite(character && character.x), cy = finite(character && character.y);
+      const tx = finite(target && target.x), ty = finite(target && target.y);
+      if ([range, cx, cy, tx, ty].some(value => value == null) || range < 60) return null;
+
+      let definition = null;
+      try { definition = this.game && this.game.monsterDefinition ? this.game.monsterDefinition(target.mtype) : null; } catch (_) {}
+      const monsterRange = Math.max(0, finite(target.range) || finite(definition && definition.range) || 25);
+      const monsterSpeed = Math.max(1, finite(target.speed) || finite(definition && definition.speed) || 40);
+      const hardSafeDistance = monsterRange + this.config.kiteMonsterBuffer + monsterSpeed * this.config.kiteSpeedBufferSeconds;
+      const maxRangeDistance = range * this.config.kiteMaxRangeRatio;
+      if (hardSafeDistance + 8 >= maxRangeDistance) return null;
+
+      const currentDistance = Math.hypot(cx - tx, cy - ty);
+      const desiredDistance = Math.min(maxRangeDistance, Math.max(range * this.config.kiteDesiredRangeRatio, hardSafeDistance + 16));
+      const speed = Math.max(1, finite(character.speed) || 40);
+      const preferred = this._orbitDirection(character);
+      const canMove = (x, y) => {
+        try {
+          const value = this.movement && typeof this.movement._canMoveTo === 'function' ? this.movement._canMoveTo(x, y) : null;
+          return value !== false;
+        } catch (_) { return false; }
+      };
+      const candidates = [];
+
+      if (currentDistance < hardSafeDistance + 4) {
+        const step = Math.max(8, Math.min(Math.max(1, desiredDistance - currentDistance), speed * this.config.kiteStepSeconds, Math.max(20, maxRangeDistance * 0.25)));
+        const base = Math.atan2(cy - ty, cx - tx);
+        for (const offsetDeg of [preferred * 12, preferred * 22, 0, -preferred * 12, -preferred * 22]) {
+          const angle = base + offsetDeg * Math.PI / 180;
+          const x = cx + Math.cos(angle) * step;
+          const y = cy + Math.sin(angle) * step;
+          const afterDistance = Math.hypot(x - tx, y - ty);
+          if (!canMove(x, y) || afterDistance <= currentDistance + 2 || afterDistance > maxRangeDistance) continue;
+          if (!this._segmentSafe(character, { x, y }, target, hardSafeDistance, { allowStartInside: true })) continue;
+          candidates.push({ x, y, afterDistance, direction: offsetDeg === 0 ? preferred : Math.sign(offsetDeg), escape: true, score: Math.abs(desiredDistance - afterDistance) + Math.abs(offsetDeg) * 0.02 });
+        }
+      } else {
+        const chordTarget = Math.max(10, Math.min(speed * this.config.kiteStepSeconds, range * 0.22));
+        const ratioValue = Math.min(0.98, chordTarget / Math.max(1, 2 * desiredDistance));
+        const baseDelta = Math.max(8 * Math.PI / 180, Math.min(28 * Math.PI / 180, 2 * Math.asin(ratioValue)));
+        const currentAngle = Math.atan2(cy - ty, cx - tx);
+        for (const direction of [preferred, -preferred]) {
+          for (const scale of [1, 0.72, 0.48]) {
+            const angle = currentAngle + baseDelta * scale * direction;
+            for (const radius of [desiredDistance, Math.max(hardSafeDistance + 8, Math.min(maxRangeDistance, currentDistance))]) {
+              const x = tx + Math.cos(angle) * radius;
+              const y = ty + Math.sin(angle) * radius;
+              if (!canMove(x, y)) continue;
+              if (!this._segmentSafe(character, { x, y }, target, hardSafeDistance)) continue;
+              const step = Math.hypot(x - cx, y - cy);
+              if (step < 4) continue;
+              candidates.push({
+                x, y, afterDistance: Math.hypot(x - tx, y - ty), direction, escape: false,
+                score: Math.abs(desiredDistance - Math.hypot(x - tx, y - ty)) + (direction === preferred ? 0 : 8) + Math.abs(1 - scale) * 4
+              });
+            }
+          }
+        }
+      }
+
+      candidates.sort((a, b) => a.score - b.score);
+      for (const candidate of candidates) {
+        if (!this._groupTetherAllows(character, candidate)) {
+          this.metrics.kiteGroupTetherBlocks += 1;
+          continue;
+        }
+        this.orbitDirectionByCharacter.set(String(character.name || 'local'), candidate.direction);
+        return candidate;
+      }
+      return null;
+    }
+
     _kite(game, target) {
       if (!this.session.policy.kiting) return false;
-      const range = finite(game.character.range);
-      const distance = finite(target.distance);
-      if (range == null || distance == null) return false;
-      if (distance > range * this.config.kiteTriggerRatio) return false;
+      const character = game && game.character;
+      const ctype = String(character && character.ctype || '').toLowerCase();
+      if (['warrior', 'paladin', 'rogue'].includes(ctype)) {
+        this.metrics.meleeKiteBypasses += 1;
+        return false;
+      }
+      if (!character || !target || String(target.targetId || '') !== String(character.name || '')) {
+        this.metrics.kiteNoAggroHolds += 1;
+        return false;
+      }
       if (this._foreignMovementActive() || this._combatMovementActive()) return false;
 
-      const cx = finite(game.character.x), cy = finite(game.character.y);
-      const tx = finite(target.x), ty = finite(target.y);
-      if (cx == null || cy == null || tx == null || ty == null) return false;
-      const dx = cx - tx;
-      const dy = cy - ty;
-      const length = Math.hypot(dx, dy);
-      if (length <= 0) return false;
-      const x = cx + (dx / length) * this.config.kiteStep;
-      const y = cy + (dy / length) * this.config.kiteStep;
-      const result = this.movement.moveLocal(x, y, {
+      const waypoint = this._kiteWaypoint(character, target);
+      if (!waypoint) {
+        this.metrics.kiteTerrainBlocks += 1;
+        return false;
+      }
+      const result = this.movement.moveLocal(waypoint.x, waypoint.y, {
         owner: 'combat-h5-kite',
         arrivalRadius: 8
       });
       if (result && result.accepted) {
         this.metrics.kites += 1;
+        this.metrics.kiteOrbitMoves += 1;
         this.session.counters.kites += 1;
         this.session.state = 'KITING';
         this.session.lastDecision = {
           at: new Date().toISOString(),
-          type: 'KITE',
+          type: waypoint.escape ? 'KITE_ESCAPE' : 'KITE_ORBIT',
           targetId: target.id,
-          destination: { x, y }
+          destination: { x: waypoint.x, y: waypoint.y },
+          afterDistance: waypoint.afterDistance,
+          groupTether: this.session.policy.leaderOwnedPulls === true
         };
         return true;
       }
@@ -10084,12 +10912,20 @@
 
       if (this._observePendingAttack()) return;
 
+      const localName = String(character.name || '');
+      const groupNames = new Set((this.session.policy.groupMemberNames || []).map(String));
+      const followerMirrorOnly = this.session.policy.leaderOwnedPulls === true
+        && this.session.policy.groupLeaderName
+        && localName !== String(this.session.policy.groupLeaderName);
+
       if (this.session.policy.partyAssist && this.party && typeof this.party.preferredTargetId === 'function') {
         const preferredId = this.party.preferredTargetId();
         if (preferredId != null && this.session.targetId != null && String(preferredId) !== String(this.session.targetId)) {
           const preferred = this.safeCandidates(this.session.policy)
             .find(candidate => String(candidate.id) === String(preferredId));
-          if (preferred) {
+          const preferredAllowed = preferred && (!followerMirrorOnly
+            || (preferred.targetId && groupNames.has(String(preferred.targetId))));
+          if (preferredAllowed) {
             this._clearGameTarget('PARTY_FOCUS_RETARGET');
             this.session.state = 'ACQUIRING';
           }
@@ -10097,6 +10933,12 @@
       }
 
       let target = this._freshTarget();
+      if (target && followerMirrorOnly
+        && !(target.targetId && groupNames.has(String(target.targetId)))) {
+        this._clearGameTarget('GROUP_FOLLOWER_STALE_FOCUS');
+        target = null;
+        this.session.state = 'ACQUIRING';
+      }
       if (!target) {
         if (this.session.targetId) {
           this._clearGameTarget('TARGET_LOST');
@@ -10172,7 +11014,10 @@
         return;
       }
 
-      if (this._kite(game, target)) return;
+      if (this._kite(game, target)) {
+        if (!readiness.cooldown && readiness.canAttack) this._beginAttack(target);
+        return;
+      }
 
       if (readiness.cooldown || !readiness.canAttack) {
         this.session.state = readiness.cooldown ? 'WAITING_COOLDOWN' : 'WAITING_ATTACK_READY';
@@ -10260,7 +11105,12 @@
         visibleAcquireDistance: Math.max(150, Math.min(900, Number(options.visibleAcquireDistance) || 500)),
         densityTarget: Math.max(2, Math.min(20, Number(options.densityTarget) || 6)),
         depletionGraceMs: Math.max(1000, Math.min(30000, Number(options.depletionGraceMs) || 5000)),
-        minExpectedHitChance: Math.max(0.05, Math.min(0.95, Number(options.minExpectedHitChance) || 0.25))
+        minExpectedHitChance: Math.max(0.05, Math.min(0.95, Number(options.minExpectedHitChance) || 0.25)),
+        groupRegroupTriggerDistance: Math.max(90, Math.min(250, Number(options.groupRegroupTriggerDistance) || 120)),
+        groupRegroupStopDistance: Math.max(35, Math.min(100, Number(options.groupRegroupStopDistance) || 60)),
+        groupHardRegroupDistance: Math.max(150, Math.min(350, Number(options.groupHardRegroupDistance) || 195)),
+        groupRetargetDistance: Math.max(20, Math.min(100, Number(options.groupRetargetDistance) || 35)),
+        groupRetargetMs: Math.max(700, Math.min(5000, Number(options.groupRetargetMs) || 1400))
       };
 
       this.moduleActive = false;
@@ -10268,6 +11118,8 @@
       this.heartbeat = null;
       this.session = null;
       this.sequence = 0;
+      this.groupPolicy = { leaderName: null, memberNames: [] };
+      this.groupMove = null;
       this.currentSelection = null;
       this.lastPlan = null;
       this.lastAction = null;
@@ -10289,7 +11141,13 @@
         ownershipBlocks: 0,
         foreignPartyBlocks: 0,
         unsafeBlocks: 0,
-        movementUnknown: 0
+        movementUnknown: 0,
+        groupLeaderPlans: 0,
+        groupFollowerHolds: 0,
+        groupRegroups: 0,
+        groupRetargets: 0,
+        groupHardRegroups: 0,
+        combatUnknownSuspensions: 0
       };
     }
 
@@ -10341,10 +11199,18 @@
           ? options.excludedTypes.map(value => cleanText(value, 120)).filter(Boolean)
           : [],
         allowTravel: options.allowTravel !== false,
+        groupLeaderName: cleanText(options.groupLeaderName || this.groupPolicy.leaderName || '', 120) || null,
+        groupMemberNames: [...new Set((Array.isArray(options.groupMemberNames) ? options.groupMemberNames : this.groupPolicy.memberNames)
+          .map(value => cleanText(value, 120)).filter(Boolean))].sort(),
         startedAt: new Date().toISOString(),
         stoppedAt: null,
         reason: null
       };
+      this.groupPolicy = {
+        leaderName: this.session.groupLeaderName,
+        memberNames: this.session.groupMemberNames.slice()
+      };
+      this.groupMove = null;
       this.currentSelection = null;
       this.lastPlan = null;
       this.lastAction = null;
@@ -10366,8 +11232,36 @@
       const ended = clone(session);
       this.session = null;
       this.currentSelection = null;
+      this.groupMove = null;
       this.suspendedReason = null;
       return { stopped: true, session: ended };
+    }
+
+    configureGroup(options = {}) {
+      const leaderName = cleanText(options.groupLeaderName || '', 120) || null;
+      const memberNames = [...new Set((Array.isArray(options.groupMemberNames) ? options.groupMemberNames : [])
+        .map(value => cleanText(value, 120)).filter(Boolean))].sort();
+      this.groupPolicy = { leaderName, memberNames };
+      if (this.session && this.session.enabled) {
+        this.session.groupLeaderName = leaderName;
+        this.session.groupMemberNames = memberNames.slice();
+      }
+      return clone(this.groupPolicy);
+    }
+
+    suspendFromCombatUnknown(reason = 'ATTACK_OUTCOME_UNCONFIRMED', details = null) {
+      if (!this.session || !this.session.enabled) return { suspended: false, reason: 'H9_AUTONOMY_NOT_ACTIVE' };
+      this.suspendedReason = 'H9_COMBAT_UNKNOWN';
+      this.metrics.combatUnknownSuspensions += 1;
+      this._stopOwnedMovement('H9_COMBAT_UNKNOWN');
+      this.lastAction = {
+        at: new Date().toISOString(),
+        type: 'SUSPEND',
+        reason: this.suspendedReason,
+        combatReason: cleanText(reason, 240),
+        details: details == null ? null : clone(details)
+      };
+      return { suspended: true, reason: this.suspendedReason };
     }
 
     _partyOwnedNames(characterName) {
@@ -10770,7 +11664,7 @@
 
     _ownedMovement(status = this._movementStatus()) {
       const order = status && status.activeOrder;
-      return !!(order && String(order.owner || '') === 'farm-intelligence-h9');
+      return !!(order && String(order.owner || '').startsWith('farm-intelligence-h9'));
     }
 
     _delegatedCombatMovement(status = this._movementStatus(), farmStatus = this._farmingStatus()) {
@@ -10838,6 +11732,146 @@
         if (this.history.length > 12) this.history.shift();
       }
       return changed;
+    }
+
+    _groupContext(character) {
+      if (!this.session || !this.session.enabled || !character || !character.name) return { enabled: false };
+      const leaderName = cleanText(this.session.groupLeaderName || '', 120) || null;
+      const memberNames = Array.isArray(this.session.groupMemberNames) ? this.session.groupMemberNames.map(String) : [];
+      const localName = String(character.name);
+      if (!leaderName || memberNames.length < 2 || !memberNames.includes(localName) || !memberNames.includes(leaderName)) {
+        return { enabled: false };
+      }
+      let status = null;
+      try { status = this.party && typeof this.party.status === 'function' ? this.party.status() : null; } catch (_) {}
+      const party = status && status.party || null;
+      const members = party && Array.isArray(party.ownedMembers) ? party.ownedMembers : [];
+      const local = members.find(row => row && String(row.name) === localName) || null;
+      const leader = members.find(row => row && String(row.name) === leaderName) || null;
+      const d = local && leader ? distance(local, leader) : null;
+      return {
+        enabled: true,
+        localName,
+        leaderName,
+        memberNames,
+        isLeader: localName === leaderName,
+        local,
+        leader,
+        distance: d,
+        sameMap: !!(local && leader && (!local.map || !leader.map || String(local.map) === String(leader.map))),
+        focusTargetId: this.party && typeof this.party.preferredTargetId === 'function' ? this.party.preferredTargetId() : null
+      };
+    }
+
+    _ensureFollowerFarm(group) {
+      const farm = this._farmingStatus();
+      if (this._ownedFarming(farm)) return { state: 'FARMING', reason: 'H9_GROUP_FOLLOWER_FARM_ACTIVE' };
+      if (farm && farm.active) {
+        this.metrics.ownershipBlocks += 1;
+        return this._suspend('H9_FOREIGN_FARMING_OWNERSHIP');
+      }
+      const started = this.farming.startSession({
+        owner: 'farm-intelligence-h9',
+        monsterType: null,
+        partyAssist: true,
+        leaderOwnedPulls: true,
+        groupLeaderName: group.leaderName,
+        groupMemberNames: group.memberNames,
+        maxAcquireDistance: this.config.visibleAcquireDistance
+      });
+      if (!started || started.accepted !== true) {
+        return { state: 'WAITING', reason: started && started.reason || 'H9_GROUP_FOLLOWER_FARM_START_REJECTED' };
+      }
+      this.metrics.farmingStarts += 1;
+      this.lastAction = {
+        at: new Date().toISOString(),
+        type: 'GROUP_FOLLOWER_FARM_START',
+        leaderName: group.leaderName,
+        groupMemberNames: group.memberNames.slice()
+      };
+      return { state: 'FARMING', reason: 'H9_GROUP_FOLLOWER_FARM_STARTED' };
+    }
+
+    _tickGroupFollower(character, group) {
+      const movement = this._movementStatus();
+      if (movement && movement.lastOrder
+        && String(movement.lastOrder.owner || '').startsWith('farm-intelligence-h9')
+        && ['UNKNOWN', 'FAILED_SAFE'].includes(String(movement.lastOrder.state || ''))) {
+        this.metrics.movementUnknown += 1;
+        return this._suspend('H9_MOVEMENT_' + String(movement.lastOrder.state));
+      }
+      if (!group.local || !group.leader || !group.sameMap || group.distance == null) {
+        this._stopOwnedFarming('H9_GROUP_LEADER_POSITION_UNAVAILABLE');
+        if (this._ownedMovement(movement)) {
+          try { this.movement.cancel('H9_GROUP_LEADER_POSITION_UNAVAILABLE'); } catch (_) {}
+        }
+        this.groupMove = null;
+        return { state: 'WAITING', reason: 'H9_GROUP_LEADER_POSITION_UNAVAILABLE', leaderName: group.leaderName };
+      }
+
+      const farm = this._farmingStatus();
+      const combat = this.combat && typeof this.combat.status === 'function' ? this.combat.status() : null;
+      const activeEncounter = !!(this._ownedFarming(farm) && combat && combat.active);
+      const d = Number(group.distance);
+
+      if (activeEncounter && d <= this.config.groupHardRegroupDistance) {
+        this.metrics.groupFollowerHolds += 1;
+        return {
+          state: 'FARMING',
+          reason: 'H9_GROUP_FORMATION_HOLD',
+          leaderName: group.leaderName,
+          distance: d,
+          hardRegroupDistance: this.config.groupHardRegroupDistance
+        };
+      }
+
+      const activeOwnMove = this._ownedMovement(movement);
+      if (activeOwnMove) {
+        const destination = movement.activeOrder && movement.activeOrder.destination || null;
+        const shifted = destination && group.leader ? distance(destination, group.leader) : null;
+        const moveAge = this.groupMove ? this.now() - Number(this.groupMove.atMs || 0) : 0;
+        if (shifted != null && shifted >= this.config.groupRetargetDistance && moveAge >= this.config.groupRetargetMs) {
+          const target = { map: group.leader.map || character.map, x: group.leader.x, y: group.leader.y };
+          const retarget = this.movement.retarget(target, {
+            owner: 'farm-intelligence-h9-group-regroup',
+            arrivalRadius: this.config.groupRegroupStopDistance
+          });
+          if (retarget && retarget.accepted) {
+            this.groupMove = { atMs: this.now(), destination: clone(target) };
+            this.metrics.groupRetargets += 1;
+          }
+        }
+        if (d <= this.config.groupRegroupStopDistance) {
+          try { this.movement.cancel('H9_GROUP_REJOINED_FORMATION'); } catch (_) {}
+          this.groupMove = null;
+        } else {
+          return { state: 'TRAVELLING', reason: 'H9_GROUP_REGROUP_IN_PROGRESS', leaderName: group.leaderName, distance: d };
+        }
+      }
+
+      if (d >= this.config.groupRegroupTriggerDistance || activeEncounter && d > this.config.groupHardRegroupDistance) {
+        if (activeEncounter && d > this.config.groupHardRegroupDistance) this.metrics.groupHardRegroups += 1;
+        this._stopOwnedFarming('H9_GROUP_REGROUP');
+        const afterStopMovement = this._movementStatus();
+        if (afterStopMovement && afterStopMovement.activeOrder && !this._ownedMovement(afterStopMovement)) {
+          this.metrics.ownershipBlocks += 1;
+          return { state: 'WAITING', reason: 'H9_GROUP_REGROUP_MOVEMENT_BUSY', distance: d };
+        }
+        const destination = { map: group.leader.map || character.map, x: group.leader.x, y: group.leader.y };
+        const move = this.movement.smartMove(destination, {
+          owner: 'farm-intelligence-h9-group-regroup',
+          arrivalRadius: this.config.groupRegroupStopDistance
+        });
+        if (!move || move.accepted !== true) {
+          return { state: 'WAITING', reason: move && move.reason || 'H9_GROUP_REGROUP_REJECTED', distance: d };
+        }
+        this.groupMove = { atMs: this.now(), destination: clone(destination) };
+        this.metrics.groupRegroups += 1;
+        this.lastAction = { at: new Date().toISOString(), type: 'GROUP_REGROUP', leaderName: group.leaderName, destination, distance: d };
+        return { state: 'TRAVELLING', reason: 'H9_GROUP_REGROUP_STARTED', leaderName: group.leaderName, distance: d, destination };
+      }
+
+      return this._ensureFollowerFarm(group);
     }
 
     _apply(plan) {
@@ -10920,10 +11954,15 @@
         this._stopOwnedFarming('H9_SWITCH_FARM_TARGET');
       }
 
+      const group = this._groupContext(character);
+      if (group.enabled && group.isLeader) this.metrics.groupLeaderPlans += 1;
       const start = this.farming.startSession({
         owner: 'farm-intelligence-h9',
         monsterType: candidate.mtype,
         partyAssist: true,
+        leaderOwnedPulls: group.enabled,
+        groupLeaderName: group.enabled ? group.leaderName : null,
+        groupMemberNames: group.enabled ? group.memberNames : [],
         maxAcquireDistance: this.config.visibleAcquireDistance
       });
       if (!start || start.accepted !== true) {
@@ -10946,6 +11985,12 @@
         } catch (_) {}
       }
       if (!this.moduleActive || !this.session || !this.session.enabled) return { state: 'IDLE' };
+      if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason };
+      const game = this.game && typeof this.game.snapshot === 'function' ? this.game.snapshot() : null;
+      const character = game && game.character;
+      if (!game || !game.available || !character) return this._suspend('CHARACTER_UNAVAILABLE');
+      const group = this._groupContext(character);
+      if (group.enabled && !group.isLeader) return this._tickGroupFollower(character, group);
       const plan = this.plan();
       return this._apply(plan);
     }
@@ -11353,6 +12398,7 @@
       this.movement = options.movement || null;
       this.inventory = options.inventory || null;
       this.partyLogistics = options.partyLogistics || null;
+      this.economy = options.economy || null;
       this.moduleActive = false;
       this.scope = null;
       this.suspendedReason = null;
@@ -11998,6 +13044,13 @@
           || Array.isArray(logistics.queue) && logistics.queue.length)) {
         this.metrics.ownershipBlocks += 1;
         return { state: 'WAITING', reason: 'H11_PARTY_LOGISTICS_OWNERSHIP', plan };
+      }
+      let economy = null;
+      try { economy = this.economy && typeof this.economy.status === 'function' ? this.economy.status() : null; } catch (_) {}
+      if (economy && (economy.autonomyEnabled === true || economy.currentAction
+          || Array.isArray(economy.queue) && economy.queue.length)) {
+        this.metrics.ownershipBlocks += 1;
+        return { state: 'WAITING', reason: 'H11_ECONOMY_OWNERSHIP', plan };
       }
 
       if (plan.pressure.state === 'CRITICAL') this.metrics.pressureCritical += 1;
@@ -17537,7 +18590,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.20.0-h20';
+      this.version = options.version || '0.21.0-h21';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -17545,6 +18598,7 @@
       this.startedAt = null;
       this.running = false;
       this.runEpoch = 0;
+      this._h19FullAutonomyRearmIntent = null;
       this.bus = new ns.EventBus();
       this.storage = new ns.StorageAdapter(this.root);
       this.logger = new ns.Logger({ bus: this.bus, limit: 400 });
@@ -17570,6 +18624,13 @@
         logger: this.logger,
         game: this.game,
         actions: this.actions
+      });
+      this.resourceTopoff = new ns.ResourceTopoffController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        classSkills: this.classSkills
       });
       this.combat = new ns.CombatController({
         root: this.root,
@@ -17610,6 +18671,7 @@
         movement: this.movement,
         party: this.party
       });
+      this.combat.farmIntelligence = this.farmIntelligence;
       this.inventory = new ns.LootInventoryController({
         root: this.root,
         logger: this.logger,
@@ -17738,8 +18800,39 @@
         getPartyState: () => this.party.snapshot(),
         leavePartyLocal: () => dispatchH19CrossWindowPartyAction('leave_party', []),
         requestPartyJoinLocal: leaderName => dispatchH19CrossWindowPartyAction('send_party_request', [leaderName]),
-        startRuntime: () => this.start(),
-        stopRuntime: reason => this.stop(reason)
+        startRuntime: async () => {
+          const status = await this.start();
+          const intent = this._h19FullAutonomyRearmIntent;
+          this._h19FullAutonomyRearmIntent = null;
+          if (intent && this.running && !this.stopLatch.status().latched && this.fullAutonomy) {
+            const armed = this.fullAutonomy.startAutonomy({
+              taskType: intent.taskType || 'FARM',
+              waitForRoster: true,
+              desiredCharacterNames: intent.desiredCharacterNames || []
+            });
+            if (!armed || armed.accepted !== true) {
+              this.logger.warn('Full Autonomy nach H19-Runtime-Restart nicht reaktiviert', {
+                reason: armed && armed.reason || 'FULL_AUTONOMY_REARM_REJECTED'
+              });
+            }
+          }
+          return status;
+        },
+        stopRuntime: reason => {
+          const text = String(reason || '');
+          let full = null;
+          try { full = this.fullAutonomy && this.fullAutonomy.status ? this.fullAutonomy.status() : null; } catch (_) {}
+          const terminalSafety = /EMERGENCY|UNKNOWN|UNVERIFIED|TERMINAL|SAFETY|SUSPEND|FAIL/i.test(text);
+          this._h19FullAutonomyRearmIntent = full && full.enabled === true
+            && !this.stopLatch.status().latched
+            && !terminalSafety
+            ? {
+              taskType: full.config && full.config.taskType || 'FARM',
+              desiredCharacterNames: Array.isArray(full.desiredCharacterNames) ? full.desiredCharacterNames.slice() : []
+            }
+            : null;
+          return this.stop(reason);
+        }
       });
       this.lifecycle = new ns.CharacterLifecycleController({
         root: this.root,
@@ -17769,6 +18862,7 @@
       });
       this.inventory.partyLogistics = this.partyLogistics;
       this.merchant.partyLogistics = this.partyLogistics;
+      this.merchant.economy = this.economy;
       this.economy.partyLogistics = this.partyLogistics;
       this.liveTests = new ns.LiveTestRunner({
         runtime: this,
@@ -17840,6 +18934,15 @@
         start: () => this.classSkills.start(),
         stop: reason => this.classSkills.stop(reason),
         status: () => this.classSkills.status()
+      });
+
+      this.modules.register({
+        id: 'resource-topoff',
+        title: 'Resource Topoff',
+        version: '0.21.0',
+        start: context => this.resourceTopoff.start(context),
+        stop: reason => this.resourceTopoff.stop(reason),
+        status: () => this.resourceTopoff.status()
       });
 
       this.modules.register({
@@ -22890,6 +23993,9 @@
 
     async stop(reason = 'MANUAL_STOP') {
       if (this._destroyed) return this.status();
+      if (/EMERGENCY|UNKNOWN|UNVERIFIED|TERMINAL|SAFETY|SUSPEND|FAIL/i.test(String(reason || ''))) {
+        this._h19FullAutonomyRearmIntent = null;
+      }
       this.running = false;
       await this.modules.stopAll(reason);
       this.scheduler.stop(reason);
@@ -22899,6 +24005,7 @@
     }
 
     async emergencyStop(reason = 'MANUAL_EMERGENCY_STOP') {
+      this._h19FullAutonomyRearmIntent = null;
       const stop = this.stopLatch.latch(reason);
       this.running = false;
       try { this.liveTests.cancel('EMERGENCY_STOP'); } catch (_) {}
@@ -24999,6 +26106,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
   'use strict';
   const ns = root.__ALBOT_INTERNALS__;
   if (!ns || !ns.ALBotRuntime) throw new Error('ALBOT_RUNTIME_MISSING');
+  const cleanText = ns.helpers && ns.helpers.cleanText ? ns.helpers.cleanText : (value => String(value == null ? '' : value));
 
   function resolveSharedHost(start) {
     let current = start;
@@ -25047,7 +26155,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.20.0-h20',
+    version: '0.21.0-h21',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -25141,6 +26249,13 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
       supported: ctype => runtime.classSkills.supportedSkills(ctype),
       live: ctype => runtime.classSkills.liveSkillSummary(ctype),
       preview: targetId => runtime.classSkills.preview(targetId)
+    },
+
+    resourceTopoff: {
+      status: () => runtime.resourceTopoff.status(),
+      supply: () => runtime.resourceTopoff.supply(),
+      tick: () => runtime.resourceTopoff.tick(),
+      reset: reason => runtime.resourceTopoff.resetSafety(reason || 'API_RESOURCE_TOPOFF_RESET')
     },
 
     party: {
@@ -25360,6 +26475,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
   Object.freeze(api.movement);
   Object.freeze(api.combat);
   Object.freeze(api.classSkills);
+  Object.freeze(api.resourceTopoff);
   Object.freeze(api.party);
   Object.freeze(api.partyLogistics);
   Object.freeze(api.lifecycle);
@@ -25392,7 +26508,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
     };
   } catch (_) {}
 
-  runtime.logger.info('AL Bot H20 geladen', {
+  runtime.logger.info('AL Bot H21 geladen', {
     version: api.version,
     bootCount,
     hotReload: !!previous,
