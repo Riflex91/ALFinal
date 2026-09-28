@@ -758,61 +758,22 @@
         let requiresRotation = readiness.unexpectedOnlineNames.length > 0
           || onlineDesiredCount !== 4
           || readiness.missing.length > 0;
-        let rotationFallback = null;
+        const rotationFallback = null;
 
         if (requiresRotation && this.runtime.lifecycle
             && typeof this.runtime.lifecycle.characterRotationReadiness === 'function') {
           const rotationReadiness = this.runtime.lifecycle.characterRotationReadiness(nextDesired);
           if (!rotationReadiness || rotationReadiness.ready !== true) {
-            const fallbackPlan = readiness.online.length === 4
-              ? this.strategy.optimizeTask({
-                type: effectiveTaskType,
-                allowedCharacterNames: readiness.online.slice()
-              })
-              : null;
-            const fallbackQuartet = fallbackPlan && fallbackPlan.status === 'SELECTION_READY'
-              ? this._desiredQuartet(fallbackPlan)
-              : { ok: false };
-            const fallbackNames = fallbackQuartet.ok ? fallbackQuartet.names.slice() : [];
-            const onlineSet = new Set(readiness.online.map(String));
-            const fallbackUsesExactOnlineQuartet = fallbackNames.length === 4
-              && readiness.online.length === 4
-              && fallbackNames.every(name => onlineSet.has(String(name)))
-              && readiness.online.every(name => fallbackNames.includes(String(name)));
-
-            if (fallbackUsesExactOnlineQuartet) {
-              rotationFallback = {
-                used: true,
-                reason: rotationReadiness && rotationReadiness.reason || 'H19_ROTATION_CHARACTER_CONTROL_UNAVAILABLE',
-                blockers: rotationReadiness && rotationReadiness.blockers || [],
-                requestedDesiredCharacterNames: nextDesired.slice(),
-                fallbackDesiredCharacterNames: fallbackNames.slice()
-              };
-              plan = fallbackPlan;
-              quartet = fallbackQuartet;
-              nextDesired = fallbackNames;
-              selectionChanged = nextDesired.join('|') !== this.desiredCharacterNames.slice().sort().join('|');
-              this.desiredCharacterNames = nextDesired.slice();
-              this.lastPlan = clone(plan);
-              readiness = this._profileReadiness();
-              desiredSet = new Set(nextDesired);
-              onlineDesiredCount = readiness.online.filter(name => desiredSet.has(String(name))).length;
-              requiresRotation = readiness.unexpectedOnlineNames.length > 0
-                || onlineDesiredCount !== 4
-                || readiness.missing.length > 0;
-            } else {
-              this.strategy.recordTraining(false);
-              return this.lastDecision = {
-                at: new Date().toISOString(),
-                state: 'BLOCKED',
-                reason: 'FULL_AUTONOMY_ROTATION_UNAVAILABLE_NO_ONLINE_FALLBACK',
-                expectedOnlineCount: 4,
-                requestedDesiredCharacterNames: nextDesired,
-                onlineCharacterNames: readiness.online,
-                rotationReadiness: clone(rotationReadiness),
-                fallbackPlan: clone(fallbackPlan)
-              };
-            }
+            this.strategy.recordTraining(false);
+            return this.lastDecision = {
+              at: new Date().toISOString(),
+              state: 'BLOCKED',
+              reason: 'FULL_AUTONOMY_ROTATION_UNAVAILABLE',
+              expectedOnlineCount: 4,
+              requestedDesiredCharacterNames: nextDesired,
+              onlineCharacterNames: readiness.online,
+              rotationReadiness: clone(rotationReadiness)
+            };
           }
         }
 
