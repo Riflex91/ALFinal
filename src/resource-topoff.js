@@ -151,15 +151,17 @@
     }
 
     _supply(inventory = this._inventory()) {
-      const items = inventory && inventory.available !== false && Array.isArray(inventory.items) ? inventory.items : [];
+      const available = !!(inventory && inventory.available !== false && Array.isArray(inventory.items));
+      const items = available ? inventory.items : [];
       const hpRows = items.filter(row => row && /^hpot/i.test(String(row.name || '')));
       const mpRows = items.filter(row => row && /^mpot/i.test(String(row.name || '')));
       const count = rows => rows.reduce((sum, row) => sum + Math.max(1, Math.floor(Number(row.quantity) || 1)), 0);
       const status = {
+        available,
         hpPotions: count(hpRows),
         mpPotions: count(mpRows),
-        hpReady: hpRows.length > 0,
-        mpReady: mpRows.length > 0,
+        hpReady: available && hpRows.length > 0,
+        mpReady: available && mpRows.length > 0,
         hpItems: hpRows.map(row => ({ name: row.name, quantity: row.quantity })),
         mpItems: mpRows.map(row => ({ name: row.name, quantity: row.quantity }))
       };
@@ -221,6 +223,7 @@
       return {
         hp: finite(character && character.hp),
         mp: finite(character && character.mp),
+        inventoryAvailable: supply.available === true,
         hpPotions: supply.hpPotions,
         mpPotions: supply.mpPotions
       };
@@ -255,9 +258,10 @@
       const resourceIncreased = pending.resource === 'hp'
         ? after.hp != null && pending.before.hp != null && after.hp > pending.before.hp
         : after.mp != null && pending.before.mp != null && after.mp > pending.before.mp;
-      const potionDecreased = pending.resource === 'hp'
+      const inventoryComparable = pending.before.inventoryAvailable === true && after.inventoryAvailable === true;
+      const potionDecreased = inventoryComparable && (pending.resource === 'hp'
         ? after.hpPotions < pending.before.hpPotions
-        : after.mpPotions < pending.before.mpPotions;
+        : after.mpPotions < pending.before.mpPotions);
 
       const response = pending.response && typeof pending.response === 'object' ? pending.response : null;
       const explicitUseConfirmed = !!(response && (
@@ -276,6 +280,7 @@
           state: 'CONFIRMED',
           resourceIncreased,
           potionDecreased,
+          inventoryComparable,
           explicitUseConfirmed
         };
         return true;
