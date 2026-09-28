@@ -30,6 +30,26 @@
     return Math.max(0, Math.min(1, current / total));
   }
 
+  function rejectionText(value) {
+    if (value == null) return '';
+    if (typeof value === 'string') return cleanText(value, 500);
+    if (typeof value !== 'object') return cleanText(value, 500);
+    const keys = ['reason', 'message', 'code', 'type', 'name'];
+    for (const key of keys) {
+      const candidate = value[key];
+      if (typeof candidate === 'string' && candidate.trim()) return cleanText(candidate, 500);
+    }
+    const nested = value.error || value.response;
+    if (nested && typeof nested === 'object') {
+      for (const key of keys) {
+        const candidate = nested[key];
+        if (typeof candidate === 'string' && candidate.trim()) return cleanText(candidate, 500);
+      }
+    }
+    try { return cleanText(JSON.stringify(value), 500); } catch (_) {}
+    return cleanText(value, 500);
+  }
+
   function restoreAmount(meta, resource) {
     const gives = meta && meta.gives;
     if (Array.isArray(gives)) {
@@ -242,12 +262,12 @@
       }, error => {
         if (!this.pending || this.pending.id !== pending.id) return;
         pending.settlement = 'REJECTED';
-        pending.error = cleanText(error && error.message || error || 'RESOURCE_TOPOFF_REJECTED', 500);
+        pending.error = rejectionText(error) || 'RESOURCE_TOPOFF_REJECTED';
       }).catch(() => {});
     }
 
     _knownRejection(value) {
-      const text = cleanText(value && (value.reason || value.message) || value || '', 300).toLowerCase();
+      const text = rejectionText(value).toLowerCase();
       return /cooldown|safet|no_mp|no_hp|full|not_ready|cant_use|cannot_use|unavailable/.test(text);
     }
 
