@@ -122,6 +122,67 @@ test('merchant stand automatic mutation is off by default and only considers exp
   assert.equal(plan.selected.price, 500);
 });
 
+test('merchant repricing uses validated unlist then relist and confirms from live slot state', () => {
+  const { root } = context({
+    character: {
+      name: 'M',
+      ctype: 'merchant',
+      stand: true,
+      slots: {
+        trade1: { name: 'sellme', level: 0, q: 2, price: 1000, rid: 'rid-a' }
+      }
+    }
+  });
+  vm.runInNewContext(marketSource, root);
+  const Stand = root.__ALBOT_INTERNALS__.MerchantStandController;
+  let inventoryRows = [];
+  const calls = [];
+  const stand = new Stand({
+    root,
+    game: {
+      inventorySnapshot: () => ({ available: true, freeSlots: 3, items: inventoryRows })
+    },
+    inventory: {
+      plan: () => ({ items: [] }),
+      ruleSnapshot: () => ({ sellNames: ['sellme'] })
+    },
+    market: {
+      priceBand: () => ({ recommendedAsk: 800, confidence: 'LIVE_VISIBLE' })
+    },
+    actions: {
+      dispatch: (action, args) => {
+        calls.push({ action, args });
+        return { state: 'DISPATCHED', value: Promise.resolve({ success: true }) };
+      }
+    },
+    combat: { status: () => ({ active: false }) },
+    movement: { status: () => ({ active: false }) },
+    economy: { status: () => ({ autonomyEnabled: false, currentAction: null }) },
+    partyLogistics: { status: () => ({ autonomyEnabled: false, currentAction: null }) },
+    canAct: () => true
+  });
+  stand.moduleActive = true;
+  stand.autoManage = true;
+
+  const first = stand.tick();
+  assert.equal(first.state, 'DISPATCHED');
+  assert.equal(calls[0].action, 'unequip');
+  assert.deepEqual(calls[0].args, ['trade1']);
+
+  root.character.slots.trade1 = null;
+  inventoryRows = [{ slot: 4, name: 'sellme', level: 0, quantity: 2, statType: null, property: null, locked: false, giveaway: false }];
+  const second = stand.tick();
+  assert.equal(second.state, 'DISPATCHED');
+  assert.equal(calls[1].action, 'trade');
+  assert.deepEqual(calls[1].args, [4, 1, 800, 2]);
+
+  root.character.slots.trade1 = { name: 'sellme', level: 0, q: 2, price: 800, rid: 'rid-b' };
+  const third = stand.tick();
+  assert.equal(third.state, 'CONFIRMED');
+  assert.equal(stand.status().repricesThisSession, 1);
+  assert.equal(stand.status().pending, null);
+});
+
 test('action boundary exposes merchant stand actions through the central write gate', () => {
   const { root } = context({
     open_stand: () => true,
