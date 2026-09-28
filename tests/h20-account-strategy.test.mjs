@@ -551,6 +551,18 @@ test('Full Autonomy rejects any plan that is not exactly three farmers plus one 
   assert.equal(state.lifecycleStarts, 0);
 });
 
+test('Full Autonomy stops an already-active owned H9 session when the local farmer is no longer selected', () => {
+  const { controller, state } = loadFullAutonomy({ localName: 'My_Warrior' });
+  state.farmActive = true;
+  const result = controller._ensureCombatRole({
+    selected: { memberNames: ['My_Mage', 'My_Priest', 'My_Ranger1'] },
+    leaderName: 'My_Priest'
+  });
+  assert.equal(result.ok, true);
+  assert.equal(state.farmStops, 1);
+  assert.equal(state.farmActive, false);
+});
+
 test('full autonomy arms an already-active lifecycle and blocks if it later stops', () => {
   const { controller, state } = loadFullAutonomy({ partyHealthy: false });
   state.lifecycleAutonomyEnabled = true;
