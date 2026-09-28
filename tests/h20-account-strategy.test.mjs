@@ -536,30 +536,20 @@ test('full autonomy honors a lifecycle self-stop and does not restart it on the 
 });
 
 
-test('Full Autonomy executes only the strategy-selected combat group and keeps unselected quartet members on standby', () => {
-  const selectedMembers = ['My_Priest', 'My_Ranger1'];
-  const priest = loadFullAutonomy({ localName: 'My_Priest', selectedMembers, leaderName: 'My_Priest', partyHealthy: true });
-  const ranger = loadFullAutonomy({ localName: 'My_Ranger1', selectedMembers, leaderName: 'My_Priest', partyHealthy: true });
-  const warrior = loadFullAutonomy({ localName: 'My_Warrior', selectedMembers, leaderName: 'My_Priest', partyHealthy: true });
+test('Full Autonomy rejects any plan that is not exactly three farmers plus one Merchant', () => {
+  const { controller, state } = loadFullAutonomy({
+    localName: 'My_Priest',
+    selectedMembers: ['My_Priest', 'My_Ranger1'],
+    leaderName: 'My_Priest',
+    partyHealthy: true
+  });
 
-  const priestStart = priest.controller.startAutonomy({ taskType: 'FARM' });
-  const rangerStart = ranger.controller.startAutonomy({ taskType: 'FARM' });
-  const warriorStart = warrior.controller.startAutonomy({ taskType: 'FARM' });
-
-  for (const started of [priestStart, rangerStart, warriorStart]) {
-    assert.equal(started.accepted, true);
-    assert.equal(started.tick.state, 'RUNNING');
-    assert.deepEqual(started.tick.executionMembers, selectedMembers);
-    assert.deepEqual(started.tick.supportMembers, ['My_Merchant']);
-    assert.deepEqual([...started.tick.desiredParty], ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior']);
-  }
-  assert.equal(priestStart.tick.localRole, 'combat-farm');
-  assert.equal(rangerStart.tick.localRole, 'combat-farm');
-  assert.equal(warriorStart.tick.localRole, 'standby');
-  assert.deepEqual([...warriorStart.tick.standbyMembers], ['My_Warrior']);
-  assert.deepEqual(priest.state.farmGroup, { groupLeaderName: 'My_Priest', groupMemberNames: selectedMembers });
-  assert.deepEqual(ranger.state.farmGroup, { groupLeaderName: 'My_Priest', groupMemberNames: selectedMembers });
-  assert.equal(warrior.state.farmGroup, null);
+  const started = controller.startAutonomy({ taskType: 'FARM' });
+  assert.equal(started.accepted, true);
+  assert.equal(started.tick.state, 'BLOCKED');
+  assert.equal(started.tick.reason, 'FULL_AUTONOMY_REQUIRES_THREE_FARMERS_AND_ONE_MERCHANT');
+  assert.equal(state.farmStarts, 0);
+  assert.equal(state.lifecycleStarts, 0);
 });
 
 test('full autonomy arms an already-active lifecycle and blocks if it later stops', () => {
