@@ -4631,7 +4631,15 @@
         ? after.hpPotions < pending.before.hpPotions
         : after.mpPotions < pending.before.mpPotions;
 
-      if (resourceIncreased || potionDecreased) {
+      const response = pending.response && typeof pending.response === 'object' ? pending.response : null;
+      const explicitUseConfirmed = !!(response && (
+        response.used === true
+        || response.consumed === true
+        || response.potionUsed === true
+        || (response.success === true && ['use_hp', 'use_mp'].includes(String(response.action || response.place || '').toLowerCase()))
+      ));
+
+      if (potionDecreased || explicitUseConfirmed) {
         this.pending = null;
         this.metrics.confirmed += 1;
         this.lastUse = {
@@ -4639,7 +4647,8 @@
           action: pending.action,
           state: 'CONFIRMED',
           resourceIncreased,
-          potionDecreased
+          potionDecreased,
+          explicitUseConfirmed
         };
         return true;
       }
@@ -9196,7 +9205,13 @@
         });
       }
 
+      const sessionOwner = status && status.session ? String(status.session.owner || '') : '';
+      const fullAutonomyOwns = status && status.active && sessionOwner === 'full-autonomy';
+
       if (shouldFarm) {
+        if (status && status.active && !fullAutonomyOwns) {
+          return { ok: false, reason: 'FULL_AUTONOMY_FOREIGN_FARM_INTELLIGENCE_OWNERSHIP' };
+        }
         if (!status.active) {
           const started = this.runtime.farmIntelligence.startAutonomy({
             owner: 'full-autonomy',
@@ -9208,9 +9223,17 @@
           else if (!started || !String(started.reason || '').includes('ALREADY')) {
             return { ok: false, reason: started && started.reason || 'FULL_AUTONOMY_FARM_START_REJECTED' };
           }
+        } else {
+          this.started.farming = true;
         }
-      } else if (this.started.farming && status.active) {
-        try { this.runtime.farmIntelligence.stopAutonomy('FULL_AUTONOMY_NOT_SELECTED'); } catch (_) {}
+      } else if (status && status.active) {
+        if (fullAutonomyOwns) {
+          try { this.runtime.farmIntelligence.stopAutonomy('FULL_AUTONOMY_NOT_SELECTED'); } catch (_) {}
+          this.started.farming = false;
+        } else {
+          return { ok: false, reason: 'FULL_AUTONOMY_FOREIGN_FARM_INTELLIGENCE_OWNERSHIP' };
+        }
+      } else {
         this.started.farming = false;
       }
       return { ok: true, shouldFarm, selected: [...selected].sort() };
@@ -9657,6 +9680,37 @@
       const ended = clone(session);
       this.session = null;
       return { stopped: true, session: ended };
+    }
+
+    configureGroup(options = {}) {
+      if (!this.session || !this.session.enabled) {
+        return { changed: false, reason: 'H8_SESSION_NOT_ACTIVE' };
+      }
+      const leaderName = cleanText(options.groupLeaderName || '', 120) || null;
+      const memberNames = [...new Set((Array.isArray(options.groupMemberNames) ? options.groupMemberNames : [])
+        .map(value => cleanText(value, 120)).filter(Boolean))].sort();
+      const leaderOwnedPulls = options.leaderOwnedPulls === true || (!!leaderName && memberNames.length > 1);
+      const previousMembers = Array.isArray(this.session.groupMemberNames) ? this.session.groupMemberNames.map(String).sort() : [];
+      const changed = String(this.session.groupLeaderName || '') !== String(leaderName || '')
+        || previousMembers.join('|') !== memberNames.join('|')
+        || this.session.leaderOwnedPulls !== leaderOwnedPulls;
+
+      this.session.groupLeaderName = leaderName;
+      this.session.groupMemberNames = memberNames.slice();
+      this.session.leaderOwnedPulls = leaderOwnedPulls;
+
+      const combat = this._combatStatus();
+      if (combat && combat.active && combat.session
+          && String(combat.session.id) === String(this.session.combatSessionId)
+          && String(combat.session.owner || '') === 'farming-h8'
+          && this.combat && typeof this.combat.configureGroup === 'function') {
+        this.combat.configureGroup({
+          groupLeaderName: leaderName,
+          groupMemberNames: memberNames,
+          leaderOwnedPulls
+        });
+      }
+      return { changed, groupLeaderName: leaderName, groupMemberNames: memberNames.slice() };
     }
 
     onCombatEnded(combatSessionId, reason = 'COMBAT_ENDED') {
@@ -10335,6 +10389,36 @@
         policy: this.session.policy
       });
       return { accepted: true, session: this._publicSession(this.session) };
+    }
+
+    configureGroup(options = {}) {
+      if (!this.session || !this.session.enabled) {
+        return { changed: false, reason: 'COMBAT_SESSION_NOT_ACTIVE' };
+      }
+      const leaderName = cleanText(options.groupLeaderName || '', 120) || null;
+      const memberNames = [...new Set((Array.isArray(options.groupMemberNames) ? options.groupMemberNames : [])
+        .map(value => cleanText(value, 120)).filter(Boolean))].sort();
+      const leaderOwnedPulls = options.leaderOwnedPulls === true || (!!leaderName && memberNames.length > 1);
+      const policy = this.session.policy || {};
+      const previousMembers = Array.isArray(policy.groupMemberNames) ? policy.groupMemberNames.map(String).sort() : [];
+      const changed = String(policy.groupLeaderName || '') !== String(leaderName || '')
+        || previousMembers.join('|') !== memberNames.join('|')
+        || policy.leaderOwnedPulls !== leaderOwnedPulls;
+
+      policy.groupLeaderName = leaderName;
+      policy.groupMemberNames = memberNames.slice();
+      policy.leaderOwnedPulls = leaderOwnedPulls;
+      this.session.policy = policy;
+
+      if (changed) {
+        this.session.lastDecision = {
+          at: new Date().toISOString(),
+          type: 'GROUP_POLICY_UPDATED',
+          groupLeaderName: leaderName,
+          groupMemberNames: memberNames.slice()
+        };
+      }
+      return { changed, groupLeaderName: leaderName, groupMemberNames: memberNames.slice() };
     }
 
     _combatMovementActive() {
@@ -11378,12 +11462,26 @@
       const leaderName = cleanText(options.groupLeaderName || '', 120) || null;
       const memberNames = [...new Set((Array.isArray(options.groupMemberNames) ? options.groupMemberNames : [])
         .map(value => cleanText(value, 120)).filter(Boolean))].sort();
+      const previous = this.groupPolicy || { leaderName: null, memberNames: [] };
+      const previousMembers = Array.isArray(previous.memberNames) ? previous.memberNames.map(String).sort() : [];
+      const changed = String(previous.leaderName || '') !== String(leaderName || '')
+        || previousMembers.join('|') !== memberNames.join('|');
+
       this.groupPolicy = { leaderName, memberNames };
       if (this.session && this.session.enabled) {
         this.session.groupLeaderName = leaderName;
         this.session.groupMemberNames = memberNames.slice();
       }
-      return clone(this.groupPolicy);
+
+      const farm = this._farmingStatus();
+      if (changed && this._ownedFarming(farm) && this.farming && typeof this.farming.configureGroup === 'function') {
+        this.farming.configureGroup({
+          groupLeaderName: leaderName,
+          groupMemberNames: memberNames,
+          leaderOwnedPulls: true
+        });
+      }
+      return { ...clone(this.groupPolicy), changed };
     }
 
     suspendFromCombatUnknown(reason = 'ATTACK_OUTCOME_UNCONFIRMED', details = null) {
@@ -11895,7 +11993,7 @@
         local,
         leader,
         distance: d,
-        sameMap: !!(local && leader && (!local.map || !leader.map || String(local.map) === String(leader.map))),
+        sameMap: !!(local && leader && local.map && leader.map && String(local.map) === String(leader.map)),
         focusTargetId: this.party && typeof this.party.preferredTargetId === 'function' ? this.party.preferredTargetId() : null
       };
     }
@@ -11968,7 +12066,7 @@
         const shifted = destination && group.leader ? distance(destination, group.leader) : null;
         const moveAge = this.groupMove ? this.now() - Number(this.groupMove.atMs || 0) : 0;
         if (shifted != null && shifted >= this.config.groupRetargetDistance && moveAge >= this.config.groupRetargetMs) {
-          const target = { map: group.leader.map || character.map, x: group.leader.x, y: group.leader.y };
+          const target = { map: group.leader.map, x: group.leader.x, y: group.leader.y };
           const retarget = this.movement.retarget(target, {
             owner: 'farm-intelligence-h9-group-regroup',
             arrivalRadius: this.config.groupRegroupStopDistance
@@ -11994,7 +12092,7 @@
           this.metrics.ownershipBlocks += 1;
           return { state: 'WAITING', reason: 'H9_GROUP_REGROUP_MOVEMENT_BUSY', distance: d };
         }
-        const destination = { map: group.leader.map || character.map, x: group.leader.x, y: group.leader.y };
+        const destination = { map: group.leader.map, x: group.leader.x, y: group.leader.y };
         const move = this.movement.smartMove(destination, {
           owner: 'farm-intelligence-h9-group-regroup',
           arrivalRadius: this.config.groupRegroupStopDistance
