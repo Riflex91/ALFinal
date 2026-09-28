@@ -425,5 +425,5 @@ test('H18 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(build, /AL Bot 0\.21\.0-h21/);
   assert.match(dist, /AL Bot 0\.21\.0-h21/);
   assert.match(dist, /class PartyLogisticsController/);
-  assert.equal(pkg.version, '0.20.0');
+  assert.equal(pkg.version, '0.21.0');
 });
