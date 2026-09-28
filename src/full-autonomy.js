@@ -436,7 +436,13 @@
         });
       }
 
+      const sessionOwner = status && status.session ? String(status.session.owner || '') : '';
+      const fullAutonomyOwns = status && status.active && sessionOwner === 'full-autonomy';
+
       if (shouldFarm) {
+        if (status && status.active && !fullAutonomyOwns) {
+          return { ok: false, reason: 'FULL_AUTONOMY_FOREIGN_FARM_INTELLIGENCE_OWNERSHIP' };
+        }
         if (!status.active) {
           const started = this.runtime.farmIntelligence.startAutonomy({
             owner: 'full-autonomy',
@@ -448,9 +454,17 @@
           else if (!started || !String(started.reason || '').includes('ALREADY')) {
             return { ok: false, reason: started && started.reason || 'FULL_AUTONOMY_FARM_START_REJECTED' };
           }
+        } else {
+          this.started.farming = true;
         }
-      } else if (this.started.farming && status.active) {
-        try { this.runtime.farmIntelligence.stopAutonomy('FULL_AUTONOMY_NOT_SELECTED'); } catch (_) {}
+      } else if (status && status.active) {
+        if (fullAutonomyOwns) {
+          try { this.runtime.farmIntelligence.stopAutonomy('FULL_AUTONOMY_NOT_SELECTED'); } catch (_) {}
+          this.started.farming = false;
+        } else {
+          return { ok: false, reason: 'FULL_AUTONOMY_FOREIGN_FARM_INTELLIGENCE_OWNERSHIP' };
+        }
+      } else {
         this.started.farming = false;
       }
       return { ok: true, shouldFarm, selected: [...selected].sort() };
