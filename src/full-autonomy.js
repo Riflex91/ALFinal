@@ -191,7 +191,7 @@
       };
     }
 
-    _desiredQuartet(plan, readiness) {
+    _desiredQuartet(plan) {
       const selected = [...new Set(plan && plan.selected && Array.isArray(plan.selected.memberNames)
         ? plan.selected.memberNames.map(String)
         : [])];
@@ -199,45 +199,31 @@
         ? [...new Set(Array.isArray(plan && plan.supportMemberNames) ? plan.supportMemberNames.map(String) : [])]
         : [];
 
-      if (selected.length < 1 || selected.length > 3) {
-        return { ok: false, reason: 'FULL_AUTONOMY_EXECUTION_GROUP_SIZE_INVALID', selected, support };
+      if (selected.length !== 3) {
+        return {
+          ok: false,
+          reason: 'FULL_AUTONOMY_REQUIRES_THREE_FARMERS_AND_ONE_MERCHANT',
+          selected,
+          support
+        };
       }
-      if (this.config.keepSupportInParty && support.length !== 1) {
-        return { ok: false, reason: 'FULL_AUTONOMY_SUPPORT_GROUP_INVALID', selected, support };
-      }
-
-      const desired = [...new Set([...selected, ...support])];
-      const currentDesired = new Set(this.desiredCharacterNames.map(String));
-      const profiles = Array.isArray(readiness && readiness.profiles) ? readiness.profiles : [];
-      const candidates = profiles
-        .filter(row => row && row.name && !desired.includes(String(row.name)))
-        .filter(row => row.rip !== true && row.emergencyStopLatched !== true)
-        .sort((a, b) =>
-          Number(currentDesired.has(String(b.name))) - Number(currentDesired.has(String(a.name)))
-          || Number(b.online && b.running === true) - Number(a.online && a.running === true)
-          || Number(b.peerFresh === true) - Number(a.peerFresh === true)
-          || Number(b.online === true) - Number(a.online === true)
-          || Number(String(a.ctype || '').toLowerCase() === 'merchant') - Number(String(b.ctype || '').toLowerCase() === 'merchant')
-          || (Number(b.level) || 0) - (Number(a.level) || 0)
-          || String(a.name).localeCompare(String(b.name)));
-
-      const standby = [];
-      for (const row of candidates) {
-        if (desired.length >= 4) break;
-        const name = String(row.name);
-        if (desired.includes(name)) continue;
-        desired.push(name);
-        standby.push(name);
+      if (support.length !== 1) {
+        return {
+          ok: false,
+          reason: 'FULL_AUTONOMY_REQUIRES_THREE_FARMERS_AND_ONE_MERCHANT',
+          selected,
+          support
+        };
       }
 
-      if (desired.length !== 4) {
+      const names = [...new Set([...selected, ...support])].sort();
+      if (names.length !== 4) {
         return {
           ok: false,
           reason: 'FULL_AUTONOMY_DESIRED_QUARTET_INVALID',
           selected,
           support,
-          standby,
-          desiredCharacterNames: desired.slice().sort()
+          desiredCharacterNames: names
         };
       }
 
@@ -245,8 +231,8 @@
         ok: true,
         selected: selected.slice().sort(),
         support: support.slice().sort(),
-        standby: standby.slice().sort(),
-        names: desired.slice().sort()
+        standby: [],
+        names
       };
     }
 
@@ -261,11 +247,8 @@
       const support = this.config.keepSupportInParty
         ? [...new Set(Array.isArray(plan && plan.supportMemberNames) ? plan.supportMemberNames.map(String) : [])]
         : [];
-      if (selected.length < 1 || selected.length > 3) {
-        return { ok: false, reason: 'FULL_AUTONOMY_EXECUTION_GROUP_SIZE_INVALID' };
-      }
-      if (this.config.keepSupportInParty && support.length !== 1) {
-        return { ok: false, reason: 'FULL_AUTONOMY_SUPPORT_GROUP_INVALID' };
+      if (selected.length !== 3 || support.length !== 1) {
+        return { ok: false, reason: 'FULL_AUTONOMY_REQUIRES_THREE_FARMERS_AND_ONE_MERCHANT' };
       }
       const stableDesired = this.desiredCharacterNames.slice().sort();
       if (stableDesired.length !== 4
@@ -574,7 +557,7 @@
             plan: clone(plan)
           };
         }
-        const quartet = this._desiredQuartet(plan, initialReadiness);
+        const quartet = this._desiredQuartet(plan);
         if (!quartet.ok) {
           this.strategy.recordTraining(false);
           return this.lastDecision = {
@@ -676,8 +659,7 @@
           taskType: plan.taskType,
           executionMembers: plan.selected.memberNames,
           supportMembers: plan.supportMemberNames,
-          standbyMembers: lifecycle.partyNames.filter(name =>
-            !plan.selected.memberNames.includes(name) && !plan.supportMemberNames.includes(name)),
+          standbyMembers: [],
           desiredParty: lifecycle.partyNames,
           leader: lifecycle.leader,
           lifecycleCoordinator: lifecycle.coordinatorName,
