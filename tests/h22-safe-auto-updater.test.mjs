@@ -307,3 +307,32 @@ test('H22 failed release is quarantined after verified rollback and is not immed
   assert.equal(second.applied, false);
   assert.equal(second.reason, 'UPDATE_RELEASE_QUARANTINED');
 });
+
+
+test('H22 rejects a legacy persisted pending manifest before touching runtime or code slots', async () => {
+  const { Controller } = loadUpdater();
+  const body = bundle('0.22.1-h22');
+  const fixture = runtimeFixture({ config: { autoApply: true, safeHoldMs: 3000, stagingSlots: ['2'] } });
+  fixture.root.get_active_code_slot = () => '1';
+  fixture.root.upload_code = async () => { throw new Error('MUST_NOT_UPLOAD'); };
+  const updater = new Controller({ runtime: fixture.runtime, root: fixture.root, storage: fixture.storage, sha256: async () => 'a'.repeat(64) });
+  const legacy = manifestFor('0.22.1-h22', body);
+  delete legacy.commitSha;
+  legacy.bundleUrl = 'https://raw.githubusercontent.com/Riflex91/ALFinal/main/dist/al-bot.js';
+  updater.pending = { downloadedAt: new Date().toISOString(), manifest: legacy, bundle: body };
+  updater.safeSince = Date.now() - 4000;
+
+  const result = await updater.applyPending();
+  assert.equal(result.applied, false);
+  assert.equal(result.reason, 'UPDATE_MANIFEST_COMMIT_SHA_INVALID');
+  assert.equal(fixture.state.stops, 0);
+  assert.equal(updater.status().pending, null);
+});
+
+test('H22 build script never publishes a mutable main/latest bundle manifest', () => {
+  const build = fs.readFileSync(new URL('../scripts/build.mjs', import.meta.url), 'utf8');
+  assert.match(build, /ALBOT_RELEASE_COMMIT_SHA/);
+  assert.match(build, /releaseCommitSha/);
+  assert.match(build, /raw\.githubusercontent\.com\/Riflex91\/ALFinal\/\$\{releaseCommitSha\}\/dist\/al-bot\.js/);
+  assert.doesNotMatch(build, /raw\.githubusercontent\.com\/Riflex91\/ALFinal\/main\/dist\/al-bot\.js/);
+});
