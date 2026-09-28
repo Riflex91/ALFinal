@@ -18962,6 +18962,7 @@
   const UPDATE_COORDINATION_PROTOCOL = 'h22-synchronized-update-v1';
   const PENDING_KEY = 'albot:auto-update:pending:v1';
   const QUARANTINE_KEY = 'albot:auto-update:quarantine:v1';
+  const GROUP_OUTCOME_PREFIX = 'albot:auto-update:rollout-outcome:v1:';
 
   function finite(value, fallback = 0) {
     const n = Number(value);
@@ -19658,10 +19659,14 @@
 
       const release = payload && payload.release || null;
       const releaseKey = clean(payload && payload.releaseKey || '', 300);
+      const rolloutId = clean(payload && payload.rolloutId || '', 500);
       const expectedKey = release && release.version && release.commitSha && release.sha256
         ? String(release.version) + '@' + String(release.commitSha).toLowerCase() + ':' + String(release.sha256).toLowerCase()
         : null;
       if (!release || !releaseKey || releaseKey !== expectedKey) return { accepted: false, reason: 'UPDATE_GROUP_RELEASE_INVALID' };
+      if (!rolloutId || !rolloutId.startsWith(releaseKey + ':')) {
+        return { accepted: false, reason: 'UPDATE_GROUP_ROLLOUT_ID_INVALID' };
+      }
 
       const previousRelease = payload && payload.previousRelease || null;
       const localActiveRelease = this._activeRelease();
@@ -19691,6 +19696,7 @@
         protocol: UPDATE_COORDINATION_PROTOCOL,
         state: 'PREPARED',
         releaseKey,
+        rolloutId,
         release: clone(release),
         previousRelease: clone(previousRelease),
         coordinator,
@@ -19711,6 +19717,7 @@
         accepted: true,
         state: 'PREPARED',
         releaseKey,
+        rolloutId,
         localName,
         previousRelease: clone(previousRelease),
         cachedInWindow: ready.cachedInWindow === true,
@@ -19855,6 +19862,85 @@
       }
     }
 
+    _groupOutcomeKey(rolloutId, characterName) {
+      return GROUP_OUTCOME_PREFIX
+        + encodeURIComponent(clean(rolloutId || '', 500))
+        + ':'
+        + encodeURIComponent(clean(characterName || '', 120));
+    }
+
+    _recordGroupOutcome(rollout, state, details = {}) {
+      if (!this.storage || !rollout || !rollout.rolloutId || !rollout.localName) return null;
+      const row = {
+        rolloutId: rollout.rolloutId,
+        releaseKey: rollout.releaseKey,
+        characterName: rollout.localName,
+        state: clean(state || '', 40),
+        atMs: Date.now(),
+        at: new Date().toISOString(),
+        details: clone(details)
+      };
+      try {
+        this.storage.set(this._groupOutcomeKey(rollout.rolloutId, rollout.localName), JSON.stringify(row));
+        return row;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    _readGroupOutcomes(rollout) {
+      const rows = [];
+      if (!this.storage || !rollout || !rollout.rolloutId) return rows;
+      const participants = Array.isArray(rollout.participants) ? rollout.participants : [];
+      for (const name of participants) {
+        try {
+          const raw = this.storage.get(this._groupOutcomeKey(rollout.rolloutId, name));
+          const row = raw ? JSON.parse(raw) : null;
+          if (row && row.rolloutId === rollout.rolloutId && row.releaseKey === rollout.releaseKey
+              && String(row.characterName || '') === String(name)) {
+            rows.push(row);
+          }
+        } catch (_) {}
+      }
+      return rows;
+    }
+
+    async _waitGroupReady(rollout, details = {}) {
+      const participants = Array.isArray(rollout && rollout.participants) ? rollout.participants.slice() : [];
+      if (!rollout || !rollout.rolloutId || !rollout.localName || !participants.length) {
+        return { ok: false, reason: 'UPDATE_GROUP_HEALTH_BARRIER_INVALID', outcomes: [] };
+      }
+
+      this._recordGroupOutcome(rollout, 'READY', details);
+      if (participants.length === 1) {
+        return { ok: true, reason: 'UPDATE_GROUP_HEALTHY', outcomes: this._readGroupOutcomes(rollout) };
+      }
+
+      const deadline = Date.now() + Math.max(5000, this.config.handshakeTimeoutMs);
+      while (Date.now() < deadline) {
+        const outcomes = this._readGroupOutcomes(rollout);
+        const failed = outcomes.find(row => row && row.state === 'FAILED');
+        if (failed) {
+          return {
+            ok: false,
+            reason: 'UPDATE_GROUP_MEMBER_FAILED:' + clean(failed.characterName || '', 120),
+            outcomes
+          };
+        }
+        const ready = new Set(outcomes.filter(row => row && row.state === 'READY').map(row => String(row.characterName || '')));
+        if (participants.every(name => ready.has(String(name)))) {
+          return { ok: true, reason: 'UPDATE_GROUP_HEALTHY', outcomes };
+        }
+        await this._sleep(100);
+      }
+
+      return {
+        ok: false,
+        reason: 'UPDATE_GROUP_HEALTH_TIMEOUT',
+        outcomes: this._readGroupOutcomes(rollout)
+      };
+    }
+
     _coordinationFailure(reason, details = {}) {
       const now = Date.now();
       this.stats.coordinationFailures += 1;
@@ -19914,6 +20000,7 @@
 
       const release = this._releaseDescriptor(manifest);
       const releaseKey = this._releaseKey(manifest);
+      const rolloutId = releaseKey + ':' + String(now) + ':' + String(group.coordinator || '');
       const previousRelease = this._releaseDescriptor(this._activeRelease());
       if (!previousRelease) {
         return this._coordinationFailure('UPDATE_GROUP_ROLLBACK_RELEASE_UNKNOWN', { group, release });
@@ -19921,6 +20008,7 @@
       const payload = {
         protocol: UPDATE_COORDINATION_PROTOCOL,
         releaseKey,
+        rolloutId,
         release,
         previousRelease,
         coordinator: group.coordinator,
@@ -20246,6 +20334,7 @@
           const rollbackBaseBootCount = Math.max(previousBootCount, finite(failedStatus && failedStatus.bootCount, 0));
           const rollback = await this._rollbackToRelease(previousRelease, failedApi, rollbackBaseBootCount, rearmIntent);
           const executionReason = clean(executionError && executionError.message || executionError, 240);
+          if (rollout) this._recordGroupOutcome(rollout, 'FAILED', { phase: 'EXECUTE', reason: executionReason });
           this._recordReleaseFailure(
             manifest,
             'UPDATE_EXECUTION_FAILED:' + executionReason,
@@ -20263,6 +20352,7 @@
           try { failedStatus = failedApi && typeof failedApi.status === 'function' ? failedApi.status() : null; } catch (_) {}
           const rollbackBaseBootCount = Math.max(previousBootCount, finite(failedStatus && failedStatus.bootCount, 0));
           const rollback = await this._rollbackToRelease(previousRelease, failedApi, rollbackBaseBootCount, rearmIntent);
+          if (rollout) this._recordGroupOutcome(rollout, 'FAILED', { phase: 'HANDSHAKE', reason: handshake.reason });
           this._recordReleaseFailure(
             manifest,
             'UPDATE_HANDSHAKE_FAILED:' + handshake.reason,
@@ -20280,6 +20370,7 @@
           try { failedStatus = failedApi && typeof failedApi.status === 'function' ? failedApi.status() : null; } catch (_) {}
           const rollbackBaseBootCount = Math.max(previousBootCount, finite(failedStatus && failedStatus.bootCount, 0));
           const rollback = await this._rollbackToRelease(previousRelease, failedApi, rollbackBaseBootCount, rearmIntent);
+          if (rollout) this._recordGroupOutcome(rollout, 'FAILED', { phase: 'REARM', reason: rearm.reason || 'UNKNOWN' });
           this._recordReleaseFailure(
             manifest,
             'UPDATE_REARM_FAILED:' + (rearm.reason || 'UNKNOWN'),
@@ -20287,6 +20378,32 @@
           );
           failureRecorded = true;
           throw new Error('UPDATE_REARM_FAILED:' + (rearm.reason || 'UNKNOWN') + ':ROLLBACK_' + (rollback.ok ? 'OK' : 'FAILED'));
+        }
+
+        let groupBarrier = null;
+        if (rollout) {
+          groupBarrier = await this._waitGroupReady(rollout, {
+            phase: 'HEALTHY',
+            version: manifest.version,
+            handshake,
+            rearm
+          });
+          if (!groupBarrier.ok) {
+            this.stats.rollbacks += 1;
+            this._recordGroupOutcome(rollout, 'FAILED', { phase: 'BARRIER', reason: groupBarrier.reason });
+            const failedApi = this.root && this.root.ALBot;
+            let failedStatus = null;
+            try { failedStatus = failedApi && typeof failedApi.status === 'function' ? failedApi.status() : null; } catch (_) {}
+            const rollbackBaseBootCount = Math.max(previousBootCount, finite(failedStatus && failedStatus.bootCount, 0));
+            const rollback = await this._rollbackToRelease(previousRelease, failedApi, rollbackBaseBootCount, rearmIntent);
+            this._recordReleaseFailure(
+              manifest,
+              groupBarrier.reason,
+              { groupBarrier, rollback, previousRelease: this._releaseDescriptor(previousRelease) }
+            );
+            failureRecorded = true;
+            throw new Error(groupBarrier.reason + ':ROLLBACK_' + (rollback.ok ? 'OK' : 'FAILED'));
+          }
         }
 
         await this._confirmActiveRelease(manifest);
@@ -20302,6 +20419,7 @@
           release: this._releaseDescriptor(manifest),
           handshake,
           rearm,
+          groupBarrier,
           transport: 'verified-bootstrap-runtime-loader'
         };
         this.pending = null;
@@ -20415,6 +20533,8 @@
           twoPhasePrepareCommit: true,
           bundleCachedAndVerifiedBeforeGroupCommit: true,
           finalProtectionRecheckBeforeExecution: true,
+          coordinatedHealthBarrierBeforeReleaseConfirm: true,
+          coordinatedRollbackOnAnyMemberFailure: true,
           ordinaryCombatDoesNotBlockApply: true,
           ordinaryGameplayDoesNotBlockApply: true,
           eventOrBossDefersApply: true,
