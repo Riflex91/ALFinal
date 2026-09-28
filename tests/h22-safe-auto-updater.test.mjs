@@ -336,3 +336,15 @@ test('H22 build script never publishes a mutable main/latest bundle manifest', (
   assert.match(build, /raw\.githubusercontent\.com\/Riflex91\/ALFinal\/\$\{releaseCommitSha\}\/dist\/al-bot\.js/);
   assert.doesNotMatch(build, /raw\.githubusercontent\.com\/Riflex91\/ALFinal\/main\/dist\/al-bot\.js/);
 });
+
+
+test('H22 runtime and public API expose updater diagnostics and stable updater namespace', () => {
+  const runtime = fs.readFileSync(new URL('../src/runtime.js', import.meta.url), 'utf8');
+  const entry = fs.readFileSync(new URL('../src/entry.js', import.meta.url), 'utf8');
+  assert.match(runtime, /h22-safe-auto-updater/);
+  assert.match(runtime, /bundleUrlMustPinCommitSha/);
+  assert.match(entry, /updater:\s*\{/);
+  assert.match(entry, /tick:\s*\(\) => runtime\.safeUpdater\.cycle\(\)/);
+  assert.match(entry, /Object\.freeze\(api\.updater\)/);
+  assert.match(entry, /updates:\s*\{/);
+});
