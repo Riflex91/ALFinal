@@ -706,6 +706,30 @@
 
       const active = this._onlineSet(roster);
       const localName = this._localName();
+      const desiredActive = new Set(this.policyState.desiredActiveNames.map(String));
+
+      // Rotation is deliberately stop-before-start. Adventure Land only allows
+      // four concurrent characters, so an old farmer must vacate its slot
+      // before H19 starts the newly selected farmer. Never stop the local
+      // coordinator from its own window; once a desired peer is online, that
+      // peer becomes the next coordinator and can finish the rotation.
+      const undesiredActive = [...active]
+        .filter(name => this._ownedRow(name, roster) && !desiredActive.has(String(name)))
+        .sort((a, b) => a.localeCompare(b));
+      for (const name of undesiredActive) {
+        if (String(name) === String(localName)) continue;
+        return {
+          state: 'READY',
+          reason: 'H19_UNDESIRED_CHARACTER_ACTIVE',
+          request: {
+            id: 'h19-auto-stop-' + name,
+            kind: 'STOP',
+            targetName: name,
+            queuedAt: nowIso(),
+            automatic: true
+          }
+        };
+      }
 
       for (const name of this.policyState.desiredRuntimeRunningNames) {
         if (name === localName) continue;
