@@ -197,7 +197,7 @@ test('H6 exposes class skill API, module and recommended live suite', async t =>
   const { ctx } = await startController({ ctype: 'warrior', level: 28, mp: 300, maxMp: 300, range: 23 });
   t.after(async () => { try { await ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {} });
 
-  assert.equal(ctx.ALBot.version, '0.24.0-h24');
+  assert.equal(ctx.ALBot.version, '0.24.1-h24');
   assert.equal(typeof ctx.ALBot.classSkills.status, 'function');
   assert.equal(typeof ctx.ALBot.classSkills.preview, 'function');
   assert.equal(ctx.ALBot.liveTests.status().recommendedId, 'h19-remote-recovery');

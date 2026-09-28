@@ -1,10 +1,11 @@
 {
   "name": "al-bot",
-  "version": "0.24.0",
+  "version": "0.24.1",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "test": "npm run build && node --test tests/*.test.mjs"
+    "test": "npm run build && npm run verify:transport && node --test tests/*.test.mjs",
+    "verify:transport": "node scripts/verify-v6-transport.mjs"
   }
 }
