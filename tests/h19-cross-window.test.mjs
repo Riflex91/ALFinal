@@ -12,17 +12,25 @@ function clone(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value));
 }
 
-function makeRoster(localName, names) {
+function makeRoster(localName, names, state = {}) {
   return {
-    refresh: () => ({
-      accountStateAvailable: true,
-      onlineStateAvailable: true,
-      activeStateAvailable: true,
-      accountCharacters: names.map(name => ({ name, ctype: name.includes('Merchant') ? 'merchant' : 'ranger', online: true })),
-      onlineCharacterNames: names.slice(),
-      activeCharacterNames: [localName],
-      runnerActiveCharacterNames: [localName]
-    })
+    refresh: () => {
+      const online = new Set(Array.isArray(state.onlineNames) ? state.onlineNames.map(String) : names.map(String));
+      online.add(String(localName));
+      return {
+        accountStateAvailable: true,
+        onlineStateAvailable: true,
+        activeStateAvailable: true,
+        accountCharacters: names.map(name => ({
+          name,
+          ctype: name.includes('Merchant') ? 'merchant' : 'ranger',
+          online: online.has(String(name))
+        })),
+        onlineCharacterNames: [...online].sort(),
+        activeCharacterNames: [localName],
+        runnerActiveCharacterNames: [localName]
+      };
+    }
   };
 }
 
@@ -68,7 +76,7 @@ function makeContext(name, names, network, state, nowRef) {
   const Transport = ctx.__ALBOT_INTERNALS__.H19CrossWindowLifecycleTransport;
   const transport = new Transport({
     root: ctx,
-    roster: makeRoster(name, names),
+    roster: makeRoster(name, names, state),
     now: () => nowRef.value,
     heartbeatIntervalMs: 1500,
     staleMs: 5000,
@@ -278,7 +286,9 @@ test('H25 cross-window browser navigation settles before the page navigation des
   assert.equal(request.state, 'UNAVAILABLE', 'same/local desired target must not be reused as replacement');
 
   names.push('My_Mage');
-  // Recreate with the complete owned roster so the desired character can be validated.
+  aState.onlineNames = ['My_Ranger1', 'My_Priest'];
+  bState.onlineNames = ['My_Ranger1', 'My_Priest'];
+  // Recreate with the complete owned roster while the desired replacement stays offline.
   a.transport.destroy();
   b.transport.destroy();
   const network2 = new Map();
@@ -309,8 +319,20 @@ test('H25 cross-window browser navigation is unavailable without explicit naviga
   const names = ['My_Ranger1', 'My_Priest', 'My_Mage'];
   const network = new Map();
   const nowRef = { value: 2900 };
-  const aState = { running: true, runEpoch: 1, emergencyStopLatched: false, characterNavigateCapable: true };
-  const bState = { running: true, runEpoch: 3, emergencyStopLatched: false, characterNavigateCapable: false };
+  const aState = {
+    running: true,
+    runEpoch: 1,
+    emergencyStopLatched: false,
+    characterNavigateCapable: true,
+    onlineNames: ['My_Ranger1', 'My_Priest']
+  };
+  const bState = {
+    running: true,
+    runEpoch: 3,
+    emergencyStopLatched: false,
+    characterNavigateCapable: false,
+    onlineNames: ['My_Ranger1', 'My_Priest']
+  };
   const a = makeContext('My_Ranger1', names, network, aState, nowRef);
   const b = makeContext('My_Priest', names, network, bState, nowRef);
   a.transport.install();
