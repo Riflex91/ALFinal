@@ -676,8 +676,10 @@
           taskType: plan.taskType,
           executionMembers: plan.selected.memberNames,
           supportMembers: plan.supportMemberNames,
-          standbyMembers: [],
+          standbyMembers: lifecycle.partyNames.filter(name =>
+            !plan.selected.memberNames.includes(name) && !plan.supportMemberNames.includes(name)),
           desiredParty: lifecycle.partyNames,
+          executionLeader: plan.leaderName || null,
           leader: lifecycle.leader,
           lifecycleCoordinator: lifecycle.coordinatorName,
           localLifecycleCoordinator: lifecycle.coordinator === true,
