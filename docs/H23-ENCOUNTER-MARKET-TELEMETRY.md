@@ -27,7 +27,7 @@ This branch is prepared for review/testing only and must remain fresh against ma
 - New Merchant Stand controller uses central ActionBoundary actions open_stand, close_stand and trade.
 - Auto-stand is off by default.
 - Automatic listing only considers H10 rows explicitly classified SELL.
-- Existing listings are not automatically removed/repriced in this first safe version; the GUI exposes recommendations until the exact removal/relist contract has separate live evidence.
+- Existing own SELL listings can be repriced through a bounded UNLIST → live inventory evidence → RELIST state machine. The original listing rid/name/level/price is revalidated immediately before unlisting; repricing requires a free inventory slot, a material price delta, an actionable live/ALData signal, cooldown/budgets, and UNKNOWN always suspends without blind retry.
 
 ## Telemetry
 
