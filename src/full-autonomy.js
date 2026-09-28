@@ -33,12 +33,14 @@
         keepSupportInParty: true,
         requireAllOnlineProfiles: true,
         logisticsProbeMs: 30000,
+        standProbeMs: 60000,
         lifecycleMaxActions: 20,
         economyMaxActions: 100,
         logisticsMaxActions: 10,
         expectedOnlineCount: 4
       };
       this.lastLogisticsProbeAtMs = 0;
+      this.lastStandProbeAtMs = 0;
       this.desiredCharacterNames = [];
       this.tickResourceId = null;
       this.lifecycleArmed = false;
@@ -67,6 +69,9 @@
       if (options.requireAllOnlineProfiles != null) this.config.requireAllOnlineProfiles = options.requireAllOnlineProfiles === true;
       if (options.logisticsProbeMs != null) {
         this.config.logisticsProbeMs = Math.max(5000, Math.min(300000, Math.floor(Number(options.logisticsProbeMs) || 30000)));
+      }
+      if (options.standProbeMs != null) {
+        this.config.standProbeMs = Math.max(15000, Math.min(600000, Math.floor(Number(options.standProbeMs) || 60000)));
       }
       // Adventure Land Full Live is always a four-character group: 3 farmers + 1 Merchant.
       this.config.expectedOnlineCount = 4;
@@ -567,16 +572,44 @@
       if (!local || String(local.ctype || '').toLowerCase() !== 'merchant') return { ok: true, merchant: false };
       const economy = this.runtime.economy;
       const logistics = this.runtime.partyLogistics;
+      const stand = this.runtime.merchantStand || null;
       const economyStatus = economy.status();
       const logisticsStatus = logistics.status();
-      if (economyStatus.suspendedReason || logisticsStatus.suspendedReason) {
+      let standStatus = stand && typeof stand.status === 'function' ? stand.status() : null;
+      if (economyStatus.suspendedReason || logisticsStatus.suspendedReason
+          || (standStatus && standStatus.autoManage && standStatus.suspendedReason)) {
         return {
           ok: false,
-          reason: economyStatus.suspendedReason || logisticsStatus.suspendedReason || 'FULL_AUTONOMY_MERCHANT_SUSPENDED'
+          reason: economyStatus.suspendedReason
+            || logisticsStatus.suspendedReason
+            || standStatus && standStatus.suspendedReason
+            || 'FULL_AUTONOMY_MERCHANT_SUSPENDED'
         };
       }
 
       const now = Date.now();
+
+      // An already-started stand mutation owns the Merchant until it reaches live evidence.
+      if (standStatus && standStatus.autoManage && standStatus.pending) {
+        const currentEconomy = economy.status();
+        const currentLogistics = logistics.status();
+        if (currentEconomy.currentAction || currentLogistics.currentAction) {
+          return { ok: false, reason: 'FULL_AUTONOMY_MERCHANT_STAND_OWNERSHIP_CONFLICT' };
+        }
+        if (this.started.economy && currentEconomy.autonomyEnabled) {
+          try { economy.stopAutonomy('FULL_AUTONOMY_MERCHANT_STAND_PENDING'); } catch (_) {}
+          this.started.economy = false;
+        }
+        if (this.started.partyLogistics && currentLogistics.autonomyEnabled) {
+          try { logistics.stopAutonomy('FULL_AUTONOMY_MERCHANT_STAND_PENDING'); } catch (_) {}
+          this.started.partyLogistics = false;
+        }
+        const step = stand.tick();
+        standStatus = stand.status();
+        if (standStatus.suspendedReason) return { ok: false, reason: standStatus.suspendedReason };
+        return { ok: true, merchant: true, owner: 'merchant-stand', plan: clone(step) };
+      }
+
       const logisticsActive = logisticsStatus.autonomyEnabled === true;
       if (logisticsActive) {
         const plan = logistics.plan();
@@ -606,6 +639,28 @@
             this.started.partyLogistics = true;
             return { ok: true, merchant: true, owner: 'party-logistics', plan: clone(logisticsPlan) };
           }
+        }
+      }
+
+      // Auto-stand is opt-in. Probe it in a bounded window so it never races Economy.
+      standStatus = stand && typeof stand.status === 'function' ? stand.status() : null;
+      const economyBeforeStand = economy.status();
+      const logisticsBeforeStand = logistics.status();
+      if (standStatus && standStatus.autoManage
+          && now - this.lastStandProbeAtMs >= this.config.standProbeMs
+          && !economyBeforeStand.currentAction
+          && !logisticsBeforeStand.currentAction
+          && !logisticsBeforeStand.autonomyEnabled) {
+        this.lastStandProbeAtMs = now;
+        if (this.started.economy && economyBeforeStand.autonomyEnabled) {
+          try { economy.stopAutonomy('FULL_AUTONOMY_MERCHANT_STAND_PROBE'); } catch (_) {}
+          this.started.economy = false;
+        }
+        const standStep = stand.tick();
+        standStatus = stand.status();
+        if (standStatus.suspendedReason) return { ok: false, reason: standStatus.suspendedReason };
+        if (standStatus.pending || (standStep && ['DISPATCHED', 'PENDING', 'CONFIRMED'].includes(String(standStep.state || '')))) {
+          return { ok: true, merchant: true, owner: 'merchant-stand', plan: clone(standStep) };
         }
       }
 
