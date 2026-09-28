@@ -1,4 +1,4 @@
-/* AL Bot 0.22.6-h22 | generated file | do not edit dist directly */
+/* AL Bot 0.22.7-h22 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -11798,11 +11798,11 @@
         densityTarget: Math.max(2, Math.min(20, Number(options.densityTarget) || 6)),
         depletionGraceMs: Math.max(1000, Math.min(30000, Number(options.depletionGraceMs) || 5000)),
         minExpectedHitChance: Math.max(0.05, Math.min(0.95, Number(options.minExpectedHitChance) || 0.25)),
-        groupRegroupTriggerDistance: Math.max(90, Math.min(250, Number(options.groupRegroupTriggerDistance) || 120)),
-        groupRegroupStopDistance: Math.max(35, Math.min(100, Number(options.groupRegroupStopDistance) || 60)),
-        groupHardRegroupDistance: Math.max(150, Math.min(350, Number(options.groupHardRegroupDistance) || 195)),
-        groupRetargetDistance: Math.max(20, Math.min(100, Number(options.groupRetargetDistance) || 35)),
-        groupRetargetMs: Math.max(700, Math.min(5000, Number(options.groupRetargetMs) || 1400))
+        groupRegroupTriggerDistance: Math.max(90, Math.min(250, Number(options.groupRegroupTriggerDistance) || 160)),
+        groupRegroupStopDistance: Math.max(35, Math.min(100, Number(options.groupRegroupStopDistance) || 90)),
+        groupHardRegroupDistance: Math.max(150, Math.min(350, Number(options.groupHardRegroupDistance) || 220)),
+        groupRetargetDistance: Math.max(20, Math.min(100, Number(options.groupRetargetDistance) || 90)),
+        groupRetargetMs: Math.max(700, Math.min(5000, Number(options.groupRetargetMs) || 4000))
       };
 
       this.moduleActive = false;
@@ -12533,24 +12533,27 @@
 
       const activeOwnMove = this._ownedMovement(movement);
       if (activeOwnMove) {
-        const destination = movement.activeOrder && movement.activeOrder.destination || null;
-        const shifted = destination && group.leader ? distance(destination, group.leader) : null;
-        const moveAge = this.groupMove ? this.now() - Number(this.groupMove.atMs || 0) : 0;
-        if (shifted != null && shifted >= this.config.groupRetargetDistance && moveAge >= this.config.groupRetargetMs) {
-          const target = { map: group.leader.map, x: group.leader.x, y: group.leader.y };
-          const retarget = this.movement.retarget(target, {
-            owner: 'farm-intelligence-h9-group-regroup',
-            arrivalRadius: this.config.groupRegroupStopDistance
-          });
-          if (retarget && retarget.accepted) {
-            this.groupMove = { atMs: this.now(), destination: clone(target) };
-            this.metrics.groupRetargets += 1;
-          }
-        }
+        // Close the regroup before considering a retarget. Otherwise a moving
+        // leader can cause a pointless retarget on the same tick that the
+        // follower has already re-entered formation.
         if (d <= this.config.groupRegroupStopDistance) {
           try { this.movement.cancel('H9_GROUP_REJOINED_FORMATION'); } catch (_) {}
           this.groupMove = null;
         } else {
+          const destination = movement.activeOrder && movement.activeOrder.destination || null;
+          const shifted = destination && group.leader ? distance(destination, group.leader) : null;
+          const moveAge = this.groupMove ? this.now() - Number(this.groupMove.atMs || 0) : 0;
+          if (shifted != null && shifted >= this.config.groupRetargetDistance && moveAge >= this.config.groupRetargetMs) {
+            const target = { map: group.leader.map, x: group.leader.x, y: group.leader.y };
+            const retarget = this.movement.retarget(target, {
+              owner: 'farm-intelligence-h9-group-regroup',
+              arrivalRadius: this.config.groupRegroupStopDistance
+            });
+            if (retarget && retarget.accepted) {
+              this.groupMove = { atMs: this.now(), destination: clone(target) };
+              this.metrics.groupRetargets += 1;
+            }
+          }
           return { state: 'TRAVELLING', reason: 'H9_GROUP_REGROUP_IN_PROGRESS', leaderName: group.leaderName, distance: d };
         }
       }
@@ -17106,6 +17109,28 @@
         }
       }
 
+      if (pending.settlement === 'RESOLVED'
+          && pending.response
+          && typeof pending.response === 'object'
+          && typeof pending.response.success === 'boolean'
+          && Date.now() - Number(pending.dispatchedAtMs || 0) >= this.config.settleGraceMs) {
+        // Since the 2026 CODE API update, public async functions settle on the
+        // real server result. Keep inventory deltas as the strongest evidence,
+        // but accept an explicit server success/failure when redraw/inventory
+        // propagation lags behind the Promise settlement.
+        if (pending.response.success === true) {
+          return this._complete(pending, 'SUCCEEDED', {
+            evidence: 'SERVER_SETTLEMENT_SUCCESS'
+          });
+        }
+        return this._complete(pending, 'FAILED', {
+          evidence: 'SERVER_SETTLEMENT_FAILURE',
+          serverReason: cleanText(
+            pending.response.reason || pending.response.message || pending.response.code || 'SERVER_REJECTED',
+            240
+          )
+        });
+      }
       if (pending.settlement === 'REJECTED') {
         return this._suspend(pending.kind, pending.error || 'H15_ACTION_REJECTED_WITHOUT_LIVE_OUTCOME');
       }
@@ -22204,7 +22229,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.22.6-h22';
+      this.version = options.version || '0.22.7-h22';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -22213,6 +22238,17 @@
       this.running = false;
       this.runEpoch = 0;
       this._h19FullAutonomyRearmIntent = null;
+      this.performanceGuard = {
+        supported: typeof (this.root && this.root.performance_trick) === 'function',
+        applied: false,
+        attempts: 0,
+        successes: 0,
+        failures: 0,
+        alreadyPlaying: false,
+        lastAttemptAt: null,
+        lastSuccessAt: null,
+        lastError: null
+      };
       this.bus = new ns.EventBus();
       this.storage = new ns.StorageAdapter(this.root);
       this.logger = new ns.Logger({ bus: this.bus, limit: 400 });
@@ -27652,6 +27688,44 @@
       return { runtime: this };
     }
 
+    performanceTrick() {
+      const now = new Date().toISOString();
+      const guard = this.performanceGuard || (this.performanceGuard = {});
+      guard.attempts = Math.max(0, Number(guard.attempts) || 0) + 1;
+      guard.lastAttemptAt = now;
+      guard.supported = typeof (this.root && this.root.performance_trick) === 'function';
+      guard.alreadyPlaying = false;
+
+      if (!guard.supported) {
+        guard.lastError = 'PERFORMANCE_TRICK_UNAVAILABLE';
+        return ns.helpers.clone(guard);
+      }
+
+      try {
+        const emptySound = this.root && this.root.sounds && this.root.sounds.empty || null;
+        const canInspect = !!(emptySound && typeof emptySound.playing === 'function');
+        if (canInspect) {
+          try { guard.alreadyPlaying = emptySound.playing() === true; } catch (_) {}
+        }
+
+        // Adventure Land's official performance_trick keeps background tabs
+        // active by playing its empty keep-alive sound. Never stack duplicate
+        // playback; only reapply when the live sound state proves it stopped.
+        if (!guard.alreadyPlaying && (!guard.applied || canInspect)) {
+          this.root.performance_trick();
+        }
+
+        guard.applied = true;
+        guard.successes = Math.max(0, Number(guard.successes) || 0) + 1;
+        guard.lastSuccessAt = now;
+        guard.lastError = null;
+      } catch (error) {
+        guard.failures = Math.max(0, Number(guard.failures) || 0) + 1;
+        guard.lastError = ns.helpers.cleanText(error && (error.reason || error.message) || error || 'PERFORMANCE_TRICK_FAILED', 300);
+      }
+      return ns.helpers.clone(guard);
+    }
+
     async start() {
       if (this._destroyed) throw new Error('ALBOT_RUNTIME_DESTROYED');
       if (this.stopLatch.status().latched) throw new Error('ALBOT_START_BLOCKED_BY_EMERGENCY_STOP');
@@ -27661,12 +27735,16 @@
       this.runEpoch += 1;
       this.startedAt = new Date().toISOString();
       this.scheduler.start();
+      this.performanceTrick();
       try { this.roster.refresh(); } catch (_) {}
 
       await this.modules.startAll(this._runtimeContext());
       this.scheduler.interval('runtime', 'module-watchdog', () => {
         this.modules.checkWatchdogs();
       }, 1000, { immediate: true });
+      this.scheduler.interval('runtime', 'performance-trick-guard', () => {
+        this.performanceTrick();
+      }, 30000);
 
       this.logger.info('AL Bot gestartet', {
         runEpoch: this.runEpoch,
@@ -27753,6 +27831,7 @@
         runEpoch: this.runEpoch,
         bootCount: this.bootCount,
         replacedPrevious: this.replacedPrevious,
+        performanceTrick: ns.helpers.clone(this.performanceGuard),
         emergencyStop: this.stopLatch.status(),
         scheduler: this.scheduler.status(),
         modules: this.modules.list(),
@@ -29598,8 +29677,15 @@ ${items.length ? items.slice(0, 24).map(row => '<div class="albot-small">#'+esc(
       } catch (_) {}
       const plan = full.lastPlan || strategy.taskPlan || null;
       const decision = full.lastDecision || null;
+      const rotationFallback = decision && decision.rotationFallback || plan && plan.rotationFallback || null;
       const selected = plan && plan.selected && Array.isArray(plan.selected.memberNames) ? plan.selected.memberNames : [];
       const support = plan && Array.isArray(plan.supportMemberNames) ? plan.supportMemberNames : [];
+      const requestedRotation = rotationFallback && Array.isArray(rotationFallback.requestedDesiredCharacterNames)
+        ? rotationFallback.requestedDesiredCharacterNames
+        : [];
+      const fallbackRotation = rotationFallback && Array.isArray(rotationFallback.fallbackDesiredCharacterNames)
+        ? rotationFallback.fallbackDesiredCharacterNames
+        : [];
       const resultText = this.fullAutonomyResult
         ? JSON.stringify(this.fullAutonomyResult, null, 2)
         : 'Noch keine manuelle Full-Live-Aktion.';
@@ -29613,7 +29699,12 @@ ${items.length ? items.slice(0, 24).map(row => '<div class="albot-small">#'+esc(
         + '<div><span class="albot-k">Leader</span><div class="albot-v">'+esc(plan && plan.leaderName || decision && decision.leader || '-')+'</div></div>'
         + '<div><span class="albot-k">Execution Group</span><div class="albot-v">'+(selected.length ? selected.map(esc).join(', ') : '-')+'</div></div>'
         + '<div><span class="albot-k">Support</span><div class="albot-v">'+(support.length ? support.map(esc).join(', ') : '-')+'</div></div>'
-        + '<div><span class="albot-k">Catch-up Ziel</span><div class="albot-v">'+esc(progression && progression.selectedCharacterName || plan && plan.progression && plan.progression.selectedCharacterName || '-')+'</div></div>'
+        + '<div><span class="albot-k">Catch-up Ziel (Strategie)</span><div class="albot-v">'+esc(progression && progression.selectedCharacterName || plan && plan.progression && plan.progression.selectedCharacterName || '-')+'</div></div>'
+        + '<div><span class="albot-k">Catch-up Rotation</span><div class="albot-v">'+(rotationFallback && rotationFallback.used
+          ? 'BLOCKIERT · '+esc(rotationFallback.reason || 'ROTATION_UNAVAILABLE')
+          : 'BEREIT / NICHT ERFORDERLICH')+'</div></div>'
+        + '<div><span class="albot-k">Angefordert</span><div class="albot-v">'+(requestedRotation.length ? requestedRotation.map(esc).join(', ') : '-')+'</div></div>'
+        + '<div><span class="albot-k">Aktiver Fallback</span><div class="albot-v">'+(fallbackRotation.length ? fallbackRotation.map(esc).join(', ') : '-')+'</div></div>'
         + '<div><span class="albot-k">Lokale Rolle</span><div class="albot-v">'+esc(decision && decision.localRole || '-')+'</div></div>'
         + '</div></div>'
         + '<div class="albot-card"><b>Account-Profile</b>'
@@ -29623,7 +29714,7 @@ ${items.length ? items.slice(0, 24).map(row => '<div class="albot-small">#'+esc(
         + '<div class="albot-row"><select id="albot-full-task">'
         + ['FARM','QUEST','BOSS','EVENT','SPECIAL'].map(value => '<option value="'+value+'" '+((full.config && full.config.taskType || 'FARM') === value ? 'selected' : '')+'>'+value+'</option>').join('')
         + '</select><button id="albot-full-start" class="albot-btn" '+(full.enabled || status.emergencyStop && status.emergencyStop.latched ? 'disabled' : '')+'>Full Live starten</button><button id="albot-full-stop" class="albot-btn warn" '+(full.enabled ? '' : 'disabled')+'>Full Live stoppen</button></div>'
-        + '<div class="albot-small">Auf allen vier Fenstern denselben aktuellen Build laden. Der Modus bleibt WARMING, bis fuer jeden online gemeldeten Character ein frisches Cross-Window-Profil vorliegt.</div>'
+        + '<div class="albot-small">Auf allen vier Fenstern denselben aktuellen Build laden. Der Modus bleibt WARMING, bis fuer jeden online gemeldeten Character ein frisches Cross-Window-Profil vorliegt. Bei H19_ROTATION_STOP_NOT_RUNNER_CONTROLLABLE ist das Catch-up-Ziel erkannt, aber ein separat gestartetes Browserfenster kann nicht sicher mit stop_character beendet werden; die aktuelle Vierergruppe bleibt dann absichtlich aktiv.</div>'
         + '<div class="albot-log" style="margin-top:8px">'+esc(resultText)+'</div></div>';
 
       const start = panel.querySelector('#albot-full-start');
@@ -29876,7 +29967,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.22.6-h22',
+    version: '0.22.7-h22',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -29899,6 +29990,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
     status: () => runtime.status(),
     selfTest: () => runtime.selfTest(),
     diagnostics: () => runtime.diagnostics(),
+    performance_trick: () => runtime.performanceTrick(),
 
     scheduler: {
       status: () => runtime.scheduler.status(),
