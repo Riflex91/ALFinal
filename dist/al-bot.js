@@ -1,4 +1,4 @@
-/* AL Bot 0.22.4-h22 | generated file | do not edit dist directly */
+/* AL Bot 0.22.5-h22 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -7198,6 +7198,10 @@
       this.party = options.party || null;
       this.storage = options.storage || null;
       this.crossWindow = options.crossWindow || null;
+      this.sessionId = cleanText(
+        options.sessionId || this.crossWindow && this.crossWindow.sessionId || '',
+        240
+      ) || ('h19-session-' + Date.now());
       this.canAct = typeof options.canAct === 'function' ? options.canAct : () => true;
 
       this.config = {
@@ -7263,7 +7267,10 @@
         ownershipBlocks: 0,
         safetyBlocks: 0,
         crossWindowDispatches: 0,
-        crossWindowConfirms: 0
+        crossWindowConfirms: 0,
+        rotationCapabilityBlocks: 0,
+        stalePendingDiscarded: 0,
+        stalePendingReconciled: 0
       };
     }
 
@@ -7443,6 +7450,7 @@
     _persistCurrent() {
       if (!this.currentAction) return this._removeStorage('pending');
       const row = clone(this.currentAction);
+      row.ownerSessionId = this.sessionId;
       delete row.response;
       delete row.errorObject;
       this._writeStorage('pending', row);
@@ -7477,21 +7485,54 @@
 
       const pending = this._readStorage('pending');
       if (pending && pending.kind && pending.id) {
-        this.currentAction = {
-          ...pending,
-          settlement: 'RESTORED',
-          restored: true,
-          response: null,
-          error: null
-        };
-        this.metrics.reconciliations += 1;
-        this.lastAction = {
-          at: nowIso(),
-          type: 'PENDING_RESTORED',
-          actionId: pending.id,
-          kind: pending.kind,
-          targetName: pending.targetName || null
-        };
+        const sameSession = !!pending.ownerSessionId && String(pending.ownerSessionId) === String(this.sessionId);
+        if (!sameSession) {
+          const liveOutcome = this._pendingLiveOutcome(pending);
+          this._removeStorage('pending');
+          this.metrics.reconciliations += 1;
+          if (liveOutcome.confirmed) {
+            this.metrics.stalePendingReconciled += 1;
+            this.lastAction = {
+              at: nowIso(),
+              type: 'STALE_PENDING_RECONCILED',
+              actionId: pending.id,
+              kind: pending.kind,
+              targetName: pending.targetName || null,
+              evidence: liveOutcome.evidence || null,
+              previousSessionId: pending.ownerSessionId || null,
+              currentSessionId: this.sessionId
+            };
+          } else {
+            this.metrics.stalePendingDiscarded += 1;
+            this.lastAction = {
+              at: nowIso(),
+              type: 'STALE_PENDING_DISCARDED',
+              actionId: pending.id,
+              kind: pending.kind,
+              targetName: pending.targetName || null,
+              reason: liveOutcome.reason || 'H19_STALE_PENDING_NO_LIVE_OUTCOME',
+              previousSessionId: pending.ownerSessionId || null,
+              currentSessionId: this.sessionId
+            };
+          }
+        } else {
+          this.currentAction = {
+            ...pending,
+            settlement: 'RESTORED',
+            restored: true,
+            response: null,
+            error: null
+          };
+          this.metrics.reconciliations += 1;
+          this.lastAction = {
+            at: nowIso(),
+            type: 'PENDING_RESTORED',
+            actionId: pending.id,
+            kind: pending.kind,
+            targetName: pending.targetName || null,
+            ownerSessionId: pending.ownerSessionId
+          };
+        }
       }
     }
 
@@ -7559,7 +7600,112 @@
       return new Set(names.map(String));
     }
 
-    _validateRemoteTarget(name, mode) {
+    _actionAvailable(actionName) {
+      if (!this.actions) return false;
+      if (typeof this.actions.available === 'function') {
+        try { return this.actions.available(actionName) === true; } catch (_) { return false; }
+      }
+      return typeof this.actions.dispatch === 'function';
+    }
+
+    _pendingLiveOutcome(pending) {
+      if (!pending || !pending.kind) return { confirmed: false, reason: 'H19_STALE_PENDING_INVALID' };
+      const kind = String(pending.kind);
+      const targetName = cleanText(pending.targetName || '', 120);
+      if (kind === 'START' || kind === 'STOP') {
+        if (pending.transport === 'cross-window-runtime') {
+          const peer = this.crossWindow && typeof this.crossWindow.freshPeer === 'function'
+            ? this.crossWindow.freshPeer(targetName)
+            : null;
+          const desiredRunning = kind === 'START';
+          if (peer && peer.running === desiredRunning) {
+            return { confirmed: true, evidence: 'STALE_CROSS_WINDOW_RUNTIME_STATE' };
+          }
+          return { confirmed: false, reason: 'H19_STALE_RUNTIME_OUTCOME_UNVERIFIED' };
+        }
+        const roster = this._roster();
+        if (!roster || roster.onlineStateAvailable !== true) {
+          return { confirmed: false, reason: 'H19_STALE_ROSTER_UNAVAILABLE' };
+        }
+        const online = this._onlineSet(roster).has(targetName);
+        if (kind === 'START' && online) return { confirmed: true, evidence: 'STALE_ACTIVE_ROSTER_PRESENT' };
+        if (kind === 'STOP' && !online) return { confirmed: true, evidence: 'STALE_ACTIVE_ROSTER_ABSENT' };
+        return { confirmed: false, reason: 'H19_STALE_CHARACTER_OUTCOME_UNVERIFIED' };
+      }
+      if (kind === 'RESPAWN') {
+        const local = this._local();
+        if (local && local.rip !== true) return { confirmed: true, evidence: 'STALE_LOCAL_CHARACTER_ALIVE' };
+        return { confirmed: false, reason: 'H19_STALE_RESPAWN_OUTCOME_UNVERIFIED' };
+      }
+      if (['PARTY_INVITE', 'PARTY_REQUEST', 'PARTY_ACCEPT_INVITE', 'PARTY_ACCEPT_REQUEST'].includes(kind)) {
+        const party = this._partySnapshot();
+        const members = this._partyMemberSet(party);
+        const localName = this._localName();
+        if (party && party.partyId && members.has(targetName) && members.has(localName)) {
+          return { confirmed: true, evidence: 'STALE_PARTY_SNAPSHOT_MEMBERSHIP' };
+        }
+        return { confirmed: false, reason: 'H19_STALE_PARTY_OUTCOME_UNVERIFIED' };
+      }
+      return { confirmed: false, reason: 'H19_STALE_PENDING_KIND_UNSUPPORTED' };
+    }
+
+    characterRotationReadiness(desiredNames = []) {
+      const roster = this._roster();
+      const desired = [...new Set((Array.isArray(desiredNames) ? desiredNames : [])
+        .map(name => cleanText(name, 120))
+        .filter(Boolean))].sort((a, b) => a.localeCompare(b));
+      if (!roster || roster.accountStateAvailable !== true || roster.onlineStateAvailable !== true) {
+        this.metrics.rotationCapabilityBlocks += 1;
+        return { ready: false, reason: 'H19_ROTATION_ROSTER_UNAVAILABLE', desiredCharacterNames: desired };
+      }
+      if (roster.activeStateAvailable !== true) {
+        this.metrics.rotationCapabilityBlocks += 1;
+        return { ready: false, reason: 'H19_ROTATION_RUNNER_STATE_UNAVAILABLE', desiredCharacterNames: desired };
+      }
+
+      const owned = new Set((roster.accountCharacters || []).map(row => String(row && row.name || '')).filter(Boolean));
+      if (desired.some(name => !owned.has(name))) {
+        this.metrics.rotationCapabilityBlocks += 1;
+        return { ready: false, reason: 'H19_ROTATION_TARGET_NOT_OWNED', desiredCharacterNames: desired };
+      }
+
+      const online = this._onlineSet(roster);
+      const runnerActive = this._runnerActiveSet(roster);
+      const localName = this._localName();
+      const unexpectedOnlineNames = [...online]
+        .filter(name => owned.has(String(name)) && !desired.includes(String(name)))
+        .sort((a, b) => a.localeCompare(b));
+      const missingDesiredNames = desired.filter(name => !online.has(String(name))).sort((a, b) => a.localeCompare(b));
+      const blockers = [];
+
+      if (unexpectedOnlineNames.length && !this._actionAvailable('stop_character')) {
+        blockers.push('H19_ROTATION_STOP_ACTION_UNAVAILABLE');
+      }
+      if (missingDesiredNames.length && !this._actionAvailable('start_character')) {
+        blockers.push('H19_ROTATION_START_ACTION_UNAVAILABLE');
+      }
+      for (const name of unexpectedOnlineNames) {
+        if (String(name) === String(localName)) blockers.push('H19_ROTATION_WOULD_STOP_LOCAL:' + name);
+        else if (!runnerActive.has(String(name))) blockers.push('H19_ROTATION_STOP_NOT_RUNNER_CONTROLLABLE:' + name);
+      }
+
+      const ready = blockers.length === 0;
+      if (!ready) this.metrics.rotationCapabilityBlocks += 1;
+      return {
+        ready,
+        reason: ready ? 'H19_ROTATION_CHARACTER_CONTROL_READY' : blockers[0],
+        blockers,
+        desiredCharacterNames: desired,
+        onlineCharacterNames: [...online].sort((a, b) => a.localeCompare(b)),
+        runnerActiveCharacterNames: [...runnerActive].sort((a, b) => a.localeCompare(b)),
+        unexpectedOnlineNames,
+        missingDesiredNames,
+        stopActionAvailable: this._actionAvailable('stop_character'),
+        startActionAvailable: this._actionAvailable('start_character')
+      };
+    }
+
+    _validateRemoteTarget(name, mode, options = {}) {
       const roster = this._roster();
       if (!roster || roster.accountStateAvailable !== true || roster.onlineStateAvailable !== true) {
         return { ok: false, reason: 'H19_ROSTER_LIVE_STATE_UNAVAILABLE' };
@@ -7583,6 +7729,12 @@
 
       if (mode === 'STOP') {
         if (!active) return { ok: false, reason: 'H19_TARGET_ALREADY_STOPPED' };
+        if (options.requireCharacterStateChange === true) {
+          if (!this._actionAvailable('stop_character')) return { ok: false, reason: 'H19_ROTATION_STOP_ACTION_UNAVAILABLE' };
+          if (roster.activeStateAvailable !== true) return { ok: false, reason: 'H19_ROTATION_RUNNER_STATE_UNAVAILABLE' };
+          if (!runnerActive) return { ok: false, reason: 'H19_ROTATION_STOP_NOT_RUNNER_CONTROLLABLE' };
+          return { ok: true, roster, owned, active, runnerActive, peer, transport: 'child-character' };
+        }
         if (roster.activeStateAvailable === true && runnerActive) {
           return { ok: true, roster, owned, active, runnerActive, peer, transport: 'child-character' };
         }
@@ -7597,6 +7749,11 @@
       }
 
       if (mode === 'START') {
+        if (options.requireCharacterStateChange === true) {
+          if (active) return { ok: false, reason: 'H19_TARGET_ALREADY_ACTIVE' };
+          if (!this._actionAvailable('start_character')) return { ok: false, reason: 'H19_ROTATION_START_ACTION_UNAVAILABLE' };
+          return { ok: true, roster, owned, active, runnerActive, peer, transport: 'child-character' };
+        }
         if (peer) {
           if (peer.running === true) return { ok: false, reason: 'H19_TARGET_ALREADY_ACTIVE' };
           return { ok: true, roster, owned, active, runnerActive, peer, transport: 'cross-window-runtime' };
@@ -7614,7 +7771,9 @@
       if (this.queue.length >= this.config.maxQueue) return { accepted: false, reason: 'H19_QUEUE_FULL' };
 
       if (kind === 'START' || kind === 'STOP') {
-        const check = this._validateRemoteTarget(targetName, kind);
+        const check = this._validateRemoteTarget(targetName, kind, {
+          requireCharacterStateChange: details.requireCharacterStateChange === true
+        });
         if (!check.ok) return { accepted: false, reason: check.reason };
       }
 
@@ -7891,7 +8050,8 @@
             kind: 'STOP',
             targetName: name,
             queuedAt: nowIso(),
-            automatic: true
+            automatic: true,
+            requireCharacterStateChange: true
           }
         };
       }
@@ -7939,7 +8099,8 @@
               kind: 'START',
               targetName: name,
               queuedAt: nowIso(),
-              automatic: true
+              automatic: true,
+              requireCharacterStateChange: true
             }
           };
         }
@@ -8054,7 +8215,9 @@
       let args;
       let before = {};
       if (request.kind === 'START' || request.kind === 'STOP') {
-        const check = this._validateRemoteTarget(request.targetName, request.kind);
+        const check = this._validateRemoteTarget(request.targetName, request.kind, {
+          requireCharacterStateChange: request.requireCharacterStateChange === true
+        });
         if (!check.ok) return { accepted: false, reason: check.reason };
         actionName = request.kind === 'START' ? 'start_character' : 'stop_character';
         args = [request.targetName];
@@ -8063,7 +8226,8 @@
           targetWasActive: check.active,
           transport: check.transport || 'child-character',
           targetSessionId: check.peer && check.peer.sessionId || null,
-          targetRuntimeWasRunning: check.peer ? check.peer.running === true : null
+          targetRuntimeWasRunning: check.peer ? check.peer.running === true : null,
+          requireCharacterStateChange: request.requireCharacterStateChange === true
         };
       } else if (request.kind === 'RESPAWN') {
         const readiness = this._respawnReadiness();
@@ -8125,6 +8289,7 @@
         kind: request.kind,
         targetName: request.targetName || null,
         automatic: request.automatic === true,
+        requireCharacterStateChange: request.requireCharacterStateChange === true,
         signalId: request.signalId || null,
         preparedAt: nowIso(),
         preparedAtMs: nowMs,
@@ -8752,8 +8917,12 @@
         ? [...new Set(input.requiredCapabilities.map(value => cleanText(value, 40).toUpperCase()).filter(Boolean))]
         : defaults.required.slice();
       const progression = this.progressionPlan();
+      const allowedCharacterNames = Array.isArray(input.allowedCharacterNames)
+        ? new Set(input.allowedCharacterNames.map(name => cleanText(name, 120)).filter(Boolean))
+        : null;
       const scored = this._scoredProfiles()
         .filter(row => row.rip !== true && row.emergencyStopLatched !== true)
+        .filter(row => !allowedCharacterNames || allowedCharacterNames.has(String(row.name)))
         .filter(row => !defaults.combatOnly || row.ctype !== 'merchant')
         .slice(0, this.config.maxCandidates);
 
@@ -8811,6 +8980,7 @@
       }
       const merchants = this._scoredProfiles()
         .filter(row => row.rip !== true && row.emergencyStopLatched !== true && row.ctype === 'merchant')
+        .filter(row => !allowedCharacterNames || allowedCharacterNames.has(String(row.name)))
         .sort((a, b) =>
           Number(b.online && b.running === true) - Number(a.online && a.running === true)
           || b.strength - a.strength
@@ -8822,6 +8992,7 @@
         schemaVersion: 1,
         taskType,
         requiredCapabilities: required,
+        allowedCharacterNames: allowedCharacterNames ? [...allowedCharacterNames].sort((a, b) => a.localeCompare(b)) : null,
         status: selected && supportReady
           ? 'SELECTION_READY'
           : (selected && !supportReady ? 'NO_MERCHANT_SUPPORT' : 'NO_ALLOWED_COMBINATION'),
@@ -9133,24 +9304,28 @@
       const foreignNames = party && Array.isArray(party.foreignMemberNames)
         ? party.foreignMemberNames.map(String)
         : [];
-      const currentLeader = cleanText(party && party.leader || '', 120) || null;
       const onlineSet = new Set(readiness.online.map(String));
-      const onlineDesired = desiredPartyAll.filter(name => onlineSet.has(String(name)));
-      const preferredLeader = plan.leaderName && desiredPartyAll.includes(plan.leaderName)
+      const onlineDesired = desiredPartyAll
+        .filter(name => onlineSet.has(String(name)))
+        .sort((a, b) => a.localeCompare(b));
+      const preferredCombatLeader = plan.leaderName && desiredPartyAll.includes(plan.leaderName)
         ? plan.leaderName
-        : (support[0] || desiredPartyAll[0] || null);
-      const leader = currentLeader
-        && desiredPartyAll.includes(currentLeader)
-        && foreignNames.length === 0
-        ? currentLeader
-        : (onlineDesired.includes(preferredLeader)
-          ? preferredLeader
-          : (onlineDesired.includes(support[0]) ? support[0] : (onlineDesired[0] || preferredLeader)));
+        : (desiredPartyAll[0] || null);
+      // The Merchant is the stable fourth member of Full Live and therefore
+      // owns party topology. Keeping party leader + lifecycle coordinator on
+      // the same deterministic character lets one authority create/rebuild
+      // the party while combat can retain a separate execution leader.
+      const preferredPartyLeader = support[0] || preferredCombatLeader || desiredPartyAll[0] || null;
+      const leader = preferredPartyLeader;
       if (!leader) return { ok: false, reason: 'FULL_AUTONOMY_PARTY_LEADER_UNAVAILABLE' };
 
-      const coordinatorName = onlineSet.has(String(leader))
-        ? leader
-        : (onlineDesired.includes(support[0]) ? support[0] : (onlineDesired[0] || currentLeader || localName));
+      const supportCoordinator = support[0] && onlineDesired.includes(String(support[0]))
+        ? String(support[0])
+        : null;
+      const coordinatorName = supportCoordinator
+        || (onlineDesired.includes(String(preferredPartyLeader || '')) ? String(preferredPartyLeader) : null)
+        || onlineDesired[0]
+        || localName;
       const coordinator = localName === String(coordinatorName);
       const desiredActiveNames = stableDesired.slice();
       const desiredPartyMembers = desiredPartyAll.slice();
@@ -9448,7 +9623,7 @@
           };
         }
 
-        const plan = this.strategy.optimizeTask({ type: this.config.taskType });
+        let plan = this.strategy.optimizeTask({ type: this.config.taskType });
         this.lastPlan = clone(plan);
         if (!plan || plan.status !== 'SELECTION_READY') {
           this.strategy.recordTraining(false);
@@ -9459,7 +9634,7 @@
             plan: clone(plan)
           };
         }
-        const quartet = this._desiredQuartet(plan);
+        let quartet = this._desiredQuartet(plan);
         if (!quartet.ok) {
           this.strategy.recordTraining(false);
           return this.lastDecision = {
@@ -9474,15 +9649,72 @@
           };
         }
 
-        const nextDesired = quartet.names.slice();
-        const selectionChanged = nextDesired.join('|') !== this.desiredCharacterNames.slice().sort().join('|');
+        let nextDesired = quartet.names.slice();
+        let selectionChanged = nextDesired.join('|') !== this.desiredCharacterNames.slice().sort().join('|');
         this.desiredCharacterNames = nextDesired;
-        const readiness = this._profileReadiness();
-        const desiredSet = new Set(nextDesired);
-        const onlineDesiredCount = readiness.online.filter(name => desiredSet.has(String(name))).length;
-        const requiresRotation = readiness.unexpectedOnlineNames.length > 0
+        let readiness = this._profileReadiness();
+        let desiredSet = new Set(nextDesired);
+        let onlineDesiredCount = readiness.online.filter(name => desiredSet.has(String(name))).length;
+        let requiresRotation = readiness.unexpectedOnlineNames.length > 0
           || onlineDesiredCount !== 4
           || readiness.missing.length > 0;
+        let rotationFallback = null;
+
+        if (requiresRotation && this.runtime.lifecycle
+            && typeof this.runtime.lifecycle.characterRotationReadiness === 'function') {
+          const rotationReadiness = this.runtime.lifecycle.characterRotationReadiness(nextDesired);
+          if (!rotationReadiness || rotationReadiness.ready !== true) {
+            const fallbackPlan = readiness.online.length === 4
+              ? this.strategy.optimizeTask({
+                type: this.config.taskType,
+                allowedCharacterNames: readiness.online.slice()
+              })
+              : null;
+            const fallbackQuartet = fallbackPlan && fallbackPlan.status === 'SELECTION_READY'
+              ? this._desiredQuartet(fallbackPlan)
+              : { ok: false };
+            const fallbackNames = fallbackQuartet.ok ? fallbackQuartet.names.slice() : [];
+            const onlineSet = new Set(readiness.online.map(String));
+            const fallbackUsesExactOnlineQuartet = fallbackNames.length === 4
+              && readiness.online.length === 4
+              && fallbackNames.every(name => onlineSet.has(String(name)))
+              && readiness.online.every(name => fallbackNames.includes(String(name)));
+
+            if (fallbackUsesExactOnlineQuartet) {
+              rotationFallback = {
+                used: true,
+                reason: rotationReadiness && rotationReadiness.reason || 'H19_ROTATION_CHARACTER_CONTROL_UNAVAILABLE',
+                blockers: rotationReadiness && rotationReadiness.blockers || [],
+                requestedDesiredCharacterNames: nextDesired.slice(),
+                fallbackDesiredCharacterNames: fallbackNames.slice()
+              };
+              plan = fallbackPlan;
+              quartet = fallbackQuartet;
+              nextDesired = fallbackNames;
+              selectionChanged = nextDesired.join('|') !== this.desiredCharacterNames.slice().sort().join('|');
+              this.desiredCharacterNames = nextDesired.slice();
+              this.lastPlan = clone(plan);
+              readiness = this._profileReadiness();
+              desiredSet = new Set(nextDesired);
+              onlineDesiredCount = readiness.online.filter(name => desiredSet.has(String(name))).length;
+              requiresRotation = readiness.unexpectedOnlineNames.length > 0
+                || onlineDesiredCount !== 4
+                || readiness.missing.length > 0;
+            } else {
+              this.strategy.recordTraining(false);
+              return this.lastDecision = {
+                at: new Date().toISOString(),
+                state: 'BLOCKED',
+                reason: 'FULL_AUTONOMY_ROTATION_UNAVAILABLE_NO_ONLINE_FALLBACK',
+                expectedOnlineCount: 4,
+                requestedDesiredCharacterNames: nextDesired,
+                onlineCharacterNames: readiness.online,
+                rotationReadiness: clone(rotationReadiness),
+                fallbackPlan: clone(fallbackPlan)
+              };
+            }
+          }
+        }
 
         if (requiresRotation) {
           this.strategy.recordTraining(false);
@@ -9572,7 +9804,8 @@
           lifecycleRecoveryBlockReason: lifecycle.recoveryBlockReason || null,
           partyTopologyHealthy: lifecycle.partyTopologyHealthy === true,
           missingDesiredCharacters: this.desiredCharacterNames.filter(name => !readiness.online.includes(name)),
-          progressionTarget: plan.progression && plan.progression.selectedCharacterName || null
+          progressionTarget: plan.progression && plan.progression.selectedCharacterName || null,
+          rotationFallback: clone(rotationFallback)
         };
       } catch (error) {
         this.lastError = {
@@ -21860,7 +22093,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.22.4-h22';
+      this.version = options.version || '0.22.5-h22';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -22135,6 +22368,7 @@
         party: this.party,
         storage: this.storage,
         crossWindow: this.lifecycleTransport,
+        sessionId: this.lifecycleTransport && this.lifecycleTransport.sessionId || null,
         canAct: action => this.actionAllowed(action)
       });
       this.accountStrategy = new ns.AccountStrategyController({
@@ -22422,7 +22656,7 @@
       this.modules.register({
         id: 'known-recovery',
         title: 'H22 Known Recovery Coordinator',
-        version: '0.22.4',
+        version: '0.22.5',
         watchdogMs: 5000,
         start: context => this.knownRecovery.start(context),
         stop: reason => this.knownRecovery.stop(reason),
@@ -29531,7 +29765,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.22.4-h22',
+    version: '0.22.5-h22',
     bootCount,
     replacedPrevious: !!previous
   });
