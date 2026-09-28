@@ -27,12 +27,12 @@
   });
 
   const TASK_DEFAULTS = Object.freeze({
-    FARM: { minMembers: 3, maxMembers: 3, required: ['TANK', 'HEALER', 'DPS'], combatOnly: true, progressionWeight: 0.20 },
-    QUEST: { minMembers: 1, maxMembers: 2, required: ['DPS'], combatOnly: true, progressionWeight: 0.16 },
-    BOSS: { minMembers: 3, maxMembers: 4, required: ['TANK', 'HEALER', 'DPS'], combatOnly: true, progressionWeight: 0 },
-    EVENT: { minMembers: 3, maxMembers: 4, required: ['TANK', 'HEALER', 'DPS'], combatOnly: true, progressionWeight: 0 },
-    SPECIAL: { minMembers: 2, maxMembers: 4, required: ['HEALER', 'DPS'], combatOnly: true, progressionWeight: 0.04 },
-    ECONOMY: { minMembers: 1, maxMembers: 1, required: ['ECONOMY'], combatOnly: false, progressionWeight: 0 }
+    FARM: { minMembers: 1, maxMembers: 3, required: ['DPS'], combatOnly: true, progressionWeight: 0.20, extraMemberCost: 0.90, diversityWeight: 0.02 },
+    QUEST: { minMembers: 1, maxMembers: 3, required: ['DPS'], combatOnly: true, progressionWeight: 0.16, extraMemberCost: 0.75, diversityWeight: 0.025 },
+    BOSS: { minMembers: 3, maxMembers: 4, required: ['TANK', 'HEALER', 'DPS'], combatOnly: true, progressionWeight: 0, extraMemberCost: 0.08, diversityWeight: 0.035 },
+    EVENT: { minMembers: 3, maxMembers: 4, required: ['TANK', 'HEALER', 'DPS'], combatOnly: true, progressionWeight: 0, extraMemberCost: 0.06, diversityWeight: 0.035 },
+    SPECIAL: { minMembers: 2, maxMembers: 4, required: ['HEALER', 'DPS'], combatOnly: true, progressionWeight: 0.04, extraMemberCost: 0.35, diversityWeight: 0.03 },
+    ECONOMY: { minMembers: 1, maxMembers: 1, required: ['ECONOMY'], combatOnly: false, progressionWeight: 0, extraMemberCost: 0, diversityWeight: 0 }
   });
 
   function combinations(rows, minSize, maxSize) {
@@ -340,18 +340,23 @@
         if (progressionRequired && !memberNameSet.has(String(progression.selectedCharacterName))) continue;
         const memberNames = members.map(member => member.name).sort();
         const baseStrength = members.reduce((sum, member) => sum + member.strength, 0);
-        const roleDiversity = capabilities.size / 10;
+        const averageStrength = members.length ? baseStrength / members.length : 0;
+        const roleDiversityBonus = capabilities.size * Math.max(0, Number(defaults.diversityWeight) || 0);
         const containsProgression = progression.selectedCharacterName
           ? memberNames.includes(progression.selectedCharacterName)
           : false;
         const progressionBonus = containsProgression ? defaults.progressionWeight : 0;
-        const score = baseStrength + roleDiversity + progressionBonus;
+        const coordinationCost = Math.max(0, members.length - 1) * Math.max(0, Number(defaults.extraMemberCost) || 0);
+        const score = baseStrength + roleDiversityBonus + progressionBonus - coordinationCost;
         ranking.push({
           taskType,
           memberNames,
           score: Number(score.toFixed(6)),
           baseStrength: Number(baseStrength.toFixed(6)),
+          averageStrength: Number(averageStrength.toFixed(6)),
           progressionBonus,
+          roleDiversityBonus: Number(roleDiversityBonus.toFixed(6)),
+          coordinationCost: Number(coordinationCost.toFixed(6)),
           capabilities: [...capabilities].sort(),
           members: clone(members)
         });
@@ -381,7 +386,10 @@
           memberNames: selected.memberNames,
           score: selected.score,
           baseStrength: selected.baseStrength,
+          averageStrength: selected.averageStrength,
           progressionBonus: selected.progressionBonus,
+          roleDiversityBonus: selected.roleDiversityBonus,
+          coordinationCost: selected.coordinationCost,
           capabilities: selected.capabilities
         } : null,
         leaderName,
@@ -391,7 +399,10 @@
           memberNames: row.memberNames,
           score: row.score,
           baseStrength: row.baseStrength,
+          averageStrength: row.averageStrength,
           progressionBonus: row.progressionBonus,
+          roleDiversityBonus: row.roleDiversityBonus,
+          coordinationCost: row.coordinationCost,
           capabilities: row.capabilities
         }))
       };
