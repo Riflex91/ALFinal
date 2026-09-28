@@ -1100,7 +1100,7 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(runtime, /rejectedDelta === 0/);
   assert.match(runtime, /unknownDelta === 0/);
   assert.match(runtime, /H19_REMOTE_TARGET_NOT_RESTORED/);
-  assert.match(runtime, /options\.version \|\| '0\.25\.0-h25'/);
+  assert.match(runtime, /options\.version \|\| '0\.26\.0-h26'/);
   assert.match(entry, /runtime\.lifecycle\.queueStart/);
   assert.match(entry, /runtime\.lifecycle\.queueStop/);
   assert.match(entry, /runtime\.lifecycle\.queueRespawn/);
@@ -1148,8 +1148,8 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.doesNotMatch(fullAutonomy, /fallbackUsesExactOnlineQuartet/);
   assert.match(build, /src\/cross-window-lifecycle\.js/);
   assert.match(build, /src\/lifecycle-recovery\.js/);
-  assert.match(build, /const runtimeVersion = '0\.25\.0-h25'/);
-  assert.match(dist, /AL Bot 0\.25\.0-h25/);
+  assert.match(build, /const runtimeVersion = '0\.26\.0-h26'/);
+  assert.match(dist, /AL Bot 0\.26\.0-h26/);
   assert.match(dist, /class H19CrossWindowLifecycleTransport/);
   assert.match(dist, /albot-h19-cross-window-v1/);
   assert.match(dist, /h19-cross-window-readiness/);
@@ -1159,7 +1159,7 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(dist, /class CharacterLifecycleController/);
   assert.match(dist, /H19_REMOTE_TARGET_NOT_RUNNER_CONTROLLABLE/);
   assert.match(dist, /H19_REMOTE_CONTROLLABLE_TARGET_UNAVAILABLE/);
-  assert.equal(pkg.version, '0.25.0');
+  assert.equal(pkg.version, '0.26.0');
 });
 
 
