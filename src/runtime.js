@@ -210,12 +210,33 @@
             lifecycleAutonomyEnabled: this.lifecycle ? this.lifecycle.status().autonomyEnabled === true : null,
             version: this.version,
             profile: this.accountStrategy ? this.accountStrategy.localProfile() : null,
-            observation: this.observer ? this.observer.summary() : null
+            observation: this.observer ? this.observer.summary() : null,
+            updateProtection: this.safeUpdater && typeof this.safeUpdater.localProtection === 'function'
+              ? this.safeUpdater.localProtection()
+              : null
           };
         },
         getPartyState: () => this.party.snapshot(),
         leavePartyLocal: () => dispatchH19CrossWindowPartyAction('leave_party', []),
         requestPartyJoinLocal: leaderName => dispatchH19CrossWindowPartyAction('send_party_request', [leaderName]),
+        prepareUpdateLocal: (payload, sender) => {
+          if (!this.safeUpdater || typeof this.safeUpdater.prepareCoordinatedUpdate !== 'function') {
+            throw new Error('H22_SAFE_UPDATER_PREPARE_UNAVAILABLE');
+          }
+          return this.safeUpdater.prepareCoordinatedUpdate(payload || {}, { sender });
+        },
+        commitUpdateLocal: (payload, sender) => {
+          if (!this.safeUpdater || typeof this.safeUpdater.commitCoordinatedUpdate !== 'function') {
+            throw new Error('H22_SAFE_UPDATER_COMMIT_UNAVAILABLE');
+          }
+          return this.safeUpdater.commitCoordinatedUpdate(payload || {}, { sender });
+        },
+        cancelUpdateLocal: (payload, sender) => {
+          if (!this.safeUpdater || typeof this.safeUpdater.cancelCoordinatedUpdate !== 'function') {
+            return { accepted: true, cancelled: false, reason: 'H22_SAFE_UPDATER_CANCEL_UNAVAILABLE' };
+          }
+          return this.safeUpdater.cancelCoordinatedUpdate(payload || {}, { sender });
+        },
         startRuntime: async () => {
           const status = await this.start();
           const intent = this._h19FullAutonomyRearmIntent;
