@@ -176,6 +176,132 @@ test('H22 failed restart is surfaced and not hidden as healthy', async () => {
   assert.equal(status.stats.restartFailures, 1);
 });
 
+test('H22 retired run IDs cannot reclaim the lease after a newer process run is accepted', () => {
+  let now = 1000;
+  const watchdog = new H22HostWatchdogSupervisor({
+    now: () => now,
+    expectedCharacters: ['A']
+  });
+
+  assert.equal(watchdog.acceptBeacon(beacon('A', now, { runId: 'A-run-1', seq: 7 })).accepted, true);
+
+  now = 1100;
+  const replacement = watchdog.acceptBeacon(beacon('A', now, { runId: 'A-run-2', seq: 1 }));
+  assert.equal(replacement.accepted, true);
+  assert.equal(replacement.newRun, true);
+
+  now = 1200;
+  const delayedOldRun = watchdog.acceptBeacon(beacon('A', now, { runId: 'A-run-1', seq: 8 }));
+  assert.equal(delayedOldRun.accepted, false);
+  assert.equal(delayedOldRun.reason, 'BEACON_RETIRED_RUN');
+
+  const status = watchdog.status();
+  const a = status.characters.find(row => row.name === 'A');
+  assert.equal(a.lastRunId, 'A-run-2');
+  assert.equal(a.retiredRunCount, 1);
+  assert.equal(status.stats.retiredRunRejects, 1);
+  assert.equal(status.policies.retiredRunIdsRejected, true);
+});
+
+test('H22 successful restart retires the old run so delayed beacons cannot renew it', async () => {
+  let now = 1000;
+  const watchdog = new H22HostWatchdogSupervisor({
+    now: () => now,
+    expectedCharacters: ['A'],
+    startupGraceMs: 5000,
+    restartDelayMs: 1000,
+    restartProcess: async () => true
+  });
+  watchdog.configure({ enabled: true, ack: HOST_RESTART_ACK });
+  assert.equal(watchdog.acceptBeacon(beacon('A', now, { runId: 'A-run-1', leaseMs: 3000 })).accepted, true);
+
+  now = 5001;
+  assert.equal((await watchdog.tick()).state, 'RESTARTING');
+
+  now = 5100;
+  const delayed = watchdog.acceptBeacon(beacon('A', now, { runId: 'A-run-1', seq: 2, leaseMs: 3000 }));
+  assert.equal(delayed.accepted, false);
+  assert.equal(delayed.reason, 'BEACON_RETIRED_RUN');
+  assert.equal(watchdog.status().characters[0].deadman.state, 'STARTING');
+});
+
+test('H22 lease expiry is computed from host receipt time even when browser clock is far behind', async () => {
+  let hostNow = 100000;
+  const watchdog = new H22HostWatchdogSupervisor({
+    now: () => hostNow,
+    expectedCharacters: ['A'],
+    restartDelayMs: 1000
+  });
+
+  const staleBrowserClockBeacon = beacon('A', 1000, {
+    runId: 'A-run-1',
+    seq: 1,
+    leaseMs: 5000
+  });
+  const accepted = watchdog.acceptBeacon(staleBrowserClockBeacon);
+  assert.equal(accepted.accepted, true);
+  assert.equal(accepted.reportedDeadlineAt, 6000);
+  assert.equal(accepted.hostDeadlineAt, 105000);
+
+  let status = await watchdog.tick();
+  assert.equal(status.state, 'HEALTHY');
+  let a = status.characters.find(row => row.name === 'A');
+  assert.equal(a.lastReportedDeadlineAt, 6000);
+  assert.equal(a.lastDeadlineAt, 105000);
+
+  hostNow = 104999;
+  status = await watchdog.tick();
+  assert.equal(status.state, 'HEALTHY');
+
+  hostNow = 105001;
+  status = await watchdog.tick();
+  a = status.characters.find(row => row.name === 'A');
+  assert.equal(a.deadman.dead, true);
+  assert.equal(a.deadman.reason, 'BEACON_DEADLINE_MISSED');
+  assert.equal(status.policies.leaseExpiryUsesHostReceiptClock, true);
+});
+
+test('H22 newly configured expected characters receive their own startup grace', async () => {
+  let now = 1000;
+  let restarts = 0;
+  const watchdog = new H22HostWatchdogSupervisor({
+    now: () => now,
+    expectedCharacters: ['A'],
+    startupGraceMs: 5000,
+    restartDelayMs: 1000,
+    restartProcess: async () => { restarts += 1; return true; }
+  });
+  watchdog.configure({ enabled: true, ack: HOST_RESTART_ACK });
+  assert.equal(watchdog.acceptBeacon(beacon('A', now)).accepted, true);
+
+  now = 100000;
+  assert.equal(watchdog.acceptBeacon(beacon('A', now, { seq: 2 })).accepted, true);
+  const reconfigured = watchdog.configure({
+    expectedCharacters: ['A', 'B'],
+    enabled: true,
+    ack: HOST_RESTART_ACK
+  });
+  assert.equal(reconfigured.accepted, true);
+
+  let status = await watchdog.tick();
+  const bDuringGrace = status.characters.find(row => row.name === 'B');
+  assert.equal(bDuringGrace.deadman.dead, false);
+  assert.equal(bDuringGrace.deadman.state, 'STARTING');
+  assert.equal(bDuringGrace.deadman.deadlineAt, 105000);
+  assert.equal(restarts, 0);
+
+  now = 104999;
+  status = await watchdog.tick();
+  assert.equal(status.characters.find(row => row.name === 'B').deadman.state, 'STARTING');
+  assert.equal(restarts, 0);
+
+  now = 106001;
+  status = await watchdog.tick();
+  assert.equal(status.state, 'RESTARTING');
+  assert.equal(restarts, 1);
+  assert.equal(status.policies.perCharacterStartupGrace, true);
+});
+
 test('H22 host watchdog status explicitly forbids gameplay and code-repair authority', () => {
   const watchdog = new H22HostWatchdogSupervisor({ expectedCharacters: ['A'] });
   const status = watchdog.status();
