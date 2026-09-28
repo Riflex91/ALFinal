@@ -98,7 +98,8 @@
         incidentLimit: Math.max(4, Math.min(100, Math.floor(finite(options.incidentLimit, 24)))),
         incidentPreMs: Math.max(5000, Math.min(10 * 60 * 1000, Math.floor(finite(options.incidentPreMs, 60000)))),
         incidentPostMs: Math.max(1000, Math.min(2 * 60 * 1000, Math.floor(finite(options.incidentPostMs, 10000)))),
-        incidentDedupeMs: Math.max(10000, Math.min(60 * 60 * 1000, Math.floor(finite(options.incidentDedupeMs, 120000))))
+        incidentDedupeMs: Math.max(10000, Math.min(60 * 60 * 1000, Math.floor(finite(options.incidentDedupeMs, 120000)))),
+        hostBeaconLeaseMs: Math.max(3000, Math.min(5 * 60 * 1000, Math.floor(finite(options.hostBeaconLeaseMs, 10000))))
       };
       if (this.config.timerGapCriticalMs < this.config.timerGapWarnMs) this.config.timerGapCriticalMs = this.config.timerGapWarnMs;
       if (this.config.farmerCriticalMs < this.config.farmerWatchMs) this.config.farmerCriticalMs = this.config.farmerWatchMs;
@@ -108,6 +109,8 @@
       this.scope = null;
       this.heartbeat = null;
       this.sequence = 0;
+      this.hostBeaconSeq = 0;
+      this.lastHostBeacon = null;
       this.lastTickAtMs = null;
       this.lastAssessment = this._emptyAssessment();
       this.lastSnapshot = null;
@@ -464,6 +467,80 @@
       };
     }
 
+    _runId() {
+      return [
+        'h22',
+        cleanText(this.runtime && this.runtime.version || 'unknown', 80) || 'unknown',
+        String(Math.max(0, finite(this.runtime && this.runtime.bootCount, 0))),
+        String(Math.max(0, finite(this.runtime && this.runtime.runEpoch, 0))),
+        cleanText(this.runtime && this.runtime.loadedAt || '', 80) || 'unloaded'
+      ].join(':');
+    }
+
+    _makeHostBeacon(snapshot, assessment, now) {
+      const leaseMs = this.config.hostBeaconLeaseMs;
+      const character = snapshot && snapshot.character || null;
+      const openIncident = this.openIncident ? {
+        id: this.openIncident.id,
+        detectedAt: this.openIncident.detectedAt,
+        state: this.openIncident.state,
+        verdict: this.openIncident.verdict
+      } : null;
+      const last = this.incidents.length ? this.incidents[this.incidents.length - 1] : null;
+      return {
+        schemaVersion: 1,
+        type: 'ALBOT_H22_HOST_WATCHDOG_BEACON',
+        runId: this._runId(),
+        seq: ++this.hostBeaconSeq,
+        at: now,
+        leaseMs,
+        deadlineAt: now + leaseMs,
+        release: cleanText(this.runtime && this.runtime.version || '', 80) || null,
+        character: character ? {
+          name: cleanText(character.name || '', 120) || null,
+          ctype: cleanText(character.ctype || '', 40).toLowerCase() || null,
+          map: cleanText(character.map || '', 120) || null,
+          rip: character.rip === true
+        } : { name: null, ctype: null, map: null, rip: false },
+        runtime: {
+          running: this.runtime && this.runtime.running === true,
+          bootCount: Math.max(0, finite(this.runtime && this.runtime.bootCount, 0)),
+          runEpoch: Math.max(0, finite(this.runtime && this.runtime.runEpoch, 0)),
+          loadedAt: cleanText(this.runtime && this.runtime.loadedAt || '', 80) || null,
+          observerTickAtMs: now
+        },
+        health: {
+          state: assessment && assessment.state || 'CRITICAL',
+          verdict: assessment && assessment.verdict || 'FAIL',
+          reasons: clone((assessment && assessment.reasons || []).slice(0, 8)),
+          observedAt: assessment && assessment.at || new Date(now).toISOString(),
+          observedAtMs: assessment && assessment.atMs || now
+        },
+        incidents: {
+          open: openIncident,
+          count: this.incidents.length,
+          lastFinalized: last ? {
+            id: last.id,
+            detectedAt: last.detectedAt,
+            finalizedAt: last.finalizedAt,
+            state: last.state,
+            verdict: last.verdict
+          } : null
+        },
+        contract: {
+          externalDeadManRequired: true,
+          hostOwnsRestart: true,
+          authenticationOwnedByHost: true,
+          actionAuthority: false,
+          gameplayActionAuthority: false
+        }
+      };
+    }
+
+    hostBeacon() {
+      return clone(this.lastHostBeacon);
+    }
+
     _incidentFingerprint(assessment) {
       return (assessment && assessment.reasons || []).slice().sort().join('|') || String(assessment && assessment.state || 'UNKNOWN');
     }
@@ -557,6 +634,8 @@
       if (assessment.state === 'CRITICAL' && !this.openIncident) this._openIncident(assessment, snapshot);
       if (this.openIncident && now >= this.openIncident.postUntilMs) this._finalizeIncident(now);
 
+      this.lastHostBeacon = this._makeHostBeacon(snapshot, assessment, now);
+
       if (this.heartbeat) {
         try {
           this.heartbeat({
@@ -623,6 +702,13 @@
         verdict: this.lastAssessment.verdict,
         assessment: clone(this.lastAssessment),
         summary: this.summary(),
+        hostBeacon: this.lastHostBeacon ? {
+          runId: this.lastHostBeacon.runId,
+          seq: this.lastHostBeacon.seq,
+          at: this.lastHostBeacon.at,
+          deadlineAt: this.lastHostBeacon.deadlineAt,
+          leaseMs: this.lastHostBeacon.leaseMs
+        } : null,
         recorder: this.events.status(),
         openIncident,
         incidents: this.incidents.length,
@@ -635,6 +721,8 @@
           boundedTelemetry: true,
           incidentPreAndPostWindow: true,
           secretRedaction: true,
+          externalHostDeadManCompatible: true,
+          beaconRefreshOwnedByObserverTick: true,
           actionAuthority: false,
           gameplayActionAuthority: false,
           recoveryAuthority: false,

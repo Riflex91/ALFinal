@@ -51,7 +51,7 @@
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.22.1-h22',
+    version: '0.22.2-h22',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -220,6 +220,7 @@
     observation: {
       status: () => runtime.observer.status(),
       assessment: () => runtime.observer.status().assessment,
+      beacon: () => runtime.observer.hostBeacon(),
       tick: () => runtime.observer.tick(),
       events: limit => runtime.observer.listEvents(limit),
       incidents: limit => runtime.observer.listIncidents(limit)

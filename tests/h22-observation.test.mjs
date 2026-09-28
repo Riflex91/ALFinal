@@ -51,7 +51,7 @@ function fixture() {
     root: {},
     logger: null,
     bus: { on: () => () => {} },
-    version: '0.22.1-h22',
+    version: '0.22.2-h22',
     running: true,
     runEpoch: 1,
     bootCount: 1,
@@ -109,6 +109,44 @@ test('H22 observer returns deterministic PASS for a healthy idle runtime', () =>
   assert.deepEqual(Array.from(result.reasons), []);
   assert.equal(observer.status().policies.gameplayActionAuthority, false);
   assert.equal(observer.status().policies.chatgptRequiredForNormalOperation, false);
+});
+
+test('H22 host beacon advances only on observer ticks and cannot be refreshed by reads', () => {
+  const { Controller } = loadObserver();
+  const { runtime } = fixture();
+  runtime.loadedAt = '2026-09-28T10:00:00.000Z';
+  let clock = 1000;
+  const observer = new Controller({ runtime, now: () => clock, hostBeaconLeaseMs: 5000 });
+  observer.moduleActive = true;
+
+  assert.equal(observer.hostBeacon(), null);
+  observer.tick();
+  const first = observer.hostBeacon();
+  assert.equal(first.type, 'ALBOT_H22_HOST_WATCHDOG_BEACON');
+  assert.equal(first.seq, 1);
+  assert.equal(first.at, 1000);
+  assert.equal(first.deadlineAt, 6000);
+  assert.equal(first.character.name, 'FarmerA');
+  assert.equal(first.health.verdict, 'PASS');
+  assert.equal(first.contract.externalDeadManRequired, true);
+  assert.equal(first.contract.hostOwnsRestart, true);
+  assert.equal(first.contract.authenticationOwnedByHost, true);
+  assert.equal(first.contract.actionAuthority, false);
+  assert.equal(first.contract.gameplayActionAuthority, false);
+
+  clock = 4500;
+  const readOnly = observer.hostBeacon();
+  assert.equal(readOnly.seq, 1);
+  assert.equal(readOnly.at, 1000);
+  assert.equal(readOnly.deadlineAt, 6000);
+
+  observer.tick();
+  const second = observer.hostBeacon();
+  assert.equal(second.seq, 2);
+  assert.equal(second.at, 4500);
+  assert.equal(second.deadlineAt, 9500);
+  assert.equal(second.runId, first.runId);
+  assert.equal(observer.status().policies.beaconRefreshOwnedByObserverTick, true);
 });
 
 test('H22 observer marks emergency stop and module failures CRITICAL', () => {
@@ -270,6 +308,7 @@ test('H22 observation integration is wired through build, runtime, H19 heartbeat
   assert.match(crossWindow, /observation: state\.observation/);
   assert.match(crossWindow, /observation: row\.observation/);
   assert.match(entry, /observation:\s*\{/);
+  assert.match(entry, /beacon: \(\) => runtime\.observer\.hostBeacon\(\)/);
   assert.match(entry, /incidents: limit => runtime\.observer\.listIncidents\(limit\)/);
   assert.match(entry, /Object\.freeze\(api\.observation\)/);
 });
