@@ -10,7 +10,7 @@
   const DEFAULT_HANDSHAKE_TIMEOUT_MS = 12000;
   const DEFAULT_RETRY_BASE_MS = 5 * 60 * 1000;
   const DEFAULT_RETRY_MAX_MS = 6 * 60 * 60 * 1000;
-  const DEFAULT_GROUP_APPLY_DELAY_MS = 6500;
+  const DEFAULT_GROUP_APPLY_DELAY_MS = 8000;
   const DEFAULT_COORDINATION_RETRY_MS = 5000;
   const UPDATE_COORDINATION_PROTOCOL = 'h22-synchronized-update-v1';
   const PENDING_KEY = 'albot:auto-update:pending:v1';
@@ -115,7 +115,7 @@
         handshakeTimeoutMs: Math.max(3000, finite(globalConfig.handshakeTimeoutMs, DEFAULT_HANDSHAKE_TIMEOUT_MS)),
         retryBaseMs: Math.max(60000, finite(globalConfig.retryBaseMs, DEFAULT_RETRY_BASE_MS)),
         retryMaxMs: Math.max(5 * 60000, finite(globalConfig.retryMaxMs, DEFAULT_RETRY_MAX_MS)),
-        groupApplyDelayMs: Math.max(5000, finite(globalConfig.groupApplyDelayMs, DEFAULT_GROUP_APPLY_DELAY_MS)),
+        groupApplyDelayMs: Math.max(6000, finite(globalConfig.groupApplyDelayMs, DEFAULT_GROUP_APPLY_DELAY_MS)),
         coordinationRetryMs: Math.max(2000, finite(globalConfig.coordinationRetryMs, DEFAULT_COORDINATION_RETRY_MS)),
         autoDownload: globalConfig.autoDownload !== false,
         autoApply: globalConfig.autoApply !== false,
@@ -178,7 +178,7 @@
       if (value.handshakeTimeoutMs != null) this.config.handshakeTimeoutMs = Math.max(3000, finite(value.handshakeTimeoutMs, this.config.handshakeTimeoutMs));
       if (value.retryBaseMs != null) this.config.retryBaseMs = Math.max(60000, finite(value.retryBaseMs, this.config.retryBaseMs));
       if (value.retryMaxMs != null) this.config.retryMaxMs = Math.max(this.config.retryBaseMs, finite(value.retryMaxMs, this.config.retryMaxMs));
-      if (value.groupApplyDelayMs != null) this.config.groupApplyDelayMs = Math.max(5000, finite(value.groupApplyDelayMs, this.config.groupApplyDelayMs));
+      if (value.groupApplyDelayMs != null) this.config.groupApplyDelayMs = Math.max(6000, finite(value.groupApplyDelayMs, this.config.groupApplyDelayMs));
       if (value.coordinationRetryMs != null) this.config.coordinationRetryMs = Math.max(2000, finite(value.coordinationRetryMs, this.config.coordinationRetryMs));
       if (Object.prototype.hasOwnProperty.call(value, 'coordinatedApply')) this.config.coordinatedApply = value.coordinatedApply !== false;
       if (Array.isArray(value.stagingSlots)) {
@@ -500,6 +500,7 @@
       const protection = this.localProtection();
       const reasons = [];
       if (!this.runtime.running) reasons.push('RUNTIME_NOT_RUNNING');
+      if (this.runtime.stopLatch && this.runtime.stopLatch.status().latched) reasons.push('EMERGENCY_STOP_LATCHED');
       if (!protection.characterName) reasons.push('CHARACTER_UNKNOWN');
       if (protection.event) reasons.push('EVENT_ACTIVE');
       if (protection.boss) reasons.push('BOSS_COMBAT_ACTIVE');
@@ -584,6 +585,7 @@
           continue;
         }
         if (peer.running !== true) reasons.push('UPDATE_GROUP_PEER_RUNTIME_NOT_RUNNING:' + name);
+        if (peer.emergencyStopLatched === true) reasons.push('UPDATE_GROUP_PEER_EMERGENCY_STOP:' + name);
         if (peer.version && String(peer.version) !== String(this.runtime.version)) {
           reasons.push('UPDATE_GROUP_PEER_VERSION_MISMATCH:' + name);
         }
@@ -933,18 +935,22 @@
 
       const applyAtMs = Date.now() + this.config.groupApplyDelayMs;
       const commitPayload = { ...payload, applyAtMs };
-      const localCommit = this.commitCoordinatedUpdate(commitPayload, {});
-      if (!localCommit || localCommit.accepted !== true) {
-        await this._cancelGroup(remoteNames, { ...payload, reason: localCommit && localCommit.reason || 'LOCAL_COMMIT_FAILED' });
-        this.cancelCoordinatedUpdate({ releaseKey, reason: localCommit && localCommit.reason || 'LOCAL_COMMIT_FAILED' });
-        return this._coordinationFailure(localCommit && localCommit.reason || 'UPDATE_GROUP_LOCAL_COMMIT_FAILED', { phase: 'COMMIT', localCommit });
-      }
 
+      // Arm remote peers first and wait for their COMMIT settlements. The local
+      // coordinator is armed last so it can still cancel the group if any peer
+      // rejects the cutover.
       const remoteCommit = await this._dispatchGroup('requestUpdateCommit', remoteNames, commitPayload);
       if (!remoteCommit.ok) {
         await this._cancelGroup(remoteNames, { ...payload, reason: remoteCommit.reason });
         this.cancelCoordinatedUpdate({ releaseKey, reason: remoteCommit.reason });
         return this._coordinationFailure(remoteCommit.reason, { phase: 'COMMIT', remoteCommit });
+      }
+
+      const localCommit = this.commitCoordinatedUpdate(commitPayload, {});
+      if (!localCommit || localCommit.accepted !== true) {
+        await this._cancelGroup(remoteNames, { ...payload, reason: localCommit && localCommit.reason || 'LOCAL_COMMIT_FAILED' });
+        this.cancelCoordinatedUpdate({ releaseKey, reason: localCommit && localCommit.reason || 'LOCAL_COMMIT_FAILED' });
+        return this._coordinationFailure(localCommit && localCommit.reason || 'UPDATE_GROUP_LOCAL_COMMIT_FAILED', { phase: 'COMMIT', localCommit, remoteCommit });
       }
 
       this.lastCoordination = {
