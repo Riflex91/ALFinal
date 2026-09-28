@@ -100,7 +100,7 @@ function fixture(options = {}) {
       if (options.syncUnknown) return { state: 'UNKNOWN', dispatched: true, error: { message: 'NETWORK_UNCERTAIN' } };
 
       if (name === 'start_character' && options.noMutation !== true) {
-        state.online.add(String(args[0]));
+        if (options.startOnlyRunnerState !== true) state.online.add(String(args[0]));
         if (options.freezeRunnerActive !== true) state.active.add(String(args[0]));
       }
       if (name === 'stop_character' && options.noMutation !== true) {
@@ -142,7 +142,8 @@ function fixture(options = {}) {
       sessionId: String(peer.sessionId || ('session-' + peer.name)),
       running: peer.running === true,
       runEpoch: Number(peer.runEpoch || 1),
-      characterDisconnectCapable: peer.characterDisconnectCapable === true
+      characterDisconnectCapable: peer.characterDisconnectCapable === true,
+      characterNavigateCapable: peer.characterNavigateCapable === true
     }
   ]));
   state.crossWindowDispatches = state.crossWindowDispatches || [];
@@ -197,6 +198,33 @@ function fixture(options = {}) {
           ? new Promise(() => {})
           : Promise.resolve({ success: true, reason: 'H24_CROSS_WINDOW_CHARACTER_DISCONNECT_ACCEPTED' })
       };
+    },
+    requestCharacterNavigation(name, desiredName) {
+      const peer = runtimePeers.get(String(name));
+      if (!peer || peer.running !== true || peer.characterNavigateCapable !== true) {
+        return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H25_CROSS_WINDOW_CHARACTER_NAVIGATION_CAPABILITY_MISSING' } };
+      }
+      state.crossWindowDispatches.push({
+        type: 'navigate-character',
+        name: String(name),
+        desiredName: String(desiredName),
+        sessionId: peer.sessionId
+      });
+      if (options.crossWindowNoMutation !== true) {
+        state.online.delete(String(name));
+        state.active.delete(String(name));
+        state.active.add(String(desiredName));
+        if (options.browserSwapAccountOnlineLag !== true) state.online.add(String(desiredName));
+        runtimePeers.delete(String(name));
+      }
+      return {
+        id: 'cm-' + state.crossWindowDispatches.length,
+        state: 'DISPATCHED',
+        dispatched: true,
+        value: options.crossWindowNeverSettle
+          ? new Promise(() => {})
+          : Promise.resolve({ success: true, reason: 'H25_CROSS_WINDOW_CHARACTER_NAVIGATION_ACCEPTED' })
+      };
     }
   } : null;
 
@@ -224,6 +252,8 @@ function fixture(options = {}) {
     sessionId: options.sessionId || 'h19-fixture-session',
     canAct: () => options.actionBlocked !== true,
     outcomeTimeoutMs: options.outcomeTimeoutMs == null ? 5000 : options.outcomeTimeoutMs,
+    startOutcomeTimeoutMs: options.startOutcomeTimeoutMs == null ? 15000 : options.startOutcomeTimeoutMs,
+    browserSwapTimeoutMs: options.browserSwapTimeoutMs == null ? 20000 : options.browserSwapTimeoutMs,
     maxActionsPerSession: options.maxActionsPerSession == null ? 4 : options.maxActionsPerSession
   });
   controller.start({ scope: { interval: () => 'h19-resource' } });
@@ -295,6 +325,48 @@ test('H19 start requires settlement and live active-roster evidence', async () =
   assert.equal(confirmed.state, 'CONFIRMED');
   assert.equal(confirmed.details.evidence, 'ACTIVE_ROSTER_PRESENT');
   assert.equal(controller.status().metrics.startsConfirmed, 1);
+});
+
+test('H25 start confirms from runner loading state while account online flag still lags', async () => {
+  const { controller, state } = fixture({
+    onlineNames: ['My_Ranger'],
+    runnerActiveNames: ['My_Ranger'],
+    startOnlyRunnerState: true
+  });
+  assert.equal(controller.queueStart('My_Merchant').accepted, true);
+  assert.equal(controller.tick().state, 'DISPATCHED');
+  assert.equal(state.online.has('My_Merchant'), false);
+  assert.equal(state.active.has('My_Merchant'), true);
+  await flush();
+  const confirmed = controller.tick();
+  assert.equal(confirmed.state, 'CONFIRMED');
+  assert.equal(confirmed.details.evidence, 'RUNNER_START_STATE_PRESENT');
+  assert.equal(controller.status().suspended, false);
+});
+
+test('H25 late positive START evidence clears only the matching timeout suspension', async () => {
+  const f = fixture({
+    onlineNames: ['My_Ranger'],
+    runnerActiveNames: ['My_Ranger'],
+    manualSettlement: true,
+    startOnlyRunnerState: true
+  });
+  assert.equal(f.controller.queueStart('My_Merchant').accepted, true);
+  assert.equal(f.controller.tick().state, 'DISPATCHED');
+  f.controller.currentAction.deadlineAtMs = Date.now() - 1;
+  const timedOut = f.controller.tick();
+  assert.equal(timedOut.state, 'UNKNOWN');
+  assert.equal(f.controller.status().suspendedReason, 'H19_START_UNVERIFIED_TIMEOUT');
+
+  f.resolve({ success: true });
+  await flush();
+  const recovered = f.controller.tick();
+  assert.equal(recovered.state, 'CONFIRMED');
+  assert.equal(recovered.lateConfirmed, true);
+  assert.equal(recovered.details.evidence, 'RUNNER_START_STATE_PRESENT');
+  assert.equal(f.controller.status().suspended, false);
+  assert.equal(f.controller.status().suspendedReason, null);
+  assert.equal(f.controller.status().metrics.lateOutcomeRecoveries, 1);
 });
 
 test('H19 stop confirms only after settlement and target disappears from active roster', async () => {
@@ -692,14 +764,14 @@ test('H19 separate-window lifecycle uses fresh CM peer instead of runner-active 
   assert.equal(controller.status().metrics.crossWindowDispatches, 2);
 });
 
-test('H24 catch-up rotation self-disconnects a separate window, starts the weak character, then invites it', async () => {
+test('H25 catch-up rotation navigates the separate browser window directly to the weak character', async () => {
   const { controller, state } = fixture({
     onlineNames: ['My_Merchant', 'My_Ranger', 'My_Priest', 'My_Warrior'],
     runnerActiveNames: ['My_Ranger'],
     freezeRunnerActive: true,
+    browserSwapAccountOnlineLag: true,
     crossWindowPeers: [
-      { name: 'My_Priest', sessionId: 'priest-window-session', running: true, runEpoch: 4, characterDisconnectCapable: true },
-      { name: 'My_Merchant', sessionId: 'merchant-window-session', running: true, runEpoch: 2, characterDisconnectCapable: true }
+      { name: 'My_Priest', sessionId: 'priest-window-session', running: true, runEpoch: 4, characterDisconnectCapable: true, characterNavigateCapable: true }
     ],
     maxActionsPerSession: 4
   });
@@ -708,7 +780,7 @@ test('H24 catch-up rotation self-disconnects a separate window, starts the weak 
   const desired = ['My_Mage', 'My_Merchant', 'My_Ranger', 'My_Warrior'];
   const readiness = controller.characterRotationReadiness(desired);
   assert.equal(readiness.ready, true);
-  assert.deepEqual([...readiness.remoteDisconnectNames], ['My_Priest']);
+  assert.deepEqual(clone(readiness.browserSwapPairs), [{ from: 'My_Priest', to: 'My_Mage' }]);
 
   assert.equal(controller.setPolicy({
     desiredActiveNames: desired,
@@ -717,39 +789,54 @@ test('H24 catch-up rotation self-disconnects a separate window, starts the weak 
   }).accepted, true);
   assert.equal(controller.startAutonomy({ maxActions: 4 }).accepted, true);
 
-  const stopPlan = controller.plan();
-  assert.equal(stopPlan.state, 'READY');
-  assert.equal(stopPlan.request.kind, 'STOP');
-  assert.equal(stopPlan.request.targetName, 'My_Priest');
-  assert.equal(stopPlan.request.requireCharacterStateChange, true);
+  const plan = controller.plan();
+  assert.equal(plan.state, 'READY');
+  assert.equal(plan.request.kind, 'BROWSER_SWAP');
+  assert.equal(plan.request.targetName, 'My_Priest');
+  assert.equal(plan.request.desiredName, 'My_Mage');
 
-  const stopDispatch = controller.tick();
-  assert.equal(stopDispatch.state, 'DISPATCHED');
+  const dispatched = controller.tick();
+  assert.equal(dispatched.state, 'DISPATCHED');
   assert.equal(state.crossWindowDispatches.length, 1);
-  assert.equal(state.crossWindowDispatches[0].type, 'disconnect-character');
+  assert.deepEqual(clone(state.crossWindowDispatches[0]), {
+    type: 'navigate-character',
+    name: 'My_Priest',
+    desiredName: 'My_Mage',
+    sessionId: 'priest-window-session'
+  });
   assert.equal(state.online.has('My_Priest'), false);
+  assert.equal(state.online.has('My_Mage'), false, 'account online flag may lag the browser load');
+  assert.equal(state.active.has('My_Mage'), true, 'loading/starting runner state is live start evidence');
+  assert.equal(state.dispatches.filter(row => row.name === 'start_character').length, 0);
 
   await flush();
-  const stopConfirmed = controller.tick();
-  assert.equal(stopConfirmed.state, 'CONFIRMED');
-  assert.equal(stopConfirmed.details.evidence, 'ACTIVE_ROSTER_ABSENT_AFTER_REMOTE_SELF_DISCONNECT');
-
-  const startDispatch = controller.tick();
-  assert.equal(startDispatch.state, 'DISPATCHED');
-  assert.equal(state.dispatches.at(-1).name, 'start_character');
-  assert.equal(state.dispatches.at(-1).args[0], 'My_Mage');
-  await flush();
-  const startConfirmed = controller.tick();
-  assert.equal(startConfirmed.state, 'CONFIRMED');
-  assert.equal(state.online.has('My_Mage'), true);
-
-  const inviteDispatch = controller.tick();
-  assert.equal(inviteDispatch.state, 'DISPATCHED');
-  assert.equal(state.dispatches.at(-1).name, 'send_party_invite');
-  assert.equal(state.dispatches.at(-1).args[0], 'My_Mage');
+  const confirmed = controller.tick();
+  assert.equal(confirmed.state, 'CONFIRMED');
+  assert.equal(confirmed.kind, 'BROWSER_SWAP');
+  assert.equal(confirmed.desiredName, 'My_Mage');
+  assert.equal(confirmed.details.evidence, 'BROWSER_SWAP_NEW_CHARACTER_PRESENT');
+  assert.equal(controller.status().metrics.browserSwapsConfirmed, 1);
+  assert.equal(state.dispatches.filter(row => row.name === 'start_character').length, 0);
 });
 
-test('H24 catch-up rotation remains fail-closed when a separate window cannot self-disconnect', () => {
+test('H25 rotation blocks rather than falling back to reconnect-prone disconnect when browser navigation is unavailable', () => {
+  const { controller, state } = fixture({
+    onlineNames: ['My_Merchant', 'My_Ranger', 'My_Priest', 'My_Warrior'],
+    runnerActiveNames: ['My_Ranger'],
+    freezeRunnerActive: true,
+    crossWindowPeers: [
+      { name: 'My_Priest', sessionId: 'priest-window-session', running: true, runEpoch: 4, characterDisconnectCapable: true, characterNavigateCapable: false }
+    ]
+  });
+  state.account.push({ name: 'My_Mage', ctype: 'mage', online: false });
+  const desired = ['My_Mage', 'My_Merchant', 'My_Ranger', 'My_Warrior'];
+  const readiness = controller.characterRotationReadiness(desired);
+  assert.equal(readiness.ready, false);
+  assert.equal(readiness.reason, 'H25_ROTATION_BROWSER_NAVIGATION_UNAVAILABLE:My_Priest');
+  assert.equal(state.crossWindowDispatches.length, 0);
+});
+
+test('H24 surplus-window disconnect remains fail-closed when the separate window cannot self-disconnect', () => {
   const { controller, state } = fixture({
     onlineNames: ['My_Merchant', 'My_Ranger', 'My_Priest', 'My_Warrior'],
     runnerActiveNames: ['My_Ranger'],
