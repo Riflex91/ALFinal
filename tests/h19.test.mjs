@@ -142,6 +142,7 @@ function fixture(options = {}) {
       sessionId: String(peer.sessionId || ('session-' + peer.name)),
       running: peer.running === true,
       runEpoch: Number(peer.runEpoch || 1),
+      fullAutonomyEnabled: peer.fullAutonomyEnabled === true,
       characterDisconnectCapable: peer.characterDisconnectCapable === true,
       characterNavigateCapable: peer.characterNavigateCapable === true
     }
@@ -819,6 +820,7 @@ test('H26 browser swap waits for the replacement bot runtime to load and start',
     sessionId: 'mage-window-session',
     running: false,
     runEpoch: 1,
+    fullAutonomyEnabled: false,
     characterDisconnectCapable: true,
     characterNavigateCapable: true
   });
@@ -827,13 +829,18 @@ test('H26 browser swap waits for the replacement bot runtime to load and start',
 
   runtimePeers.get('My_Mage').running = true;
   runtimePeers.get('My_Mage').runEpoch = 2;
+  const runtimeOnly = controller.tick();
+  assert.equal(runtimeOnly.state, 'PENDING', 'runtime running without Full Autonomy must not confirm the browser swap');
+
+  runtimePeers.get('My_Mage').fullAutonomyEnabled = true;
   const confirmed = controller.tick();
   assert.equal(confirmed.state, 'CONFIRMED');
   assert.equal(confirmed.kind, 'BROWSER_SWAP');
   assert.equal(confirmed.desiredName, 'My_Mage');
-  assert.equal(confirmed.details.evidence, 'BROWSER_SWAP_NEW_RUNTIME_RUNNING');
+  assert.equal(confirmed.details.evidence, 'BROWSER_SWAP_NEW_RUNTIME_READY');
   assert.equal(confirmed.details.desiredRuntimeLoaded, true);
   assert.equal(confirmed.details.desiredRuntimeRunning, true);
+  assert.equal(confirmed.details.desiredFullAutonomyEnabled, true);
   assert.equal(confirmed.details.desiredSessionId, 'mage-window-session');
   assert.equal(controller.status().metrics.browserSwapsConfirmed, 1);
   assert.equal(state.dispatches.filter(row => row.name === 'start_character').length, 0);
