@@ -217,6 +217,14 @@
       discard: reason => runtime.safeUpdater.discardPending(reason || 'API_UPDATE_DISCARD')
     },
 
+    observation: {
+      status: () => runtime.observer.status(),
+      assessment: () => runtime.observer.status().assessment,
+      tick: () => runtime.observer.tick(),
+      events: limit => runtime.observer.listEvents(limit),
+      incidents: limit => runtime.observer.listIncidents(limit)
+    },
+
     // Backwards-compatible alias for the first H22 branch iterations.
     updates: {
       status: () => runtime.safeUpdater.status(),
@@ -397,6 +405,7 @@
   Object.freeze(api.accountStrategy);
   Object.freeze(api.fullAutonomy);
   Object.freeze(api.updater);
+  Object.freeze(api.observation);
   Object.freeze(api.updates);
   Object.freeze(api.farming);
   Object.freeze(api.farmIntelligence);
