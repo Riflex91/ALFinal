@@ -192,16 +192,56 @@
       try {
         const raw = this.storage.get(PENDING_KEY);
         const row = raw ? JSON.parse(raw) : null;
-        if (row && row.manifest && typeof row.bundle === 'string') this.pending = row;
+        if (row && row.manifest) {
+          this.pending = {
+            downloadedAt: row.downloadedAt || null,
+            manifest: row.manifest,
+            bundle: null
+          };
+        }
       } catch (_) {}
     }
 
     _persistPending() {
       if (!this.storage) return;
       try {
-        if (!this.pending) this.storage.remove(PENDING_KEY);
-        else this.storage.set(PENDING_KEY, JSON.stringify(this.pending));
+        if (!this.pending) {
+          this.storage.remove(PENDING_KEY);
+        } else {
+          this.storage.set(PENDING_KEY, JSON.stringify({
+            downloadedAt: this.pending.downloadedAt || null,
+            manifest: clone(this.pending.manifest)
+          }));
+        }
       } catch (_) {}
+    }
+
+    _bootstrap() {
+      const api = this.root && this.root.__ALBOT_BOOTSTRAP__;
+      if (!api || String(api.product || '') !== 'AL Bot') return null;
+      return api;
+    }
+
+    _bootstrapCompatibility(manifest) {
+      const bootstrap = this._bootstrap();
+      if (!bootstrap) return { ok: false, reason: 'UPDATE_BOOTSTRAP_UNAVAILABLE' };
+      for (const method of ['loadRelease', 'executeVerifiedRelease', 'confirmActiveRelease', 'activeRelease']) {
+        if (typeof bootstrap[method] !== 'function') {
+          return { ok: false, reason: 'UPDATE_BOOTSTRAP_API_INCOMPLETE:' + method };
+        }
+      }
+      const version = clean(bootstrap.version || '', 80);
+      if (!version) return { ok: false, reason: 'UPDATE_BOOTSTRAP_VERSION_UNKNOWN' };
+      if (manifest && manifest.minBootstrapVersion
+          && compareVersions(version, manifest.minBootstrapVersion) < 0) {
+        return {
+          ok: false,
+          reason: 'UPDATE_BOOTSTRAP_TOO_OLD',
+          bootstrapVersion: version,
+          minBootstrapVersion: manifest.minBootstrapVersion
+        };
+      }
+      return { ok: true, bootstrap, version };
     }
 
     _loadQuarantine() {
@@ -250,6 +290,8 @@
         version: manifest.version,
         commitSha: manifest.commitSha,
         sha256: manifest.sha256,
+        bytes: Math.floor(finite(manifest.bytes, 0)),
+        bundleUrl: clean(manifest.bundleUrl || '', 900) || null,
         failures,
         retryAtMs,
         retryAt: new Date(retryAtMs).toISOString(),
@@ -365,9 +407,8 @@
         const checked = validateManifest(rawManifest);
         if (!checked.ok) throw new Error(checked.reason);
         const manifest = checked.manifest;
-        if (manifest.minBootstrapVersion && compareVersions(this.runtime.version, manifest.minBootstrapVersion) < 0) {
-          throw new Error('UPDATE_BOOTSTRAP_TOO_OLD');
-        }
+        const bootstrapCheck = this._bootstrapCompatibility(manifest);
+        if (!bootstrapCheck.ok) throw new Error(bootstrapCheck.reason);
         if (compareVersions(manifest.version, this.runtime.version) <= 0) {
           if (this.pending && compareVersions(this.pending.manifest.version, this.runtime.version) <= 0) {
             this.pending = null;
@@ -527,7 +568,8 @@
         version: clean(manifest.version || '', 80),
         commitSha: clean(manifest.commitSha || '', 80).toLowerCase(),
         sha256: clean(manifest.sha256 || '', 80).toLowerCase(),
-        bytes: Math.floor(finite(manifest.bytes, 0))
+        bytes: Math.floor(finite(manifest.bytes, 0)),
+        bundleUrl: clean(manifest.bundleUrl || '', 900)
       } : null;
     }
 
@@ -538,7 +580,8 @@
         && local.version === clean(release.version || '', 80)
         && local.commitSha === clean(release.commitSha || '', 80).toLowerCase()
         && local.sha256 === clean(release.sha256 || '', 80).toLowerCase()
-        && local.bytes === Math.floor(finite(release.bytes, 0));
+        && local.bytes === Math.floor(finite(release.bytes, 0))
+        && local.bundleUrl === clean(release.bundleUrl || '', 900);
     }
 
     _localName() {
@@ -617,19 +660,24 @@
 
     async _verifyPendingForRelease(release) {
       if (!this.pending) this._loadPending();
-      if (!this.pending || !this.pending.manifest || !this._releaseMatches(this.pending.manifest, release)) {
+      if (!this.pending || !this.pending.manifest || !this._releaseMatches(this.pending.manifest, release)
+          || typeof this.pending.bundle !== 'string') {
         const checked = await this.checkAndDownload();
         if (!checked || checked.accepted !== true) {
           return { ok: false, reason: checked && checked.reason || 'UPDATE_GROUP_DOWNLOAD_FAILED' };
         }
       }
-      if (!this.pending || !this.pending.manifest || !this._releaseMatches(this.pending.manifest, release)) {
+      if (!this.pending || !this.pending.manifest || !this._releaseMatches(this.pending.manifest, release)
+          || typeof this.pending.bundle !== 'string') {
         return { ok: false, reason: 'UPDATE_GROUP_RELEASE_MISMATCH' };
       }
 
       const manifestCheck = validateManifest(this.pending.manifest);
       if (!manifestCheck.ok) return { ok: false, reason: manifestCheck.reason };
       const manifest = manifestCheck.manifest;
+      const bootstrapCheck = this._bootstrapCompatibility(manifest);
+      if (!bootstrapCheck.ok) return { ok: false, reason: bootstrapCheck.reason };
+
       const bytes = this._utf8Bytes(this.pending.bundle);
       const sha256 = await this._sha256(this.pending.bundle);
       const expectedBanner = '/* AL Bot ' + String(manifest.version) + ' | generated file | do not edit dist directly */';
@@ -638,19 +686,17 @@
         return { ok: false, reason: 'UPDATE_PENDING_REVALIDATION_FAILED', bytes, sha256 };
       }
 
-      const activeSlot = this._activeSlot();
-      const stagingSlot = this._stagingSlot(activeSlot);
-      if (activeSlot == null) return { ok: false, reason: 'UPDATE_ACTIVE_SLOT_UNKNOWN' };
-      if (stagingSlot == null) return { ok: false, reason: 'UPDATE_STAGING_SLOT_REQUIRED', activeSlot };
-
       const safety = this.safety();
       if (!safety.safe) return { ok: false, reason: 'UPDATE_EVENT_OR_BOSS_ACTIVE', safety };
 
-      const save = await this._saveCode(stagingSlot, this.pending.bundle, manifest.version);
-      if (save && (save.failed === true || save.success === false)) {
-        return { ok: false, reason: 'UPDATE_SAVE_CODE_REJECTED', activeSlot, stagingSlot };
-      }
-      return { ok: true, manifest, activeSlot, stagingSlot, bytes, sha256, staged: true };
+      return {
+        ok: true,
+        manifest,
+        bytes,
+        sha256,
+        bundleUrl: manifest.bundleUrl,
+        cachedInWindow: true
+      };
     }
 
     async prepareCoordinatedUpdate(payload = {}, meta = {}) {
@@ -692,9 +738,11 @@
         coordinator,
         participants,
         localName,
-        activeSlot: ready.activeSlot,
-        stagingSlot: ready.stagingSlot,
-        staged: ready.staged === true,
+        cachedInWindow: ready.cachedInWindow === true,
+        bytes: ready.bytes,
+        sha256: ready.sha256,
+        bundleUrl: ready.bundleUrl,
+        rearmIntent: this._captureRearmIntent(),
         preparedAt: new Date().toISOString(),
         preparedAtMs: Date.now(),
         applyAt: null,
@@ -706,8 +754,10 @@
         state: 'PREPARED',
         releaseKey,
         localName,
-        activeSlot: ready.activeSlot,
-        stagingSlot: ready.stagingSlot
+        cachedInWindow: ready.cachedInWindow === true,
+        bytes: ready.bytes,
+        sha256: ready.sha256,
+        bundleUrl: ready.bundleUrl
       };
     }
 
@@ -969,41 +1019,65 @@
       };
     }
 
-    _binding(name) {
-      if (this.root && typeof this.root[name] === 'function') return { fn: this.root[name], owner: this.root };
-      let parent = null;
-      try { parent = this.root && this.root.parent; } catch (_) {}
-      if (parent && typeof parent[name] === 'function') return { fn: parent[name], owner: parent };
-      return null;
-    }
-
-    _activeSlot() {
-      const binding = this._binding('get_active_code_slot');
-      if (!binding) return null;
+    _activeRelease() {
+      const bootstrap = this._bootstrap();
+      if (!bootstrap || typeof bootstrap.activeRelease !== 'function') return null;
       try {
-        const value = binding.fn.call(binding.owner);
-        const slot = value && typeof value === 'object' ? (value.slot ?? value.id ?? value.name) : value;
-        return slot == null ? null : String(slot);
+        const release = bootstrap.activeRelease();
+        const checked = validateManifest(release);
+        return checked.ok ? checked.manifest : null;
       } catch (_) {
         return null;
       }
     }
 
-    _stagingSlot(activeSlot) {
-      return this.config.stagingSlots.find(slot => String(slot) !== String(activeSlot)) || null;
+    async _executeVerifiedRelease(manifest, bundle) {
+      const check = this._bootstrapCompatibility(manifest);
+      if (!check.ok) throw new Error(check.reason);
+      return check.bootstrap.executeVerifiedRelease(manifest, bundle);
     }
 
-    async _saveCode(slot, code, version) {
-      const upload = this._binding('upload_code');
-      if (upload) {
-        const result = upload.fn.call(upload.owner, slot, 'AL Bot ' + version, code);
-        return result && typeof result.then === 'function' ? await result : result;
+    async _confirmActiveRelease(manifest) {
+      const check = this._bootstrapCompatibility(manifest);
+      if (!check.ok) throw new Error(check.reason);
+      return check.bootstrap.confirmActiveRelease(manifest);
+    }
+
+    async _rollbackToRelease(previousRelease, failedApi, previousBootCount, rearmIntent) {
+      const checked = validateManifest(previousRelease);
+      if (!checked.ok) return { ok: false, reason: 'ROLLBACK_RELEASE_INVALID:' + checked.reason };
+      const bootstrapCheck = this._bootstrapCompatibility(checked.manifest);
+      if (!bootstrapCheck.ok) return { ok: false, reason: bootstrapCheck.reason };
+
+      try {
+        const loaded = await bootstrapCheck.bootstrap.loadRelease(checked.manifest);
+        if (!loaded || !loaded.manifest || typeof loaded.bundle !== 'string') {
+          return { ok: false, reason: 'ROLLBACK_RELEASE_LOAD_INVALID' };
+        }
+        await bootstrapCheck.bootstrap.executeVerifiedRelease(loaded.manifest, loaded.bundle);
+        const handshake = await this._waitHandshake(failedApi, checked.manifest.version, { previousBootCount });
+        if (!handshake.ok) {
+          this.stats.rollbackFailures += 1;
+          return { ok: false, reason: 'ROLLBACK_HANDSHAKE_FAILED:' + handshake.reason, handshake };
+        }
+
+        const rearm = await this._rearmApi(this.root && this.root.ALBot, rearmIntent);
+        if (!rearm.accepted) {
+          this.stats.rollbackFailures += 1;
+          return { ok: false, reason: 'ROLLBACK_REARM_FAILED:' + (rearm.reason || 'UNKNOWN'), handshake, rearm };
+        }
+
+        await this._confirmActiveRelease(checked.manifest);
+        return {
+          ok: true,
+          release: this._releaseDescriptor(checked.manifest),
+          handshake,
+          rearm
+        };
+      } catch (error) {
+        this.stats.rollbackFailures += 1;
+        return { ok: false, reason: clean(error && error.message || error, 240) };
       }
-      let parent = null;
-      try { parent = this.root && this.root.parent; } catch (_) {}
-      if (!parent || typeof parent.api_call !== 'function') throw new Error('UPDATE_SAVE_CODE_UNAVAILABLE');
-      const result = parent.api_call('save_code', { slot, name: 'AL Bot ' + version, code, auto: true, electron: true }, { timeout: 15000 });
-      return result && typeof result.then === 'function' ? await result : result;
     }
 
     _sleep(ms) {
@@ -1103,9 +1177,16 @@
 
     async applyPending(options = {}) {
       if (!this.pending) this._loadPending();
-      if (!this.pending || !this.pending.manifest || typeof this.pending.bundle !== 'string') return { applied: false, reason: 'UPDATE_NOT_DOWNLOADED' };
+      if (!this.pending || !this.pending.manifest) return { applied: false, reason: 'UPDATE_NOT_DOWNLOADED' };
       if (!this.config.autoApply) return { applied: false, reason: 'UPDATE_AUTO_APPLY_DISABLED' };
       if (this.busy) return { applied: false, reason: 'UPDATE_BUSY' };
+
+      if (typeof this.pending.bundle !== 'string') {
+        const refreshed = await this.checkAndDownload();
+        if (!refreshed || refreshed.accepted !== true || !this.pending || typeof this.pending.bundle !== 'string') {
+          return { applied: false, reason: refreshed && refreshed.reason || 'UPDATE_NOT_DOWNLOADED' };
+        }
+      }
 
       const checkedManifest = validateManifest(this.pending.manifest);
       if (!checkedManifest.ok) {
@@ -1114,13 +1195,13 @@
         return { applied: false, reason: checkedManifest.reason };
       }
       const manifest = checkedManifest.manifest;
+      const bootstrapCheck = this._bootstrapCompatibility(manifest);
+      if (!bootstrapCheck.ok) return { applied: false, reason: bootstrapCheck.reason };
+
       if (compareVersions(manifest.version, this.runtime.version) <= 0) {
         this.pending = null;
         this._persistPending();
         return { applied: false, reason: 'UPDATE_NOT_NEWER_THAN_RUNTIME' };
-      }
-      if (manifest.minBootstrapVersion && compareVersions(this.runtime.version, manifest.minBootstrapVersion) < 0) {
-        return { applied: false, reason: 'UPDATE_BOOTSTRAP_TOO_OLD' };
       }
       const quarantine = this._quarantineState(manifest);
       if (quarantine.blocked) {
@@ -1140,20 +1221,24 @@
       if (!options.localOnly && this.config.coordinatedApply) {
         return this._coordinatePending(manifest);
       }
+
+      const rollout = clone(this.preparedUpdate);
       if (options.localOnly && options.coordinated === true) {
-        if (!this.preparedUpdate || this.preparedUpdate.state !== 'COMMITTED'
-            || this.preparedUpdate.releaseKey !== releaseKey) {
+        if (!rollout || rollout.state !== 'COMMITTED' || rollout.releaseKey !== releaseKey) {
           return { applied: false, reason: 'UPDATE_GROUP_COMMIT_REQUIRED' };
         }
-        if (Date.now() + 50 < finite(this.preparedUpdate.applyAtMs, 0)) {
-          return { applied: false, reason: 'UPDATE_GROUP_APPLY_NOT_DUE', rollout: clone(this.preparedUpdate) };
+        if (Date.now() + 50 < finite(rollout.applyAtMs, 0)) {
+          return { applied: false, reason: 'UPDATE_GROUP_APPLY_NOT_DUE', rollout };
+        }
+
+        const finalGroup = this._groupState();
+        const expectedParticipants = Array.isArray(rollout.participants) ? rollout.participants.slice().sort() : [];
+        const actualParticipants = Array.isArray(finalGroup.participants) ? finalGroup.participants.slice().sort() : [];
+        if (!finalGroup.ready || JSON.stringify(expectedParticipants) !== JSON.stringify(actualParticipants)) {
+          this.stats.groupDeferrals += 1;
+          return { applied: false, reason: 'UPDATE_GROUP_PROTECTION_CHANGED', group: finalGroup };
         }
       }
-
-      const activeSlot = this._activeSlot();
-      const stagingSlot = this._stagingSlot(activeSlot);
-      if (activeSlot == null) return { applied: false, reason: 'UPDATE_ACTIVE_SLOT_UNKNOWN' };
-      if (stagingSlot == null) return { applied: false, reason: 'UPDATE_STAGING_SLOT_REQUIRED', activeSlot };
 
       const bytes = this._utf8Bytes(this.pending.bundle);
       const sha256 = await this._sha256(this.pending.bundle);
@@ -1167,82 +1252,59 @@
         return { applied: false, reason: 'UPDATE_PENDING_REVALIDATION_FAILED' };
       }
 
+      const previousRelease = this._activeRelease();
+      if (!previousRelease) {
+        return { applied: false, reason: 'UPDATE_PREVIOUS_RELEASE_UNKNOWN' };
+      }
+
       const previousApi = this.root && this.root.ALBot;
       let previousStatus = null;
       try { previousStatus = previousApi && typeof previousApi.status === 'function' ? previousApi.status() : null; } catch (_) {}
-      const previousVersion = String(previousStatus && previousStatus.version || this.runtime.version || '');
+      const previousVersion = String(previousStatus && previousStatus.version || previousRelease.version || this.runtime.version || '');
       const previousBootCount = Math.max(0, finite(previousStatus && previousStatus.bootCount, this.runtime.bootCount || 0));
-      const rearmIntent = this._captureRearmIntent();
-      const coordinatedStagingReady = options.coordinated === true
-        && this.preparedUpdate
-        && this.preparedUpdate.releaseKey === releaseKey
-        && this.preparedUpdate.staged === true
-        && String(this.preparedUpdate.stagingSlot || '') === String(stagingSlot);
+      const rearmIntent = rollout && rollout.rearmIntent || this._captureRearmIntent();
+
       this.busy = true;
       let failureRecorded = false;
       try {
-        if (!coordinatedStagingReady) {
-          const save = await this._saveCode(stagingSlot, this.pending.bundle, manifest.version);
-          if (save && (save.failed === true || save.success === false)) throw new Error('UPDATE_SAVE_CODE_REJECTED');
-        }
-
         await this.runtime.stop('PLANNED_AUTO_UPDATE');
-        const load = this._binding('load_code');
-        if (!load) throw new Error('UPDATE_LOAD_CODE_UNAVAILABLE');
-
-        const loaded = load.fn.call(load.owner, stagingSlot);
-        if (loaded && typeof loaded.then === 'function') await loaded;
+        await this._executeVerifiedRelease(manifest, this.pending.bundle);
 
         const handshake = await this._waitHandshake(previousApi, manifest.version, { previousBootCount });
         if (!handshake.ok) {
           this.stats.rollbacks += 1;
           const failedApi = this.root && this.root.ALBot;
-          let rollbackHandshake = { ok: false, reason: 'ROLLBACK_NOT_ATTEMPTED' };
-          try {
-            const rollback = load.fn.call(load.owner, activeSlot);
-            if (rollback && typeof rollback.then === 'function') await rollback;
-            rollbackHandshake = await this._waitHandshake(failedApi, previousVersion, { previousBootCount });
-            if (!rollbackHandshake.ok) this.stats.rollbackFailures += 1;
-          } catch (rollbackError) {
-            this.stats.rollbackFailures += 1;
-            rollbackHandshake = { ok: false, reason: clean(rollbackError && rollbackError.message || rollbackError, 240) };
-          }
-          let rollbackRearm = null;
-          if (rollbackHandshake.ok) rollbackRearm = await this._rearmApi(this.root && this.root.ALBot, rearmIntent);
-          const quarantineRow = this._recordReleaseFailure(
+          let failedStatus = null;
+          try { failedStatus = failedApi && typeof failedApi.status === 'function' ? failedApi.status() : null; } catch (_) {}
+          const rollbackBaseBootCount = Math.max(previousBootCount, finite(failedStatus && failedStatus.bootCount, 0));
+          const rollback = await this._rollbackToRelease(previousRelease, failedApi, rollbackBaseBootCount, rearmIntent);
+          this._recordReleaseFailure(
             manifest,
             'UPDATE_HANDSHAKE_FAILED:' + handshake.reason,
-            { handshake, rollbackHandshake, rollbackRearm, activeSlot, stagingSlot }
+            { handshake, rollback, previousRelease: this._releaseDescriptor(previousRelease) }
           );
           failureRecorded = true;
-          throw new Error('UPDATE_HANDSHAKE_FAILED:' + handshake.reason + ':ROLLBACK_' + (rollbackHandshake.ok ? 'OK' : 'FAILED'));
+          throw new Error('UPDATE_HANDSHAKE_FAILED:' + handshake.reason + ':ROLLBACK_' + (rollback.ok ? 'OK' : 'FAILED'));
         }
 
         const rearm = await this._rearmApi(this.root && this.root.ALBot, rearmIntent);
         if (!rearm.accepted) {
           this.stats.rollbacks += 1;
           const failedApi = this.root && this.root.ALBot;
-          let rollbackHandshake = { ok: false, reason: 'ROLLBACK_NOT_ATTEMPTED' };
-          try {
-            const rollback = load.fn.call(load.owner, activeSlot);
-            if (rollback && typeof rollback.then === 'function') await rollback;
-            rollbackHandshake = await this._waitHandshake(failedApi, previousVersion, { previousBootCount });
-            if (!rollbackHandshake.ok) this.stats.rollbackFailures += 1;
-          } catch (rollbackError) {
-            this.stats.rollbackFailures += 1;
-            rollbackHandshake = { ok: false, reason: clean(rollbackError && rollbackError.message || rollbackError, 240) };
-          }
-          let rollbackRearm = null;
-          if (rollbackHandshake.ok) rollbackRearm = await this._rearmApi(this.root && this.root.ALBot, rearmIntent);
+          let failedStatus = null;
+          try { failedStatus = failedApi && typeof failedApi.status === 'function' ? failedApi.status() : null; } catch (_) {}
+          const rollbackBaseBootCount = Math.max(previousBootCount, finite(failedStatus && failedStatus.bootCount, 0));
+          const rollback = await this._rollbackToRelease(previousRelease, failedApi, rollbackBaseBootCount, rearmIntent);
           this._recordReleaseFailure(
             manifest,
             'UPDATE_REARM_FAILED:' + (rearm.reason || 'UNKNOWN'),
-            { handshake, rearm, rollbackHandshake, rollbackRearm, activeSlot, stagingSlot }
+            { handshake, rearm, rollback, previousRelease: this._releaseDescriptor(previousRelease) }
           );
           failureRecorded = true;
-          throw new Error('UPDATE_REARM_FAILED:' + (rearm.reason || 'UNKNOWN'));
+          throw new Error('UPDATE_REARM_FAILED:' + (rearm.reason || 'UNKNOWN') + ':ROLLBACK_' + (rollback.ok ? 'OK' : 'FAILED'));
         }
 
+        await this._confirmActiveRelease(manifest);
         this.stats.applies += 1;
         this.stats.reloads += 1;
         this._clearReleaseFailure(manifest);
@@ -1250,11 +1312,12 @@
           at: new Date().toISOString(),
           from: previousVersion,
           to: manifest.version,
-          commitSha: manifest.commitSha,
-          activeSlot,
-          stagingSlot,
+          releaseKey,
+          previousRelease: this._releaseDescriptor(previousRelease),
+          release: this._releaseDescriptor(manifest),
           handshake,
-          rearm
+          rearm,
+          transport: 'verified-bootstrap-runtime-loader'
         };
         this.pending = null;
         this._persistPending();
@@ -1273,7 +1336,10 @@
         this.stats.failures += 1;
         this.lastError = { at: new Date().toISOString(), reason: clean(error && error.message || error, 240) };
         if (!failureRecorded) {
-          this._recordReleaseFailure(manifest, this.lastError.reason, { activeSlot, stagingSlot });
+          this._recordReleaseFailure(manifest, this.lastError.reason, {
+            previousRelease: this._releaseDescriptor(previousRelease),
+            release: this._releaseDescriptor(manifest)
+          });
         }
         return { applied: false, reason: this.lastError.reason };
       } finally {
@@ -1306,10 +1372,11 @@
     }
 
     status() {
-      const activeSlot = this._activeSlot();
+      const bootstrap = this._bootstrap();
+      const activeRelease = this._activeRelease();
       return {
         schemaVersion: 1,
-        mode: 'h22-github-safe-auto-updater',
+        mode: 'h22-github-bootstrap-auto-updater',
         active: this.active,
         enabled: this.config.enabled,
         localVersion: this.runtime.version,
@@ -1323,13 +1390,14 @@
         autoDownload: this.config.autoDownload,
         autoApply: this.config.autoApply,
         coordinatedApply: this.config.coordinatedApply,
-        stagingSlots: this.config.stagingSlots.slice(),
-        activeSlot,
-        applyReady: !!(this.config.autoApply && activeSlot != null && this._stagingSlot(activeSlot) != null),
+        bootstrapVersion: bootstrap && bootstrap.version || null,
+        activeRelease: this._releaseDescriptor(activeRelease),
+        applyReady: !!(this.config.autoApply && bootstrap),
         pending: this.pending ? {
           downloadedAt: this.pending.downloadedAt,
           manifest: clone(this.pending.manifest),
-          cachedBytes: this._utf8Bytes(this.pending.bundle)
+          cachedBytes: typeof this.pending.bundle === 'string' ? this._utf8Bytes(this.pending.bundle) : 0,
+          cachedInWindow: typeof this.pending.bundle === 'string'
         } : null,
         busy: this.busy,
         safeSince: this.safeSince || null,
@@ -1355,23 +1423,26 @@
           downgradeForbidden: true,
           automaticDownload: true,
           automaticApplyEnabledByDefault: true,
-          automaticApplyRequiresExplicitStagingSlots: true,
+          automaticApplyRequiresVerifiedBootstrap: true,
+          bootstrapOwnsTransportNotUpdateAuthority: true,
+          fullBundleNeverSavedToAdventureLandCodeSlot: true,
           coordinatedAllOnlineCharacters: true,
           twoPhasePrepareCommit: true,
-          bundleStagedBeforeGroupCommit: true,
+          bundleCachedAndVerifiedBeforeGroupCommit: true,
+          finalProtectionRecheckBeforeExecution: true,
           ordinaryCombatDoesNotBlockApply: true,
           ordinaryGameplayDoesNotBlockApply: true,
           eventOrBossDefersApply: true,
           safeWindowRequiredBeforeApply: false,
-          activeSlotNeverOverwrittenBeforeHandshake: true,
-          rollbackLoadsPreviousSlot: true,
+          rollbackLoadsPreviousPinnedRelease: true,
+          rollbackRevalidatesBytesHashAndBanner: true,
           rollbackHandshakeRequired: true,
           failedReleaseQuarantineWithBackoff: true,
           fullAutonomyRearmAfterHealthyBoot: true,
           noGitHubWriteCredentialInBot: true
         }
       };
-    }
+
   }
 
   ns.SafeAutoUpdater = SafeAutoUpdater;
