@@ -27,6 +27,11 @@ jobs:
           timeout 30s node --test tests/h21-v3-group-resource.test.mjs
           echo "=== H20 account strategy ==="
           timeout 30s node --test tests/h20-account-strategy.test.mjs
-          echo "=== Remaining suites ==="
-          files=$(find tests -name '*.test.mjs' ! -name 'h20-account-strategy.test.mjs' ! -name 'h21-v3-group-resource.test.mjs' -print)
-          timeout 90s node --test $files
+          echo "=== Remaining suites, isolated per file ==="
+          for f in tests/*.test.mjs; do
+            case "$f" in
+              tests/h20-account-strategy.test.mjs|tests/h21-v3-group-resource.test.mjs) continue ;;
+            esac
+            echo "=== FILE $f ==="
+            timeout 20s node --test "$f"
+          done
