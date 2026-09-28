@@ -701,18 +701,13 @@
         return { state: 'BLOCKED', reason: 'H19_ROSTER_LIVE_STATE_UNAVAILABLE' };
       }
 
-      const signalProposal = this._proposalPartySignal(roster);
-      if (signalProposal) return signalProposal;
-
       const active = this._onlineSet(roster);
       const localName = this._localName();
       const desiredActive = new Set(this.policyState.desiredActiveNames.map(String));
 
-      // Rotation is deliberately stop-before-start. Adventure Land only allows
-      // four concurrent characters, so an old farmer must vacate its slot
-      // before H19 starts the newly selected farmer. Never stop the local
-      // coordinator from its own window; once a desired peer is online, that
-      // peer becomes the next coordinator and can finish the rotation.
+      // Rotation is deliberately stop-before-start. This check must happen
+      // before party-leader reconciliation: the current leader itself may be
+      // the farmer that is being rotated out.
       const undesiredActive = [...active]
         .filter(name => this._ownedRow(name, roster) && !desiredActive.has(String(name)))
         .sort((a, b) => a.localeCompare(b));
@@ -730,6 +725,9 @@
           }
         };
       }
+
+      const signalProposal = this._proposalPartySignal(roster);
+      if (signalProposal) return signalProposal;
 
       for (const name of this.policyState.desiredRuntimeRunningNames) {
         if (name === localName) continue;
