@@ -69,6 +69,25 @@ test('H22 bootstrap is a small permanent loader and never contains an update pol
   assert.doesNotMatch(source, /load_code/);
 });
 
+test('H22 committed release manifest matches the built immutable bundle', () => {
+  const { api } = loadBootstrap();
+  const manifest = JSON.parse(fs.readFileSync(new URL('../release/al-bot-release.json', import.meta.url), 'utf8'));
+  const dist = fs.readFileSync(new URL('../dist/al-bot.js', import.meta.url), 'utf8');
+  const checked = api.validateManifest(manifest);
+
+  assert.equal(checked.ok, true);
+  assert.equal(manifest.version, '0.22.4-h22');
+  assert.equal(manifest.packageVersion, '0.22.4');
+  assert.equal(manifest.minBootstrapVersion, '1.0.0');
+  assert.equal(manifest.commitSha, manifest.sourceRef);
+  assert.equal(
+    manifest.bundleUrl,
+    'https://raw.githubusercontent.com/Riflex91/ALFinal/' + manifest.commitSha + '/dist/al-bot.js'
+  );
+  assert.equal(manifest.bytes, Buffer.byteLength(dist, 'utf8'));
+  assert.equal(manifest.sha256, crypto.createHash('sha256').update(dist, 'utf8').digest('hex'));
+});
+
 test('H22 bootstrap loads and verifies the official immutable release manifest', async () => {
   const body = executableBundle('0.22.4-h22');
   const manifest = manifestFor('0.22.4-h22', body);
