@@ -195,6 +195,10 @@
           && row.peerFresh && row.running === true && row.fullAutonomyEnabled !== true)
         .map(row => String(row.name))
         .sort();
+      const missingPeerNames = profiles
+        .filter(row => row && desiredSet.has(String(row.name)) && row.online === true && !row.local && row.peerFresh !== true)
+        .map(row => String(row.name))
+        .sort();
       const unexpectedOnlineNames = online.filter(name => !desiredSet.has(String(name))).sort();
       return {
         profiles,
@@ -202,6 +206,7 @@
         missing,
         stoppedNames,
         inactiveAutonomyNames,
+        missingPeerNames,
         unexpectedOnlineNames,
         readyNames: [...ready].sort(),
         onlineLimitExceeded: online.length > 4
@@ -808,11 +813,17 @@
               ? 'FULL_AUTONOMY_ROTATING_ACTIVITY_GROUP'
               : (lifecycle.rosterRecoveryRequired
                 ? 'FULL_AUTONOMY_RECOVERING_EXPECTED_ROSTER'
-                : 'FULL_AUTONOMY_RECOVERING_STOPPED_OR_STALE_PEER'),
+                : (readiness.missingPeerNames && readiness.missingPeerNames.length
+                  ? 'FULL_AUTONOMY_WAITING_REMOTE_BOT'
+                  : (readiness.inactiveAutonomyNames && readiness.inactiveAutonomyNames.length
+                    ? 'FULL_AUTONOMY_WAITING_REMOTE_FULL_AUTONOMY'
+                    : 'FULL_AUTONOMY_RECOVERING_STOPPED_OR_STALE_PEER'))),
             expectedOnlineCount: 4,
             desiredCharacterNames: nextDesired,
             onlineCharacterNames: readiness.online,
             missingProfiles: readiness.missing,
+            missingPeerNames: readiness.missingPeerNames || [],
+            inactiveFullAutonomyNames: readiness.inactiveAutonomyNames || [],
             unexpectedOnlineNames: lifecycle.unexpectedOnlineNames || readiness.unexpectedOnlineNames,
             lifecycleRecoveryRequired: lifecycle.recoveryRequired === true,
             runtimeRecoveryRequired: lifecycle.runtimeRecoveryRequired === true,
