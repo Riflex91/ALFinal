@@ -61,14 +61,14 @@
 
     configure(options = {}) {
       if (options.taskType != null) this.config.taskType = cleanText(options.taskType, 40).toUpperCase() || 'FARM';
-      if (options.keepSupportInParty != null) this.config.keepSupportInParty = options.keepSupportInParty === true;
+      // Full Live invariant: one Merchant is always the fourth party member.
+      this.config.keepSupportInParty = true;
       if (options.requireAllOnlineProfiles != null) this.config.requireAllOnlineProfiles = options.requireAllOnlineProfiles === true;
       if (options.logisticsProbeMs != null) {
         this.config.logisticsProbeMs = Math.max(5000, Math.min(300000, Math.floor(Number(options.logisticsProbeMs) || 30000)));
       }
-      if (options.expectedOnlineCount != null) {
-        this.config.expectedOnlineCount = Math.max(1, Math.min(4, Math.floor(Number(options.expectedOnlineCount) || 4)));
-      }
+      // Adventure Land Full Live is always a four-character group: 3 farmers + 1 Merchant.
+      this.config.expectedOnlineCount = 4;
       return clone(this.config);
     }
 
