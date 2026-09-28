@@ -20645,6 +20645,7 @@
         add(prefix + '_REQUEST_PENDING', !!row.request);
         add(prefix + '_DELIVERY_PENDING', !!row.delivery);
         add(prefix + '_CURRENT_ACTION', !!row.currentAction);
+        if (name === 'inventory') add('INVENTORY_PENDING_LOOT', !!row.pendingLoot);
         add(prefix + '_SUSPENDED', row.suspended === true);
       }
 
