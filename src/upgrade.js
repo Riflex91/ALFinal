@@ -614,6 +614,28 @@
         }
       }
 
+      if (pending.settlement === 'RESOLVED'
+          && pending.response
+          && typeof pending.response === 'object'
+          && typeof pending.response.success === 'boolean'
+          && Date.now() - Number(pending.dispatchedAtMs || 0) >= this.config.settleGraceMs) {
+        // Since the 2026 CODE API update, public async functions settle on the
+        // real server result. Keep inventory deltas as the strongest evidence,
+        // but accept an explicit server success/failure when redraw/inventory
+        // propagation lags behind the Promise settlement.
+        if (pending.response.success === true) {
+          return this._complete(pending, 'SUCCEEDED', {
+            evidence: 'SERVER_SETTLEMENT_SUCCESS'
+          });
+        }
+        return this._complete(pending, 'FAILED', {
+          evidence: 'SERVER_SETTLEMENT_FAILURE',
+          serverReason: cleanText(
+            pending.response.reason || pending.response.message || pending.response.code || 'SERVER_REJECTED',
+            240
+          )
+        });
+      }
       if (pending.settlement === 'REJECTED') {
         return this._suspend(pending.kind, pending.error || 'H15_ACTION_REJECTED_WITHOUT_LIVE_OUTCOME');
       }
