@@ -51,7 +51,7 @@
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.23.0-h23',
+    version: '0.24.0-h24',
     bootCount,
     replacedPrevious: !!previous
   });
