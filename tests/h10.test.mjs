@@ -337,7 +337,8 @@ test('H10 runtime, public API, UI and one-click live suite are wired', () => {
   assert.match(entry, /inventory:/);
   assert.match(entry, /reset: reason => runtime\.inventory\.resetSafety/);
   assert.match(build, /src\/inventory\.js/);
-  assert.match(build, /AL Bot.*0\.22\.0-h22/);
+  assert.match(build, /const runtimeVersion = '0\.22\.0-h22'/);
+  assert.match(build, /const banner = `\/\* AL Bot \$\{runtimeVersion\}/);
   assert.match(ui, /data-tab="inventory"/);
   assert.match(ui, /H10 Loot & Inventar/);
   assert.match(boundary, /loot: Object\.freeze\(\{ publicName: 'loot'/);
