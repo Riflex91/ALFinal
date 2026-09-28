@@ -417,7 +417,7 @@ test('H19 rotates farmers stop-before-start so the four-character account limit 
     onlineNames: ['My_Merchant', 'My_Priest', 'My_Ranger', 'My_Warrior'],
     runnerActiveNames: ['My_Merchant', 'My_Priest', 'My_Ranger', 'My_Warrior'],
     partyMembers: ['My_Merchant', 'My_Priest', 'My_Ranger', 'My_Warrior'],
-    partyLeader: 'My_Warrior',
+    partyLeader: 'My_Priest',
     maxActionsPerSession: 4
   });
   state.account.push({ name: 'My_Mage', ctype: 'mage', online: false });
