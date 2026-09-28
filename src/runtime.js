@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.22.6-h22';
+      this.version = options.version || '0.22.7-h22';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -14,6 +14,17 @@
       this.running = false;
       this.runEpoch = 0;
       this._h19FullAutonomyRearmIntent = null;
+      this.performanceGuard = {
+        supported: typeof (this.root && this.root.performance_trick) === 'function',
+        applied: false,
+        attempts: 0,
+        successes: 0,
+        failures: 0,
+        alreadyPlaying: false,
+        lastAttemptAt: null,
+        lastSuccessAt: null,
+        lastError: null
+      };
       this.bus = new ns.EventBus();
       this.storage = new ns.StorageAdapter(this.root);
       this.logger = new ns.Logger({ bus: this.bus, limit: 400 });
@@ -5453,6 +5464,44 @@
       return { runtime: this };
     }
 
+    performanceTrick() {
+      const now = new Date().toISOString();
+      const guard = this.performanceGuard || (this.performanceGuard = {});
+      guard.attempts = Math.max(0, Number(guard.attempts) || 0) + 1;
+      guard.lastAttemptAt = now;
+      guard.supported = typeof (this.root && this.root.performance_trick) === 'function';
+      guard.alreadyPlaying = false;
+
+      if (!guard.supported) {
+        guard.lastError = 'PERFORMANCE_TRICK_UNAVAILABLE';
+        return ns.helpers.clone(guard);
+      }
+
+      try {
+        const emptySound = this.root && this.root.sounds && this.root.sounds.empty || null;
+        const canInspect = !!(emptySound && typeof emptySound.playing === 'function');
+        if (canInspect) {
+          try { guard.alreadyPlaying = emptySound.playing() === true; } catch (_) {}
+        }
+
+        // Adventure Land's official performance_trick keeps background tabs
+        // active by playing its empty keep-alive sound. Never stack duplicate
+        // playback; only reapply when the live sound state proves it stopped.
+        if (!guard.alreadyPlaying && (!guard.applied || canInspect)) {
+          this.root.performance_trick();
+        }
+
+        guard.applied = true;
+        guard.successes = Math.max(0, Number(guard.successes) || 0) + 1;
+        guard.lastSuccessAt = now;
+        guard.lastError = null;
+      } catch (error) {
+        guard.failures = Math.max(0, Number(guard.failures) || 0) + 1;
+        guard.lastError = ns.helpers.cleanText(error && (error.reason || error.message) || error || 'PERFORMANCE_TRICK_FAILED', 300);
+      }
+      return ns.helpers.clone(guard);
+    }
+
     async start() {
       if (this._destroyed) throw new Error('ALBOT_RUNTIME_DESTROYED');
       if (this.stopLatch.status().latched) throw new Error('ALBOT_START_BLOCKED_BY_EMERGENCY_STOP');
@@ -5462,12 +5511,16 @@
       this.runEpoch += 1;
       this.startedAt = new Date().toISOString();
       this.scheduler.start();
+      this.performanceTrick();
       try { this.roster.refresh(); } catch (_) {}
 
       await this.modules.startAll(this._runtimeContext());
       this.scheduler.interval('runtime', 'module-watchdog', () => {
         this.modules.checkWatchdogs();
       }, 1000, { immediate: true });
+      this.scheduler.interval('runtime', 'performance-trick-guard', () => {
+        this.performanceTrick();
+      }, 30000);
 
       this.logger.info('AL Bot gestartet', {
         runEpoch: this.runEpoch,
@@ -5554,6 +5607,7 @@
         runEpoch: this.runEpoch,
         bootCount: this.bootCount,
         replacedPrevious: this.replacedPrevious,
+        performanceTrick: ns.helpers.clone(this.performanceGuard),
         emergencyStop: this.stopLatch.status(),
         scheduler: this.scheduler.status(),
         modules: this.modules.list(),

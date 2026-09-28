@@ -1609,8 +1609,15 @@ ${items.length ? items.slice(0, 24).map(row => '<div class="albot-small">#'+esc(
       } catch (_) {}
       const plan = full.lastPlan || strategy.taskPlan || null;
       const decision = full.lastDecision || null;
+      const rotationFallback = decision && decision.rotationFallback || plan && plan.rotationFallback || null;
       const selected = plan && plan.selected && Array.isArray(plan.selected.memberNames) ? plan.selected.memberNames : [];
       const support = plan && Array.isArray(plan.supportMemberNames) ? plan.supportMemberNames : [];
+      const requestedRotation = rotationFallback && Array.isArray(rotationFallback.requestedDesiredCharacterNames)
+        ? rotationFallback.requestedDesiredCharacterNames
+        : [];
+      const fallbackRotation = rotationFallback && Array.isArray(rotationFallback.fallbackDesiredCharacterNames)
+        ? rotationFallback.fallbackDesiredCharacterNames
+        : [];
       const resultText = this.fullAutonomyResult
         ? JSON.stringify(this.fullAutonomyResult, null, 2)
         : 'Noch keine manuelle Full-Live-Aktion.';
@@ -1624,7 +1631,12 @@ ${items.length ? items.slice(0, 24).map(row => '<div class="albot-small">#'+esc(
         + '<div><span class="albot-k">Leader</span><div class="albot-v">'+esc(plan && plan.leaderName || decision && decision.leader || '-')+'</div></div>'
         + '<div><span class="albot-k">Execution Group</span><div class="albot-v">'+(selected.length ? selected.map(esc).join(', ') : '-')+'</div></div>'
         + '<div><span class="albot-k">Support</span><div class="albot-v">'+(support.length ? support.map(esc).join(', ') : '-')+'</div></div>'
-        + '<div><span class="albot-k">Catch-up Ziel</span><div class="albot-v">'+esc(progression && progression.selectedCharacterName || plan && plan.progression && plan.progression.selectedCharacterName || '-')+'</div></div>'
+        + '<div><span class="albot-k">Catch-up Ziel (Strategie)</span><div class="albot-v">'+esc(progression && progression.selectedCharacterName || plan && plan.progression && plan.progression.selectedCharacterName || '-')+'</div></div>'
+        + '<div><span class="albot-k">Catch-up Rotation</span><div class="albot-v">'+(rotationFallback && rotationFallback.used
+          ? 'BLOCKIERT · '+esc(rotationFallback.reason || 'ROTATION_UNAVAILABLE')
+          : 'BEREIT / NICHT ERFORDERLICH')+'</div></div>'
+        + '<div><span class="albot-k">Angefordert</span><div class="albot-v">'+(requestedRotation.length ? requestedRotation.map(esc).join(', ') : '-')+'</div></div>'
+        + '<div><span class="albot-k">Aktiver Fallback</span><div class="albot-v">'+(fallbackRotation.length ? fallbackRotation.map(esc).join(', ') : '-')+'</div></div>'
         + '<div><span class="albot-k">Lokale Rolle</span><div class="albot-v">'+esc(decision && decision.localRole || '-')+'</div></div>'
         + '</div></div>'
         + '<div class="albot-card"><b>Account-Profile</b>'
@@ -1634,7 +1646,7 @@ ${items.length ? items.slice(0, 24).map(row => '<div class="albot-small">#'+esc(
         + '<div class="albot-row"><select id="albot-full-task">'
         + ['FARM','QUEST','BOSS','EVENT','SPECIAL'].map(value => '<option value="'+value+'" '+((full.config && full.config.taskType || 'FARM') === value ? 'selected' : '')+'>'+value+'</option>').join('')
         + '</select><button id="albot-full-start" class="albot-btn" '+(full.enabled || status.emergencyStop && status.emergencyStop.latched ? 'disabled' : '')+'>Full Live starten</button><button id="albot-full-stop" class="albot-btn warn" '+(full.enabled ? '' : 'disabled')+'>Full Live stoppen</button></div>'
-        + '<div class="albot-small">Auf allen vier Fenstern denselben aktuellen Build laden. Der Modus bleibt WARMING, bis fuer jeden online gemeldeten Character ein frisches Cross-Window-Profil vorliegt.</div>'
+        + '<div class="albot-small">Auf allen vier Fenstern denselben aktuellen Build laden. Der Modus bleibt WARMING, bis fuer jeden online gemeldeten Character ein frisches Cross-Window-Profil vorliegt. Bei H19_ROTATION_STOP_NOT_RUNNER_CONTROLLABLE ist das Catch-up-Ziel erkannt, aber ein separat gestartetes Browserfenster kann nicht sicher mit stop_character beendet werden; die aktuelle Vierergruppe bleibt dann absichtlich aktiv.</div>'
         + '<div class="albot-log" style="margin-top:8px">'+esc(resultText)+'</div></div>';
 
       const start = panel.querySelector('#albot-full-start');

@@ -51,7 +51,7 @@
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.22.6-h22',
+    version: '0.22.7-h22',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -74,6 +74,7 @@
     status: () => runtime.status(),
     selfTest: () => runtime.selfTest(),
     diagnostics: () => runtime.diagnostics(),
+    performance_trick: () => runtime.performanceTrick(),
 
     scheduler: {
       status: () => runtime.scheduler.status(),

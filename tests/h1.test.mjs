@@ -20,6 +20,17 @@ function runtimeContext() {
       removeItem: k => memory.delete(k)
     },
     navigator: { userAgent: 'node-test' },
+    __performanceTrickCalls: 0,
+    __performanceTrickPlaying: false,
+    sounds: {
+      empty: {
+        playing() { return context.__performanceTrickPlaying === true; }
+      }
+    },
+    performance_trick() {
+      context.__performanceTrickCalls += 1;
+      context.__performanceTrickPlaying = true;
+    },
     character: { name: 'CurrentRanger', ctype: 'ranger', hp: 100, max_hp: 100, mp: 80, max_mp: 80, gold: 5, map: 'main', x: 1, y: 2 },
     get_characters: () => [
       { name: 'TradeChar', ctype: 'merchant', online: true },
@@ -38,11 +49,27 @@ test('H1 bundle loads and exposes ALBot API', () => {
   const ctx = runtimeContext();
   vm.runInNewContext(bundle, ctx, { filename: 'al-bot.js' });
   assert.equal(ctx.ALBot.product, 'AL Bot');
-  assert.equal(ctx.ALBot.version, '0.22.6-h22');
+  assert.equal(ctx.ALBot.version, '0.22.7-h22');
   assert.equal(ctx.ALBot.status().running, false);
   assert.equal(typeof ctx.ALBot.farming.status, 'function');
   assert.equal(typeof ctx.ALBot.farming.plan, 'function');
   assert.equal(ctx.ALBot.liveTests.status().recommendedId, 'h19-remote-recovery');
+});
+
+test('runtime applies official performance_trick once and avoids duplicate keep-alive playback', async () => {
+  const ctx = runtimeContext();
+  vm.runInNewContext(bundle, ctx, { filename: 'al-bot.js' });
+  assert.equal(typeof ctx.ALBot.performance_trick, 'function');
+  assert.equal(ctx.__performanceTrickCalls, 0);
+
+  await ctx.ALBot.start();
+  assert.equal(ctx.__performanceTrickCalls, 1);
+  assert.equal(ctx.ALBot.status().performanceTrick.applied, true);
+
+  const reapplied = ctx.ALBot.performance_trick();
+  assert.equal(reapplied.alreadyPlaying, true);
+  assert.equal(ctx.__performanceTrickCalls, 1);
+  await ctx.ALBot.stop('TEST_PERFORMANCE_TRICK');
 });
 
 test('dynamic roster discovers active farmers without hardcoded names', () => {
@@ -116,6 +143,9 @@ test('control center source includes large resizable drag and minimize behavior'
   assert.match(ui, /id="albot-minimize"/);
   assert.match(ui, /data-goal-delete/);
   assert.match(ui, /albot-goal-delete/);
+  assert.match(ui, /Catch-up Rotation/);
+  assert.match(ui, /H19_ROTATION_STOP_NOT_RUNNER_CONTROLLABLE/);
+  assert.match(ui, /Aktiver Fallback/);
 });
 
 

@@ -160,7 +160,8 @@ function fixture(options = {}) {
           }
         }
       }
-      return { state: 'DISPATCHED', value: Promise.resolve({ success: true }) };
+      const serverResult = options.serverResult || { success: true };
+      return { state: 'DISPATCHED', value: Promise.resolve(clone(serverResult)) };
     }
   };
 
@@ -223,6 +224,38 @@ test('H15 confirms upgrade only from observed inventory level and scroll deltas'
   assert.equal(status.metrics.upgradesUnknown, 0);
   assert.equal(state.rows.find(item => item.slot === 0).level, 1);
   assert.equal(state.rows.find(item => item.slot === 1).quantity, 4);
+});
+
+test('H15 accepts explicit server success when inventory redraw lags without suspending Economy', async () => {
+  const { controller, state } = fixture({ noMutation: true });
+  assert.equal(controller.queueUpgrade(0).accepted, true);
+  assert.equal(controller.tick().state, 'DISPATCHED');
+  await Promise.resolve();
+  await Promise.resolve();
+  await new Promise(resolve => setTimeout(resolve, 120));
+  controller.tick();
+  const status = controller.status();
+  assert.equal(status.suspended, false);
+  assert.equal(status.metrics.upgradesSucceeded, 1);
+  assert.equal(status.metrics.upgradesUnknown, 0);
+  assert.equal(status.lastAction.evidence, 'SERVER_SETTLEMENT_SUCCESS');
+  assert.equal(state.rows.find(item => item.slot === 0).level, 0);
+});
+
+test('H15 accepts explicit server failure as known failure when inventory redraw lags', async () => {
+  const { controller } = fixture({ noMutation: true, serverResult: { success: false, reason: 'upgrade_failed' } });
+  assert.equal(controller.queueUpgrade(0).accepted, true);
+  assert.equal(controller.tick().state, 'DISPATCHED');
+  await Promise.resolve();
+  await Promise.resolve();
+  await new Promise(resolve => setTimeout(resolve, 120));
+  controller.tick();
+  const status = controller.status();
+  assert.equal(status.suspended, false);
+  assert.equal(status.metrics.upgradesFailed, 1);
+  assert.equal(status.metrics.upgradesUnknown, 0);
+  assert.equal(status.lastAction.evidence, 'SERVER_SETTLEMENT_FAILURE');
+  assert.equal(status.lastAction.serverReason, 'upgrade_failed');
 });
 
 test('H15 records known upgrade failure when scroll is consumed without level gain', async () => {

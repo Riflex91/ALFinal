@@ -51,11 +51,11 @@
         densityTarget: Math.max(2, Math.min(20, Number(options.densityTarget) || 6)),
         depletionGraceMs: Math.max(1000, Math.min(30000, Number(options.depletionGraceMs) || 5000)),
         minExpectedHitChance: Math.max(0.05, Math.min(0.95, Number(options.minExpectedHitChance) || 0.25)),
-        groupRegroupTriggerDistance: Math.max(90, Math.min(250, Number(options.groupRegroupTriggerDistance) || 120)),
-        groupRegroupStopDistance: Math.max(35, Math.min(100, Number(options.groupRegroupStopDistance) || 60)),
-        groupHardRegroupDistance: Math.max(150, Math.min(350, Number(options.groupHardRegroupDistance) || 195)),
-        groupRetargetDistance: Math.max(20, Math.min(100, Number(options.groupRetargetDistance) || 35)),
-        groupRetargetMs: Math.max(700, Math.min(5000, Number(options.groupRetargetMs) || 1400))
+        groupRegroupTriggerDistance: Math.max(90, Math.min(250, Number(options.groupRegroupTriggerDistance) || 160)),
+        groupRegroupStopDistance: Math.max(35, Math.min(100, Number(options.groupRegroupStopDistance) || 90)),
+        groupHardRegroupDistance: Math.max(150, Math.min(350, Number(options.groupHardRegroupDistance) || 220)),
+        groupRetargetDistance: Math.max(20, Math.min(100, Number(options.groupRetargetDistance) || 90)),
+        groupRetargetMs: Math.max(700, Math.min(5000, Number(options.groupRetargetMs) || 4000))
       };
 
       this.moduleActive = false;
@@ -786,24 +786,27 @@
 
       const activeOwnMove = this._ownedMovement(movement);
       if (activeOwnMove) {
-        const destination = movement.activeOrder && movement.activeOrder.destination || null;
-        const shifted = destination && group.leader ? distance(destination, group.leader) : null;
-        const moveAge = this.groupMove ? this.now() - Number(this.groupMove.atMs || 0) : 0;
-        if (shifted != null && shifted >= this.config.groupRetargetDistance && moveAge >= this.config.groupRetargetMs) {
-          const target = { map: group.leader.map, x: group.leader.x, y: group.leader.y };
-          const retarget = this.movement.retarget(target, {
-            owner: 'farm-intelligence-h9-group-regroup',
-            arrivalRadius: this.config.groupRegroupStopDistance
-          });
-          if (retarget && retarget.accepted) {
-            this.groupMove = { atMs: this.now(), destination: clone(target) };
-            this.metrics.groupRetargets += 1;
-          }
-        }
+        // Close the regroup before considering a retarget. Otherwise a moving
+        // leader can cause a pointless retarget on the same tick that the
+        // follower has already re-entered formation.
         if (d <= this.config.groupRegroupStopDistance) {
           try { this.movement.cancel('H9_GROUP_REJOINED_FORMATION'); } catch (_) {}
           this.groupMove = null;
         } else {
+          const destination = movement.activeOrder && movement.activeOrder.destination || null;
+          const shifted = destination && group.leader ? distance(destination, group.leader) : null;
+          const moveAge = this.groupMove ? this.now() - Number(this.groupMove.atMs || 0) : 0;
+          if (shifted != null && shifted >= this.config.groupRetargetDistance && moveAge >= this.config.groupRetargetMs) {
+            const target = { map: group.leader.map, x: group.leader.x, y: group.leader.y };
+            const retarget = this.movement.retarget(target, {
+              owner: 'farm-intelligence-h9-group-regroup',
+              arrivalRadius: this.config.groupRegroupStopDistance
+            });
+            if (retarget && retarget.accepted) {
+              this.groupMove = { atMs: this.now(), destination: clone(target) };
+              this.metrics.groupRetargets += 1;
+            }
+          }
           return { state: 'TRAVELLING', reason: 'H9_GROUP_REGROUP_IN_PROGRESS', leaderName: group.leaderName, distance: d };
         }
       }
