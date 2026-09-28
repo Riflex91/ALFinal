@@ -260,20 +260,22 @@
       const onlineDesired = desiredPartyAll
         .filter(name => onlineSet.has(String(name)))
         .sort((a, b) => a.localeCompare(b));
-      const preferredLeader = plan.leaderName && desiredPartyAll.includes(plan.leaderName)
+      const preferredCombatLeader = plan.leaderName && desiredPartyAll.includes(plan.leaderName)
         ? plan.leaderName
-        : (support[0] || desiredPartyAll[0] || null);
-      const leader = preferredLeader || onlineDesired[0] || null;
+        : (desiredPartyAll[0] || null);
+      // The Merchant is the stable fourth member of Full Live and therefore
+      // owns party topology. Keeping party leader + lifecycle coordinator on
+      // the same deterministic character lets one authority create/rebuild
+      // the party while combat can retain a separate execution leader.
+      const preferredPartyLeader = support[0] || preferredCombatLeader || desiredPartyAll[0] || null;
+      const leader = preferredPartyLeader;
       if (!leader) return { ok: false, reason: 'FULL_AUTONOMY_PARTY_LEADER_UNAVAILABLE' };
 
-      // Coordinator selection must not depend on a window-local party snapshot.
-      // Prefer the Merchant because it remains the stable fourth member while
-      // farmers may rotate; otherwise choose the same sorted online desired name.
       const supportCoordinator = support[0] && onlineDesired.includes(String(support[0]))
         ? String(support[0])
         : null;
       const coordinatorName = supportCoordinator
-        || (onlineDesired.includes(String(preferredLeader || '')) ? String(preferredLeader) : null)
+        || (onlineDesired.includes(String(preferredPartyLeader || '')) ? String(preferredPartyLeader) : null)
         || onlineDesired[0]
         || localName;
       const coordinator = localName === String(coordinatorName);
