@@ -404,7 +404,9 @@ test('H26 party recovery waits until every desired remote bot has Full Autonomy 
   const started = controller.startAutonomy({ taskType: 'FARM' });
   assert.equal(started.accepted, true);
   assert.equal(started.tick.state, 'WARMING');
+  assert.equal(started.tick.reason, 'FULL_AUTONOMY_WAITING_REMOTE_FULL_AUTONOMY');
   assert.deepEqual([...started.tick.missingProfiles], ['My_Priest']);
+  assert.deepEqual([...started.tick.inactiveFullAutonomyNames], ['My_Priest']);
   assert.equal(state.lifecycleStarts, 0, 'leader must not invite a bot that cannot accept the desired-party policy yet');
   assert.equal(state.farmStarts, 0);
 });
