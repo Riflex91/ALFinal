@@ -1,4 +1,4 @@
-/* AL Bot 0.24.0-h24 | generated file | do not edit dist directly */
+/* AL Bot 0.25.0-h25 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -24431,7 +24431,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.24.0-h24';
+      this.version = options.version || '0.25.0-h25';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -25083,7 +25083,7 @@
       this.modules.register({
         id: 'encounters',
         title: 'Boss & Event Encounters',
-        version: '0.24.0',
+        version: '0.25.0',
         start: context => this.encounters.start(context),
         stop: reason => this.encounters.stop(reason),
         status: () => this.encounters.status()
@@ -25092,7 +25092,7 @@
       this.modules.register({
         id: 'market-intelligence',
         title: 'Market Intelligence',
-        version: '0.24.0',
+        version: '0.25.0',
         start: context => this.marketIntelligence.start(context),
         stop: reason => this.marketIntelligence.stop(reason),
         status: () => this.marketIntelligence.status()
@@ -25101,7 +25101,7 @@
       this.modules.register({
         id: 'merchant-stand',
         title: 'Merchant Stand',
-        version: '0.24.0',
+        version: '0.25.0',
         start: context => this.merchantStand.start(context),
         stop: reason => this.merchantStand.stop(reason),
         status: () => this.merchantStand.status()
@@ -25110,7 +25110,7 @@
       this.modules.register({
         id: 'host-telemetry',
         title: 'Host Telemetry',
-        version: '0.24.0',
+        version: '0.25.0',
         start: context => this.telemetry.start(context),
         stop: reason => this.telemetry.stop(reason),
         status: () => this.telemetry.status()
@@ -32459,7 +32459,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.24.0-h24',
+    version: '0.25.0-h25',
     bootCount,
     replacedPrevious: !!previous
   });
