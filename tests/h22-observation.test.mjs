@@ -97,6 +97,49 @@ test('H22 bounded flight recorder retains only the newest rows and sanitizes sec
   assert.equal(sanitized.nested.safe, 'ok');
 });
 
+test('H22 flight recorder captures known recovery events with redaction', () => {
+  const { Controller } = loadObserver();
+  const { runtime } = fixture();
+  const listeners = new Map();
+  runtime.bus = {
+    on(type, fn) {
+      const rows = listeners.get(type) || new Set();
+      rows.add(fn);
+      listeners.set(type, rows);
+      return () => rows.delete(fn);
+    },
+    emit(type, payload) {
+      for (const fn of [...(listeners.get(type) || [])]) fn(payload);
+    }
+  };
+  let cleanup = null;
+  const scope = {
+    interval: () => 'observer-tick',
+    cleanup: (_label, fn) => {
+      cleanup = fn;
+      return 'observer-cleanup';
+    }
+  };
+  const observer = new Controller({ runtime, bus: runtime.bus, now: () => 1000 });
+  observer.start({ scope, heartbeat: () => {} });
+
+  runtime.bus.emit('h22-known-recovery', {
+    type: 'RECOVERY_FAILED',
+    severity: 'ERROR',
+    reason: 'simulated failure',
+    token: 'must-not-leak'
+  });
+
+  const event = observer.listEvents(20).find(row => row.type === 'KNOWN_RECOVERY');
+  assert.ok(event);
+  assert.equal(event.component, 'known-recovery');
+  assert.equal(event.severity, 'ERROR');
+  assert.equal(event.reason, 'simulated failure');
+  assert.equal(event.data.token, '[REDACTED]');
+  assert.equal(typeof cleanup, 'function');
+  cleanup();
+});
+
 test('H22 observer returns deterministic PASS for a healthy idle runtime', () => {
   const { Controller } = loadObserver();
   const { runtime } = fixture();
