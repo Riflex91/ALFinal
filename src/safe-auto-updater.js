@@ -712,6 +712,12 @@
         : null;
       if (!release || !releaseKey || releaseKey !== expectedKey) return { accepted: false, reason: 'UPDATE_GROUP_RELEASE_INVALID' };
 
+      const previousRelease = payload && payload.previousRelease || null;
+      const localActiveRelease = this._activeRelease();
+      if (!previousRelease || !localActiveRelease || !this._releaseMatches(localActiveRelease, previousRelease)) {
+        return { accepted: false, reason: 'UPDATE_GROUP_ROLLBACK_RELEASE_MISMATCH' };
+      }
+
       const coordinator = clean(payload.coordinator || '', 120);
       const sender = clean(meta && meta.sender || '', 120);
       if (!coordinator) return { accepted: false, reason: 'UPDATE_GROUP_COORDINATOR_REQUIRED' };
@@ -735,6 +741,7 @@
         state: 'PREPARED',
         releaseKey,
         release: clone(release),
+        previousRelease: clone(previousRelease),
         coordinator,
         participants,
         localName,
@@ -754,6 +761,7 @@
         state: 'PREPARED',
         releaseKey,
         localName,
+        previousRelease: clone(previousRelease),
         cachedInWindow: ready.cachedInWindow === true,
         bytes: ready.bytes,
         sha256: ready.sha256,
@@ -955,10 +963,15 @@
 
       const release = this._releaseDescriptor(manifest);
       const releaseKey = this._releaseKey(manifest);
+      const previousRelease = this._releaseDescriptor(this._activeRelease());
+      if (!previousRelease) {
+        return this._coordinationFailure('UPDATE_GROUP_ROLLBACK_RELEASE_UNKNOWN', { group, release });
+      }
       const payload = {
         protocol: UPDATE_COORDINATION_PROTOCOL,
         releaseKey,
         release,
+        previousRelease,
         coordinator: group.coordinator,
         participants: group.participants.slice()
       };
@@ -1252,9 +1265,13 @@
         return { applied: false, reason: 'UPDATE_PENDING_REVALIDATION_FAILED' };
       }
 
-      const previousRelease = this._activeRelease();
-      if (!previousRelease) {
+      const activeRelease = this._activeRelease();
+      const previousRelease = rollout && rollout.previousRelease || activeRelease;
+      if (!previousRelease || !activeRelease) {
         return { applied: false, reason: 'UPDATE_PREVIOUS_RELEASE_UNKNOWN' };
+      }
+      if (rollout && !this._releaseMatches(activeRelease, previousRelease)) {
+        return { applied: false, reason: 'UPDATE_GROUP_ROLLBACK_RELEASE_MISMATCH' };
       }
 
       const previousApi = this.root && this.root.ALBot;
