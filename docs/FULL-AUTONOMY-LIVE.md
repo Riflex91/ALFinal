@@ -8,28 +8,27 @@ Dieser Lauf ist kein isolierter H20-Test. Er soll den aktuellen ALFinal/V6-Stand
 
 Der Runtime-Start aktiviert alle registrierten Module. Der Full-Live-Orchestrator schaltet mutierende Autonomie jedoch rollen- und ownership-gerecht frei, damit nicht mehrere Controller dieselbe Bewegung, Economy-Aktion oder Lifecycle-Recovery gleichzeitig besitzen.
 
-## Rollen
+## Rollen und Gruppenvertrag
 
-Fuer den aktuellen Vierer-Account werden die Rollen dynamisch aus den Klassen erkannt.
+Full Live arbeitet immer mit genau vier aktiven Characters:
 
-- Warrior: Tank / DPS;
-- Priest: Healer / Revive / Support / DPS;
-- Ranger: DPS / Ranged;
-- Merchant: Economy / Logistics.
+- exakt drei vom Optimizer fuer die aktuelle Aktivitaet ausgewaehlte Combat-Farmer;
+- exakt ein Merchant fuer Economy / Logistics.
 
-Die Namen sind nicht im Optimizer hartcodiert. Die Runtime verwendet den accountweiten Roster und frische Character-Profile.
+Die drei Farmer sind nicht auf Warrior, Priest und Ranger fest verdrahtet. Der Optimizer bewertet alle geeigneten Combat-Characters des Accounts nach Aktivitaet, Faehigkeiten, beobachteter Staerke und Catch-up-Bedarf. Dadurch koennen zum Beispiel Warrior, Priest, Ranger, Mage, Rogue oder Paladin je nach Aufgabe in die Dreiergruppe rotieren.
+
+Die Namen und die konkrete Klassenkombination sind nicht hartcodiert. Die Runtime verwendet den accountweiten Roster und frische Character-Profile.
 
 ## Startvoraussetzungen
 
 Vor dem Start:
 
-1. alle vier gewuenschten Characters sind online;
-2. jedes Fenster hat exakt denselben aktuellen ALFinal-Build geladen;
-3. kein Fenster hat einen gelatchten globalen STOP;
-4. bestehende UNKNOWN-/Safety-Suspensions werden nicht automatisch aufgehoben;
-5. einige Sekunden fuer gegenseitige H19-CM-Heartbeats abwarten.
+1. jedes bereits laufende Fenster hat exakt denselben aktuellen ALFinal-Build geladen;
+2. kein Fenster hat einen gelatchten globalen STOP;
+3. bestehende UNKNOWN-/Safety-Suspensions werden nicht automatisch aufgehoben;
+4. einige Sekunden fuer gegenseitige H19-CM-Heartbeats abwarten.
 
-Full Live erwartet standardmaessig genau vier online Characters. Bei weniger oder mehr Characters wird der Start fail-closed abgelehnt.
+Full Live plant immer ein Desired-Quartett aus drei Farmern plus einem Merchant. Sind davon noch nicht alle vier online, darf Full Live im Zustand `WARMING` starten und H19 stellt das gewaehlte Quartett bounded her. Mehr als vier gleichzeitig online gemeldete Account-Characters werden fail-closed blockiert.
 
 ## Start
 
@@ -55,18 +54,19 @@ FULL_AUTONOMY_ROLE_PLAN_ACTIVE
 - alle normalen Runtime-Module sind aktiv;
 - der Account-Optimizer bewertet Level, Gear, Combat-/Survivalwerte und Trainingszeit;
 - ein zurueckliegender Combat-Character erhaelt Catch-up-Prioritaet;
-- die FARM-Ausfuehrungsgruppe wird pro Planung dynamisch aus 1 bis 3 Combat-Characters gewaehlt;
-- die Auswahl bewertet aktuelle Staerke, Progression/Catch-up, benoetigte Faehigkeiten, Rollenvielfalt und den Koordinationsaufwand zusaetzlicher Mitglieder;
-- ein weiterer Character wird nur aufgenommen, wenn sein Nutzen fuer die aktuelle Aufgabe den zusaetzlichen Gruppen-Overhead rechtfertigt;
+- die FARM-Ausfuehrungsgruppe besteht immer aus exakt drei Combat-Farmern;
+- die Auswahl bewertet aktuelle Staerke, Progression/Catch-up und die fuer die Aktivitaet nuetzlichen Faehigkeiten;
+- ein deutlich zurueckliegender Combat-Character kann gezielt als Catch-up-Farmer in die Dreiergruppe rotieren, damit die Account-Characters langfristig ungefaehr im selben Staerke-Korridor bleiben;
 - die Namen und die konkrete Klassenkombination sind nicht fest vorgegeben;
-- nur die ausgewaehlte Combat-Gruppe reist und kaempft koordiniert; ihr Leader besitzt Farmrichtung und neue Pulls, Followers spiegeln das Gruppenziel und regroupen bei echter Trennung;
-- nicht ausgewaehlte Combat-Characters bleiben als sichere Standby-/Party-Mitglieder verfuegbar und koennen bei einer spaeteren Strategieentscheidung in die Ausfuehrungsgruppe wechseln;
-- BOSS/EVENT/SPECIAL koennen strengere Capability-Anforderungen wie Tank, Healer und DPS verlangen;
-- Merchant fuehrt Economy-Autonomie aus;
+- die drei ausgewaehlten Farmer reisen und kaempfen koordiniert; ihr Leader besitzt Farmrichtung und neue Pulls, Followers spiegeln das Gruppenziel und regroupen bei echter Trennung;
+- nicht ausgewaehlte Combat-Characters gehoeren nicht als aktiver Standby-Farmer zur Vierergruppe; sie koennen bei einer spaeteren Strategieentscheidung sicher eingewechselt werden;
+- BOSS/EVENT/SPECIAL bleiben ebenfalls Dreier-Combat-Gruppen, koennen aber strengere Capability-Anforderungen wie Tank, Healer und DPS verlangen;
+- Merchant ist immer der vierte aktive Character und fuehrt Economy-/Logistik-Autonomie aus;
 - Party Logistics darf auf dem Merchant Economy bounded abloesen, wenn echte Logistikarbeit vorliegt;
-- Lifecycle Recovery haelt das beim Start gepinnte Vierer-Desired-Set;
-- nur der dynamisch gewaehlte Leader koordiniert Remote-Recovery;
-- Nicht-Leader starten H19 nur bei eigener Party-Abweichung fuer den bounded Rejoin-Pfad.
+- Lifecycle Recovery haelt das aktuell vom Optimizer gewaehlte Desired-Quartett und rotiert bei einer neuen Auswahl stop-before-start;
+- nur der dynamisch gewaehlte Lifecycle-Koordinator fuehrt accountweite Remote-Recovery aus;
+- bei einer Farmer-Rotation wird zuerst ein nicht mehr gewuenschter aktiver Farmer gestoppt und erst danach der Ersatz gestartet, damit das Vier-Character-Limit erhalten bleibt;
+- Nicht-Koordinatoren fuehren keine konkurrierende accountweite Lifecycle-Autonomie aus.
 
 ## Sicherheitsregeln
 
