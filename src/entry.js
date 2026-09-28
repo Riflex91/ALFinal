@@ -208,6 +208,16 @@
       tick: () => runtime.fullAutonomy.tick()
     },
 
+    updater: {
+      status: () => runtime.safeUpdater.status(),
+      configure: options => runtime.safeUpdater.configure(options || {}),
+      check: () => runtime.safeUpdater.checkAndDownload(),
+      tick: () => runtime.safeUpdater.cycle(),
+      apply: () => runtime.safeUpdater.applyPending(),
+      discard: reason => runtime.safeUpdater.discardPending(reason || 'API_UPDATE_DISCARD')
+    },
+
+    // Backwards-compatible alias for the first H22 branch iterations.
     updates: {
       status: () => runtime.safeUpdater.status(),
       configure: options => runtime.safeUpdater.configure(options || {}),
@@ -386,6 +396,7 @@
   Object.freeze(api.lifecycle);
   Object.freeze(api.accountStrategy);
   Object.freeze(api.fullAutonomy);
+  Object.freeze(api.updater);
   Object.freeze(api.updates);
   Object.freeze(api.farming);
   Object.freeze(api.farmIntelligence);
