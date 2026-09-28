@@ -953,6 +953,7 @@
       const undesiredActive = [...active]
         .filter(name => this._ownedRow(name, roster) && !desiredActive.has(String(name)))
         .sort((a, b) => a.localeCompare(b));
+      const runnerActive = this._runnerActiveSet(roster);
       const missingDesired = [...desiredActive]
         .filter(name => this._ownedRow(name, roster) && !startEvidence.has(String(name)))
         .sort((a, b) => a.localeCompare(b));
@@ -962,7 +963,9 @@
         const peer = this.crossWindow && typeof this.crossWindow.freshPeer === 'function'
           ? this.crossWindow.freshPeer(name)
           : null;
-        if (remainingMissing.length && peer && peer.running === true && peer.characterNavigateCapable === true
+        if (!runnerActive.has(String(name))
+            && remainingMissing.length
+            && peer && peer.running === true && peer.characterNavigateCapable === true
             && this.crossWindow && typeof this.crossWindow.requestCharacterNavigation === 'function') {
           const desiredName = remainingMissing.shift();
           return {
