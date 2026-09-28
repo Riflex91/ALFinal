@@ -36,6 +36,7 @@ function resourceFixture(options = {}) {
       { slot: 0, name: 'hpot0', quantity: 20 },
       { slot: 1, name: 'mpot0', quantity: options.mpPotions == null ? 20 : options.mpPotions }
     ],
+    inventoryAvailable: true,
     dispatches: []
   };
   const skillCosts = {
@@ -46,7 +47,7 @@ function resourceFixture(options = {}) {
   };
   const game = {
     snapshot: () => ({ available: true, character: clone(state.character) }),
-    inventorySnapshot: () => ({ available: true, items: clone(state.items) }),
+    inventorySnapshot: () => ({ available: state.inventoryAvailable, items: clone(state.items) }),
     skillDefinition: id => skillCosts[id] == null ? null : { id, mp: skillCosts[id] }
   };
   const actions = {
@@ -114,6 +115,26 @@ test('resource topoff does not confirm a pending potion from unrelated MP regene
   assert.equal(next.state, 'PENDING');
   assert.equal(f.controller.status().metrics.confirmed, 0);
   assert.ok(f.controller.status().pending);
+  assert.equal(f.state.dispatches.length, 1);
+});
+
+test('resource topoff keeps a potion pending when inventory visibility disappears after dispatch', () => {
+  const f = resourceFixture({ mp: 100, maxMp: 1000, pending: true });
+  const first = f.controller.tick();
+  assert.equal(first.state, 'DISPATCHED');
+  assert.equal(f.state.dispatches.length, 1);
+
+  f.state.inventoryAvailable = false;
+  const hidden = f.controller.tick();
+  assert.equal(hidden.state, 'PENDING');
+  assert.equal(f.controller.status().metrics.confirmed, 0);
+  assert.ok(f.controller.status().pending);
+  assert.equal(f.state.dispatches.length, 1);
+
+  f.state.inventoryAvailable = true;
+  const visibleAgain = f.controller.tick();
+  assert.equal(visibleAgain.state, 'PENDING');
+  assert.equal(f.controller.status().metrics.confirmed, 0);
   assert.equal(f.state.dispatches.length, 1);
 });
 
