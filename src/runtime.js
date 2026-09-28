@@ -288,6 +288,13 @@
         bus: this.bus,
         runtime: this
       });
+      this.knownRecovery = new ns.KnownRecoveryCoordinator({
+        root: this.root,
+        logger: this.logger,
+        bus: this.bus,
+        runtime: this,
+        observer: this.observer
+      });
       this.inventory.partyLogistics = this.partyLogistics;
       this.merchant.partyLogistics = this.partyLogistics;
       this.merchant.economy = this.economy;
@@ -534,6 +541,16 @@
         start: context => this.observer.start(context),
         stop: reason => this.observer.stop(reason),
         status: () => this.observer.status()
+      });
+
+      this.modules.register({
+        id: 'known-recovery',
+        title: 'H22 Known Recovery Coordinator',
+        version: '0.22.3',
+        watchdogMs: 5000,
+        start: context => this.knownRecovery.start(context),
+        stop: reason => this.knownRecovery.stop(reason),
+        status: () => this.knownRecovery.status()
       });
     }
 
@@ -5541,6 +5558,7 @@
         fullAutonomy: this.fullAutonomy.status(),
         safeUpdater: this.safeUpdater.status(),
         observation: this.observer.status(),
+        knownRecovery: this.knownRecovery.status(),
         liveTests: this.liveTests.status(),
         knowledge: this.knowledge.status(),
         roster,
@@ -5580,6 +5598,7 @@
         fullAutonomy: this.fullAutonomy.status(),
         safeUpdater: this.safeUpdater.status(),
         observation: this.observer.status(),
+        knownRecovery: this.knownRecovery.status(),
         observationEvents: this.observer.listEvents(200),
         observationIncidents: this.observer.listIncidents(12),
         liveTests: this.liveTests.status(),
@@ -5641,6 +5660,14 @@
         && typeof this.observer.hostBeacon === 'function'
         && typeof this.observer.listEvents === 'function'
         && typeof this.observer.listIncidents === 'function', observerStatus);
+      const recoveryStatus = this.knownRecovery.status();
+      push('h22-known-recovery', !!recoveryStatus
+        && recoveryStatus.policies
+        && recoveryStatus.policies.allowlistedOnly === true
+        && recoveryStatus.policies.gameplayActionAuthority === false
+        && recoveryStatus.policies.unknownRecoveryAuthority === false
+        && typeof this.knownRecovery.plan === 'function'
+        && typeof this.knownRecovery.tick === 'function', recoveryStatus);
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
       push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);
