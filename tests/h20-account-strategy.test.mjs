@@ -557,6 +557,37 @@ test('Full Autonomy rejects any plan that is not exactly three farmers plus one 
   assert.equal(state.lifecycleStarts, 0);
 });
 
+test('Full Autonomy blocks foreign H9 before any lifecycle recovery or rotation mutation', () => {
+  const { controller, state } = loadFullAutonomy({
+    localName: 'My_Warrior',
+    farmOwner: 'manual-h9',
+    partyLeader: 'My_Warrior',
+    partyMembers: ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior'],
+    profileRows: [
+      { name: 'My_Warrior', ctype: 'warrior' },
+      { name: 'My_Priest', ctype: 'priest' },
+      { name: 'My_Ranger1', ctype: 'ranger' },
+      { name: 'My_Mage', ctype: 'mage' },
+      { name: 'My_Merchant', ctype: 'merchant' }
+    ],
+    selectedMembers: ['My_Mage', 'My_Ranger1', 'My_Warrior'],
+    onlineNames: ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior']
+  });
+  state.farmActive = true;
+
+  const started = controller.startAutonomy({ taskType: 'FARM' });
+
+  assert.equal(started.accepted, true);
+  assert.equal(started.tick.state, 'BLOCKED');
+  assert.equal(started.tick.reason, 'FULL_AUTONOMY_FOREIGN_FARM_INTELLIGENCE_OWNERSHIP');
+  assert.equal(state.lifecycleStarts, 0);
+  assert.equal(state.lifecyclePolicy, null);
+  assert.equal(state.farmGroupConfigCalls, 0);
+  assert.equal(state.farmStarts, 0);
+  assert.equal(state.farmStops, 0);
+  assert.equal(state.farmActive, true);
+});
+
 test('Full Autonomy never reconfigures a foreign active H9 session before rejecting ownership', () => {
   const { controller, state } = loadFullAutonomy({
     localName: 'My_Warrior',
