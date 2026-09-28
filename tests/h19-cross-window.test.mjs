@@ -81,6 +81,7 @@ function makeContext(name, names, network, state, nowRef) {
       emergencyStopLatched: state.emergencyStopLatched,
       lifecycleAutonomyEnabled: state.autonomyEnabled === true,
       characterDisconnectCapable: state.characterDisconnectCapable === true,
+      characterNavigateCapable: state.characterNavigateCapable === true,
       version: '0.19.0-h19'
     }),
     startRuntime: async () => {
@@ -91,6 +92,11 @@ function makeContext(name, names, network, state, nowRef) {
     disconnectLocal: () => {
       state.disconnects = (state.disconnects || 0) + 1;
       state.disconnected = true;
+    },
+    navigateCharacterLocal: desiredName => {
+      state.navigations = state.navigations || [];
+      state.navigations.push(String(desiredName));
+      state.navigatedTo = String(desiredName);
     },
     getPartyState: () => clone(state.party || { available: false, partyId: null, leader: null, memberNames: [], foreignMemberNames: [], size: 0 }),
     leavePartyLocal: async () => {
@@ -249,6 +255,71 @@ test('H24 cross-window character disconnect is unavailable without explicit targ
   assert.equal(request.state, 'UNAVAILABLE');
   assert.equal(request.error.message, 'H24_CROSS_WINDOW_CHARACTER_DISCONNECT_CAPABILITY_MISSING');
   assert.equal(bState.disconnects || 0, 0);
+  a.transport.destroy();
+  b.transport.destroy();
+});
+
+test('H25 cross-window browser navigation settles before the page navigation destroys the old runtime', async () => {
+  const names = ['My_Ranger1', 'My_Priest'];
+  const network = new Map();
+  const nowRef = { value: 2850 };
+  const aState = { running: true, runEpoch: 1, emergencyStopLatched: false, characterNavigateCapable: true };
+  const bState = { running: true, runEpoch: 3, emergencyStopLatched: false, characterNavigateCapable: true, navigations: [] };
+  const a = makeContext('My_Ranger1', names, network, aState, nowRef);
+  const b = makeContext('My_Priest', names, network, bState, nowRef);
+  a.transport.install();
+  b.transport.install();
+  a.transport.broadcastHeartbeat();
+  b.transport.broadcastHeartbeat();
+
+  const peer = a.transport.freshPeer('My_Priest');
+  assert.equal(peer.characterNavigateCapable, true);
+  const request = a.transport.requestCharacterNavigation('My_Priest', 'My_Ranger1');
+  assert.equal(request.state, 'UNAVAILABLE', 'same/local desired target must not be reused as replacement');
+
+  names.push('My_Mage');
+  // Recreate with the complete owned roster so the desired character can be validated.
+  a.transport.destroy();
+  b.transport.destroy();
+  const network2 = new Map();
+  const a2 = makeContext('My_Ranger1', names, network2, aState, nowRef);
+  const b2 = makeContext('My_Priest', names, network2, bState, nowRef);
+  a2.transport.install();
+  b2.transport.install();
+  a2.transport.broadcastHeartbeat();
+  b2.transport.broadcastHeartbeat();
+
+  const dispatched = a2.transport.requestCharacterNavigation('My_Priest', 'My_Mage');
+  assert.equal(dispatched.state, 'DISPATCHED');
+  const settlement = await dispatched.value;
+  assert.equal(settlement.success, true);
+  assert.equal(settlement.reason, 'H25_CROSS_WINDOW_CHARACTER_NAVIGATION_ACCEPTED');
+  assert.equal(settlement.details.desiredCharacterName, 'My_Mage');
+  assert.equal(settlement.details.completionEvidence, 'OLD_ACCOUNT_OFFLINE_AND_NEW_CHARACTER_PRESENT');
+  assert.deepEqual(bState.navigations, [], 'navigation must occur only after the settlement is emitted');
+
+  await new Promise(resolve => setTimeout(resolve, 130));
+  assert.deepEqual(bState.navigations, ['My_Mage']);
+  assert.equal(bState.navigatedTo, 'My_Mage');
+  a2.transport.destroy();
+  b2.transport.destroy();
+});
+
+test('H25 cross-window browser navigation is unavailable without explicit navigation capability', () => {
+  const names = ['My_Ranger1', 'My_Priest', 'My_Mage'];
+  const network = new Map();
+  const nowRef = { value: 2900 };
+  const aState = { running: true, runEpoch: 1, emergencyStopLatched: false, characterNavigateCapable: true };
+  const bState = { running: true, runEpoch: 3, emergencyStopLatched: false, characterNavigateCapable: false };
+  const a = makeContext('My_Ranger1', names, network, aState, nowRef);
+  const b = makeContext('My_Priest', names, network, bState, nowRef);
+  a.transport.install();
+  b.transport.install();
+  b.transport.broadcastHeartbeat();
+  const request = a.transport.requestCharacterNavigation('My_Priest', 'My_Mage');
+  assert.equal(request.state, 'UNAVAILABLE');
+  assert.equal(request.error.message, 'H25_CROSS_WINDOW_CHARACTER_NAVIGATION_CAPABILITY_MISSING');
+  assert.deepEqual(bState.navigations || [], []);
   a.transport.destroy();
   b.transport.destroy();
 });
