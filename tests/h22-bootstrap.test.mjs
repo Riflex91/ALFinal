@@ -123,6 +123,18 @@ test('H22 bootstrap rejects SHA, byte and banner mismatches before execution', a
   assert.equal(context.ALBot, undefined);
 });
 
+test('H22 bootstrap restores candidate marker when verified execution itself throws', async () => {
+  const throwing = '/* AL Bot 0.22.4-h22 | generated file | do not edit dist directly */\n'
+    + '(function(){ throw new Error("BOOT_FAIL"); })();\n'
+    + ' '.repeat(12000);
+  const manifest = manifestFor('0.22.4-h22', throwing);
+  const { api } = loadBootstrap();
+
+  await assert.rejects(() => api.executeVerifiedRelease(manifest, throwing), /BOOT_FAIL/);
+  assert.equal(api.candidateRelease(), null);
+  assert.equal(api.activeRelease(), null);
+});
+
 test('H22 bootstrap enforces minBootstrapVersion', async () => {
   const body = executableBundle('0.22.4-h22');
   const manifest = manifestFor('0.22.4-h22', body, { minBootstrapVersion: '2.0.0' });
