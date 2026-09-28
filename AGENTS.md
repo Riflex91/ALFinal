@@ -28,6 +28,21 @@ Before every GitHub write, compare the working branch with current main. Write o
 
 Never merge when the user explicitly asked that the work only be prepared for review/test.
 
+## Stable release promotion
+
+A merge into `main` does **not** by itself publish a new bot version. The Adventure Land bootstrap and Safe Auto Updater consume only `release/al-bot-release.json` on the `stable` channel.
+
+After a user-authorized merge that is intended to reach live bots:
+
+1. create a fresh release-promotion branch from the current `main`;
+2. pin `release/al-bot-release.json` to the exact immutable merged commit SHA — never to `main`, a branch name, or another mutable ref;
+3. use the exact generated `dist/al-bot.js` byte count and SHA-256 from the validated build for that commit;
+4. keep `version`, `packageVersion`, `bundleUrl`, `commitSha`, `sourceRef`, and `minBootstrapVersion` mutually consistent;
+5. run the normal repository CI and apply the same freshness/review/merge gates as production code;
+6. do not claim that automatic updating is available until the release-promotion change itself is merged to `main`.
+
+Do not promote a build that is explicitly preparation-only, still awaiting required live validation, or not authorized for live rollout. If the user explicitly requests promotion despite a previously pending live-validation gate, that new instruction is the release authorization.
+
 ## Runtime safety
 
 Preserve the existing AL Bot principles: central ActionBoundary, live-game truth over cached/external data, bounded actions, explicit ownership, global STOP, UNKNOWN => fail closed, and no blind retry of irreversible actions.
