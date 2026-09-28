@@ -27,6 +27,22 @@
     return Math.hypot(ax - bx, ay - by);
   }
 
+  function maxPairDistance(members = []) {
+    if (!Array.isArray(members) || members.length < 2) return 0;
+    let max = 0;
+    for (let left = 0; left < members.length; left += 1) {
+      for (let right = left + 1; right < members.length; right += 1) {
+        if (!members[left] || !members[right]
+            || !members[left].map || !members[right].map
+            || String(members[left].map) !== String(members[right].map)) return Number.POSITIVE_INFINITY;
+        const d = distance(members[left], members[right]);
+        if (d == null) return Number.POSITIVE_INFINITY;
+        max = Math.max(max, d);
+      }
+    }
+    return max;
+  }
+
   class FarmIntelligenceController {
     constructor(options = {}) {
       this.root = options.root || root;
@@ -51,11 +67,13 @@
         densityTarget: Math.max(2, Math.min(20, Number(options.densityTarget) || 6)),
         depletionGraceMs: Math.max(1000, Math.min(30000, Number(options.depletionGraceMs) || 5000)),
         minExpectedHitChance: Math.max(0.05, Math.min(0.95, Number(options.minExpectedHitChance) || 0.25)),
-        groupRegroupTriggerDistance: Math.max(90, Math.min(250, Number(options.groupRegroupTriggerDistance) || 160)),
-        groupRegroupStopDistance: Math.max(35, Math.min(100, Number(options.groupRegroupStopDistance) || 90)),
-        groupHardRegroupDistance: Math.max(150, Math.min(350, Number(options.groupHardRegroupDistance) || 220)),
-        groupRetargetDistance: Math.max(20, Math.min(100, Number(options.groupRetargetDistance) || 90)),
-        groupRetargetMs: Math.max(700, Math.min(5000, Number(options.groupRetargetMs) || 4000))
+        groupRegroupTriggerDistance: Math.max(90, Math.min(250, Number(options.groupRegroupTriggerDistance) || 150)),
+        groupRegroupStopDistance: Math.max(35, Math.min(100, Number(options.groupRegroupStopDistance) || 70)),
+        groupHardRegroupDistance: Math.max(150, Math.min(350, Number(options.groupHardRegroupDistance) || 195)),
+        groupRetargetDistance: Math.max(20, Math.min(100, Number(options.groupRetargetDistance) || 75)),
+        groupRetargetMs: Math.max(700, Math.min(5000, Number(options.groupRetargetMs) || 2500)),
+        groupLeaderRecoveryMaxStep: Math.max(25, Math.min(90, Number(options.groupLeaderRecoveryMaxStep) || 60)),
+        groupLeaderRecoveryMinImprovement: Math.max(3, Math.min(40, Number(options.groupLeaderRecoveryMinImprovement) || 6))
       };
 
       this.moduleActive = false;
@@ -92,6 +110,9 @@
         groupRegroups: 0,
         groupRetargets: 0,
         groupHardRegroups: 0,
+        groupLeaderHolds: 0,
+        groupLeaderRecoveries: 0,
+        groupCrossMapRegroups: 0,
         combatUnknownSuspensions: 0
       };
     }
@@ -696,7 +717,9 @@
     _groupContext(character) {
       if (!this.session || !this.session.enabled || !character || !character.name) return { enabled: false };
       const leaderName = cleanText(this.session.groupLeaderName || '', 120) || null;
-      const memberNames = Array.isArray(this.session.groupMemberNames) ? this.session.groupMemberNames.map(String) : [];
+      const memberNames = Array.isArray(this.session.groupMemberNames)
+        ? [...new Set(this.session.groupMemberNames.map(String))].sort((a, b) => a.localeCompare(b))
+        : [];
       const localName = String(character.name);
       if (!leaderName || memberNames.length < 2 || !memberNames.includes(localName) || !memberNames.includes(leaderName)) {
         return { enabled: false };
@@ -704,10 +727,14 @@
       let status = null;
       try { status = this.party && typeof this.party.status === 'function' ? this.party.status() : null; } catch (_) {}
       const party = status && status.party || null;
-      const members = party && Array.isArray(party.ownedMembers) ? party.ownedMembers : [];
-      const local = members.find(row => row && String(row.name) === localName) || null;
-      const leader = members.find(row => row && String(row.name) === leaderName) || null;
-      const d = local && leader ? distance(local, leader) : null;
+      const owned = party && Array.isArray(party.ownedMembers) ? party.ownedMembers : [];
+      const members = memberNames
+        .map(name => owned.find(row => row && String(row.name) === String(name)) || null);
+      const complete = members.every(row => row && row.map && finite(row.x) != null && finite(row.y) != null);
+      const observed = members.filter(Boolean);
+      const local = observed.find(row => String(row.name) === localName) || null;
+      const leader = observed.find(row => String(row.name) === leaderName) || null;
+      const sameMap = complete && members.every(row => String(row.map) === String(leader && leader.map || ''));
       return {
         enabled: true,
         localName,
@@ -716,10 +743,93 @@
         isLeader: localName === leaderName,
         local,
         leader,
-        distance: d,
-        sameMap: !!(local && leader && local.map && leader.map && String(local.map) === String(leader.map)),
+        members: observed,
+        complete,
+        distance: local && leader ? distance(local, leader) : null,
+        maxPairDistance: complete ? maxPairDistance(members) : Number.POSITIVE_INFINITY,
+        sameMap,
         focusTargetId: this.party && typeof this.party.preferredTargetId === 'function' ? this.party.preferredTargetId() : null
       };
+    }
+
+    _groupFacing(group) {
+      if (!group || !group.leader) return 0;
+      const focusId = group.focusTargetId == null ? null : String(group.focusTargetId);
+      if (focusId && this.game && typeof this.game.visibleMonsters === 'function') {
+        let monsters = [];
+        try { monsters = this.game.visibleMonsters() || []; } catch (_) {}
+        const target = monsters.find(row => row && String(row.id) === focusId);
+        if (target && finite(target.x) != null && finite(target.y) != null) {
+          return Math.atan2(Number(target.y) - Number(group.leader.y), Number(target.x) - Number(group.leader.x));
+        }
+      }
+      if (this.currentSelection && finite(this.currentSelection.x) != null && finite(this.currentSelection.y) != null) {
+        return Math.atan2(Number(this.currentSelection.y) - Number(group.leader.y), Number(this.currentSelection.x) - Number(group.leader.x));
+      }
+      return 0;
+    }
+
+    _formationPoint(group) {
+      if (!group || !group.local || !group.leader || group.isLeader) return group && group.leader ? clone(group.leader) : null;
+      const followers = group.members
+        .filter(row => row && String(row.name) !== String(group.leaderName))
+        .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+      const ctype = String(group.local.ctype || '').toLowerCase();
+      const sameClass = followers.filter(row => String(row.ctype || '').toLowerCase() === ctype);
+      const classIndex = Math.max(0, sameClass.findIndex(row => String(row.name) === String(group.localName)));
+      const side = classIndex % 2 === 0 ? -1 : 1;
+      let forward = -25;
+      let lateral = side * 28;
+      if (ctype === 'warrior' || ctype === 'paladin') { forward = 32; lateral = side * 20; }
+      else if (ctype === 'rogue') { forward = 10; lateral = side * 32; }
+      else if (ctype === 'priest') { forward = -55; lateral = side * 16; }
+      else if (ctype === 'ranger' || ctype === 'mage') { forward = -38; lateral = side * 32; }
+      const facing = this._groupFacing(group);
+      const fx = Math.cos(facing), fy = Math.sin(facing);
+      const lx = -fy, ly = fx;
+      return {
+        map: group.leader.map,
+        x: Number(group.leader.x) + fx * forward + lx * lateral,
+        y: Number(group.leader.y) + fy * forward + ly * lateral
+      };
+    }
+
+    _bestLeaderRecoveryWaypoint(group) {
+      if (!group || !group.isLeader || !group.complete || !group.sameMap || !group.leader) return null;
+      const followers = group.members.filter(row => row && String(row.name) !== String(group.leaderName));
+      if (!followers.length || !Number.isFinite(group.maxPairDistance)
+          || group.maxPairDistance <= this.config.groupRegroupTriggerDistance) return null;
+      const centroid = {
+        x: followers.reduce((sum, row) => sum + Number(row.x), 0) / followers.length,
+        y: followers.reduce((sum, row) => sum + Number(row.y), 0) / followers.length
+      };
+      const farthest = followers.slice().sort((a, b) => distance(group.leader, b) - distance(group.leader, a))[0];
+      const targets = [farthest, centroid];
+      const candidates = [];
+      for (const target of targets) {
+        const base = Math.atan2(Number(target.y) - Number(group.leader.y), Number(target.x) - Number(group.leader.x));
+        const required = Math.max(8, group.maxPairDistance - this.config.groupRegroupTriggerDistance + this.config.groupLeaderRecoveryMinImprovement);
+        const step = Math.min(this.config.groupLeaderRecoveryMaxStep, required);
+        for (const offsetDeg of [0, 15, -15, 30, -30, 45, -45, 65, -65, 90, -90]) {
+          const angle = base + offsetDeg * Math.PI / 180;
+          const point = {
+            map: group.leader.map,
+            x: Number(group.leader.x) + Math.cos(angle) * step,
+            y: Number(group.leader.y) + Math.sin(angle) * step
+          };
+          let canMove = true;
+          try {
+            if (this.movement && typeof this.movement._canMoveTo === 'function') canMove = this.movement._canMoveTo(point.x, point.y) !== false;
+          } catch (_) { canMove = false; }
+          if (!canMove) continue;
+          const projected = group.members.map(row => String(row.name) === String(group.leaderName) ? { ...row, ...point } : row);
+          const nextMax = maxPairDistance(projected);
+          const improvement = group.maxPairDistance - nextMax;
+          if (improvement < this.config.groupLeaderRecoveryMinImprovement) continue;
+          candidates.push({ ...point, step, offsetDeg, nextMax, improvement });
+        }
+      }
+      return candidates.sort((a, b) => b.improvement - a.improvement || a.nextMax - b.nextMax || Math.abs(a.offsetDeg) - Math.abs(b.offsetDeg))[0] || null;
     }
 
     _ensureFollowerFarm(group) {
@@ -759,7 +869,7 @@
         this.metrics.movementUnknown += 1;
         return this._suspend('H9_MOVEMENT_' + String(movement.lastOrder.state));
       }
-      if (!group.local || !group.leader || !group.sameMap || group.distance == null) {
+      if (!group.local || !group.leader || !group.complete) {
         this._stopOwnedFarming('H9_GROUP_LEADER_POSITION_UNAVAILABLE');
         if (this._ownedMovement(movement)) {
           try { this.movement.cancel('H9_GROUP_LEADER_POSITION_UNAVAILABLE'); } catch (_) {}
@@ -771,69 +881,198 @@
       const farm = this._farmingStatus();
       const combat = this.combat && typeof this.combat.status === 'function' ? this.combat.status() : null;
       const activeEncounter = !!(this._ownedFarming(farm) && combat && combat.active);
-      const d = Number(group.distance);
+      const hardDistance = Number(group.maxPairDistance);
 
-      if (activeEncounter && d <= this.config.groupHardRegroupDistance) {
+      if (!group.sameMap) {
+        this._stopOwnedFarming('H9_GROUP_CROSS_MAP_REGROUP');
+        const activeOwnMove = this._ownedMovement(movement);
+        if (activeOwnMove) return { state: 'TRAVELLING', reason: 'H9_GROUP_CROSS_MAP_REGROUP_IN_PROGRESS', leaderName: group.leaderName };
+        const destination = { map: group.leader.map, x: group.leader.x, y: group.leader.y };
+        const move = this.movement.smartMove(destination, {
+          owner: 'farm-intelligence-h9-group-regroup',
+          arrivalRadius: this.config.groupRegroupStopDistance
+        });
+        if (!move || move.accepted !== true) return { state: 'WAITING', reason: move && move.reason || 'H9_GROUP_CROSS_MAP_REGROUP_REJECTED' };
+        this.groupMove = { atMs: this.now(), destination: clone(destination) };
+        this.metrics.groupRegroups += 1;
+        this.metrics.groupCrossMapRegroups += 1;
+        return { state: 'TRAVELLING', reason: 'H9_GROUP_CROSS_MAP_REGROUP_STARTED', leaderName: group.leaderName, destination };
+      }
+
+      const formation = this._formationPoint(group);
+      const formationDistance = formation ? distance(group.local, formation) : group.distance;
+      if (activeEncounter && hardDistance <= this.config.groupHardRegroupDistance) {
         this.metrics.groupFollowerHolds += 1;
         return {
           state: 'FARMING',
           reason: 'H9_GROUP_FORMATION_HOLD',
           leaderName: group.leaderName,
-          distance: d,
+          distance: group.distance,
+          maxPairDistance: hardDistance,
           hardRegroupDistance: this.config.groupHardRegroupDistance
         };
       }
 
       const activeOwnMove = this._ownedMovement(movement);
       if (activeOwnMove) {
-        // Close the regroup before considering a retarget. Otherwise a moving
-        // leader can cause a pointless retarget on the same tick that the
-        // follower has already re-entered formation.
-        if (d <= this.config.groupRegroupStopDistance) {
+        if (formationDistance != null && formationDistance <= this.config.groupRegroupStopDistance
+            && hardDistance <= this.config.groupRegroupTriggerDistance) {
           try { this.movement.cancel('H9_GROUP_REJOINED_FORMATION'); } catch (_) {}
           this.groupMove = null;
         } else {
           const destination = movement.activeOrder && movement.activeOrder.destination || null;
-          const shifted = destination && group.leader ? distance(destination, group.leader) : null;
+          const shifted = destination && formation ? distance(destination, formation) : null;
           const moveAge = this.groupMove ? this.now() - Number(this.groupMove.atMs || 0) : 0;
           if (shifted != null && shifted >= this.config.groupRetargetDistance && moveAge >= this.config.groupRetargetMs) {
-            const target = { map: group.leader.map, x: group.leader.x, y: group.leader.y };
-            const retarget = this.movement.retarget(target, {
+            const retarget = this.movement.retarget(formation, {
               owner: 'farm-intelligence-h9-group-regroup',
               arrivalRadius: this.config.groupRegroupStopDistance
             });
             if (retarget && retarget.accepted) {
-              this.groupMove = { atMs: this.now(), destination: clone(target) };
+              this.groupMove = { atMs: this.now(), destination: clone(formation) };
               this.metrics.groupRetargets += 1;
             }
           }
-          return { state: 'TRAVELLING', reason: 'H9_GROUP_REGROUP_IN_PROGRESS', leaderName: group.leaderName, distance: d };
+          return { state: 'TRAVELLING', reason: 'H9_GROUP_REGROUP_IN_PROGRESS', leaderName: group.leaderName, distance: group.distance, maxPairDistance: hardDistance };
         }
       }
 
-      if (d >= this.config.groupRegroupTriggerDistance || activeEncounter && d > this.config.groupHardRegroupDistance) {
-        if (activeEncounter && d > this.config.groupHardRegroupDistance) this.metrics.groupHardRegroups += 1;
+      if (hardDistance >= this.config.groupRegroupTriggerDistance
+          || (formationDistance != null && formationDistance >= this.config.groupRegroupTriggerDistance)
+          || activeEncounter && hardDistance > this.config.groupHardRegroupDistance) {
+        if (activeEncounter && hardDistance > this.config.groupHardRegroupDistance) this.metrics.groupHardRegroups += 1;
         this._stopOwnedFarming('H9_GROUP_REGROUP');
         const afterStopMovement = this._movementStatus();
         if (afterStopMovement && afterStopMovement.activeOrder && !this._ownedMovement(afterStopMovement)) {
           this.metrics.ownershipBlocks += 1;
-          return { state: 'WAITING', reason: 'H9_GROUP_REGROUP_MOVEMENT_BUSY', distance: d };
+          return { state: 'WAITING', reason: 'H9_GROUP_REGROUP_MOVEMENT_BUSY', distance: group.distance };
         }
-        const destination = { map: group.leader.map, x: group.leader.x, y: group.leader.y };
+        const destination = formation || { map: group.leader.map, x: group.leader.x, y: group.leader.y };
         const move = this.movement.smartMove(destination, {
           owner: 'farm-intelligence-h9-group-regroup',
           arrivalRadius: this.config.groupRegroupStopDistance
         });
         if (!move || move.accepted !== true) {
-          return { state: 'WAITING', reason: move && move.reason || 'H9_GROUP_REGROUP_REJECTED', distance: d };
+          return { state: 'WAITING', reason: move && move.reason || 'H9_GROUP_REGROUP_REJECTED', distance: group.distance };
         }
         this.groupMove = { atMs: this.now(), destination: clone(destination) };
         this.metrics.groupRegroups += 1;
-        this.lastAction = { at: new Date().toISOString(), type: 'GROUP_REGROUP', leaderName: group.leaderName, destination, distance: d };
-        return { state: 'TRAVELLING', reason: 'H9_GROUP_REGROUP_STARTED', leaderName: group.leaderName, distance: d, destination };
+        this.lastAction = {
+          at: new Date().toISOString(),
+          type: activeEncounter ? 'GROUP_HARD_REGROUP' : 'GROUP_REGROUP',
+          leaderName: group.leaderName,
+          destination,
+          distance: group.distance,
+          maxPairDistance: hardDistance
+        };
+        return { state: 'TRAVELLING', reason: 'H9_GROUP_REGROUP_STARTED', leaderName: group.leaderName, distance: group.distance, maxPairDistance: hardDistance, destination };
       }
 
       return this._ensureFollowerFarm(group);
+    }
+
+    _tickGroupLeader(character, group) {
+      if (!group || !group.enabled || !group.isLeader) return null;
+      const movement = this._movementStatus();
+      const farm = this._farmingStatus();
+      const combat = this.combat && typeof this.combat.status === 'function' ? this.combat.status() : null;
+      const activeEncounter = !!(this._ownedFarming(farm) && combat && combat.active);
+
+      if (!group.complete) {
+        if (!activeEncounter) {
+          this._stopOwnedFarming('H9_GROUP_MEMBER_POSITION_UNAVAILABLE');
+          this._stopOwnedMovement('H9_GROUP_MEMBER_POSITION_UNAVAILABLE');
+        }
+        this.metrics.groupLeaderHolds += 1;
+        return {
+          state: activeEncounter ? 'FARMING' : 'WAITING',
+          reason: activeEncounter ? 'H9_GROUP_COMBAT_HOLD_UNOBSERVABLE' : 'H9_GROUP_MEMBER_POSITION_UNAVAILABLE',
+          leaderName: group.leaderName
+        };
+      }
+
+      if (!group.sameMap) {
+        if (!activeEncounter) {
+          this._stopOwnedFarming('H9_GROUP_CROSS_MAP_REGROUP_WAIT');
+          this._stopOwnedMovement('H9_GROUP_CROSS_MAP_REGROUP_WAIT');
+        }
+        this.metrics.groupLeaderHolds += 1;
+        return {
+          state: activeEncounter ? 'FARMING' : 'WAITING',
+          reason: activeEncounter ? 'H9_GROUP_CROSS_MAP_COMBAT_HOLD' : 'H9_GROUP_CROSS_MAP_REGROUP_WAIT',
+          leaderName: group.leaderName,
+          maxPairDistance: group.maxPairDistance
+        };
+      }
+
+      if (group.maxPairDistance <= this.config.groupRegroupTriggerDistance) {
+        if (movement && movement.activeOrder
+            && String(movement.activeOrder.owner || '') === 'farm-intelligence-h9-leader-regroup') {
+          try { this.movement.cancel('H9_GROUP_COHESION_RECOVERED'); } catch (_) {}
+        }
+        return null;
+      }
+
+      if (activeEncounter) {
+        this.metrics.groupLeaderHolds += 1;
+        if (group.maxPairDistance > this.config.groupHardRegroupDistance) this.metrics.groupHardRegroups += 1;
+        return {
+          state: 'FARMING',
+          reason: group.maxPairDistance > this.config.groupHardRegroupDistance
+            ? 'H9_GROUP_HARD_REGROUP_PENDING_COMBAT'
+            : 'H9_GROUP_FORMATION_HOLD',
+          leaderName: group.leaderName,
+          maxPairDistance: group.maxPairDistance,
+          hardRegroupDistance: this.config.groupHardRegroupDistance
+        };
+      }
+
+      this._stopOwnedFarming('H9_WAITING_FOR_TEAM_COHESION');
+      const activeOrder = movement && movement.activeOrder;
+      if (activeOrder && String(activeOrder.owner || '') === 'farm-intelligence-h9-leader-regroup') {
+        this.metrics.groupLeaderHolds += 1;
+        return { state: 'TRAVELLING', reason: 'H9_GROUP_LEADER_RECOVERY_IN_PROGRESS', maxPairDistance: group.maxPairDistance };
+      }
+      if (activeOrder && String(activeOrder.owner || '') !== 'farm-intelligence-h9-leader-regroup') {
+        if (this._ownedMovement(movement)) {
+          try { this.movement.cancel('H9_WAITING_FOR_TEAM_COHESION'); } catch (_) {}
+        } else {
+          this.metrics.ownershipBlocks += 1;
+          return { state: 'WAITING', reason: 'H9_GROUP_LEADER_RECOVERY_MOVEMENT_BUSY', maxPairDistance: group.maxPairDistance };
+        }
+      }
+
+      const waypoint = this._bestLeaderRecoveryWaypoint(group);
+      if (!waypoint) {
+        this.metrics.groupLeaderHolds += 1;
+        return { state: 'WAITING', reason: 'H9_WAITING_FOR_TEAM_COHESION', maxPairDistance: group.maxPairDistance };
+      }
+      const move = this.movement.moveLocal(waypoint.x, waypoint.y, {
+        owner: 'farm-intelligence-h9-leader-regroup',
+        arrivalRadius: 8
+      });
+      if (!move || move.accepted !== true) {
+        this.metrics.groupLeaderHolds += 1;
+        return { state: 'WAITING', reason: move && move.reason || 'H9_GROUP_LEADER_RECOVERY_REJECTED', maxPairDistance: group.maxPairDistance };
+      }
+      this.metrics.groupLeaderRecoveries += 1;
+      this.lastAction = {
+        at: new Date().toISOString(),
+        type: 'GROUP_LEADER_RECOVERY',
+        leaderName: group.leaderName,
+        destination: { map: waypoint.map, x: waypoint.x, y: waypoint.y },
+        maxPairDistance: group.maxPairDistance,
+        projectedMaxPairDistance: waypoint.nextMax,
+        improvement: waypoint.improvement
+      };
+      return {
+        state: 'TRAVELLING',
+        reason: 'H9_GROUP_LEADER_RECOVERY_STARTED',
+        leaderName: group.leaderName,
+        maxPairDistance: group.maxPairDistance,
+        projectedMaxPairDistance: waypoint.nextMax,
+        destination: clone(this.lastAction.destination)
+      };
     }
 
     _apply(plan) {
@@ -953,6 +1192,10 @@
       if (!game || !game.available || !character) return this._suspend('CHARACTER_UNAVAILABLE');
       const group = this._groupContext(character);
       if (group.enabled && !group.isLeader) return this._tickGroupFollower(character, group);
+      if (group.enabled && group.isLeader) {
+        const leaderDecision = this._tickGroupLeader(character, group);
+        if (leaderDecision) return leaderDecision;
+      }
       const plan = this.plan();
       return this._apply(plan);
     }

@@ -1,4 +1,4 @@
-/* AL Bot 0.23.0-h23 | generated file | do not edit dist directly */
+/* AL Bot 0.24.0-h24 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -2808,6 +2808,7 @@
     auto_craft: Object.freeze({ publicName: 'auto_craft', family: 'exchange-craft' }),
     start_character: Object.freeze({ publicName: 'start_character', family: 'character-lifecycle' }),
     stop_character: Object.freeze({ publicName: 'stop_character', family: 'character-lifecycle' }),
+    disconnect: Object.freeze({ publicName: 'disconnect', family: 'character-lifecycle' }),
     respawn: Object.freeze({ publicName: 'respawn', family: 'character-recovery' }),
     send_party_invite: Object.freeze({ publicName: 'send_party_invite', family: 'party-recovery' }),
     send_party_request: Object.freeze({ publicName: 'send_party_request', family: 'party-recovery' }),
@@ -6235,6 +6236,9 @@
       this.stopRuntime = typeof options.stopRuntime === 'function'
         ? options.stopRuntime
         : async () => { throw new Error('H19_CROSS_WINDOW_STOP_RUNTIME_UNAVAILABLE'); };
+      this.disconnectLocal = typeof options.disconnectLocal === 'function'
+        ? options.disconnectLocal
+        : () => { throw new Error('H24_CROSS_WINDOW_CHARACTER_DISCONNECT_UNAVAILABLE'); };
       this.getPartyState = typeof options.getPartyState === 'function' ? options.getPartyState : () => null;
       this.leavePartyLocal = typeof options.leavePartyLocal === 'function'
         ? options.leavePartyLocal
@@ -6515,6 +6519,7 @@
         runEpoch: Number.isFinite(Number(row.runEpoch)) ? Number(row.runEpoch) : 0,
         emergencyStopLatched: row.emergencyStopLatched === true,
         lifecycleAutonomyEnabled: typeof row.lifecycleAutonomyEnabled === 'boolean' ? row.lifecycleAutonomyEnabled : null,
+        characterDisconnectCapable: row.characterDisconnectCapable === true,
         version: cleanText(row.version || '', 80) || null,
         party: row.party && typeof row.party === 'object' ? {
           available: row.party.available !== false,
@@ -6592,6 +6597,7 @@
         runEpoch: Number.isFinite(Number(state.runEpoch)) ? Number(state.runEpoch) : 0,
         emergencyStopLatched: state.emergencyStopLatched === true,
         lifecycleAutonomyEnabled: typeof state.lifecycleAutonomyEnabled === 'boolean' ? state.lifecycleAutonomyEnabled : null,
+        characterDisconnectCapable: state.characterDisconnectCapable === true,
         version: cleanText(state.version || '', 80) || null,
         party: party && typeof party === 'object' ? {
           available: party.available !== false,
@@ -6932,7 +6938,7 @@
       const sender = cleanText(envelope.senderCharacterName || '', 120);
       const commandType = cleanText(envelope.commandType || '', 80);
       const supported = new Set([
-        'START_RUNTIME', 'STOP_RUNTIME', 'LEAVE_PARTY', 'REQUEST_PARTY_JOIN',
+        'START_RUNTIME', 'STOP_RUNTIME', 'DISCONNECT_CHARACTER', 'LEAVE_PARTY', 'REQUEST_PARTY_JOIN',
         'PREPARE_UPDATE', 'COMMIT_UPDATE', 'CANCEL_UPDATE'
       ]);
       if (!commandId || !sender || !supported.has(commandType)) return false;
@@ -6965,6 +6971,26 @@
           outcome = {
             reason: desiredRunning ? 'H19_CROSS_WINDOW_RUNTIME_STARTED' : 'H19_CROSS_WINDOW_RUNTIME_STOPPED',
             details: { running: after.running, runEpoch: after.runEpoch }
+          };
+        } else if (commandType === 'DISCONNECT_CHARACTER') {
+          const before = this._localStatePayload();
+          if (before.running !== true) throw new Error('H24_CROSS_WINDOW_CHARACTER_RUNTIME_NOT_RUNNING');
+          if (before.emergencyStopLatched === true) throw new Error('H24_CROSS_WINDOW_CHARACTER_EMERGENCY_STOP_LATCHED');
+          if (before.characterDisconnectCapable !== true) throw new Error('H24_CROSS_WINDOW_CHARACTER_DISCONNECT_CAPABILITY_MISSING');
+          if (!this.setTimeoutFn) throw new Error('H24_CROSS_WINDOW_CHARACTER_DISCONNECT_TIMER_UNAVAILABLE');
+          // Settlement must be emitted before the character severs its own
+          // connection. Completion is never inferred from this ACK; the
+          // coordinator waits for account-roster offline evidence.
+          this.setTimeoutFn(() => {
+            try { this.disconnectLocal('H24_REMOTE_CHARACTER_ROTATION:' + sender); }
+            catch (error) {
+              this.lastError = { at: nowIso(this.now()), reason: errorReason(error, 'H24_CROSS_WINDOW_CHARACTER_DISCONNECT_FAILED') };
+              this._log('error', 'H24 Cross-Window Character Disconnect fehlgeschlagen', this.lastError);
+            }
+          }, 100);
+          outcome = {
+            reason: 'H24_CROSS_WINDOW_CHARACTER_DISCONNECT_ACCEPTED',
+            details: { characterName: this._localName(), completionEvidence: 'ACCOUNT_ROSTER_OFFLINE_REQUIRED' }
           };
         } else if (commandType === 'LEAVE_PARTY') {
           outcome = await this._executePartyLeave(sender);
@@ -7073,6 +7099,19 @@
         return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: desired ? 'H19_CROSS_WINDOW_RUNTIME_ALREADY_RUNNING' : 'H19_CROSS_WINDOW_RUNTIME_ALREADY_STOPPED' } };
       }
       return this._requestCommand(target, desired ? 'START_RUNTIME' : 'STOP_RUNTIME', { peer, desiredRunning: desired });
+    }
+
+    requestCharacterDisconnect(targetName) {
+      const target = cleanText(targetName || '', 120);
+      const peer = this.freshPeer(target);
+      if (!peer) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H24_CROSS_WINDOW_CHARACTER_PEER_NOT_FRESH' } };
+      if (peer.running !== true) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H24_CROSS_WINDOW_CHARACTER_RUNTIME_NOT_RUNNING' } };
+      if (peer.emergencyStopLatched === true) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H24_CROSS_WINDOW_CHARACTER_EMERGENCY_STOP_LATCHED' } };
+      if (peer.characterDisconnectCapable !== true) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H24_CROSS_WINDOW_CHARACTER_DISCONNECT_CAPABILITY_MISSING' } };
+      return this._requestCommand(target, 'DISCONNECT_CHARACTER', {
+        peer,
+        settlementTimeoutMs: Math.min(this.config.settlementTimeoutMs, 5000)
+      });
     }
 
     requestPartyLeave(targetName) {
@@ -7315,6 +7354,7 @@
         safetyBlocks: 0,
         crossWindowDispatches: 0,
         crossWindowConfirms: 0,
+        crossWindowCharacterDisconnects: 0,
         rotationCapabilityBlocks: 0,
         stalePendingDiscarded: 0,
         stalePendingReconciled: 0
@@ -7724,30 +7764,44 @@
         .sort((a, b) => a.localeCompare(b));
       const missingDesiredNames = desired.filter(name => !online.has(String(name))).sort((a, b) => a.localeCompare(b));
       const blockers = [];
+      const remoteDisconnectNames = [];
+      const stopActionAvailable = this._actionAvailable('stop_character');
 
-      if (unexpectedOnlineNames.length && !this._actionAvailable('stop_character')) {
-        blockers.push('H19_ROTATION_STOP_ACTION_UNAVAILABLE');
-      }
       if (missingDesiredNames.length && !this._actionAvailable('start_character')) {
         blockers.push('H19_ROTATION_START_ACTION_UNAVAILABLE');
       }
       for (const name of unexpectedOnlineNames) {
-        if (String(name) === String(localName)) blockers.push('H19_ROTATION_WOULD_STOP_LOCAL:' + name);
-        else if (!runnerActive.has(String(name))) blockers.push('H19_ROTATION_STOP_NOT_RUNNER_CONTROLLABLE:' + name);
+        if (String(name) === String(localName)) {
+          blockers.push('H19_ROTATION_WOULD_STOP_LOCAL:' + name);
+          continue;
+        }
+        if (runnerActive.has(String(name))) {
+          if (!stopActionAvailable) blockers.push('H19_ROTATION_STOP_ACTION_UNAVAILABLE:' + name);
+          continue;
+        }
+        const peer = this.crossWindow && typeof this.crossWindow.freshPeer === 'function'
+          ? this.crossWindow.freshPeer(name)
+          : null;
+        if (peer && peer.running === true && peer.characterDisconnectCapable === true) {
+          remoteDisconnectNames.push(String(name));
+          continue;
+        }
+        blockers.push('H19_ROTATION_STOP_NOT_RUNNER_CONTROLLABLE:' + name);
       }
 
       const ready = blockers.length === 0;
       if (!ready) this.metrics.rotationCapabilityBlocks += 1;
       return {
         ready,
-        reason: ready ? 'H19_ROTATION_CHARACTER_CONTROL_READY' : blockers[0],
+        reason: ready ? 'H24_ROTATION_CHARACTER_CONTROL_READY' : blockers[0],
         blockers,
         desiredCharacterNames: desired,
         onlineCharacterNames: [...online].sort((a, b) => a.localeCompare(b)),
         runnerActiveCharacterNames: [...runnerActive].sort((a, b) => a.localeCompare(b)),
+        remoteDisconnectNames: remoteDisconnectNames.sort((a, b) => a.localeCompare(b)),
         unexpectedOnlineNames,
         missingDesiredNames,
-        stopActionAvailable: this._actionAvailable('stop_character'),
+        stopActionAvailable,
         startActionAvailable: this._actionAvailable('start_character')
       };
     }
@@ -7777,10 +7831,16 @@
       if (mode === 'STOP') {
         if (!active) return { ok: false, reason: 'H19_TARGET_ALREADY_STOPPED' };
         if (options.requireCharacterStateChange === true) {
-          if (!this._actionAvailable('stop_character')) return { ok: false, reason: 'H19_ROTATION_STOP_ACTION_UNAVAILABLE' };
           if (roster.activeStateAvailable !== true) return { ok: false, reason: 'H19_ROTATION_RUNNER_STATE_UNAVAILABLE' };
-          if (!runnerActive) return { ok: false, reason: 'H19_ROTATION_STOP_NOT_RUNNER_CONTROLLABLE' };
-          return { ok: true, roster, owned, active, runnerActive, peer, transport: 'child-character' };
+          if (runnerActive) {
+            if (!this._actionAvailable('stop_character')) return { ok: false, reason: 'H19_ROTATION_STOP_ACTION_UNAVAILABLE' };
+            return { ok: true, roster, owned, active, runnerActive, peer, transport: 'child-character' };
+          }
+          if (peer && peer.running === true && peer.characterDisconnectCapable === true
+              && this.crossWindow && typeof this.crossWindow.requestCharacterDisconnect === 'function') {
+            return { ok: true, roster, owned, active, runnerActive, peer, transport: 'cross-window-character-disconnect' };
+          }
+          return { ok: false, reason: 'H19_ROTATION_STOP_NOT_RUNNER_CONTROLLABLE' };
         }
         if (roster.activeStateAvailable === true && runnerActive) {
           return { ok: true, roster, owned, active, runnerActive, peer, transport: 'child-character' };
@@ -8371,6 +8431,13 @@
           }
           dispatched = this.crossWindow.requestRuntimeState(request.targetName, request.kind === 'START');
           this.metrics.crossWindowDispatches += 1;
+        } else if (request.kind === 'STOP' && action.transport === 'cross-window-character-disconnect') {
+          if (!this.crossWindow || typeof this.crossWindow.requestCharacterDisconnect !== 'function') {
+            throw new Error('H24_CROSS_WINDOW_CHARACTER_DISCONNECT_TRANSPORT_UNAVAILABLE');
+          }
+          dispatched = this.crossWindow.requestCharacterDisconnect(request.targetName);
+          this.metrics.crossWindowDispatches += 1;
+          this.metrics.crossWindowCharacterDisconnects += 1;
         } else {
           dispatched = this.actions.dispatch(actionName, args);
         }
@@ -8462,7 +8529,19 @@
 
       const settlementFinished = current.settlement !== 'PENDING' && current.settlement !== 'PREPARED';
       if (current.kind === 'START' || current.kind === 'STOP') {
-        if (current.transport === 'cross-window-runtime') {
+        if (current.transport === 'cross-window-character-disconnect') {
+          const roster = this._roster();
+          if (roster && roster.onlineStateAvailable === true) {
+            const active = this._onlineSet(roster).has(String(current.targetName || ''));
+            if (!active && current.before && current.before.targetWasActive === true) {
+              // Account-wide offline truth is the terminal mutation evidence.
+              // It is intentionally sufficient even if the CM settlement was
+              // lost because the target disconnected immediately afterwards.
+              this.metrics.crossWindowConfirms += 1;
+              return this._confirmCurrent({ evidence: 'ACTIVE_ROSTER_ABSENT_AFTER_REMOTE_SELF_DISCONNECT' });
+            }
+          }
+        } else if (current.transport === 'cross-window-runtime') {
           const desiredRunning = current.kind === 'START';
           const peer = this.crossWindow && typeof this.crossWindow.freshPeer === 'function'
             ? this.crossWindow.freshPeer(current.targetName)
@@ -8490,10 +8569,6 @@
             && !!peer.sessionId
             && String(peer.sessionId) !== String(current.before.targetSessionId);
           if (replacedSession && peer.running === desiredRunning) {
-            // A target window can reload while the transport command is in
-            // flight. A fresh replacement-session heartbeat proving the desired
-            // runtime state is independent live evidence and must win even when
-            // the dead session's transport settlement never arrives.
             this.metrics.crossWindowConfirms += 1;
             return this._confirmCurrent({
               evidence: 'CROSS_WINDOW_RUNTIME_REPLACED_SESSION_LIVE_STATE',
@@ -10386,61 +10461,22 @@
         let requiresRotation = readiness.unexpectedOnlineNames.length > 0
           || onlineDesiredCount !== 4
           || readiness.missing.length > 0;
-        let rotationFallback = null;
+        const rotationFallback = null;
 
         if (requiresRotation && this.runtime.lifecycle
             && typeof this.runtime.lifecycle.characterRotationReadiness === 'function') {
           const rotationReadiness = this.runtime.lifecycle.characterRotationReadiness(nextDesired);
           if (!rotationReadiness || rotationReadiness.ready !== true) {
-            const fallbackPlan = readiness.online.length === 4
-              ? this.strategy.optimizeTask({
-                type: effectiveTaskType,
-                allowedCharacterNames: readiness.online.slice()
-              })
-              : null;
-            const fallbackQuartet = fallbackPlan && fallbackPlan.status === 'SELECTION_READY'
-              ? this._desiredQuartet(fallbackPlan)
-              : { ok: false };
-            const fallbackNames = fallbackQuartet.ok ? fallbackQuartet.names.slice() : [];
-            const onlineSet = new Set(readiness.online.map(String));
-            const fallbackUsesExactOnlineQuartet = fallbackNames.length === 4
-              && readiness.online.length === 4
-              && fallbackNames.every(name => onlineSet.has(String(name)))
-              && readiness.online.every(name => fallbackNames.includes(String(name)));
-
-            if (fallbackUsesExactOnlineQuartet) {
-              rotationFallback = {
-                used: true,
-                reason: rotationReadiness && rotationReadiness.reason || 'H19_ROTATION_CHARACTER_CONTROL_UNAVAILABLE',
-                blockers: rotationReadiness && rotationReadiness.blockers || [],
-                requestedDesiredCharacterNames: nextDesired.slice(),
-                fallbackDesiredCharacterNames: fallbackNames.slice()
-              };
-              plan = fallbackPlan;
-              quartet = fallbackQuartet;
-              nextDesired = fallbackNames;
-              selectionChanged = nextDesired.join('|') !== this.desiredCharacterNames.slice().sort().join('|');
-              this.desiredCharacterNames = nextDesired.slice();
-              this.lastPlan = clone(plan);
-              readiness = this._profileReadiness();
-              desiredSet = new Set(nextDesired);
-              onlineDesiredCount = readiness.online.filter(name => desiredSet.has(String(name))).length;
-              requiresRotation = readiness.unexpectedOnlineNames.length > 0
-                || onlineDesiredCount !== 4
-                || readiness.missing.length > 0;
-            } else {
-              this.strategy.recordTraining(false);
-              return this.lastDecision = {
-                at: new Date().toISOString(),
-                state: 'BLOCKED',
-                reason: 'FULL_AUTONOMY_ROTATION_UNAVAILABLE_NO_ONLINE_FALLBACK',
-                expectedOnlineCount: 4,
-                requestedDesiredCharacterNames: nextDesired,
-                onlineCharacterNames: readiness.online,
-                rotationReadiness: clone(rotationReadiness),
-                fallbackPlan: clone(fallbackPlan)
-              };
-            }
+            this.strategy.recordTraining(false);
+            return this.lastDecision = {
+              at: new Date().toISOString(),
+              state: 'BLOCKED',
+              reason: 'FULL_AUTONOMY_ROTATION_UNAVAILABLE',
+              expectedOnlineCount: 4,
+              requestedDesiredCharacterNames: nextDesired,
+              onlineCharacterNames: readiness.online,
+              rotationReadiness: clone(rotationReadiness)
+            };
           }
         }
 
@@ -11330,6 +11366,7 @@
         kiteMonsterBuffer: Math.max(8, Math.min(80, Number(options.kiteMonsterBuffer) || 20)),
         kiteSpeedBufferSeconds: Math.max(0.2, Math.min(1.5, Number(options.kiteSpeedBufferSeconds) || 0.50)),
         kiteStepSeconds: Math.max(0.3, Math.min(1.2, Number(options.kiteStepSeconds) || 0.65)),
+        groupKiteFormationRadius: Math.max(70, Math.min(180, Number(options.groupKiteFormationRadius) || 100)),
         groupHardKiteTether: Math.max(150, Math.min(350, Number(options.groupHardKiteTether) || 195)),
         maxAcquireDistance: Math.max(50, Math.min(1200, Number(options.maxAcquireDistance) || 450)),
         maxAttackToHpRatio: Math.max(0.01, Math.min(0.5, Number(options.maxAttackToHpRatio) || 0.08)),
@@ -11363,7 +11400,9 @@
         meleeKiteBypasses: 0,
         kiteOrbitMoves: 0,
         kiteTerrainBlocks: 0,
-        kiteGroupTetherBlocks: 0
+        kiteGroupTetherBlocks: 0,
+        kiteGroupSoftTetherBlocks: 0,
+        attackTargetRaceRecoveries: 0
       };
     }
 
@@ -11693,11 +11732,11 @@
       const preferred = preferredId == null
         ? null
         : candidates.find(candidate => String(candidate.id) === String(preferredId)) || null;
-      const preferredSharedAggro = preferred && preferred.targetId && groupNames.has(String(preferred.targetId))
-        ? preferred
-        : null;
       const sharedAggro = candidates.find(candidate => candidate.targetId && groupNames.has(String(candidate.targetId))) || null;
-      const target = followerMirrorOnly ? (preferredSharedAggro || sharedAggro) : (preferred || candidates[0]);
+      // V3 semantics: followers never invent a routine pull. Existing shared
+      // aggro is the rescue exception; otherwise they mirror the leader/party
+      // focus immediately as long as it is locally visible and safe.
+      const target = followerMirrorOnly ? (sharedAggro || preferred) : (preferred || candidates[0]);
       if (!target) {
         this.session.state = 'WAITING_GROUP_TARGET';
         this.session.lastDecision = {
@@ -11796,11 +11835,41 @@
       };
     }
 
+    _isExpectedGroupTargetRaceRejection(pending) {
+      if (!pending || !this.session || !this.session.policy || this.session.policy.leaderOwnedPulls !== true) return false;
+      const reason = cleanText(pending.commandError || '', 240).toLowerCase();
+      const knownAbsent = reason === 'not_there'
+        || reason.endsWith(':not_there')
+        || reason.includes('not_there');
+      if (!knownAbsent) return false;
+      // A server "not_there" is recoverable only when the live world agrees
+      // that the exact target is gone. Network uncertainty or a still-visible
+      // target remains UNKNOWN and therefore fail-closed.
+      return this._freshTarget() === null;
+    }
+
+    _recoverExpectedGroupTargetRace(pending) {
+      this.metrics.attackTargetRaceRecoveries += 1;
+      this.pendingAttack = null;
+      this._clearGameTarget('GROUP_TARGET_ALREADY_GONE');
+      this.session.state = 'ACQUIRING';
+      this.session.lastDecision = {
+        at: new Date().toISOString(),
+        type: 'GROUP_TARGET_RACE_RECOVERED',
+        targetId: pending.targetId,
+        reason: pending.commandError || 'not_there'
+      };
+      return true;
+    }
+
     _observePendingAttack() {
       const pending = this.pendingAttack;
       if (!pending || !this.session) return false;
 
       if (pending.commandSettlement === 'REJECTED') {
+        if (this._isExpectedGroupTargetRaceRejection(pending)) {
+          return this._recoverExpectedGroupTargetRace(pending);
+        }
         this.metrics.attackUnknown += 1;
         this._fail('UNKNOWN', pending.commandError || 'ATTACK_COMMAND_REJECTED', clone(pending));
         return true;
@@ -11966,12 +12035,15 @@
     }
 
     _orbitDirection(character) {
-      const name = String(character && character.name || 'local');
-      if (this.orbitDirectionByCharacter.has(name)) return this.orbitDirectionByCharacter.get(name);
+      const policy = this.session && this.session.policy || {};
+      const groupKey = policy.leaderOwnedPulls === true && policy.groupLeaderName
+        ? 'group:' + String(policy.groupLeaderName)
+        : 'character:' + String(character && character.name || 'local');
+      if (this.orbitDirectionByCharacter.has(groupKey)) return this.orbitDirectionByCharacter.get(groupKey);
       let hash = 0;
-      for (let index = 0; index < name.length; index += 1) hash = ((hash * 31) + name.charCodeAt(index)) | 0;
+      for (let index = 0; index < groupKey.length; index += 1) hash = ((hash * 31) + groupKey.charCodeAt(index)) | 0;
       const direction = (Math.abs(hash) % 2) ? 1 : -1;
-      this.orbitDirectionByCharacter.set(name, direction);
+      this.orbitDirectionByCharacter.set(groupKey, direction);
       return direction;
     }
 
@@ -12022,8 +12094,14 @@
         const x = finite(row.x), y = finite(row.y);
         return x == null || y == null ? Number.POSITIVE_INFINITY : Math.hypot(Number(destination.x) - x, Number(destination.y) - y);
       }));
-      if (proposedMax <= this.config.groupHardKiteTether) return true;
-      return currentMax > this.config.groupHardKiteTether && proposedMax < currentMax;
+      if (proposedMax <= this.config.groupKiteFormationRadius) return true;
+      // Once outside the normal formation radius, kiting may only improve
+      // group cohesion. This keeps normal fire positions tight while still
+      // allowing an aggro holder to recover from an already split formation.
+      if (proposedMax < currentMax - 0.5 && proposedMax <= this.config.groupHardKiteTether) return true;
+      if (currentMax > this.config.groupHardKiteTether && proposedMax < currentMax - 0.5) return true;
+      this.metrics.kiteGroupSoftTetherBlocks += 1;
+      return false;
     }
 
     _kiteWaypoint(character, target) {
@@ -12230,11 +12308,14 @@
       if (this.session.policy.partyAssist && this.party && typeof this.party.preferredTargetId === 'function') {
         const preferredId = this.party.preferredTargetId();
         if (preferredId != null && this.session.targetId != null && String(preferredId) !== String(this.session.targetId)) {
-          const preferred = this.safeCandidates(this.session.policy)
-            .find(candidate => String(candidate.id) === String(preferredId));
-          const preferredAllowed = preferred && (!followerMirrorOnly
-            || (preferred.targetId && groupNames.has(String(preferred.targetId))));
-          if (preferredAllowed) {
+          const candidates = this.safeCandidates(this.session.policy);
+          const current = candidates.find(candidate => String(candidate.id) === String(this.session.targetId)) || null;
+          const currentSharedAggro = current && current.targetId && groupNames.has(String(current.targetId));
+          const preferred = candidates.find(candidate => String(candidate.id) === String(preferredId)) || null;
+          const preferredAllowed = !!preferred;
+          // Shared aggro is a rescue target and is not abandoned merely because
+          // the leader has selected the next routine target.
+          if (preferredAllowed && !(followerMirrorOnly && currentSharedAggro)) {
             this._clearGameTarget('PARTY_FOCUS_RETARGET');
             this.session.state = 'ACQUIRING';
           }
@@ -12243,10 +12324,15 @@
 
       let target = this._freshTarget();
       if (target && followerMirrorOnly
-        && !(target.targetId && groupNames.has(String(target.targetId)))) {
-        this._clearGameTarget('GROUP_FOLLOWER_STALE_FOCUS');
-        target = null;
-        this.session.state = 'ACQUIRING';
+          && !(target.targetId && groupNames.has(String(target.targetId)))) {
+        const preferredId = this.session.policy.partyAssist && this.party && typeof this.party.preferredTargetId === 'function'
+          ? this.party.preferredTargetId()
+          : null;
+        if (preferredId == null || String(target.id) !== String(preferredId)) {
+          this._clearGameTarget('GROUP_FOLLOWER_STALE_FOCUS');
+          target = null;
+          this.session.state = 'ACQUIRING';
+        }
       }
       if (!target) {
         if (this.session.targetId) {
@@ -12391,6 +12477,22 @@
     return Math.hypot(ax - bx, ay - by);
   }
 
+  function maxPairDistance(members = []) {
+    if (!Array.isArray(members) || members.length < 2) return 0;
+    let max = 0;
+    for (let left = 0; left < members.length; left += 1) {
+      for (let right = left + 1; right < members.length; right += 1) {
+        if (!members[left] || !members[right]
+            || !members[left].map || !members[right].map
+            || String(members[left].map) !== String(members[right].map)) return Number.POSITIVE_INFINITY;
+        const d = distance(members[left], members[right]);
+        if (d == null) return Number.POSITIVE_INFINITY;
+        max = Math.max(max, d);
+      }
+    }
+    return max;
+  }
+
   class FarmIntelligenceController {
     constructor(options = {}) {
       this.root = options.root || root;
@@ -12415,11 +12517,13 @@
         densityTarget: Math.max(2, Math.min(20, Number(options.densityTarget) || 6)),
         depletionGraceMs: Math.max(1000, Math.min(30000, Number(options.depletionGraceMs) || 5000)),
         minExpectedHitChance: Math.max(0.05, Math.min(0.95, Number(options.minExpectedHitChance) || 0.25)),
-        groupRegroupTriggerDistance: Math.max(90, Math.min(250, Number(options.groupRegroupTriggerDistance) || 160)),
-        groupRegroupStopDistance: Math.max(35, Math.min(100, Number(options.groupRegroupStopDistance) || 90)),
-        groupHardRegroupDistance: Math.max(150, Math.min(350, Number(options.groupHardRegroupDistance) || 220)),
-        groupRetargetDistance: Math.max(20, Math.min(100, Number(options.groupRetargetDistance) || 90)),
-        groupRetargetMs: Math.max(700, Math.min(5000, Number(options.groupRetargetMs) || 4000))
+        groupRegroupTriggerDistance: Math.max(90, Math.min(250, Number(options.groupRegroupTriggerDistance) || 150)),
+        groupRegroupStopDistance: Math.max(35, Math.min(100, Number(options.groupRegroupStopDistance) || 70)),
+        groupHardRegroupDistance: Math.max(150, Math.min(350, Number(options.groupHardRegroupDistance) || 195)),
+        groupRetargetDistance: Math.max(20, Math.min(100, Number(options.groupRetargetDistance) || 75)),
+        groupRetargetMs: Math.max(700, Math.min(5000, Number(options.groupRetargetMs) || 2500)),
+        groupLeaderRecoveryMaxStep: Math.max(25, Math.min(90, Number(options.groupLeaderRecoveryMaxStep) || 60)),
+        groupLeaderRecoveryMinImprovement: Math.max(3, Math.min(40, Number(options.groupLeaderRecoveryMinImprovement) || 6))
       };
 
       this.moduleActive = false;
@@ -12456,6 +12560,9 @@
         groupRegroups: 0,
         groupRetargets: 0,
         groupHardRegroups: 0,
+        groupLeaderHolds: 0,
+        groupLeaderRecoveries: 0,
+        groupCrossMapRegroups: 0,
         combatUnknownSuspensions: 0
       };
     }
@@ -13060,7 +13167,9 @@
     _groupContext(character) {
       if (!this.session || !this.session.enabled || !character || !character.name) return { enabled: false };
       const leaderName = cleanText(this.session.groupLeaderName || '', 120) || null;
-      const memberNames = Array.isArray(this.session.groupMemberNames) ? this.session.groupMemberNames.map(String) : [];
+      const memberNames = Array.isArray(this.session.groupMemberNames)
+        ? [...new Set(this.session.groupMemberNames.map(String))].sort((a, b) => a.localeCompare(b))
+        : [];
       const localName = String(character.name);
       if (!leaderName || memberNames.length < 2 || !memberNames.includes(localName) || !memberNames.includes(leaderName)) {
         return { enabled: false };
@@ -13068,10 +13177,14 @@
       let status = null;
       try { status = this.party && typeof this.party.status === 'function' ? this.party.status() : null; } catch (_) {}
       const party = status && status.party || null;
-      const members = party && Array.isArray(party.ownedMembers) ? party.ownedMembers : [];
-      const local = members.find(row => row && String(row.name) === localName) || null;
-      const leader = members.find(row => row && String(row.name) === leaderName) || null;
-      const d = local && leader ? distance(local, leader) : null;
+      const owned = party && Array.isArray(party.ownedMembers) ? party.ownedMembers : [];
+      const members = memberNames
+        .map(name => owned.find(row => row && String(row.name) === String(name)) || null);
+      const complete = members.every(row => row && row.map && finite(row.x) != null && finite(row.y) != null);
+      const observed = members.filter(Boolean);
+      const local = observed.find(row => String(row.name) === localName) || null;
+      const leader = observed.find(row => String(row.name) === leaderName) || null;
+      const sameMap = complete && members.every(row => String(row.map) === String(leader && leader.map || ''));
       return {
         enabled: true,
         localName,
@@ -13080,10 +13193,93 @@
         isLeader: localName === leaderName,
         local,
         leader,
-        distance: d,
-        sameMap: !!(local && leader && local.map && leader.map && String(local.map) === String(leader.map)),
+        members: observed,
+        complete,
+        distance: local && leader ? distance(local, leader) : null,
+        maxPairDistance: complete ? maxPairDistance(members) : Number.POSITIVE_INFINITY,
+        sameMap,
         focusTargetId: this.party && typeof this.party.preferredTargetId === 'function' ? this.party.preferredTargetId() : null
       };
+    }
+
+    _groupFacing(group) {
+      if (!group || !group.leader) return 0;
+      const focusId = group.focusTargetId == null ? null : String(group.focusTargetId);
+      if (focusId && this.game && typeof this.game.visibleMonsters === 'function') {
+        let monsters = [];
+        try { monsters = this.game.visibleMonsters() || []; } catch (_) {}
+        const target = monsters.find(row => row && String(row.id) === focusId);
+        if (target && finite(target.x) != null && finite(target.y) != null) {
+          return Math.atan2(Number(target.y) - Number(group.leader.y), Number(target.x) - Number(group.leader.x));
+        }
+      }
+      if (this.currentSelection && finite(this.currentSelection.x) != null && finite(this.currentSelection.y) != null) {
+        return Math.atan2(Number(this.currentSelection.y) - Number(group.leader.y), Number(this.currentSelection.x) - Number(group.leader.x));
+      }
+      return 0;
+    }
+
+    _formationPoint(group) {
+      if (!group || !group.local || !group.leader || group.isLeader) return group && group.leader ? clone(group.leader) : null;
+      const followers = group.members
+        .filter(row => row && String(row.name) !== String(group.leaderName))
+        .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+      const ctype = String(group.local.ctype || '').toLowerCase();
+      const sameClass = followers.filter(row => String(row.ctype || '').toLowerCase() === ctype);
+      const classIndex = Math.max(0, sameClass.findIndex(row => String(row.name) === String(group.localName)));
+      const side = classIndex % 2 === 0 ? -1 : 1;
+      let forward = -25;
+      let lateral = side * 28;
+      if (ctype === 'warrior' || ctype === 'paladin') { forward = 32; lateral = side * 20; }
+      else if (ctype === 'rogue') { forward = 10; lateral = side * 32; }
+      else if (ctype === 'priest') { forward = -55; lateral = side * 16; }
+      else if (ctype === 'ranger' || ctype === 'mage') { forward = -38; lateral = side * 32; }
+      const facing = this._groupFacing(group);
+      const fx = Math.cos(facing), fy = Math.sin(facing);
+      const lx = -fy, ly = fx;
+      return {
+        map: group.leader.map,
+        x: Number(group.leader.x) + fx * forward + lx * lateral,
+        y: Number(group.leader.y) + fy * forward + ly * lateral
+      };
+    }
+
+    _bestLeaderRecoveryWaypoint(group) {
+      if (!group || !group.isLeader || !group.complete || !group.sameMap || !group.leader) return null;
+      const followers = group.members.filter(row => row && String(row.name) !== String(group.leaderName));
+      if (!followers.length || !Number.isFinite(group.maxPairDistance)
+          || group.maxPairDistance <= this.config.groupRegroupTriggerDistance) return null;
+      const centroid = {
+        x: followers.reduce((sum, row) => sum + Number(row.x), 0) / followers.length,
+        y: followers.reduce((sum, row) => sum + Number(row.y), 0) / followers.length
+      };
+      const farthest = followers.slice().sort((a, b) => distance(group.leader, b) - distance(group.leader, a))[0];
+      const targets = [farthest, centroid];
+      const candidates = [];
+      for (const target of targets) {
+        const base = Math.atan2(Number(target.y) - Number(group.leader.y), Number(target.x) - Number(group.leader.x));
+        const required = Math.max(8, group.maxPairDistance - this.config.groupRegroupTriggerDistance + this.config.groupLeaderRecoveryMinImprovement);
+        const step = Math.min(this.config.groupLeaderRecoveryMaxStep, required);
+        for (const offsetDeg of [0, 15, -15, 30, -30, 45, -45, 65, -65, 90, -90]) {
+          const angle = base + offsetDeg * Math.PI / 180;
+          const point = {
+            map: group.leader.map,
+            x: Number(group.leader.x) + Math.cos(angle) * step,
+            y: Number(group.leader.y) + Math.sin(angle) * step
+          };
+          let canMove = true;
+          try {
+            if (this.movement && typeof this.movement._canMoveTo === 'function') canMove = this.movement._canMoveTo(point.x, point.y) !== false;
+          } catch (_) { canMove = false; }
+          if (!canMove) continue;
+          const projected = group.members.map(row => String(row.name) === String(group.leaderName) ? { ...row, ...point } : row);
+          const nextMax = maxPairDistance(projected);
+          const improvement = group.maxPairDistance - nextMax;
+          if (improvement < this.config.groupLeaderRecoveryMinImprovement) continue;
+          candidates.push({ ...point, step, offsetDeg, nextMax, improvement });
+        }
+      }
+      return candidates.sort((a, b) => b.improvement - a.improvement || a.nextMax - b.nextMax || Math.abs(a.offsetDeg) - Math.abs(b.offsetDeg))[0] || null;
     }
 
     _ensureFollowerFarm(group) {
@@ -13123,7 +13319,7 @@
         this.metrics.movementUnknown += 1;
         return this._suspend('H9_MOVEMENT_' + String(movement.lastOrder.state));
       }
-      if (!group.local || !group.leader || !group.sameMap || group.distance == null) {
+      if (!group.local || !group.leader || !group.complete) {
         this._stopOwnedFarming('H9_GROUP_LEADER_POSITION_UNAVAILABLE');
         if (this._ownedMovement(movement)) {
           try { this.movement.cancel('H9_GROUP_LEADER_POSITION_UNAVAILABLE'); } catch (_) {}
@@ -13135,69 +13331,198 @@
       const farm = this._farmingStatus();
       const combat = this.combat && typeof this.combat.status === 'function' ? this.combat.status() : null;
       const activeEncounter = !!(this._ownedFarming(farm) && combat && combat.active);
-      const d = Number(group.distance);
+      const hardDistance = Number(group.maxPairDistance);
 
-      if (activeEncounter && d <= this.config.groupHardRegroupDistance) {
+      if (!group.sameMap) {
+        this._stopOwnedFarming('H9_GROUP_CROSS_MAP_REGROUP');
+        const activeOwnMove = this._ownedMovement(movement);
+        if (activeOwnMove) return { state: 'TRAVELLING', reason: 'H9_GROUP_CROSS_MAP_REGROUP_IN_PROGRESS', leaderName: group.leaderName };
+        const destination = { map: group.leader.map, x: group.leader.x, y: group.leader.y };
+        const move = this.movement.smartMove(destination, {
+          owner: 'farm-intelligence-h9-group-regroup',
+          arrivalRadius: this.config.groupRegroupStopDistance
+        });
+        if (!move || move.accepted !== true) return { state: 'WAITING', reason: move && move.reason || 'H9_GROUP_CROSS_MAP_REGROUP_REJECTED' };
+        this.groupMove = { atMs: this.now(), destination: clone(destination) };
+        this.metrics.groupRegroups += 1;
+        this.metrics.groupCrossMapRegroups += 1;
+        return { state: 'TRAVELLING', reason: 'H9_GROUP_CROSS_MAP_REGROUP_STARTED', leaderName: group.leaderName, destination };
+      }
+
+      const formation = this._formationPoint(group);
+      const formationDistance = formation ? distance(group.local, formation) : group.distance;
+      if (activeEncounter && hardDistance <= this.config.groupHardRegroupDistance) {
         this.metrics.groupFollowerHolds += 1;
         return {
           state: 'FARMING',
           reason: 'H9_GROUP_FORMATION_HOLD',
           leaderName: group.leaderName,
-          distance: d,
+          distance: group.distance,
+          maxPairDistance: hardDistance,
           hardRegroupDistance: this.config.groupHardRegroupDistance
         };
       }
 
       const activeOwnMove = this._ownedMovement(movement);
       if (activeOwnMove) {
-        // Close the regroup before considering a retarget. Otherwise a moving
-        // leader can cause a pointless retarget on the same tick that the
-        // follower has already re-entered formation.
-        if (d <= this.config.groupRegroupStopDistance) {
+        if (formationDistance != null && formationDistance <= this.config.groupRegroupStopDistance
+            && hardDistance <= this.config.groupRegroupTriggerDistance) {
           try { this.movement.cancel('H9_GROUP_REJOINED_FORMATION'); } catch (_) {}
           this.groupMove = null;
         } else {
           const destination = movement.activeOrder && movement.activeOrder.destination || null;
-          const shifted = destination && group.leader ? distance(destination, group.leader) : null;
+          const shifted = destination && formation ? distance(destination, formation) : null;
           const moveAge = this.groupMove ? this.now() - Number(this.groupMove.atMs || 0) : 0;
           if (shifted != null && shifted >= this.config.groupRetargetDistance && moveAge >= this.config.groupRetargetMs) {
-            const target = { map: group.leader.map, x: group.leader.x, y: group.leader.y };
-            const retarget = this.movement.retarget(target, {
+            const retarget = this.movement.retarget(formation, {
               owner: 'farm-intelligence-h9-group-regroup',
               arrivalRadius: this.config.groupRegroupStopDistance
             });
             if (retarget && retarget.accepted) {
-              this.groupMove = { atMs: this.now(), destination: clone(target) };
+              this.groupMove = { atMs: this.now(), destination: clone(formation) };
               this.metrics.groupRetargets += 1;
             }
           }
-          return { state: 'TRAVELLING', reason: 'H9_GROUP_REGROUP_IN_PROGRESS', leaderName: group.leaderName, distance: d };
+          return { state: 'TRAVELLING', reason: 'H9_GROUP_REGROUP_IN_PROGRESS', leaderName: group.leaderName, distance: group.distance, maxPairDistance: hardDistance };
         }
       }
 
-      if (d >= this.config.groupRegroupTriggerDistance || activeEncounter && d > this.config.groupHardRegroupDistance) {
-        if (activeEncounter && d > this.config.groupHardRegroupDistance) this.metrics.groupHardRegroups += 1;
+      if (hardDistance >= this.config.groupRegroupTriggerDistance
+          || (formationDistance != null && formationDistance >= this.config.groupRegroupTriggerDistance)
+          || activeEncounter && hardDistance > this.config.groupHardRegroupDistance) {
+        if (activeEncounter && hardDistance > this.config.groupHardRegroupDistance) this.metrics.groupHardRegroups += 1;
         this._stopOwnedFarming('H9_GROUP_REGROUP');
         const afterStopMovement = this._movementStatus();
         if (afterStopMovement && afterStopMovement.activeOrder && !this._ownedMovement(afterStopMovement)) {
           this.metrics.ownershipBlocks += 1;
-          return { state: 'WAITING', reason: 'H9_GROUP_REGROUP_MOVEMENT_BUSY', distance: d };
+          return { state: 'WAITING', reason: 'H9_GROUP_REGROUP_MOVEMENT_BUSY', distance: group.distance };
         }
-        const destination = { map: group.leader.map, x: group.leader.x, y: group.leader.y };
+        const destination = formation || { map: group.leader.map, x: group.leader.x, y: group.leader.y };
         const move = this.movement.smartMove(destination, {
           owner: 'farm-intelligence-h9-group-regroup',
           arrivalRadius: this.config.groupRegroupStopDistance
         });
         if (!move || move.accepted !== true) {
-          return { state: 'WAITING', reason: move && move.reason || 'H9_GROUP_REGROUP_REJECTED', distance: d };
+          return { state: 'WAITING', reason: move && move.reason || 'H9_GROUP_REGROUP_REJECTED', distance: group.distance };
         }
         this.groupMove = { atMs: this.now(), destination: clone(destination) };
         this.metrics.groupRegroups += 1;
-        this.lastAction = { at: new Date().toISOString(), type: 'GROUP_REGROUP', leaderName: group.leaderName, destination, distance: d };
-        return { state: 'TRAVELLING', reason: 'H9_GROUP_REGROUP_STARTED', leaderName: group.leaderName, distance: d, destination };
+        this.lastAction = {
+          at: new Date().toISOString(),
+          type: activeEncounter ? 'GROUP_HARD_REGROUP' : 'GROUP_REGROUP',
+          leaderName: group.leaderName,
+          destination,
+          distance: group.distance,
+          maxPairDistance: hardDistance
+        };
+        return { state: 'TRAVELLING', reason: 'H9_GROUP_REGROUP_STARTED', leaderName: group.leaderName, distance: group.distance, maxPairDistance: hardDistance, destination };
       }
 
       return this._ensureFollowerFarm(group);
+    }
+
+    _tickGroupLeader(character, group) {
+      if (!group || !group.enabled || !group.isLeader) return null;
+      const movement = this._movementStatus();
+      const farm = this._farmingStatus();
+      const combat = this.combat && typeof this.combat.status === 'function' ? this.combat.status() : null;
+      const activeEncounter = !!(this._ownedFarming(farm) && combat && combat.active);
+
+      if (!group.complete) {
+        if (!activeEncounter) {
+          this._stopOwnedFarming('H9_GROUP_MEMBER_POSITION_UNAVAILABLE');
+          this._stopOwnedMovement('H9_GROUP_MEMBER_POSITION_UNAVAILABLE');
+        }
+        this.metrics.groupLeaderHolds += 1;
+        return {
+          state: activeEncounter ? 'FARMING' : 'WAITING',
+          reason: activeEncounter ? 'H9_GROUP_COMBAT_HOLD_UNOBSERVABLE' : 'H9_GROUP_MEMBER_POSITION_UNAVAILABLE',
+          leaderName: group.leaderName
+        };
+      }
+
+      if (!group.sameMap) {
+        if (!activeEncounter) {
+          this._stopOwnedFarming('H9_GROUP_CROSS_MAP_REGROUP_WAIT');
+          this._stopOwnedMovement('H9_GROUP_CROSS_MAP_REGROUP_WAIT');
+        }
+        this.metrics.groupLeaderHolds += 1;
+        return {
+          state: activeEncounter ? 'FARMING' : 'WAITING',
+          reason: activeEncounter ? 'H9_GROUP_CROSS_MAP_COMBAT_HOLD' : 'H9_GROUP_CROSS_MAP_REGROUP_WAIT',
+          leaderName: group.leaderName,
+          maxPairDistance: group.maxPairDistance
+        };
+      }
+
+      if (group.maxPairDistance <= this.config.groupRegroupTriggerDistance) {
+        if (movement && movement.activeOrder
+            && String(movement.activeOrder.owner || '') === 'farm-intelligence-h9-leader-regroup') {
+          try { this.movement.cancel('H9_GROUP_COHESION_RECOVERED'); } catch (_) {}
+        }
+        return null;
+      }
+
+      if (activeEncounter) {
+        this.metrics.groupLeaderHolds += 1;
+        if (group.maxPairDistance > this.config.groupHardRegroupDistance) this.metrics.groupHardRegroups += 1;
+        return {
+          state: 'FARMING',
+          reason: group.maxPairDistance > this.config.groupHardRegroupDistance
+            ? 'H9_GROUP_HARD_REGROUP_PENDING_COMBAT'
+            : 'H9_GROUP_FORMATION_HOLD',
+          leaderName: group.leaderName,
+          maxPairDistance: group.maxPairDistance,
+          hardRegroupDistance: this.config.groupHardRegroupDistance
+        };
+      }
+
+      this._stopOwnedFarming('H9_WAITING_FOR_TEAM_COHESION');
+      const activeOrder = movement && movement.activeOrder;
+      if (activeOrder && String(activeOrder.owner || '') === 'farm-intelligence-h9-leader-regroup') {
+        this.metrics.groupLeaderHolds += 1;
+        return { state: 'TRAVELLING', reason: 'H9_GROUP_LEADER_RECOVERY_IN_PROGRESS', maxPairDistance: group.maxPairDistance };
+      }
+      if (activeOrder && String(activeOrder.owner || '') !== 'farm-intelligence-h9-leader-regroup') {
+        if (this._ownedMovement(movement)) {
+          try { this.movement.cancel('H9_WAITING_FOR_TEAM_COHESION'); } catch (_) {}
+        } else {
+          this.metrics.ownershipBlocks += 1;
+          return { state: 'WAITING', reason: 'H9_GROUP_LEADER_RECOVERY_MOVEMENT_BUSY', maxPairDistance: group.maxPairDistance };
+        }
+      }
+
+      const waypoint = this._bestLeaderRecoveryWaypoint(group);
+      if (!waypoint) {
+        this.metrics.groupLeaderHolds += 1;
+        return { state: 'WAITING', reason: 'H9_WAITING_FOR_TEAM_COHESION', maxPairDistance: group.maxPairDistance };
+      }
+      const move = this.movement.moveLocal(waypoint.x, waypoint.y, {
+        owner: 'farm-intelligence-h9-leader-regroup',
+        arrivalRadius: 8
+      });
+      if (!move || move.accepted !== true) {
+        this.metrics.groupLeaderHolds += 1;
+        return { state: 'WAITING', reason: move && move.reason || 'H9_GROUP_LEADER_RECOVERY_REJECTED', maxPairDistance: group.maxPairDistance };
+      }
+      this.metrics.groupLeaderRecoveries += 1;
+      this.lastAction = {
+        at: new Date().toISOString(),
+        type: 'GROUP_LEADER_RECOVERY',
+        leaderName: group.leaderName,
+        destination: { map: waypoint.map, x: waypoint.x, y: waypoint.y },
+        maxPairDistance: group.maxPairDistance,
+        projectedMaxPairDistance: waypoint.nextMax,
+        improvement: waypoint.improvement
+      };
+      return {
+        state: 'TRAVELLING',
+        reason: 'H9_GROUP_LEADER_RECOVERY_STARTED',
+        leaderName: group.leaderName,
+        maxPairDistance: group.maxPairDistance,
+        projectedMaxPairDistance: waypoint.nextMax,
+        destination: clone(this.lastAction.destination)
+      };
     }
 
     _apply(plan) {
@@ -13317,6 +13642,10 @@
       if (!game || !game.available || !character) return this._suspend('CHARACTER_UNAVAILABLE');
       const group = this._groupContext(character);
       if (group.enabled && !group.isLeader) return this._tickGroupFollower(character, group);
+      if (group.enabled && group.isLeader) {
+        const leaderDecision = this._tickGroupLeader(character, group);
+        if (leaderDecision) return leaderDecision;
+      }
       const plan = this.plan();
       return this._apply(plan);
     }
@@ -23893,7 +24222,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.23.0-h23';
+      this.version = options.version || '0.24.0-h24';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -24093,6 +24422,19 @@
         // party evidence. Cross-window settlement is confirmed from party snapshots.
         return { actionBoundaryId: dispatched.id || null, settlement: dispatched.value || null };
       };
+      const dispatchH24CharacterDisconnect = () => {
+        let dispatched;
+        try { dispatched = this.actions.dispatch('disconnect', []); }
+        catch (error) { throw new Error('H24_CHARACTER_DISCONNECT_THROW:' + String(error && error.message || error || 'disconnect')); }
+        if (dispatched && dispatched.state === 'UNKNOWN' && dispatched.dispatched === true) {
+          throw new Error('H24_CHARACTER_DISCONNECT_UNKNOWN');
+        }
+        if (!dispatched || dispatched.state !== 'DISPATCHED') {
+          const reason = dispatched && dispatched.error && dispatched.error.message || 'H24_CHARACTER_DISCONNECT_NOT_DISPATCHED';
+          throw new Error(String(reason));
+        }
+        return { actionBoundaryId: dispatched.id || null, settlement: dispatched.value || null };
+      };
 
       this.lifecycleTransport = new ns.H19CrossWindowLifecycleTransport({
         root: this.root,
@@ -24107,6 +24449,7 @@
             runEpoch: this.runEpoch,
             emergencyStopLatched: this.stopLatch.status().latched,
             lifecycleAutonomyEnabled: this.lifecycle ? this.lifecycle.status().autonomyEnabled === true : null,
+            characterDisconnectCapable: this.actions.available('disconnect') === true,
             version: this.version,
             profile: this.accountStrategy ? this.accountStrategy.localProfile() : null,
             observation: this.observer ? this.observer.summary() : null,
@@ -24116,6 +24459,7 @@
           };
         },
         getPartyState: () => this.party.snapshot(),
+        disconnectLocal: () => dispatchH24CharacterDisconnect(),
         leavePartyLocal: () => dispatchH19CrossWindowPartyAction('leave_party', []),
         requestPartyJoinLocal: leaderName => dispatchH19CrossWindowPartyAction('send_party_request', [leaderName]),
         prepareUpdateLocal: (payload, sender) => {
@@ -24474,7 +24818,7 @@
       this.modules.register({
         id: 'encounters',
         title: 'Boss & Event Encounters',
-        version: '0.23.0',
+        version: '0.24.0',
         start: context => this.encounters.start(context),
         stop: reason => this.encounters.stop(reason),
         status: () => this.encounters.status()
@@ -24483,7 +24827,7 @@
       this.modules.register({
         id: 'market-intelligence',
         title: 'Market Intelligence',
-        version: '0.23.0',
+        version: '0.24.0',
         start: context => this.marketIntelligence.start(context),
         stop: reason => this.marketIntelligence.stop(reason),
         status: () => this.marketIntelligence.status()
@@ -24492,7 +24836,7 @@
       this.modules.register({
         id: 'merchant-stand',
         title: 'Merchant Stand',
-        version: '0.23.0',
+        version: '0.24.0',
         start: context => this.merchantStand.start(context),
         stop: reason => this.merchantStand.stop(reason),
         status: () => this.merchantStand.status()
@@ -24501,7 +24845,7 @@
       this.modules.register({
         id: 'host-telemetry',
         title: 'Host Telemetry',
-        version: '0.23.0',
+        version: '0.24.0',
         start: context => this.telemetry.start(context),
         stop: reason => this.telemetry.stop(reason),
         status: () => this.telemetry.status()
@@ -31850,7 +32194,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.23.0-h23',
+    version: '0.24.0-h24',
     bootCount,
     replacedPrevious: !!previous
   });

@@ -178,9 +178,9 @@ function h9FollowerFixture({ leaderX = 300, leaderMap = 'main', farmActive = fal
       party: {
         ownedMemberNames: ['My_Ranger1', 'My_Priest', 'My_Warrior'],
         ownedMembers: [
-          { name: 'My_Ranger1', local: true, map: 'main', x: 0, y: 0 },
-          ...(state.leaderVisible ? [{ name: 'My_Warrior', local: false, map: leaderMap, x: state.leaderX, y: 0 }] : []),
-          { name: 'My_Priest', local: false, map: 'main', x: Math.min(state.leaderX, 40), y: 20 }
+          { name: 'My_Ranger1', ctype: 'ranger', local: true, map: 'main', x: 0, y: 0 },
+          ...(state.leaderVisible ? [{ name: 'My_Warrior', ctype: 'warrior', local: false, map: leaderMap, x: state.leaderX, y: 0 }] : []),
+          { name: 'My_Priest', ctype: 'priest', local: false, map: 'main', x: Math.min(state.leaderX, 40), y: 20 }
         ]
       }
     }),
@@ -225,6 +225,85 @@ function h9FollowerFixture({ leaderX = 300, leaderMap = 'main', farmActive = fal
   return { controller, state };
 }
 
+function h9LeaderFixture({ rangerX = 260, priestX = 240 } = {}) {
+  const { Controller } = loadController('src/farm-intelligence.js', 'FarmIntelligenceController');
+  const state = { moves: [], activeOrder: null, farmActive: false, farmStarts: [], leaderX: 0, rangerX, priestX, nowMs: 10000 };
+  const character = { name: 'My_Warrior', ctype: 'warrior', map: 'main', x: 0, y: 0, hp: 4000, maxHp: 4000, mp: 500, maxMp: 500, rip: false };
+  const game = {
+    snapshot: () => ({ available: true, character: { ...clone(character), x: state.leaderX } }),
+    visiblePlayers: () => [],
+    visibleMonsters: () => [],
+    farmSpotCatalog: () => [],
+    monsterDefinition: () => null
+  };
+  const party = {
+    status: () => ({
+      party: {
+        ownedMemberNames: ['My_Priest', 'My_Ranger1', 'My_Warrior'],
+        ownedMembers: [
+          { name: 'My_Warrior', ctype: 'warrior', local: true, map: 'main', x: state.leaderX, y: 0 },
+          { name: 'My_Ranger1', ctype: 'ranger', local: false, map: 'main', x: state.rangerX, y: 0 },
+          { name: 'My_Priest', ctype: 'priest', local: false, map: 'main', x: state.priestX, y: 20 }
+        ]
+      }
+    }),
+    preferredTargetId: () => null
+  };
+  const movement = {
+    _canMoveTo: () => true,
+    status: () => ({ activeOrder: state.activeOrder, lastOrder: null }),
+    moveLocal: (x, y, opts) => {
+      state.moves.push({ kind: 'local', x, y, owner: opts.owner });
+      state.activeOrder = { owner: opts.owner, destination: { map: 'main', x, y }, startedAtMs: state.nowMs };
+      return { accepted: true, order: clone(state.activeOrder) };
+    },
+    cancel: () => { state.activeOrder = null; return { cancelled: true }; }
+  };
+  const farming = {
+    status: () => ({ active: state.farmActive, session: state.farmActive ? { owner: 'farm-intelligence-h9' } : null }),
+    startSession: options => { state.farmStarts.push(clone(options)); state.farmActive = true; return { accepted: true }; },
+    stopSession: () => { state.farmActive = false; return { stopped: true }; }
+  };
+  const combat = { status: () => ({ active: false }), safeCandidates: () => [] };
+  const controller = new Controller({ game, combat, farming, movement, party, now: () => state.nowMs });
+  controller.start({ scope: { interval: () => 'h9-leader-loop' } });
+  return { controller, state, character };
+}
+
+test('group leader stops new pulls and takes a bounded cohesion-recovery step toward separated followers', () => {
+  const f = h9LeaderFixture({ rangerX: 260, priestX: 240 });
+  const started = f.controller.startAutonomy({
+    owner: 'full-autonomy',
+    groupLeaderName: 'My_Warrior',
+    groupMemberNames: ['My_Priest', 'My_Ranger1', 'My_Warrior']
+  });
+  assert.equal(started.accepted, true);
+  assert.equal(started.tick.state, 'TRAVELLING');
+  assert.equal(started.tick.reason, 'H9_GROUP_LEADER_RECOVERY_STARTED');
+  assert.equal(f.state.farmStarts.length, 0);
+  assert.equal(f.state.moves.length, 1);
+  assert.equal(f.state.moves[0].owner, 'farm-intelligence-h9-leader-regroup');
+  assert.ok(f.state.moves[0].x > 0 && f.state.moves[0].x <= 60);
+  assert.ok(started.tick.projectedMaxPairDistance < started.tick.maxPairDistance);
+});
+
+test('group leader releases regroup only after pairwise cohesion is restored', () => {
+  const f = h9LeaderFixture({ rangerX: 120, priestX: 100 });
+  f.controller.session = {
+    id: 'leader-test',
+    enabled: true,
+    owner: 'full-autonomy',
+    preferredTypes: [],
+    excludedTypes: [],
+    allowTravel: true,
+    groupLeaderName: 'My_Warrior',
+    groupMemberNames: ['My_Priest', 'My_Ranger1', 'My_Warrior']
+  };
+  const group = f.controller._groupContext(f.character);
+  assert.ok(group.maxPairDistance <= f.controller.config.groupRegroupTriggerDistance);
+  assert.equal(f.controller._tickGroupLeader(f.character, group), null);
+});
+
 test('group follower never chooses its own farm direction and smart-regroups to the Warrior leader', () => {
   const f = h9FollowerFixture({ leaderX: 300 });
   const started = f.controller.startAutonomy({
@@ -237,7 +316,8 @@ test('group follower never chooses its own farm direction and smart-regroups to 
   assert.equal(started.tick.reason, 'H9_GROUP_REGROUP_STARTED');
   assert.equal(f.state.moves.length, 1);
   assert.equal(f.state.moves[0].owner, 'farm-intelligence-h9-group-regroup');
-  assert.equal(f.state.moves[0].destination.x, 300);
+  assert.equal(Math.round(f.state.moves[0].destination.x), 262);
+  assert.equal(Math.round(f.state.moves[0].destination.y), -32);
   assert.equal(f.state.farmStarts.length, 0);
 });
 
@@ -538,11 +618,11 @@ test('group hard tether blocks a kite that would split the combat trio', () => {
   assert.equal(allowed, false);
 });
 
-test('group follower rejects stale party focus after group-owned aggro disappears', () => {
+test('group follower mirrors a fresh visible leader focus before aggro starts', () => {
   const { Controller } = loadController('src/combat.js', 'CombatController');
   const state = { changeTargets: 0 };
   const character = { name: 'My_Ranger1', ctype: 'ranger', map: 'main', x: 0, y: 0, hp: 2500, maxHp: 2500, mp: 800, maxMp: 1000, range: 200, rip: false };
-  const stale = { id: 'stale', mtype: 'goo', map: 'main', x: 80, y: 0, distance: 80, attack: 10, targetId: null, dead: false, visible: true };
+  const stale = { id: 'stale', mtype: 'goo', map: 'main', x: 80, y: 0, distance: 80, attack: 10, targetId: null, dead: false, visible: true, hp: 100 };
   const game = {
     snapshot: () => ({ available: true, character: clone(character), target: null }),
     visibleMonsters: () => [clone(stale)],
@@ -573,9 +653,10 @@ test('group follower rejects stale party focus after group-owned aggro disappear
   });
   assert.equal(started.accepted, true);
   const selected = controller._selectTarget({ character });
-  assert.equal(selected, null);
-  assert.equal(state.changeTargets, 0);
-  assert.equal(controller.status().session.state, 'WAITING_GROUP_TARGET');
+  assert.ok(selected);
+  assert.equal(selected.id, 'stale');
+  assert.equal(state.changeTargets, 1);
+  assert.equal(controller.status().session.targetId, 'stale');
 });
 
 test('group follower keeps an active group-aggro target when preferred focus is stale', () => {
@@ -621,6 +702,78 @@ test('group follower keeps an active group-aggro target when preferred focus is 
   assert.equal(controller.status().session.targetId, 'active');
   assert.equal(state.changeTargets, 0);
   assert.equal(state.attacks, 0);
+});
+
+test('group members share one orbit direction instead of orbiting against each other', () => {
+  const teammateRows = [
+    { name: 'My_Warrior', local: false, map: 'main', x: 20, y: 0 },
+    { name: 'My_Priest', local: false, map: 'main', x: 30, y: 10 }
+  ];
+  const f = combatFixture({ ctype: 'ranger', partyRows: teammateRows });
+  const first = f.controller._orbitDirection({ name: 'My_Ranger1' });
+  const second = f.controller._orbitDirection({ name: 'My_Ranger2' });
+  assert.equal(first, second);
+});
+
+test('group soft kite tether only permits out-of-formation motion when it improves cohesion', () => {
+  const teammateRows = [
+    { name: 'My_Warrior', local: false, map: 'main', x: 0, y: 0 },
+    { name: 'My_Priest', local: false, map: 'main', x: 20, y: 0 }
+  ];
+  const f = combatFixture({ ctype: 'ranger', partyRows: teammateRows });
+  assert.equal(f.controller._groupTetherAllows(clone(f.character), { x: 120, y: 0 }), false);
+  assert.equal(f.controller._groupTetherAllows(clone(f.character), { x: 80, y: 0 }), true);
+});
+
+test('group kill race recovers a server not_there rejection when live target is already gone', () => {
+  const f = combatFixture({
+    ctype: 'ranger',
+    partyRows: [
+      { name: 'My_Warrior', local: false, map: 'main', x: 20, y: 0 },
+      { name: 'My_Priest', local: false, map: 'main', x: 30, y: 0 }
+    ]
+  });
+  f.controller.session.targetId = 'already-killed';
+  f.controller.session.targetType = 'goo';
+  f.controller.pendingAttack = {
+    attackId: 'attack-race',
+    targetId: 'already-killed',
+    baselineHp: 25,
+    deadlineAtMs: 12000,
+    commandSettlement: 'REJECTED',
+    commandResponse: null,
+    commandError: 'not_there'
+  };
+  assert.equal(f.controller._observePendingAttack(), true);
+  assert.equal(f.controller.status().active, true);
+  assert.equal(f.controller.status().session.state, 'ACQUIRING');
+  assert.equal(f.controller.status().metrics.attackTargetRaceRecoveries, 1);
+  assert.equal(f.state.h9Suspensions.length, 0);
+});
+
+test('network-uncertain group attack still fails closed instead of using kill-race recovery', () => {
+  const f = combatFixture({
+    ctype: 'ranger',
+    partyRows: [
+      { name: 'My_Warrior', local: false, map: 'main', x: 20, y: 0 },
+      { name: 'My_Priest', local: false, map: 'main', x: 30, y: 0 }
+    ]
+  });
+  f.controller.session.targetId = 'uncertain';
+  f.controller.pendingAttack = {
+    attackId: 'attack-uncertain',
+    targetId: 'uncertain',
+    baselineHp: 25,
+    deadlineAtMs: 12000,
+    commandSettlement: 'REJECTED',
+    commandResponse: null,
+    commandError: 'ATTACK_NETWORK_UNCERTAIN'
+  };
+  assert.equal(f.controller._observePendingAttack(), true);
+  assert.equal(f.controller.status().active, false);
+  assert.equal(f.controller.status().lastSession.state, 'UNKNOWN');
+  assert.equal(f.controller.status().metrics.attackTargetRaceRecoveries, 0);
+  assert.equal(f.state.h9Suspensions.length, 1);
 });
 
 test('combat UNKNOWN propagates into Farm Intelligence suspension', () => {

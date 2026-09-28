@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.23.0-h23';
+      this.version = options.version || '0.24.0-h24';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -205,6 +205,19 @@
         // party evidence. Cross-window settlement is confirmed from party snapshots.
         return { actionBoundaryId: dispatched.id || null, settlement: dispatched.value || null };
       };
+      const dispatchH24CharacterDisconnect = () => {
+        let dispatched;
+        try { dispatched = this.actions.dispatch('disconnect', []); }
+        catch (error) { throw new Error('H24_CHARACTER_DISCONNECT_THROW:' + String(error && error.message || error || 'disconnect')); }
+        if (dispatched && dispatched.state === 'UNKNOWN' && dispatched.dispatched === true) {
+          throw new Error('H24_CHARACTER_DISCONNECT_UNKNOWN');
+        }
+        if (!dispatched || dispatched.state !== 'DISPATCHED') {
+          const reason = dispatched && dispatched.error && dispatched.error.message || 'H24_CHARACTER_DISCONNECT_NOT_DISPATCHED';
+          throw new Error(String(reason));
+        }
+        return { actionBoundaryId: dispatched.id || null, settlement: dispatched.value || null };
+      };
 
       this.lifecycleTransport = new ns.H19CrossWindowLifecycleTransport({
         root: this.root,
@@ -219,6 +232,7 @@
             runEpoch: this.runEpoch,
             emergencyStopLatched: this.stopLatch.status().latched,
             lifecycleAutonomyEnabled: this.lifecycle ? this.lifecycle.status().autonomyEnabled === true : null,
+            characterDisconnectCapable: this.actions.available('disconnect') === true,
             version: this.version,
             profile: this.accountStrategy ? this.accountStrategy.localProfile() : null,
             observation: this.observer ? this.observer.summary() : null,
@@ -228,6 +242,7 @@
           };
         },
         getPartyState: () => this.party.snapshot(),
+        disconnectLocal: () => dispatchH24CharacterDisconnect(),
         leavePartyLocal: () => dispatchH19CrossWindowPartyAction('leave_party', []),
         requestPartyJoinLocal: leaderName => dispatchH19CrossWindowPartyAction('send_party_request', [leaderName]),
         prepareUpdateLocal: (payload, sender) => {
@@ -586,7 +601,7 @@
       this.modules.register({
         id: 'encounters',
         title: 'Boss & Event Encounters',
-        version: '0.23.0',
+        version: '0.24.0',
         start: context => this.encounters.start(context),
         stop: reason => this.encounters.stop(reason),
         status: () => this.encounters.status()
@@ -595,7 +610,7 @@
       this.modules.register({
         id: 'market-intelligence',
         title: 'Market Intelligence',
-        version: '0.23.0',
+        version: '0.24.0',
         start: context => this.marketIntelligence.start(context),
         stop: reason => this.marketIntelligence.stop(reason),
         status: () => this.marketIntelligence.status()
@@ -604,7 +619,7 @@
       this.modules.register({
         id: 'merchant-stand',
         title: 'Merchant Stand',
-        version: '0.23.0',
+        version: '0.24.0',
         start: context => this.merchantStand.start(context),
         stop: reason => this.merchantStand.stop(reason),
         status: () => this.merchantStand.status()
@@ -613,7 +628,7 @@
       this.modules.register({
         id: 'host-telemetry',
         title: 'Host Telemetry',
-        version: '0.23.0',
+        version: '0.24.0',
         start: context => this.telemetry.start(context),
         stop: reason => this.telemetry.stop(reason),
         status: () => this.telemetry.status()

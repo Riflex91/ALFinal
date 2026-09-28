@@ -205,18 +205,18 @@ function autonomyFixture(options = {}) {
   return { controller, runtime, strategy, calls, online, profiles, initialPlan, fallbackPlan };
 }
 
-test('H22 Full Autonomy keeps the existing four online characters running when a requested rotation is not character-controllable', () => {
+test('H24 Full Autonomy preserves the requested catch-up quartet and fails closed when rotation is not controllable', () => {
   const { controller, calls } = autonomyFixture({ localName: 'My_Ranger1' });
   const started = controller.startAutonomy({ taskType: 'FARM' });
 
   assert.equal(started.accepted, true);
-  assert.equal(started.tick.state, 'RUNNING');
-  assert.deepEqual(Array.from(controller.status().desiredCharacterNames), ['My_Merchant', 'My_Ranger1', 'My_Ranger2', 'My_Ranger3']);
-  assert.equal(started.tick.rotationFallback.used, true);
-  assert.equal(started.tick.rotationFallback.reason, 'H19_ROTATION_STOP_NOT_RUNNER_CONTROLLABLE:My_Ranger3');
-  assert.equal(calls.optimize.length, 2);
-  assert.deepEqual(Array.from(calls.optimize[1].allowedCharacterNames), ['My_Merchant', 'My_Ranger1', 'My_Ranger2', 'My_Ranger3']);
-  assert.equal(calls.farmStarts, 1);
+  assert.equal(started.tick.state, 'BLOCKED');
+  assert.equal(started.tick.reason, 'FULL_AUTONOMY_ROTATION_UNAVAILABLE');
+  assert.deepEqual(Array.from(controller.status().desiredCharacterNames), ['My_Merchant', 'My_Ranger1', 'My_Ranger2', 'My_Rogue']);
+  assert.equal(started.tick.rotationReadiness.reason, 'H19_ROTATION_STOP_NOT_RUNNER_CONTROLLABLE:My_Ranger3');
+  assert.deepEqual(Array.from(started.tick.requestedDesiredCharacterNames), ['My_Merchant', 'My_Ranger1', 'My_Ranger2', 'My_Rogue']);
+  assert.equal(calls.optimize.length, 1);
+  assert.equal(calls.farmStarts, 0);
   assert.equal(calls.lifecycleStarts, 0);
 });
 
