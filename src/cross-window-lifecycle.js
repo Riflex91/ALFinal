@@ -37,6 +37,9 @@
       this.stopRuntime = typeof options.stopRuntime === 'function'
         ? options.stopRuntime
         : async () => { throw new Error('H19_CROSS_WINDOW_STOP_RUNTIME_UNAVAILABLE'); };
+      this.disconnectLocal = typeof options.disconnectLocal === 'function'
+        ? options.disconnectLocal
+        : () => { throw new Error('H24_CROSS_WINDOW_CHARACTER_DISCONNECT_UNAVAILABLE'); };
       this.getPartyState = typeof options.getPartyState === 'function' ? options.getPartyState : () => null;
       this.leavePartyLocal = typeof options.leavePartyLocal === 'function'
         ? options.leavePartyLocal
@@ -317,6 +320,7 @@
         runEpoch: Number.isFinite(Number(row.runEpoch)) ? Number(row.runEpoch) : 0,
         emergencyStopLatched: row.emergencyStopLatched === true,
         lifecycleAutonomyEnabled: typeof row.lifecycleAutonomyEnabled === 'boolean' ? row.lifecycleAutonomyEnabled : null,
+        characterDisconnectCapable: row.characterDisconnectCapable === true,
         version: cleanText(row.version || '', 80) || null,
         party: row.party && typeof row.party === 'object' ? {
           available: row.party.available !== false,
@@ -394,6 +398,7 @@
         runEpoch: Number.isFinite(Number(state.runEpoch)) ? Number(state.runEpoch) : 0,
         emergencyStopLatched: state.emergencyStopLatched === true,
         lifecycleAutonomyEnabled: typeof state.lifecycleAutonomyEnabled === 'boolean' ? state.lifecycleAutonomyEnabled : null,
+        characterDisconnectCapable: state.characterDisconnectCapable === true,
         version: cleanText(state.version || '', 80) || null,
         party: party && typeof party === 'object' ? {
           available: party.available !== false,
@@ -734,7 +739,7 @@
       const sender = cleanText(envelope.senderCharacterName || '', 120);
       const commandType = cleanText(envelope.commandType || '', 80);
       const supported = new Set([
-        'START_RUNTIME', 'STOP_RUNTIME', 'LEAVE_PARTY', 'REQUEST_PARTY_JOIN',
+        'START_RUNTIME', 'STOP_RUNTIME', 'DISCONNECT_CHARACTER', 'LEAVE_PARTY', 'REQUEST_PARTY_JOIN',
         'PREPARE_UPDATE', 'COMMIT_UPDATE', 'CANCEL_UPDATE'
       ]);
       if (!commandId || !sender || !supported.has(commandType)) return false;
@@ -767,6 +772,26 @@
           outcome = {
             reason: desiredRunning ? 'H19_CROSS_WINDOW_RUNTIME_STARTED' : 'H19_CROSS_WINDOW_RUNTIME_STOPPED',
             details: { running: after.running, runEpoch: after.runEpoch }
+          };
+        } else if (commandType === 'DISCONNECT_CHARACTER') {
+          const before = this._localStatePayload();
+          if (before.running !== true) throw new Error('H24_CROSS_WINDOW_CHARACTER_RUNTIME_NOT_RUNNING');
+          if (before.emergencyStopLatched === true) throw new Error('H24_CROSS_WINDOW_CHARACTER_EMERGENCY_STOP_LATCHED');
+          if (before.characterDisconnectCapable !== true) throw new Error('H24_CROSS_WINDOW_CHARACTER_DISCONNECT_CAPABILITY_MISSING');
+          if (!this.setTimeoutFn) throw new Error('H24_CROSS_WINDOW_CHARACTER_DISCONNECT_TIMER_UNAVAILABLE');
+          // Settlement must be emitted before the character severs its own
+          // connection. Completion is never inferred from this ACK; the
+          // coordinator waits for account-roster offline evidence.
+          this.setTimeoutFn(() => {
+            try { this.disconnectLocal('H24_REMOTE_CHARACTER_ROTATION:' + sender); }
+            catch (error) {
+              this.lastError = { at: nowIso(this.now()), reason: errorReason(error, 'H24_CROSS_WINDOW_CHARACTER_DISCONNECT_FAILED') };
+              this._log('error', 'H24 Cross-Window Character Disconnect fehlgeschlagen', this.lastError);
+            }
+          }, 100);
+          outcome = {
+            reason: 'H24_CROSS_WINDOW_CHARACTER_DISCONNECT_ACCEPTED',
+            details: { characterName: this._localName(), completionEvidence: 'ACCOUNT_ROSTER_OFFLINE_REQUIRED' }
           };
         } else if (commandType === 'LEAVE_PARTY') {
           outcome = await this._executePartyLeave(sender);
@@ -875,6 +900,19 @@
         return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: desired ? 'H19_CROSS_WINDOW_RUNTIME_ALREADY_RUNNING' : 'H19_CROSS_WINDOW_RUNTIME_ALREADY_STOPPED' } };
       }
       return this._requestCommand(target, desired ? 'START_RUNTIME' : 'STOP_RUNTIME', { peer, desiredRunning: desired });
+    }
+
+    requestCharacterDisconnect(targetName) {
+      const target = cleanText(targetName || '', 120);
+      const peer = this.freshPeer(target);
+      if (!peer) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H24_CROSS_WINDOW_CHARACTER_PEER_NOT_FRESH' } };
+      if (peer.running !== true) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H24_CROSS_WINDOW_CHARACTER_RUNTIME_NOT_RUNNING' } };
+      if (peer.emergencyStopLatched === true) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H24_CROSS_WINDOW_CHARACTER_EMERGENCY_STOP_LATCHED' } };
+      if (peer.characterDisconnectCapable !== true) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H24_CROSS_WINDOW_CHARACTER_DISCONNECT_CAPABILITY_MISSING' } };
+      return this._requestCommand(target, 'DISCONNECT_CHARACTER', {
+        peer,
+        settlementTimeoutMs: Math.min(this.config.settlementTimeoutMs, 5000)
+      });
     }
 
     requestPartyLeave(targetName) {
