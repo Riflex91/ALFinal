@@ -42,7 +42,8 @@
       this.config = {
         refreshMs: Math.max(60000, Math.min(3600000, Number(options.refreshMs) || 300000)),
         historyDays: Math.max(7, Math.min(365, Number(options.historyDays) || 90)),
-        maxHistoryPerItem: Math.max(24, Math.min(2000, Number(options.maxHistoryPerItem) || 480))
+        maxHistoryPerItem: Math.max(24, Math.min(2000, Number(options.maxHistoryPerItem) || 480)),
+        externalMaxAgeMs: Math.max(3600000, Math.min(30 * 86400000, Number(options.externalMaxAgeMs) || 7 * 86400000))
       };
       this._loadHistory();
     }
@@ -79,7 +80,7 @@
     }
 
     _timestamp(raw, fallbackMs) {
-      for (const key of ['lastSeen', 'last_seen', 'updatedAt', 'updated_at', 'lastUpdate', 'date', 'timestamp']) {
+      for (const key of ['lastSeen', 'last_seen', 'updatedAt', 'updated_at', 'lastUpdate', 'lastUpdated', 'date', 'timestamp']) {
         const value = raw && raw[key];
         if (value == null) continue;
         const numeric = Number(value);
@@ -90,33 +91,60 @@
       return fallbackMs;
     }
 
-    _walk(value, context, out, fetchedAtMs, depth = 0) {
-      if (depth > 9 || value == null) return;
-      if (Array.isArray(value)) {
-        for (const row of value) this._walk(row, context, out, fetchedAtMs, depth + 1);
-        return;
+    _parseTrades(payload, fetchedAtMs) {
+      const out = [];
+      const owners = Array.isArray(payload) ? payload : [];
+      for (const ownerRow of owners) {
+        if (!ownerRow || typeof ownerRow !== 'object') continue;
+        const owner = cleanText(ownerRow.owner || '', 120) || null;
+        const seenAtMs = this._timestamp({ lastUpdated: ownerRow.lastUpdated }, fetchedAtMs);
+        const listings = Array.isArray(ownerRow.listings) ? ownerRow.listings : [];
+        for (const listing of listings) {
+          if (!listing || typeof listing !== 'object') continue;
+          const itemName = cleanText(listing.name || '', 160);
+          if (!itemName) continue;
+          const level = Math.max(0, Math.floor(finite(listing.level) || 0));
+          const property = listing.p == null ? null : cleanText(listing.p, 80);
+          for (const sideName of ['wts', 'wtb']) {
+            const side = listing[sideName];
+            if (!side || typeof side !== 'object') continue;
+            const price = finite(side.price);
+            if (price == null || price <= 0) continue;
+            out.push({
+              itemName,
+              level,
+              property,
+              price,
+              quantity: Math.max(1, Math.floor(finite(side.quantity) || 1)),
+              buying: sideName === 'wtb',
+              negotiable: side.priceNegotiable === true,
+              owner,
+              seenAtMs,
+              source: 'aldata-trades'
+            });
+          }
+        }
       }
-      if (typeof value !== 'object') return;
-      const owner = cleanText(value.owner || value.character || value.player || value.merchant || context.owner || '', 120) || null;
-      const seenAtMs = this._timestamp(value, context.seenAtMs || fetchedAtMs);
-      const name = cleanText(value.name || value.item || value.itemName || '', 160);
-      const price = finite(value.price);
-      if (name && price != null && price > 0) {
-        out.push({
-          itemName: name,
-          level: Math.max(0, Math.floor(finite(value.level) || 0)),
-          price,
-          quantity: Math.max(1, Math.floor(finite(value.q != null ? value.q : value.quantity) || 1)),
-          buying: value.b === true || value.buying === true || String(value.type || '').toLowerCase() === 'buy',
-          owner,
-          seenAtMs,
-          source: 'aldata'
-        });
+      return out;
+    }
+
+    _localIdentity() {
+      let current = this.root;
+      for (let depth = 0; depth < 8 && current; depth += 1) {
+        try {
+          if (current.character) {
+            return {
+              name: current.character.name == null ? null : String(current.character.name),
+              owner: current.character.owner == null ? null : String(current.character.owner)
+            };
+          }
+        } catch (_) {}
+        try {
+          if (current.parent && current.parent !== current) current = current.parent;
+          else break;
+        } catch (_) { break; }
       }
-      for (const [key, child] of Object.entries(value)) {
-        if (['price', 'level', 'quantity', 'q'].includes(key)) continue;
-        this._walk(child, { owner, seenAtMs }, out, fetchedAtMs, depth + 1);
-      }
+      return { name: null, owner: null };
     }
 
     _recordHistory(listings, fetchedAtMs) {
@@ -152,31 +180,36 @@
       if (!fetchFn) return { accepted: false, reason: 'MARKET_INTELLIGENCE_FETCH_UNAVAILABLE' };
       const fetchedAtMs = Date.now();
       try {
-        const response = await fetchFn(this.baseUrl + '/merchants', { method: 'GET', cache: 'no-store', credentials: 'omit' });
+        const response = await fetchFn(this.baseUrl + '/trades', { method: 'GET', cache: 'no-store', credentials: 'omit' });
         if (!response || response.ok !== true) throw new Error('ALDATA_HTTP_' + String(response && response.status || 'FAILED'));
         const payload = await response.json();
-        const listings = [];
-        this._walk(payload, {}, listings, fetchedAtMs);
+        const listings = this._parseTrades(payload, fetchedAtMs);
         const deduped = [];
         const seen = new Set();
+        let staleDropped = 0;
         for (const row of listings) {
-          const key = [row.owner || '', row.itemName, row.level, row.price, row.quantity, row.buying].join('|');
+          if (fetchedAtMs - Number(row.seenAtMs || 0) > this.config.externalMaxAgeMs) {
+            staleDropped += 1;
+            continue;
+          }
+          const key = [row.owner || '', row.itemName, row.level, row.property || '', row.price, row.quantity, row.buying].join('|');
           if (seen.has(key)) continue;
           seen.add(key);
           deduped.push(row);
         }
         this.snapshot = {
-          schemaVersion: 1,
+          schemaVersion: 2,
           fetchedAt: new Date(fetchedAtMs).toISOString(),
           fetchedAtMs,
-          endpoint: this.baseUrl + '/merchants',
+          endpoint: this.baseUrl + '/trades',
           advisoryOnly: true,
+          staleDropped,
           listings: deduped
         };
         this._recordHistory(deduped, fetchedAtMs);
         this.lastError = null;
-        if (this.logger) this.logger.info('ALData Markt-Snapshot aktualisiert', { listings: deduped.length });
-        return { accepted: true, listings: deduped.length, fetchedAt: this.snapshot.fetchedAt };
+        if (this.logger) this.logger.info('ALData Trades-Snapshot aktualisiert', { listings: deduped.length, staleDropped });
+        return { accepted: true, listings: deduped.length, staleDropped, fetchedAt: this.snapshot.fetchedAt };
       } catch (error) {
         this.lastError = { at: new Date().toISOString(), reason: cleanText(error && error.message || error, 300) };
         if (this.logger) this.logger.warn('ALData Markt-Refresh fehlgeschlagen', this.lastError);
@@ -196,15 +229,12 @@
       const name = cleanText(itemName, 160);
       const level = Math.max(0, Math.floor(finite(options.level) || 0));
       if (!name) return { available: false, reason: 'MARKET_ITEM_REQUIRED' };
-      let localName = null;
-      try {
-        const snapshot = this.game && typeof this.game.snapshot === 'function' ? this.game.snapshot() : null;
-        localName = snapshot && snapshot.character && snapshot.character.name ? String(snapshot.character.name) : null;
-      } catch (_) {}
+      const identity = this._localIdentity();
       const rows = this.snapshot && Array.isArray(this.snapshot.listings)
         ? this.snapshot.listings.filter(row => row.itemName === name
           && Number(row.level || 0) === level
-          && (!localName || !row.owner || String(row.owner) !== localName))
+          && (!identity.owner || !row.owner || String(row.owner) !== String(identity.owner))
+          && (!identity.name || !row.owner || String(row.owner) !== String(identity.name)))
         : [];
       const asks = rows.filter(row => !row.buying).sort((a, b) => a.price - b.price);
       const bids = rows.filter(row => row.buying).sort((a, b) => b.price - a.price);
@@ -273,12 +303,13 @@
         schemaVersion: 1,
         moduleActive: this.moduleActive,
         provider: 'ALData',
-        endpoint: this.baseUrl,
+        endpoint: this.baseUrl + '/trades',
         readOnly: true,
         advisoryOnly: true,
         fetchedAt: this.snapshot && this.snapshot.fetchedAt || null,
         dataAgeMs: this.snapshot ? Math.max(0, Date.now() - this.snapshot.fetchedAtMs) : null,
         listings: this.snapshot && this.snapshot.listings ? this.snapshot.listings.length : 0,
+        staleDropped: this.snapshot && this.snapshot.staleDropped || 0,
         historyItems: Object.keys(this.history).length,
         lastError: clone(this.lastError),
         policies: {
