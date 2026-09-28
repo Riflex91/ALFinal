@@ -40,11 +40,13 @@ export class H22HostWatchdogSupervisor {
     this.maxRestartsPerWindow = Math.max(1, Math.min(10, Math.floor(finite(options.maxRestartsPerWindow, 3))));
     this.maxClockSkewMs = clamp(options.maxClockSkewMs, 1000, 10 * 60 * 1000, 120000);
     this.historyCapacity = Math.max(20, Math.min(1000, Math.floor(finite(options.historyCapacity, 200))));
+    this.retiredRunCapacity = Math.max(4, Math.min(128, Math.floor(finite(options.retiredRunCapacity, 32))));
 
     this.restartEnabled = false;
     this.startedAt = this.now();
     this.records = new Map();
     this.graceUntil = new Map();
+    this.retiredRuns = new Map();
     this.restartAttempts = new Map();
     this.lastRestartAttemptAt = new Map();
     this.history = [];
@@ -54,6 +56,8 @@ export class H22HostWatchdogSupervisor {
       acceptedBeacons: 0,
       rejectedBeacons: 0,
       replayedBeacons: 0,
+      retiredRunRejects: 0,
+      runTransitions: 0,
       restartAttempts: 0,
       restartSuccesses: 0,
       restartFailures: 0,
@@ -71,9 +75,65 @@ export class H22HostWatchdogSupervisor {
     return row;
   }
 
+  _retiredFor(character) {
+    const name = bounded(character, 120);
+    if (!name) return new Map();
+    let rows = this.retiredRuns.get(name);
+    if (!rows) {
+      rows = new Map();
+      this.retiredRuns.set(name, rows);
+    }
+    return rows;
+  }
+
+  _retireRun(character, runId, reason = 'RUN_RETIRED') {
+    const name = bounded(character, 120);
+    const id = bounded(runId, 240);
+    if (!name || !id) return false;
+    const rows = this._retiredFor(name);
+    if (rows.has(id)) return false;
+    rows.set(id, { retiredAt: this.now(), reason: bounded(reason, 120) || 'RUN_RETIRED' });
+    while (rows.size > this.retiredRunCapacity) {
+      const first = rows.keys().next();
+      if (first.done) break;
+      rows.delete(first.value);
+    }
+    this._record('RUN_RETIRED', { character: name, runId: id, reason: bounded(reason, 120) || 'RUN_RETIRED' });
+    return true;
+  }
+
+  _isRetiredRun(character, runId) {
+    const rows = this.retiredRuns.get(String(character || ''));
+    return !!(rows && rows.has(String(runId || '')));
+  }
+
   configure(config = {}) {
     if (config.expectedCharacters != null) {
-      this.expectedCharacters = normalizeNames(config.expectedCharacters);
+      const previousNames = new Set(this.expectedCharacters);
+      const nextNames = normalizeNames(config.expectedCharacters);
+      const nextSet = new Set(nextNames);
+      const now = this.now();
+
+      for (const name of nextNames) {
+        if (!previousNames.has(name) && !this.records.has(name)) {
+          this.graceUntil.set(name, now + this.startupGraceMs);
+          this._record('CHARACTER_STARTUP_GRACE_STARTED', {
+            character: name,
+            graceUntil: now + this.startupGraceMs,
+            reason: 'EXPECTED_CHARACTER_ADDED'
+          });
+        }
+      }
+
+      for (const name of previousNames) {
+        if (nextSet.has(name)) continue;
+        const record = this.records.get(name);
+        if (record && record.runId) this._retireRun(name, record.runId, 'EXPECTED_CHARACTER_REMOVED');
+        this.records.delete(name);
+        this.graceUntil.delete(name);
+      }
+
+      this.expectedCharacters = nextNames;
     }
     if (config.enabled === true) {
       if (config.ack !== HOST_RESTART_ACK) {
@@ -144,7 +204,16 @@ export class H22HostWatchdogSupervisor {
     const character = String(beacon.character.name);
     const runId = String(beacon.runId);
     const seq = Number(beacon.seq);
+    const acceptedAt = this.now();
     const previous = this.records.get(character) || null;
+
+    if (this._isRetiredRun(character, runId)) {
+      this.stats.rejectedBeacons += 1;
+      this.stats.retiredRunRejects += 1;
+      this._record('BEACON_REJECTED', { reason: 'BEACON_RETIRED_RUN', character, runId, seq });
+      return { accepted: false, reason: 'BEACON_RETIRED_RUN' };
+    }
+
     if (previous && previous.runId === runId && seq <= previous.seq) {
       this.stats.rejectedBeacons += 1;
       this.stats.replayedBeacons += 1;
@@ -153,11 +222,17 @@ export class H22HostWatchdogSupervisor {
     }
 
     const newRun = !!previous && previous.runId !== runId;
+    if (newRun) {
+      this._retireRun(character, previous.runId, 'REPLACED_BY_NEW_RUN');
+      this.stats.runTransitions += 1;
+    }
+    const hostDeadlineAt = acceptedAt + Number(beacon.leaseMs);
     this.records.set(character, {
       character,
       runId,
       seq,
-      acceptedAt: this.now(),
+      acceptedAt,
+      hostDeadlineAt,
       beacon: clone(beacon)
     });
     this.graceUntil.delete(character);
@@ -167,10 +242,20 @@ export class H22HostWatchdogSupervisor {
       runId,
       seq,
       newRun,
-      deadlineAt: beacon.deadlineAt,
+      hostDeadlineAt,
+      reportedDeadlineAt: beacon.deadlineAt,
       healthState: bounded(beacon.health && beacon.health.state, 40)
     });
-    return { accepted: true, character, runId, seq, newRun, deadlineAt: beacon.deadlineAt };
+    return {
+      accepted: true,
+      character,
+      runId,
+      seq,
+      newRun,
+      deadlineAt: hostDeadlineAt,
+      hostDeadlineAt,
+      reportedDeadlineAt: beacon.deadlineAt
+    };
   }
 
   _names() {
@@ -188,7 +273,7 @@ export class H22HostWatchdogSupervisor {
       return { character: name, dead: true, reason: 'NO_BEACON_AFTER_STARTUP_GRACE', incidentAt, overdueMs: now - incidentAt };
     }
 
-    const deadlineAt = Number(record.beacon.deadlineAt);
+    const deadlineAt = Number(record.hostDeadlineAt);
     if (now <= deadlineAt) {
       return {
         character: name,
@@ -302,6 +387,7 @@ export class H22HostWatchdogSupervisor {
       if (result === false || result && result.ok === false) throw new Error('restart callback reported failure');
       this.stats.restartSuccesses += 1;
       this._record('RESTART_SUCCEEDED', { character: name, runId: context.runId });
+      if (record && record.runId) this._retireRun(name, record.runId, 'PROCESS_RESTART_REQUESTED');
       this.records.delete(name);
       this.graceUntil.set(name, now + this.startupGraceMs);
       this.state = 'RESTARTING';
@@ -328,7 +414,10 @@ export class H22HostWatchdogSupervisor {
         lastRunId: record && record.runId || null,
         lastSeq: record && record.seq || null,
         lastBeaconAt: record && record.beacon && record.beacon.at || null,
-        lastDeadlineAt: record && record.beacon && record.beacon.deadlineAt || null,
+        lastAcceptedAt: record && record.acceptedAt || null,
+        lastDeadlineAt: record && record.hostDeadlineAt || null,
+        lastReportedDeadlineAt: record && record.beacon && record.beacon.deadlineAt || null,
+        retiredRunCount: this.retiredRuns.has(name) ? this.retiredRuns.get(name).size : 0,
         health: record && record.beacon && record.beacon.health ? clone(record.beacon.health) : null,
         restartBudget: {
           used: attempts.length,
@@ -353,6 +442,9 @@ export class H22HostWatchdogSupervisor {
       characters,
       policies: {
         beaconReplayRejected: true,
+        retiredRunIdsRejected: true,
+        leaseExpiryUsesHostReceiptClock: true,
+        perCharacterStartupGrace: true,
         oneRestartPerTick: true,
         restartCooldown: true,
         boundedRestartBudget: true,
