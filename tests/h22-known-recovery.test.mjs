@@ -232,6 +232,8 @@ test('H22 cooldown and budget are independent per target', async () => {
   assert.equal((await recovery.tick()).success, true);
   fault(f.state, 'runtime-health', 'STALE');
   now = 3000;
+  assert.equal((await recovery.tick()).plan.state, 'WATCH');
+  now = 4001;
   assert.equal((await recovery.tick()).plan.reason, 'RECOVERY_COOLDOWN');
   now = 7002;
   assert.equal((await recovery.tick()).plan.reason, 'RECOVERY_BUDGET_EXHAUSTED');
