@@ -214,7 +214,8 @@ function fixture(options = {}) {
     ctx,
     resolve: value => resolvePending && resolvePending(value == null ? { success: true } : value),
     reject: error => rejectPending && rejectPending(error || new Error('PROMISE_REJECTED')),
-    recreate: extra => fixture({ ...options, ...(extra || {}), state, storage })
+    recreate: extra => fixture({ ...options, ...(extra || {}), state, storage }),
+    runtimePeers
   };
 }
 
@@ -981,4 +982,69 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(dist, /H19_REMOTE_TARGET_NOT_RUNNER_CONTROLLABLE/);
   assert.match(dist, /H19_REMOTE_CONTROLLABLE_TARGET_UNAVAILABLE/);
   assert.equal(pkg.version, '0.22.5');
+});
+
+
+test('H22 live regression: non-coordinator accepts a validated owned-party invite while proactive lifecycle autonomy stays disabled', async () => {
+  const f = fixture({ onlineNames: ['My_Ranger', 'My_Priest'], runnerActiveNames: ['My_Ranger', 'My_Priest'] });
+  const policy = f.controller.setPolicy({
+    desiredActiveNames: ['My_Ranger', 'My_Priest'],
+    desiredRuntimeRunningNames: [],
+    desiredPartyMemberNames: ['My_Ranger', 'My_Priest'],
+    desiredPartyLeader: 'My_Priest'
+  });
+  assert.equal(policy.accepted, true);
+  assert.equal(f.controller.status().autonomyEnabled, false);
+
+  assert.equal(f.controller._recordPartySignal('INVITE', 'My_Priest'), true);
+  const dispatched = f.controller.tick();
+  assert.equal(dispatched.state, 'DISPATCHED');
+  assert.equal(f.state.dispatches.length, 1);
+  assert.equal(f.state.dispatches[0].name, 'accept_party_invite');
+
+  await flush();
+  const confirmed = f.controller.tick();
+  assert.equal(confirmed.state, 'CONFIRMED');
+  assert.equal(confirmed.kind, 'PARTY_ACCEPT_INVITE');
+  assert.equal(f.controller.status().autonomyEnabled, false);
+  assert.equal(f.controller.status().suspended, false);
+  assert.equal(f.controller.status().metrics.partyAcceptsConfirmed, 1);
+});
+
+test('H22 live regression: replaced remote runtime session satisfies an in-flight START without false H19 suspension', async () => {
+  const f = fixture({
+    onlineNames: ['My_Ranger', 'My_Priest'],
+    runnerActiveNames: ['My_Ranger', 'My_Priest'],
+    crossWindowPeers: [{ name: 'My_Priest', sessionId: 'old-session', running: false, runEpoch: 1 }],
+    crossWindowNoMutation: true,
+    crossWindowReject: true
+  });
+  const policy = f.controller.setPolicy({
+    desiredActiveNames: ['My_Ranger', 'My_Priest'],
+    desiredRuntimeRunningNames: ['My_Priest'],
+    desiredPartyMemberNames: [],
+    desiredPartyLeader: null
+  });
+  assert.equal(policy.accepted, true);
+  assert.equal(f.controller.startAutonomy({ maxActions: 4 }).accepted, true);
+
+  const dispatched = f.controller.tick();
+  assert.equal(dispatched.state, 'DISPATCHED');
+  assert.equal(f.controller.status().currentAction.before.targetSessionId, 'old-session');
+
+  f.runtimePeers.set('My_Priest', {
+    name: 'My_Priest',
+    sessionId: 'replacement-session',
+    running: true,
+    runEpoch: 1
+  });
+  await flush();
+
+  const reconciled = f.controller.tick();
+  assert.equal(reconciled.state, 'CONFIRMED');
+  assert.equal(reconciled.details.evidence, 'CROSS_WINDOW_RUNTIME_REPLACED_SESSION_LIVE_STATE');
+  assert.equal(reconciled.details.previousTargetSessionId, 'old-session');
+  assert.equal(reconciled.details.targetSessionId, 'replacement-session');
+  assert.equal(f.controller.status().suspended, false);
+  assert.equal(f.controller.status().metrics.actionsUnknown, 0);
 });
