@@ -19067,10 +19067,7 @@
         coordinationRetryMs: Math.max(2000, finite(globalConfig.coordinationRetryMs, DEFAULT_COORDINATION_RETRY_MS)),
         autoDownload: globalConfig.autoDownload !== false,
         autoApply: globalConfig.autoApply !== false,
-        coordinatedApply: globalConfig.coordinatedApply !== false,
-        stagingSlots: Array.isArray(globalConfig.stagingSlots)
-          ? [...new Set(globalConfig.stagingSlots.map(value => String(value)).filter(Boolean))].slice(0, 4)
-          : []
+        coordinatedApply: globalConfig.coordinatedApply !== false
       };
       this.active = false;
       this.busy = false;
@@ -19129,9 +19126,6 @@
       if (value.groupApplyDelayMs != null) this.config.groupApplyDelayMs = Math.max(6000, finite(value.groupApplyDelayMs, this.config.groupApplyDelayMs));
       if (value.coordinationRetryMs != null) this.config.coordinationRetryMs = Math.max(2000, finite(value.coordinationRetryMs, this.config.coordinationRetryMs));
       if (Object.prototype.hasOwnProperty.call(value, 'coordinatedApply')) this.config.coordinatedApply = value.coordinatedApply !== false;
-      if (Array.isArray(value.stagingSlots)) {
-        this.config.stagingSlots = [...new Set(value.stagingSlots.map(item => String(item)).filter(Boolean))].slice(0, 4);
-      }
       return this.status();
     }
 
