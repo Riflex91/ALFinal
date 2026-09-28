@@ -467,12 +467,14 @@
           ? this.crossWindow.freshPeer(desiredName)
           : null;
         const desiredRuntimeRunning = !!(desiredPeer && desiredPeer.running === true);
-        if (oldGone && desiredRuntimeRunning) {
+        const desiredFullAutonomyEnabled = !!(desiredPeer && desiredPeer.fullAutonomyEnabled === true);
+        if (oldGone && desiredRuntimeRunning && desiredFullAutonomyEnabled) {
           return {
             confirmed: true,
-            evidence: 'STALE_BROWSER_SWAP_NEW_RUNTIME_RUNNING',
+            evidence: 'STALE_BROWSER_SWAP_NEW_RUNTIME_READY',
             desiredCharacterPresent: desiredPresent,
             desiredRuntimeRunning: true,
+            desiredFullAutonomyEnabled: true,
             desiredSessionId: desiredPeer.sessionId || null
           };
         }
@@ -480,7 +482,9 @@
           confirmed: false,
           reason: desiredPresent
             ? desiredPeer
-              ? 'H26_STALE_BROWSER_SWAP_RUNTIME_NOT_RUNNING'
+              ? desiredRuntimeRunning
+                ? 'H26_STALE_BROWSER_SWAP_FULL_AUTONOMY_NOT_READY'
+                : 'H26_STALE_BROWSER_SWAP_RUNTIME_NOT_RUNNING'
               : 'H26_STALE_BROWSER_SWAP_RUNTIME_NOT_LOADED'
             : 'H25_STALE_BROWSER_SWAP_OUTCOME_UNVERIFIED'
         };
@@ -1436,14 +1440,16 @@
             ? this.crossWindow.freshPeer(desiredName)
             : null;
           const desiredRuntimeRunning = !!(desiredPeer && desiredPeer.running === true);
-          if (oldGone && desiredRuntimeRunning) {
+          const desiredFullAutonomyEnabled = !!(desiredPeer && desiredPeer.fullAutonomyEnabled === true);
+          if (oldGone && desiredRuntimeRunning && desiredFullAutonomyEnabled) {
             this.metrics.crossWindowConfirms += 1;
             return this._confirmCurrent({
-              evidence: 'BROWSER_SWAP_NEW_RUNTIME_RUNNING',
+              evidence: 'BROWSER_SWAP_NEW_RUNTIME_READY',
               oldCharacterOffline: true,
               desiredCharacterPresent: desiredPresent,
               desiredRuntimeLoaded: true,
               desiredRuntimeRunning: true,
+              desiredFullAutonomyEnabled: true,
               desiredSessionId: desiredPeer.sessionId || null
             });
           }
