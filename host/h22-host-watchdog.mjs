@@ -44,6 +44,7 @@ export class H22HostWatchdogSupervisor {
     this.restartEnabled = false;
     this.startedAt = this.now();
     this.records = new Map();
+    this.graceUntil = new Map();
     this.restartAttempts = new Map();
     this.lastRestartAttemptAt = new Map();
     this.history = [];
@@ -159,6 +160,7 @@ export class H22HostWatchdogSupervisor {
       acceptedAt: this.now(),
       beacon: clone(beacon)
     });
+    this.graceUntil.delete(character);
     this.stats.acceptedBeacons += 1;
     this._record('BEACON_ACCEPTED', {
       character,
@@ -179,7 +181,7 @@ export class H22HostWatchdogSupervisor {
   _deadmanFor(name, now = this.now()) {
     const record = this.records.get(name);
     if (!record) {
-      const incidentAt = this.startedAt + this.startupGraceMs;
+      const incidentAt = Math.max(this.startedAt + this.startupGraceMs, finite(this.graceUntil.get(name), 0));
       if (now <= incidentAt) {
         return { character: name, dead: false, state: 'STARTING', reason: 'AWAITING_FIRST_BEACON', deadlineAt: incidentAt };
       }
@@ -301,6 +303,7 @@ export class H22HostWatchdogSupervisor {
       this.stats.restartSuccesses += 1;
       this._record('RESTART_SUCCEEDED', { character: name, runId: context.runId });
       this.records.delete(name);
+      this.graceUntil.set(name, now + this.startupGraceMs);
       this.state = 'RESTARTING';
       this.reason = 'PROCESS_RESTART_REQUESTED';
     } catch (error) {
