@@ -23,8 +23,13 @@ const body = source.map(file => fs.readFileSync(path.join(root, file), 'utf8')).
 const bundle = banner + body + '\n';
 const bundleBytes = Buffer.byteLength(bundle, 'utf8');
 const bundleSha256 = crypto.createHash('sha256').update(bundle, 'utf8').digest('hex');
+const distPath = path.join(root, 'dist/al-bot.js');
+const existingBundle = fs.existsSync(distPath) ? fs.readFileSync(distPath, 'utf8') : null;
+if (process.env.CI === 'true' && existingBundle != null && existingBundle !== bundle) {
+  throw new Error('dist/al-bot.js is out of date; run npm run build and commit the generated bundle');
+}
 fs.mkdirSync(path.join(root, 'dist'), { recursive: true });
-fs.writeFileSync(path.join(root, 'dist/al-bot.js'), bundle, 'utf8');
+fs.writeFileSync(distPath, bundle, 'utf8');
 const releaseCommitSha = String(process.env.ALBOT_RELEASE_COMMIT_SHA || '').trim().toLowerCase();
 const releaseMinBootstrapVersion = String(process.env.ALBOT_RELEASE_MIN_BOOTSTRAP_VERSION || bootstrapVersion).trim();
 const releaseTimestamp = String(process.env.ALBOT_RELEASED_AT || '').trim();
