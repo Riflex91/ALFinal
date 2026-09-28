@@ -25,7 +25,8 @@
         lifecycle: false,
         farming: false,
         economy: false,
-        partyLogistics: false
+        partyLogistics: false,
+        encounters: false
       };
       this.config = {
         taskType: 'FARM',
@@ -131,6 +132,9 @@
         if (this.started.lifecycle) {
           try { runtime.lifecycle.stopAutonomy(reason); } catch (_) {}
         }
+        if (this.started.encounters && runtime.encounters) {
+          try { runtime.encounters.stopAutonomy(reason); } catch (_) {}
+        }
       }
       if (this.tickResourceId && this.scope && typeof this.scope.cancel === 'function') {
         try { this.scope.cancel(this.tickResourceId, reason); } catch (_) {}
@@ -139,7 +143,7 @@
       this.enabled = false;
       this.desiredCharacterNames = [];
       this.lifecycleArmed = false;
-      this.started = { lifecycle: false, farming: false, economy: false, partyLogistics: false };
+      this.started = { lifecycle: false, farming: false, economy: false, partyLogistics: false, encounters: false };
       this.lastDecision = { at: new Date().toISOString(), type: 'STOP', reason: cleanText(reason, 200) };
       return this.status();
     }
@@ -428,9 +432,14 @@
         const status = this.runtime.partyLogistics.status();
         if (this.started.partyLogistics && status && status.autonomyEnabled === true) this.runtime.partyLogistics.stopAutonomy(reason);
       } catch (_) {}
+      try {
+        const status = this.runtime.encounters && this.runtime.encounters.status ? this.runtime.encounters.status() : null;
+        if (this.started.encounters && status && status.autonomyEnabled === true) this.runtime.encounters.stopAutonomy(reason);
+      } catch (_) {}
       this.started.farming = false;
       this.started.economy = false;
       this.started.partyLogistics = false;
+      this.started.encounters = false;
     }
 
     _recoveryPlan(readiness) {
@@ -465,7 +474,49 @@
       const localName = String(local.name);
       const ctype = String(local.ctype || '').toLowerCase();
       const selected = new Set(plan && plan.selected ? plan.selected.memberNames : []);
-      const shouldFarm = ctype !== 'merchant' && selected.has(localName);
+      const encounterTask = ['BOSS', 'EVENT'].includes(String(plan && plan.taskType || '').toUpperCase());
+      const shouldEncounter = encounterTask && ctype !== 'merchant' && selected.has(localName);
+      const shouldFarm = !encounterTask && ctype !== 'merchant' && selected.has(localName);
+
+      if (encounterTask) {
+        const farmStatus = this.runtime.farmIntelligence.status();
+        if (farmStatus && farmStatus.active) {
+          const owner = farmStatus.session ? String(farmStatus.session.owner || '') : '';
+          if (owner && owner !== 'full-autonomy') return { ok: false, reason: 'FULL_AUTONOMY_FOREIGN_FARM_INTELLIGENCE_OWNERSHIP' };
+          try { this.runtime.farmIntelligence.stopAutonomy('FULL_AUTONOMY_ENCOUNTER_PRIORITY'); } catch (_) {}
+          this.started.farming = false;
+        }
+        const encounter = this.runtime.encounters;
+        const encounterStatus = encounter && encounter.status ? encounter.status() : null;
+        if (!encounter || !encounterStatus) return { ok: false, reason: 'FULL_AUTONOMY_ENCOUNTER_CONTROLLER_UNAVAILABLE' };
+        if (encounterStatus.suspended) return { ok: false, reason: encounterStatus.suspendedReason || 'FULL_AUTONOMY_ENCOUNTER_SUSPENDED' };
+        if (shouldEncounter) {
+          if (encounterStatus.autonomyEnabled !== true) {
+            const started = encounter.startAutonomy({
+              owner: 'full-autonomy',
+              taskType: String(plan.taskType).toUpperCase(),
+              groupLeaderName: plan && plan.leaderName || null,
+              groupMemberNames: plan && plan.selected ? plan.selected.memberNames : []
+            });
+            if (!started || started.accepted !== true) return { ok: false, reason: started && started.reason || 'FULL_AUTONOMY_ENCOUNTER_START_REJECTED' };
+          } else if (typeof encounter.configureGroup === 'function') {
+            encounter.configureGroup({
+              groupLeaderName: plan && plan.leaderName || null,
+              groupMemberNames: plan && plan.selected ? plan.selected.memberNames : []
+            });
+          }
+          this.started.encounters = true;
+        } else if (encounterStatus.autonomyEnabled === true && this.started.encounters) {
+          try { encounter.stopAutonomy('FULL_AUTONOMY_NOT_SELECTED_FOR_ENCOUNTER'); } catch (_) {}
+          this.started.encounters = false;
+        }
+        return { ok: true, shouldFarm: false, shouldEncounter, selected: [...selected].sort() };
+      }
+
+      if (this.started.encounters && this.runtime.encounters) {
+        try { this.runtime.encounters.stopAutonomy('FULL_AUTONOMY_RETURN_TO_BASE_TASK'); } catch (_) {}
+        this.started.encounters = false;
+      }
       const status = this.runtime.farmIntelligence.status();
       const sessionOwner = status && status.session ? String(status.session.owner || '') : '';
       const fullAutonomyOwns = status && status.active && sessionOwner === 'full-autonomy';
@@ -613,7 +664,11 @@
           };
         }
 
-        let plan = this.strategy.optimizeTask({ type: this.config.taskType });
+        const encounterPriority = this.runtime.encounters && typeof this.runtime.encounters.preferredTask === 'function'
+          ? this.runtime.encounters.preferredTask()
+          : null;
+        const effectiveTaskType = encounterPriority && encounterPriority.taskType || this.config.taskType;
+        let plan = this.strategy.optimizeTask({ type: effectiveTaskType });
         this.lastPlan = clone(plan);
         if (!plan || plan.status !== 'SELECTION_READY') {
           this.strategy.recordTraining(false);
@@ -656,7 +711,7 @@
           if (!rotationReadiness || rotationReadiness.ready !== true) {
             const fallbackPlan = readiness.online.length === 4
               ? this.strategy.optimizeTask({
-                type: this.config.taskType,
+                type: effectiveTaskType,
                 allowedCharacterNames: readiness.online.slice()
               })
               : null;
@@ -779,7 +834,7 @@
           local: local.name,
           localRole: String(local.ctype || '').toLowerCase() === 'merchant'
             ? merchant.owner
-            : (combat.shouldFarm ? 'combat-farm' : 'standby'),
+            : (combat.shouldEncounter ? 'combat-encounter' : (combat.shouldFarm ? 'combat-farm' : 'standby')),
           taskType: plan.taskType,
           executionMembers: plan.selected.memberNames,
           supportMembers: plan.supportMemberNames,
