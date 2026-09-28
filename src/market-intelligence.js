@@ -196,8 +196,15 @@
       const name = cleanText(itemName, 160);
       const level = Math.max(0, Math.floor(finite(options.level) || 0));
       if (!name) return { available: false, reason: 'MARKET_ITEM_REQUIRED' };
+      let localName = null;
+      try {
+        const snapshot = this.game && typeof this.game.snapshot === 'function' ? this.game.snapshot() : null;
+        localName = snapshot && snapshot.character && snapshot.character.name ? String(snapshot.character.name) : null;
+      } catch (_) {}
       const rows = this.snapshot && Array.isArray(this.snapshot.listings)
-        ? this.snapshot.listings.filter(row => row.itemName === name && Number(row.level || 0) === level)
+        ? this.snapshot.listings.filter(row => row.itemName === name
+          && Number(row.level || 0) === level
+          && (!localName || !row.owner || String(row.owner) !== localName))
         : [];
       const asks = rows.filter(row => !row.buying).sort((a, b) => a.price - b.price);
       const bids = rows.filter(row => row.buying).sort((a, b) => b.price - a.price);
@@ -302,8 +309,19 @@
       this.suspendedReason = null;
       this.lastPlan = null;
       this.lastAction = null;
-      this.config = { tickMs: 2000, maxListingsPerSession: 20 };
+      this.config = {
+        tickMs: 2000,
+        maxListingsPerSession: 20,
+        maxRepricesPerSession: 12,
+        outcomeTimeoutMs: 7000,
+        repriceMinDeltaRatio: 0.03,
+        repriceMinDeltaGold: 100,
+        repriceCooldownMs: 300000,
+        maxRepriceStepRatio: 0.20
+      };
       this.listingsThisSession = 0;
+      this.repricesThisSession = 0;
+      this.lastRepriceAtBySlot = new Map();
     }
 
     start(context = {}) {
@@ -325,6 +343,12 @@
 
     configure(options = {}) {
       if (options.autoManage != null) this.autoManage = options.autoManage === true;
+      if (options.repriceMinDeltaRatio != null) {
+        this.config.repriceMinDeltaRatio = Math.max(0.01, Math.min(0.5, Number(options.repriceMinDeltaRatio) || 0.03));
+      }
+      if (options.repriceCooldownMs != null) {
+        this.config.repriceCooldownMs = Math.max(30000, Math.min(3600000, Number(options.repriceCooldownMs) || 300000));
+      }
       return this.status();
     }
 
@@ -356,9 +380,18 @@
       return plan && Array.isArray(plan.items) ? plan.items.filter(row => row.disposition === 'SELL' && row.protected !== true) : [];
     }
 
+    _explicitSellNames() {
+      try {
+        const rules = this.inventory && typeof this.inventory.ruleSnapshot === 'function' ? this.inventory.ruleSnapshot() : null;
+        return new Set(Array.isArray(rules && rules.sellNames) ? rules.sellNames.map(String) : []);
+      } catch (_) {
+        return new Set();
+      }
+    }
+
     _emptyTradeSlot(character) {
       const slots = character && character.slots && typeof character.slots === 'object' ? character.slots : {};
-      for (let index = 1; index <= 30; index += 1) {
+      for (let index = 1; index <= 16; index += 1) {
         const key = 'trade' + index;
         if (!slots[key]) return { key, index };
       }
@@ -371,6 +404,12 @@
       return row ? Number(row.slot) : null;
     }
 
+    _inventorySnapshot() {
+      return this.game && typeof this.game.inventorySnapshot === 'function'
+        ? this.game.inventorySnapshot()
+        : null;
+    }
+
     _busy() {
       const combat = this.combat && this.combat.status ? this.combat.status() : null;
       if (combat && combat.active) return 'COMBAT_ACTIVE';
@@ -381,6 +420,101 @@
       const logistics = this.partyLogistics && this.partyLogistics.status ? this.partyLogistics.status() : null;
       if (logistics && (logistics.currentAction || logistics.autonomyEnabled)) return 'PARTY_LOGISTICS_ACTIVE';
       return null;
+    }
+
+    _actionableBand(band) {
+      return !!(band && finite(band.recommendedAsk) != null && finite(band.recommendedAsk) > 0
+        && ['LIVE_VISIBLE', 'ALDATA_SAMPLE'].includes(String(band.confidence || '')));
+    }
+
+    _sameProperty(a, b) {
+      try { return JSON.stringify(a == null ? null : a) === JSON.stringify(b == null ? null : b); }
+      catch (_) { return a == null && b == null; }
+    }
+
+    _safeExistingListing(slot, raw, sellNames) {
+      if (!/^trade\d+$/.test(String(slot || '')) || !raw || !raw.name) return null;
+      if (raw.b === true || raw.giveaway != null || raw.acl || raw.v || raw.l || raw.data != null || raw.expires != null || raw.gift) return null;
+      const name = String(raw.name);
+      if (!sellNames.has(name)) return null;
+      const price = finite(raw.price);
+      if (price == null || price <= 0 || !raw.rid) return null;
+      return {
+        tradeSlot: String(slot),
+        tradeIndex: Math.max(1, Number(String(slot).replace('trade', '')) || 1),
+        itemName: name,
+        level: Math.max(0, Math.floor(finite(raw.level) || 0)),
+        quantity: Math.max(1, Math.floor(finite(raw.q) || 1)),
+        currentPrice: price,
+        rid: String(raw.rid),
+        statType: raw.stat_type == null ? null : String(raw.stat_type),
+        property: raw.p == null ? null : clone(raw.p)
+      };
+    }
+
+    _repriceCandidate(character) {
+      if (this.repricesThisSession >= this.config.maxRepricesPerSession) return null;
+      const inventory = this._inventorySnapshot();
+      if (!inventory || inventory.available === false || Number(inventory.freeSlots) <= 0) return null;
+      const sellNames = this._explicitSellNames();
+      if (!sellNames.size) return null;
+      const slots = character && character.slots && typeof character.slots === 'object' ? character.slots : {};
+      const candidates = [];
+      for (const [slot, raw] of Object.entries(slots)) {
+        const listing = this._safeExistingListing(slot, raw, sellNames);
+        if (!listing) continue;
+        const lastAt = Number(this.lastRepriceAtBySlot.get(listing.tradeSlot) || 0);
+        if (Date.now() - lastAt < this.config.repriceCooldownMs) continue;
+        const band = this.market && typeof this.market.priceBand === 'function'
+          ? this.market.priceBand(listing.itemName, { level: listing.level })
+          : null;
+        if (!this._actionableBand(band)) continue;
+        const rawTarget = Math.max(1, Math.floor(Number(band.recommendedAsk)));
+        const lowerStep = Math.max(1, Math.floor(listing.currentPrice * (1 - this.config.maxRepriceStepRatio)));
+        const upperStep = Math.max(1, Math.ceil(listing.currentPrice * (1 + this.config.maxRepriceStepRatio)));
+        const targetPrice = Math.max(lowerStep, Math.min(upperStep, rawTarget));
+        const delta = Math.abs(targetPrice - listing.currentPrice);
+        const threshold = Math.max(this.config.repriceMinDeltaGold, listing.currentPrice * this.config.repriceMinDeltaRatio);
+        if (delta < threshold) continue;
+        candidates.push({
+          ...listing,
+          kind: 'REPRICE',
+          targetPrice,
+          delta,
+          deltaRatio: delta / listing.currentPrice,
+          priceBand: clone(band)
+        });
+      }
+      candidates.sort((a, b) => Number(b.deltaRatio) - Number(a.deltaRatio) || Number(b.delta) - Number(a.delta));
+      return candidates[0] || null;
+    }
+
+    _findRelistInventorySlot(pending) {
+      const inventory = this._inventorySnapshot();
+      const items = inventory && Array.isArray(inventory.items) ? inventory.items : [];
+      const matches = items.filter(item =>
+        String(item.name || '') === String(pending.itemName || '')
+        && Number(item.level || 0) === Number(pending.level || 0)
+        && String(item.statType || '') === String(pending.statType || '')
+        && this._sameProperty(item.property, pending.property)
+        && Number(item.quantity || 1) >= Number(pending.quantity || 1)
+        && item.locked !== true
+        && item.giveaway !== true
+      );
+      matches.sort((a, b) => Number(a.quantity || 1) - Number(b.quantity || 1) || Number(a.slot) - Number(b.slot));
+      return matches[0] || null;
+    }
+
+    _liveListing(character, tradeSlot) {
+      return character && character.slots && character.slots[tradeSlot] || null;
+    }
+
+    _listingStillMatches(live, selected) {
+      return !!(live
+        && String(live.rid || '') === String(selected.rid || '')
+        && String(live.name || '') === String(selected.itemName || '')
+        && Number(live.level || 0) === Number(selected.level || 0)
+        && Number(live.price || 0) === Number(selected.currentPrice || 0));
     }
 
     plan() {
@@ -398,14 +532,19 @@
           : { state: 'READY', reason: 'MERCHANT_STAND_OPEN_READY', selected: { kind: 'OPEN_STAND', inventorySlot: standSlot } };
       }
 
+      const reprice = this._repriceCandidate(character);
+      if (reprice) {
+        return this.lastPlan = { state: 'READY', reason: 'MERCHANT_STAND_REPRICE_READY', selected: reprice };
+      }
+
       const tradeSlot = this._emptyTradeSlot(character);
       if (!tradeSlot) return this.lastPlan = { state: 'IDLE', reason: 'MERCHANT_STAND_FULL', selected: null };
       for (const row of this._safeSellRows()) {
         const band = this.market && typeof this.market.priceBand === 'function'
           ? this.market.priceBand(row.name, { level: Number(row.level) || 0 })
           : null;
-        const price = finite(band && band.recommendedAsk);
-        if (price == null || price <= 0 || band.confidence === 'INSUFFICIENT') continue;
+        if (!this._actionableBand(band)) continue;
+        const price = finite(band.recommendedAsk);
         return this.lastPlan = {
           state: 'READY',
           reason: 'MERCHANT_STAND_LISTING_READY',
@@ -422,7 +561,7 @@
           }
         };
       }
-      return this.lastPlan = { state: 'IDLE', reason: 'NO_SAFE_SELL_LISTING_WITH_PRICE_SIGNAL', selected: null };
+      return this.lastPlan = { state: 'IDLE', reason: 'NO_SAFE_SELL_LISTING_WITH_ACTIONABLE_PRICE_SIGNAL', selected: null };
     }
 
     _watch(value, pending) {
@@ -443,17 +582,84 @@
       }).catch(() => {});
     }
 
+    _suspend(reason, pending = null) {
+      this.suspendedReason = cleanText(reason || 'MERCHANT_STAND_SUSPENDED', 240);
+      this.autoManage = false;
+      this.pending = null;
+      this.lastAction = {
+        at: new Date().toISOString(),
+        type: 'UNKNOWN',
+        kind: pending && pending.kind || null,
+        reason: this.suspendedReason
+      };
+      return { state: 'UNKNOWN', reason: this.suspendedReason };
+    }
+
+    _beginRelist(pending) {
+      const inventoryRow = this._findRelistInventorySlot(pending);
+      if (!inventoryRow) return null;
+      const band = this.market && typeof this.market.priceBand === 'function'
+        ? this.market.priceBand(pending.itemName, { level: pending.level })
+        : null;
+      if (!this._actionableBand(band)) {
+        return this._suspend('MERCHANT_STAND_REPRICE_SIGNAL_LOST_AFTER_UNLIST', pending);
+      }
+      const currentTarget = Math.max(1, Math.floor(Number(band.recommendedAsk)));
+      const lower = Math.max(1, Math.floor(Number(pending.currentPrice) * (1 - this.config.maxRepriceStepRatio)));
+      const upper = Math.max(1, Math.ceil(Number(pending.currentPrice) * (1 + this.config.maxRepriceStepRatio)));
+      const price = Math.max(lower, Math.min(upper, currentTarget));
+      let dispatched;
+      try {
+        dispatched = this.actions.dispatch('trade', [
+          Number(inventoryRow.slot),
+          Number(pending.tradeIndex),
+          price,
+          Number(pending.quantity)
+        ]);
+      } catch (error) {
+        return this._suspend('MERCHANT_STAND_RELIST_DISPATCH_ERROR:' + cleanText(error && error.message || error, 180), pending);
+      }
+      if (!dispatched || dispatched.state !== 'DISPATCHED') {
+        return this._suspend(dispatched && dispatched.state === 'UNKNOWN'
+          ? 'MERCHANT_STAND_RELIST_DISPATCH_UNKNOWN'
+          : 'MERCHANT_STAND_RELIST_DISPATCH_REJECTED', pending);
+      }
+      const next = {
+        ...pending,
+        id: 'merchant-stand-' + Date.now() + '-relist',
+        kind: 'REPRICE_RELIST',
+        inventorySlot: Number(inventoryRow.slot),
+        price,
+        priceBand: clone(band),
+        deadlineAtMs: Date.now() + this.config.outcomeTimeoutMs,
+        settlement: 'PENDING'
+      };
+      this.pending = next;
+      this._watch(dispatched.value, next);
+      this.lastAction = {
+        at: new Date().toISOString(),
+        type: 'REPRICE_RELIST_DISPATCHED',
+        tradeSlot: next.tradeSlot,
+        itemName: next.itemName,
+        fromPrice: next.currentPrice,
+        toPrice: next.price
+      };
+      return { state: 'DISPATCHED', kind: next.kind, tradeSlot: next.tradeSlot, price: next.price };
+    }
+
     _observePending() {
       if (!this.pending) return null;
       const character = this._rawCharacter();
       const pending = this.pending;
+
       if (pending.kind === 'OPEN_STAND' && this._standOpen(character)) {
         this.pending = null;
         this.lastAction = { at: new Date().toISOString(), type: 'CONFIRMED', kind: pending.kind, evidence: 'LIVE_STAND_OPEN' };
         return { state: 'CONFIRMED', kind: pending.kind };
       }
+
       if (pending.kind === 'LIST') {
-        const live = character && character.slots && character.slots[pending.tradeSlot];
+        const live = this._liveListing(character, pending.tradeSlot);
         if (live && String(live.name || '') === String(pending.itemName) && Number(live.price) === Number(pending.price)) {
           this.pending = null;
           this.listingsThisSession += 1;
@@ -461,17 +667,49 @@
           return { state: 'CONFIRMED', kind: pending.kind };
         }
       }
+
+      if (pending.kind === 'REPRICE_UNLIST') {
+        const live = this._liveListing(character, pending.tradeSlot);
+        if (!live) {
+          const relist = this._beginRelist(pending);
+          if (relist) return relist;
+        } else if (!this._listingStillMatches(live, pending)) {
+          return this._suspend('MERCHANT_STAND_REPRICE_LISTING_CHANGED_DURING_UNLIST', pending);
+        }
+      }
+
+      if (pending.kind === 'REPRICE_RELIST') {
+        const live = this._liveListing(character, pending.tradeSlot);
+        if (live && String(live.name || '') === String(pending.itemName)
+          && Number(live.level || 0) === Number(pending.level || 0)
+          && Number(live.price || 0) === Number(pending.price || 0)) {
+          this.pending = null;
+          this.repricesThisSession += 1;
+          this.lastRepriceAtBySlot.set(pending.tradeSlot, Date.now());
+          this.lastAction = {
+            at: new Date().toISOString(),
+            type: 'REPRICE_CONFIRMED',
+            tradeSlot: pending.tradeSlot,
+            itemName: pending.itemName,
+            fromPrice: pending.currentPrice,
+            toPrice: pending.price,
+            evidence: 'LIVE_TRADE_SLOT'
+          };
+          return { state: 'CONFIRMED', kind: pending.kind, tradeSlot: pending.tradeSlot };
+        }
+      }
+
       if (pending.settlement === 'REJECTED') {
+        if (String(pending.kind || '').startsWith('REPRICE_')) {
+          return this._suspend('MERCHANT_STAND_REPRICE_REJECTED:' + cleanText(pending.error || 'UNKNOWN', 140), pending);
+        }
         this.pending = null;
         this.lastAction = { at: new Date().toISOString(), type: 'REJECTED', kind: pending.kind, reason: pending.error || 'MERCHANT_STAND_REJECTED' };
         return { state: 'REJECTED', reason: this.lastAction.reason };
       }
+
       if (Date.now() >= pending.deadlineAtMs) {
-        this.pending = null;
-        this.suspendedReason = 'MERCHANT_STAND_OUTCOME_UNKNOWN';
-        this.autoManage = false;
-        this.lastAction = { at: new Date().toISOString(), type: 'UNKNOWN', kind: pending.kind, reason: this.suspendedReason };
-        return { state: 'UNKNOWN', reason: this.suspendedReason };
+        return this._suspend('MERCHANT_STAND_OUTCOME_UNKNOWN', pending);
       }
       return { state: 'PENDING', kind: pending.kind };
     }
@@ -482,43 +720,82 @@
       if (!this.moduleActive || !this.autoManage) return { state: 'IDLE', reason: 'MERCHANT_STAND_AUTO_MANAGE_DISABLED' };
       if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason };
       if (this.canAct('merchant-stand') !== true) return { state: 'BLOCKED', reason: 'MERCHANT_STAND_RUNTIME_ACTION_BLOCKED' };
-      if (this.listingsThisSession >= this.config.maxListingsPerSession) return { state: 'BLOCKED', reason: 'MERCHANT_STAND_SESSION_BUDGET' };
+      if (this.listingsThisSession >= this.config.maxListingsPerSession
+          && this.repricesThisSession >= this.config.maxRepricesPerSession) {
+        return { state: 'BLOCKED', reason: 'MERCHANT_STAND_SESSION_BUDGET' };
+      }
+
       const plan = this.plan();
       if (!plan || plan.state !== 'READY' || !plan.selected) return plan;
       const selected = plan.selected;
-      const action = selected.kind === 'OPEN_STAND' ? 'open_stand' : 'trade';
-      const args = selected.kind === 'OPEN_STAND'
-        ? [selected.inventorySlot]
-        : [selected.inventorySlot, selected.tradeIndex, selected.price, selected.quantity];
+      let action;
+      let args;
+      let pendingKind = selected.kind;
+      if (selected.kind === 'OPEN_STAND') {
+        action = 'open_stand';
+        args = [selected.inventorySlot];
+      } else if (selected.kind === 'REPRICE') {
+        const character = this._rawCharacter();
+        const live = this._liveListing(character, selected.tradeSlot);
+        if (!this._listingStillMatches(live, selected)) {
+          return this._suspend('MERCHANT_STAND_REPRICE_PRE_DISPATCH_LISTING_CHANGED', selected);
+        }
+        action = 'unequip';
+        args = [selected.tradeSlot];
+        pendingKind = 'REPRICE_UNLIST';
+      } else {
+        action = 'trade';
+        args = [selected.inventorySlot, selected.tradeIndex, selected.price, selected.quantity];
+      }
+
       let dispatched;
       try { dispatched = this.actions.dispatch(action, args); }
       catch (error) { return { state: 'BLOCKED', reason: cleanText(error && error.message || error, 300) }; }
       if (!dispatched || dispatched.state !== 'DISPATCHED') {
+        if (selected.kind === 'REPRICE') {
+          return this._suspend(dispatched && dispatched.state === 'UNKNOWN'
+            ? 'MERCHANT_STAND_REPRICE_UNLIST_DISPATCH_UNKNOWN'
+            : 'MERCHANT_STAND_REPRICE_UNLIST_DISPATCH_REJECTED', selected);
+        }
         if (dispatched && dispatched.state === 'UNKNOWN') {
-          this.suspendedReason = 'MERCHANT_STAND_DISPATCH_UNKNOWN';
-          this.autoManage = false;
-          return { state: 'UNKNOWN', reason: this.suspendedReason };
+          return this._suspend('MERCHANT_STAND_DISPATCH_UNKNOWN', selected);
         }
         return { state: 'REJECTED', reason: dispatched && dispatched.error && dispatched.error.message || 'MERCHANT_STAND_DISPATCH_REJECTED' };
       }
+
       const pending = {
         id: 'merchant-stand-' + Date.now(),
-        kind: selected.kind,
+        kind: pendingKind,
         tradeSlot: selected.tradeSlot || null,
+        tradeIndex: selected.tradeIndex || null,
         itemName: selected.itemName || null,
-        price: selected.price || null,
-        deadlineAtMs: Date.now() + 6000,
+        level: Number(selected.level || 0),
+        quantity: Number(selected.quantity || 1),
+        price: selected.price || selected.targetPrice || null,
+        currentPrice: selected.currentPrice || null,
+        targetPrice: selected.targetPrice || null,
+        rid: selected.rid || null,
+        statType: selected.statType || null,
+        property: selected.property == null ? null : clone(selected.property),
+        deadlineAtMs: Date.now() + this.config.outcomeTimeoutMs,
         settlement: 'PENDING'
       };
       this.pending = pending;
       this._watch(dispatched.value, pending);
-      this.lastAction = { at: new Date().toISOString(), type: 'DISPATCHED', kind: selected.kind, itemName: selected.itemName || null, price: selected.price || null };
-      return { state: 'DISPATCHED', selected: clone(selected) };
+      this.lastAction = {
+        at: new Date().toISOString(),
+        type: 'DISPATCHED',
+        kind: pending.kind,
+        tradeSlot: pending.tradeSlot,
+        itemName: pending.itemName,
+        price: pending.price
+      };
+      return { state: 'DISPATCHED', selected: clone(selected), pending: clone(pending) };
     }
 
     status() {
       return {
-        schemaVersion: 1,
+        schemaVersion: 2,
         moduleActive: this.moduleActive,
         autoManage: this.autoManage,
         suspended: !!this.suspendedReason,
@@ -527,11 +804,14 @@
         lastPlan: clone(this.lastPlan),
         lastAction: clone(this.lastAction),
         listingsThisSession: this.listingsThisSession,
+        repricesThisSession: this.repricesThisSession,
+        config: clone(this.config),
         policies: {
           autoManageDefaultOff: true,
           onlyExplicitH10SellItems: true,
           externalMarketDataAdvisoryOnly: true,
-          existingListingsNotAutoRepricedUntilLiveRemovalContractValidated: true,
+          existingListingsRepricedThroughValidatedUnlistRelist: true,
+          repriceRequiresFreshLiveListingIdentity: true,
           unknownSuspendsWithoutBlindRetry: true
         }
       };
