@@ -29,7 +29,7 @@ function fixture(options = {}) {
     trade: { pending: null, request: null, suspended: false },
     upgrade: { pending: null, request: null, suspended: false },
     exchangeCraft: { pending: null, request: null, suspended: false },
-    inventory: { pending: null, request: null, suspended: false },
+    inventory: { pending: null, request: null, pendingLoot: null, suspended: false },
     merchant: { pending: null, request: null, delivery: null, suspended: false },
     gear: { pending: null, request: null, delivery: null, suspended: false },
     economy: { currentAction: null, suspended: false },
@@ -155,6 +155,7 @@ test('H22 safety gate blocks combat, transactions, UNKNOWN state, emergency and 
   const cases = [
     ['COMBAT_ACTIVE', f => { f.state.combat.active = true; }],
     ['BANK_PENDING', f => { f.state.bank.pending = { id: 'bank-1' }; }],
+    ['INVENTORY_PENDING_LOOT', f => { f.state.inventory.pendingLoot = { id: 'loot-1', settlement: 'PENDING' }; }],
     ['TRADE_SUSPENDED', f => { f.state.trade.suspended = true; }],
     ['EMERGENCY_STOP_LATCHED', f => { f.state.stop.latched = true; }],
     ['FULL_AUTONOMY_UNSAFE_TRANSITION', f => { f.state.fullAutonomy = { enabled: true, lastDecision: { state: 'BLOCKED' } }; }],
