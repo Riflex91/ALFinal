@@ -764,8 +764,8 @@ test('H19 separate-window lifecycle uses fresh CM peer instead of runner-active 
   assert.equal(controller.status().metrics.crossWindowDispatches, 2);
 });
 
-test('H25 catch-up rotation navigates the separate browser window directly to the weak character', async () => {
-  const { controller, state } = fixture({
+test('H26 browser swap waits for the replacement bot runtime to load and start', async () => {
+  const { controller, state, runtimePeers } = fixture({
     onlineNames: ['My_Merchant', 'My_Ranger', 'My_Priest', 'My_Warrior'],
     runnerActiveNames: ['My_Ranger'],
     freezeRunnerActive: true,
@@ -810,11 +810,31 @@ test('H25 catch-up rotation navigates the separate browser window directly to th
   assert.equal(state.dispatches.filter(row => row.name === 'start_character').length, 0);
 
   await flush();
+  const characterOnly = controller.tick();
+  assert.equal(characterOnly.state, 'PENDING', 'character presence alone must not confirm the browser swap');
+  assert.equal(controller.status().metrics.browserSwapsConfirmed, 0);
+
+  runtimePeers.set('My_Mage', {
+    name: 'My_Mage',
+    sessionId: 'mage-window-session',
+    running: false,
+    runEpoch: 1,
+    characterDisconnectCapable: true,
+    characterNavigateCapable: true
+  });
+  const loadedButStopped = controller.tick();
+  assert.equal(loadedButStopped.state, 'PENDING', 'a loaded but stopped bot runtime must not confirm the browser swap');
+
+  runtimePeers.get('My_Mage').running = true;
+  runtimePeers.get('My_Mage').runEpoch = 2;
   const confirmed = controller.tick();
   assert.equal(confirmed.state, 'CONFIRMED');
   assert.equal(confirmed.kind, 'BROWSER_SWAP');
   assert.equal(confirmed.desiredName, 'My_Mage');
-  assert.equal(confirmed.details.evidence, 'BROWSER_SWAP_NEW_CHARACTER_PRESENT');
+  assert.equal(confirmed.details.evidence, 'BROWSER_SWAP_NEW_RUNTIME_RUNNING');
+  assert.equal(confirmed.details.desiredRuntimeLoaded, true);
+  assert.equal(confirmed.details.desiredRuntimeRunning, true);
+  assert.equal(confirmed.details.desiredSessionId, 'mage-window-session');
   assert.equal(controller.status().metrics.browserSwapsConfirmed, 1);
   assert.equal(state.dispatches.filter(row => row.name === 'start_character').length, 0);
 });
