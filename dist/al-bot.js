@@ -1,4 +1,4 @@
-/* AL Bot 0.25.0-h25 | generated file | do not edit dist directly */
+/* AL Bot 0.26.0-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -6522,6 +6522,7 @@
         runEpoch: Number.isFinite(Number(row.runEpoch)) ? Number(row.runEpoch) : 0,
         emergencyStopLatched: row.emergencyStopLatched === true,
         lifecycleAutonomyEnabled: typeof row.lifecycleAutonomyEnabled === 'boolean' ? row.lifecycleAutonomyEnabled : null,
+        fullAutonomyEnabled: typeof row.fullAutonomyEnabled === 'boolean' ? row.fullAutonomyEnabled : null,
         characterDisconnectCapable: row.characterDisconnectCapable === true,
         characterNavigateCapable: row.characterNavigateCapable === true,
         version: cleanText(row.version || '', 80) || null,
@@ -6601,6 +6602,7 @@
         runEpoch: Number.isFinite(Number(state.runEpoch)) ? Number(state.runEpoch) : 0,
         emergencyStopLatched: state.emergencyStopLatched === true,
         lifecycleAutonomyEnabled: typeof state.lifecycleAutonomyEnabled === 'boolean' ? state.lifecycleAutonomyEnabled : null,
+        fullAutonomyEnabled: typeof state.fullAutonomyEnabled === 'boolean' ? state.fullAutonomyEnabled : null,
         characterDisconnectCapable: state.characterDisconnectCapable === true,
         characterNavigateCapable: state.characterNavigateCapable === true,
         version: cleanText(state.version || '', 80) || null,
@@ -7772,10 +7774,28 @@
         const desiredPeer = desiredName && this.crossWindow && typeof this.crossWindow.freshPeer === 'function'
           ? this.crossWindow.freshPeer(desiredName)
           : null;
-        if (oldGone && (desiredPresent || desiredPeer)) {
-          return { confirmed: true, evidence: desiredPeer ? 'STALE_BROWSER_SWAP_NEW_PEER' : 'STALE_BROWSER_SWAP_NEW_CHARACTER_PRESENT' };
+        const desiredRuntimeRunning = !!(desiredPeer && desiredPeer.running === true);
+        const desiredFullAutonomyEnabled = !!(desiredPeer && desiredPeer.fullAutonomyEnabled === true);
+        if (oldGone && desiredRuntimeRunning && desiredFullAutonomyEnabled) {
+          return {
+            confirmed: true,
+            evidence: 'STALE_BROWSER_SWAP_NEW_RUNTIME_READY',
+            desiredCharacterPresent: desiredPresent,
+            desiredRuntimeRunning: true,
+            desiredFullAutonomyEnabled: true,
+            desiredSessionId: desiredPeer.sessionId || null
+          };
         }
-        return { confirmed: false, reason: 'H25_STALE_BROWSER_SWAP_OUTCOME_UNVERIFIED' };
+        return {
+          confirmed: false,
+          reason: desiredPresent
+            ? desiredPeer
+              ? desiredRuntimeRunning
+                ? 'H26_STALE_BROWSER_SWAP_FULL_AUTONOMY_NOT_READY'
+                : 'H26_STALE_BROWSER_SWAP_RUNTIME_NOT_RUNNING'
+              : 'H26_STALE_BROWSER_SWAP_RUNTIME_NOT_LOADED'
+            : 'H25_STALE_BROWSER_SWAP_OUTCOME_UNVERIFIED'
+        };
       }
       if (kind === 'START' || kind === 'STOP') {
         if (pending.transport === 'cross-window-runtime') {
@@ -8727,12 +8747,18 @@
           const desiredPeer = desiredName && this.crossWindow && typeof this.crossWindow.freshPeer === 'function'
             ? this.crossWindow.freshPeer(desiredName)
             : null;
-          if (oldGone && (desiredPresent || desiredPeer)) {
+          const desiredRuntimeRunning = !!(desiredPeer && desiredPeer.running === true);
+          const desiredFullAutonomyEnabled = !!(desiredPeer && desiredPeer.fullAutonomyEnabled === true);
+          if (oldGone && desiredRuntimeRunning && desiredFullAutonomyEnabled) {
             this.metrics.crossWindowConfirms += 1;
             return this._confirmCurrent({
-              evidence: desiredPeer ? 'BROWSER_SWAP_NEW_PEER_PRESENT' : 'BROWSER_SWAP_NEW_CHARACTER_PRESENT',
+              evidence: 'BROWSER_SWAP_NEW_RUNTIME_READY',
               oldCharacterOffline: true,
-              desiredCharacterPresent: true
+              desiredCharacterPresent: desiredPresent,
+              desiredRuntimeLoaded: true,
+              desiredRuntimeRunning: true,
+              desiredFullAutonomyEnabled: true,
+              desiredSessionId: desiredPeer.sessionId || null
             });
           }
         }
@@ -9152,6 +9178,7 @@
         const profile = this._normalizeProfile({ ...raw, name: peer.name });
         if (!profile) continue;
         profile.running = peer.running === true;
+        profile.fullAutonomyEnabled = peer.fullAutonomyEnabled === true;
         profile.emergencyStopLatched = peer.emergencyStopLatched === true;
         profile.sessionId = peer.sessionId || null;
         profile.peerFresh = true;
@@ -10088,9 +10115,11 @@
       const local = this._local();
       const online = this._onlineNames();
       const ready = new Set(profiles.filter(row => row && row.online
-        && (row.local ? (this.runtime && this.runtime.running === true) : (row.peerFresh && row.running === true)))
+        && (row.local
+          ? (this.runtime && this.runtime.running === true && this.enabled === true)
+          : (row.peerFresh && row.running === true && row.fullAutonomyEnabled === true)))
         .map(row => String(row.name)));
-      if (local && local.name && this.runtime && this.runtime.running === true) ready.add(String(local.name));
+      if (local && local.name && this.runtime && this.runtime.running === true && this.enabled === true) ready.add(String(local.name));
       const desired = this.desiredCharacterNames.length ? this.desiredCharacterNames.slice() : [];
       const desiredSet = new Set(desired.map(String));
       const missing = this.config.requireAllOnlineProfiles
@@ -10100,12 +10129,23 @@
         .filter(row => row && desiredSet.has(String(row.name)) && !row.local && row.peerFresh && row.running !== true)
         .map(row => String(row.name))
         .sort();
+      const inactiveAutonomyNames = profiles
+        .filter(row => row && desiredSet.has(String(row.name)) && !row.local
+          && row.peerFresh && row.running === true && row.fullAutonomyEnabled !== true)
+        .map(row => String(row.name))
+        .sort();
+      const missingPeerNames = profiles
+        .filter(row => row && desiredSet.has(String(row.name)) && row.online === true && !row.local && row.peerFresh !== true)
+        .map(row => String(row.name))
+        .sort();
       const unexpectedOnlineNames = online.filter(name => !desiredSet.has(String(name))).sort();
       return {
         profiles,
         online,
         missing,
         stoppedNames,
+        inactiveAutonomyNames,
+        missingPeerNames,
         unexpectedOnlineNames,
         readyNames: [...ready].sort(),
         onlineLimitExceeded: online.length > 4
@@ -10712,11 +10752,17 @@
               ? 'FULL_AUTONOMY_ROTATING_ACTIVITY_GROUP'
               : (lifecycle.rosterRecoveryRequired
                 ? 'FULL_AUTONOMY_RECOVERING_EXPECTED_ROSTER'
-                : 'FULL_AUTONOMY_RECOVERING_STOPPED_OR_STALE_PEER'),
+                : (readiness.missingPeerNames && readiness.missingPeerNames.length
+                  ? 'FULL_AUTONOMY_WAITING_REMOTE_BOT'
+                  : (readiness.inactiveAutonomyNames && readiness.inactiveAutonomyNames.length
+                    ? 'FULL_AUTONOMY_WAITING_REMOTE_FULL_AUTONOMY'
+                    : 'FULL_AUTONOMY_RECOVERING_STOPPED_OR_STALE_PEER'))),
             expectedOnlineCount: 4,
             desiredCharacterNames: nextDesired,
             onlineCharacterNames: readiness.online,
             missingProfiles: readiness.missing,
+            missingPeerNames: readiness.missingPeerNames || [],
+            inactiveFullAutonomyNames: readiness.inactiveAutonomyNames || [],
             unexpectedOnlineNames: lifecycle.unexpectedOnlineNames || readiness.unexpectedOnlineNames,
             lifecycleRecoveryRequired: lifecycle.recoveryRequired === true,
             runtimeRecoveryRequired: lifecycle.runtimeRecoveryRequired === true,
@@ -24431,7 +24477,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.25.0-h25';
+      this.version = options.version || '0.26.0-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -24712,6 +24758,7 @@
             runEpoch: this.runEpoch,
             emergencyStopLatched: this.stopLatch.status().latched,
             lifecycleAutonomyEnabled: this.lifecycle ? this.lifecycle.status().autonomyEnabled === true : null,
+            fullAutonomyEnabled: this.fullAutonomy ? this.fullAutonomy.status().enabled === true : null,
             characterDisconnectCapable: this.actions.available('disconnect') === true,
             characterNavigateCapable: h25BrowserNavigationCapability(),
             version: this.version,
@@ -32459,7 +32506,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.25.0-h25',
+    version: '0.26.0-h26',
     bootCount,
     replacedPrevious: !!previous
   });
