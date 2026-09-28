@@ -551,12 +551,12 @@ test('Full Autonomy executes only the strategy-selected combat group and keeps u
     assert.equal(started.tick.state, 'RUNNING');
     assert.deepEqual(started.tick.executionMembers, selectedMembers);
     assert.deepEqual(started.tick.supportMembers, ['My_Merchant']);
-    assert.deepEqual(started.tick.desiredParty, ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior']);
+    assert.deepEqual([...started.tick.desiredParty], ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior']);
   }
   assert.equal(priestStart.tick.localRole, 'combat-farm');
   assert.equal(rangerStart.tick.localRole, 'combat-farm');
   assert.equal(warriorStart.tick.localRole, 'standby');
-  assert.deepEqual(warriorStart.tick.standbyMembers, ['My_Warrior']);
+  assert.deepEqual([...warriorStart.tick.standbyMembers], ['My_Warrior']);
   assert.deepEqual(priest.state.farmGroup, { groupLeaderName: 'My_Priest', groupMemberNames: selectedMembers });
   assert.deepEqual(ranger.state.farmGroup, { groupLeaderName: 'My_Priest', groupMemberNames: selectedMembers });
   assert.equal(warrior.state.farmGroup, null);
