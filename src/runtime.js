@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.22.7-h22';
+      this.version = options.version || '0.23.0-h23';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -303,6 +303,16 @@
         crossWindow: this.lifecycleTransport,
         gear: this.gear
       });
+      this.encounters = new ns.EncounterController({
+        root: this.root,
+        logger: this.logger,
+        storage: this.storage,
+        game: this.game,
+        movement: this.movement,
+        combat: this.combat,
+        party: this.party,
+        canAct: action => this.actionAllowed(action)
+      });
       this.fullAutonomy = new ns.FullAutonomyController({
         root: this.root,
         logger: this.logger,
@@ -332,6 +342,31 @@
       this.merchant.partyLogistics = this.partyLogistics;
       this.merchant.economy = this.economy;
       this.economy.partyLogistics = this.partyLogistics;
+      this.marketIntelligence = new ns.ALDataMarketIntelligence({
+        root: this.root,
+        logger: this.logger,
+        storage: this.storage,
+        game: this.game,
+        trade: this.trade
+      });
+      this.merchantStand = new ns.MerchantStandController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        inventory: this.inventory,
+        market: this.marketIntelligence,
+        combat: this.combat,
+        movement: this.movement,
+        economy: this.economy,
+        partyLogistics: this.partyLogistics,
+        canAct: action => this.actionAllowed(action)
+      });
+      this.telemetry = new ns.HostTelemetryClient({
+        root: this.root,
+        logger: this.logger,
+        runtime: this
+      });
       this.liveTests = new ns.LiveTestRunner({
         runtime: this,
         logger: this.logger,
@@ -546,6 +581,42 @@
         start: context => this.accountStrategy.start(context),
         stop: reason => this.accountStrategy.stop(reason),
         status: () => this.accountStrategy.status()
+      });
+
+      this.modules.register({
+        id: 'encounters',
+        title: 'Boss & Event Encounters',
+        version: '0.23.0',
+        start: context => this.encounters.start(context),
+        stop: reason => this.encounters.stop(reason),
+        status: () => this.encounters.status()
+      });
+
+      this.modules.register({
+        id: 'market-intelligence',
+        title: 'Market Intelligence',
+        version: '0.23.0',
+        start: context => this.marketIntelligence.start(context),
+        stop: reason => this.marketIntelligence.stop(reason),
+        status: () => this.marketIntelligence.status()
+      });
+
+      this.modules.register({
+        id: 'merchant-stand',
+        title: 'Merchant Stand',
+        version: '0.23.0',
+        start: context => this.merchantStand.start(context),
+        stop: reason => this.merchantStand.stop(reason),
+        status: () => this.merchantStand.status()
+      });
+
+      this.modules.register({
+        id: 'host-telemetry',
+        title: 'Host Telemetry',
+        version: '0.23.0',
+        start: context => this.telemetry.start(context),
+        stop: reason => this.telemetry.stop(reason),
+        status: () => this.telemetry.status()
       });
 
       this.modules.register({
@@ -5631,6 +5702,10 @@
         lifecycleTransport: this.lifecycleTransport.status(),
         lifecycle: this.lifecycle.status(),
         accountStrategy: this.accountStrategy.status(),
+        encounters: this.encounters.status(),
+        marketIntelligence: this.marketIntelligence.status(),
+        merchantStand: this.merchantStand.status(),
+        telemetry: this.telemetry.status(),
         fullAutonomy: this.fullAutonomy.status(),
         safeUpdater: this.safeUpdater.status(),
         observation: this.observer.status(),
@@ -5671,6 +5746,10 @@
         lifecycleTransport: this.lifecycleTransport.status(),
         lifecycle: this.lifecycle.status(),
         accountStrategy: this.accountStrategy.status(),
+        encounters: this.encounters.status(),
+        marketIntelligence: this.marketIntelligence.status(),
+        merchantStand: this.merchantStand.status(),
+        telemetry: this.telemetry.status(),
         fullAutonomy: this.fullAutonomy.status(),
         safeUpdater: this.safeUpdater.status(),
         observation: this.observer.status(),
@@ -5718,6 +5797,21 @@
         && typeof this.lifecycleTransport.requestRuntimeState === 'function', this.lifecycleTransport.status());
       push('character-lifecycle-controller', !!this.lifecycle.status() && typeof this.lifecycle.plan === 'function' && typeof this.lifecycle.queueStart === 'function' && typeof this.lifecycle.queueRespawn === 'function', this.lifecycle.status());
       push('account-strategy-controller', !!this.accountStrategy.status() && typeof this.accountStrategy.optimizeTask === 'function' && typeof this.accountStrategy.progressionPlan === 'function', this.accountStrategy.status());
+      push('encounter-controller', !!this.encounters.status()
+        && this.encounters.status().policies
+        && this.encounters.status().policies.allNewBossesAndEventsEnabledByDefault === true
+        && typeof this.encounters.catalog === 'function'
+        && typeof this.encounters.setEnabled === 'function', this.encounters.status());
+      push('market-intelligence', !!this.marketIntelligence.status()
+        && this.marketIntelligence.status().readOnly === true
+        && this.marketIntelligence.status().advisoryOnly === true
+        && typeof this.marketIntelligence.priceBand === 'function', this.marketIntelligence.status());
+      push('merchant-stand-controller', !!this.merchantStand.status()
+        && this.merchantStand.status().policies
+        && this.merchantStand.status().policies.autoManageDefaultOff === true, this.merchantStand.status());
+      push('host-telemetry-client', !!this.telemetry.status()
+        && this.telemetry.status().hostStorageContract
+        && this.telemetry.status().hostStorageContract.defaultRoot === 'D:/ALBot/telemetry', this.telemetry.status());
       push('full-autonomy-controller', !!this.fullAutonomy.status() && typeof this.fullAutonomy.startAutonomy === 'function' && typeof this.fullAutonomy.stopAutonomy === 'function', this.fullAutonomy.status());
       const updaterStatus = this.safeUpdater.status();
       push('h22-safe-auto-updater', !!updaterStatus
