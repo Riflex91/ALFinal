@@ -88,6 +88,7 @@ function makeContext(name, names, network, state, nowRef) {
       runEpoch: state.runEpoch,
       emergencyStopLatched: state.emergencyStopLatched,
       lifecycleAutonomyEnabled: state.autonomyEnabled === true,
+      fullAutonomyEnabled: state.fullAutonomyEnabled === true,
       characterDisconnectCapable: state.characterDisconnectCapable === true,
       characterNavigateCapable: state.characterNavigateCapable === true,
       version: '0.19.0-h19'
@@ -173,7 +174,30 @@ test('H19 cross-window transport discovers separate browser runtimes by CM heart
   assert.equal(peer.running, true);
   assert.equal(peer.runEpoch, 4);
   assert.equal(peer.lifecycleAutonomyEnabled, false);
+  assert.equal(peer.fullAutonomyEnabled, false);
   assert.equal(a.transport.status().freshPeers.length, 1);
+
+  a.transport.destroy();
+  b.transport.destroy();
+});
+
+test('H26 cross-window heartbeat exposes Full Autonomy readiness', () => {
+  const names = ['My_Ranger1', 'My_Merchant'];
+  const network = new Map();
+  const nowRef = { value: 1500 };
+  const aState = { running: true, runEpoch: 1, emergencyStopLatched: false, fullAutonomyEnabled: true };
+  const bState = { running: true, runEpoch: 2, emergencyStopLatched: false, fullAutonomyEnabled: true };
+  const a = makeContext('My_Ranger1', names, network, aState, nowRef);
+  const b = makeContext('My_Merchant', names, network, bState, nowRef);
+
+  a.transport.install();
+  b.transport.install();
+  b.transport.broadcastHeartbeat();
+
+  const peer = a.transport.freshPeer('My_Merchant');
+  assert.ok(peer);
+  assert.equal(peer.running, true);
+  assert.equal(peer.fullAutonomyEnabled, true);
 
   a.transport.destroy();
   b.transport.destroy();
