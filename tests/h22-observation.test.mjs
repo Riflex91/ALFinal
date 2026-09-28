@@ -51,7 +51,7 @@ function fixture() {
     root: {},
     logger: null,
     bus: { on: () => () => {} },
-    version: '0.22.1-h22',
+    version: '0.22.2-h22',
     running: true,
     runEpoch: 1,
     bootCount: 1,

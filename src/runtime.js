@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.22.1-h22';
+      this.version = options.version || '0.22.2-h22';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -529,7 +529,7 @@
       this.modules.register({
         id: 'autonomous-observer',
         title: 'H22 Local Observation Coordinator',
-        version: '0.22.1',
+        version: '0.22.2',
         watchdogMs: 4000,
         start: context => this.observer.start(context),
         stop: reason => this.observer.stop(reason),
