@@ -216,14 +216,14 @@ test('merchant repricing uses validated unlist then relist and confirms from liv
   const first = stand.tick();
   assert.equal(first.state, 'DISPATCHED');
   assert.equal(calls[0].action, 'unequip');
-  assert.deepEqual(calls[0].args, ['trade1']);
+  assert.deepEqual(Array.from(calls[0].args), ['trade1']);
 
   root.character.slots.trade1 = null;
   inventoryRows = [{ slot: 4, name: 'sellme', level: 0, quantity: 2, statType: null, property: null, locked: false, giveaway: false }];
   const second = stand.tick();
   assert.equal(second.state, 'DISPATCHED');
   assert.equal(calls[1].action, 'trade');
-  assert.deepEqual(calls[1].args, [4, 1, 800, 2]);
+  assert.deepEqual(Array.from(calls[1].args), [4, 1, 800, 2]);
 
   root.character.slots.trade1 = { name: 'sellme', level: 0, q: 2, price: 800, rid: 'rid-b' };
   const third = stand.tick();
