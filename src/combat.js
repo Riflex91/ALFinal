@@ -57,6 +57,7 @@
         kiteMonsterBuffer: Math.max(8, Math.min(80, Number(options.kiteMonsterBuffer) || 20)),
         kiteSpeedBufferSeconds: Math.max(0.2, Math.min(1.5, Number(options.kiteSpeedBufferSeconds) || 0.50)),
         kiteStepSeconds: Math.max(0.3, Math.min(1.2, Number(options.kiteStepSeconds) || 0.65)),
+        groupKiteFormationRadius: Math.max(70, Math.min(180, Number(options.groupKiteFormationRadius) || 100)),
         groupHardKiteTether: Math.max(150, Math.min(350, Number(options.groupHardKiteTether) || 195)),
         maxAcquireDistance: Math.max(50, Math.min(1200, Number(options.maxAcquireDistance) || 450)),
         maxAttackToHpRatio: Math.max(0.01, Math.min(0.5, Number(options.maxAttackToHpRatio) || 0.08)),
@@ -90,7 +91,9 @@
         meleeKiteBypasses: 0,
         kiteOrbitMoves: 0,
         kiteTerrainBlocks: 0,
-        kiteGroupTetherBlocks: 0
+        kiteGroupTetherBlocks: 0,
+        kiteGroupSoftTetherBlocks: 0,
+        attackTargetRaceRecoveries: 0
       };
     }
 
@@ -420,11 +423,11 @@
       const preferred = preferredId == null
         ? null
         : candidates.find(candidate => String(candidate.id) === String(preferredId)) || null;
-      const preferredSharedAggro = preferred && preferred.targetId && groupNames.has(String(preferred.targetId))
-        ? preferred
-        : null;
       const sharedAggro = candidates.find(candidate => candidate.targetId && groupNames.has(String(candidate.targetId))) || null;
-      const target = followerMirrorOnly ? (preferredSharedAggro || sharedAggro) : (preferred || candidates[0]);
+      // V3 semantics: followers never invent a routine pull. Existing shared
+      // aggro is the rescue exception; otherwise they mirror the leader/party
+      // focus immediately as long as it is locally visible and safe.
+      const target = followerMirrorOnly ? (sharedAggro || preferred) : (preferred || candidates[0]);
       if (!target) {
         this.session.state = 'WAITING_GROUP_TARGET';
         this.session.lastDecision = {
@@ -523,11 +526,41 @@
       };
     }
 
+    _isExpectedGroupTargetRaceRejection(pending) {
+      if (!pending || !this.session || !this.session.policy || this.session.policy.leaderOwnedPulls !== true) return false;
+      const reason = cleanText(pending.commandError || '', 240).toLowerCase();
+      const knownAbsent = reason === 'not_there'
+        || reason.endsWith(':not_there')
+        || reason.includes('not_there');
+      if (!knownAbsent) return false;
+      // A server "not_there" is recoverable only when the live world agrees
+      // that the exact target is gone. Network uncertainty or a still-visible
+      // target remains UNKNOWN and therefore fail-closed.
+      return this._freshTarget() === null;
+    }
+
+    _recoverExpectedGroupTargetRace(pending) {
+      this.metrics.attackTargetRaceRecoveries += 1;
+      this.pendingAttack = null;
+      this._clearGameTarget('GROUP_TARGET_ALREADY_GONE');
+      this.session.state = 'ACQUIRING';
+      this.session.lastDecision = {
+        at: new Date().toISOString(),
+        type: 'GROUP_TARGET_RACE_RECOVERED',
+        targetId: pending.targetId,
+        reason: pending.commandError || 'not_there'
+      };
+      return true;
+    }
+
     _observePendingAttack() {
       const pending = this.pendingAttack;
       if (!pending || !this.session) return false;
 
       if (pending.commandSettlement === 'REJECTED') {
+        if (this._isExpectedGroupTargetRaceRejection(pending)) {
+          return this._recoverExpectedGroupTargetRace(pending);
+        }
         this.metrics.attackUnknown += 1;
         this._fail('UNKNOWN', pending.commandError || 'ATTACK_COMMAND_REJECTED', clone(pending));
         return true;
@@ -693,12 +726,15 @@
     }
 
     _orbitDirection(character) {
-      const name = String(character && character.name || 'local');
-      if (this.orbitDirectionByCharacter.has(name)) return this.orbitDirectionByCharacter.get(name);
+      const policy = this.session && this.session.policy || {};
+      const groupKey = policy.leaderOwnedPulls === true && policy.groupLeaderName
+        ? 'group:' + String(policy.groupLeaderName)
+        : 'character:' + String(character && character.name || 'local');
+      if (this.orbitDirectionByCharacter.has(groupKey)) return this.orbitDirectionByCharacter.get(groupKey);
       let hash = 0;
-      for (let index = 0; index < name.length; index += 1) hash = ((hash * 31) + name.charCodeAt(index)) | 0;
+      for (let index = 0; index < groupKey.length; index += 1) hash = ((hash * 31) + groupKey.charCodeAt(index)) | 0;
       const direction = (Math.abs(hash) % 2) ? 1 : -1;
-      this.orbitDirectionByCharacter.set(name, direction);
+      this.orbitDirectionByCharacter.set(groupKey, direction);
       return direction;
     }
 
@@ -749,8 +785,14 @@
         const x = finite(row.x), y = finite(row.y);
         return x == null || y == null ? Number.POSITIVE_INFINITY : Math.hypot(Number(destination.x) - x, Number(destination.y) - y);
       }));
-      if (proposedMax <= this.config.groupHardKiteTether) return true;
-      return currentMax > this.config.groupHardKiteTether && proposedMax < currentMax;
+      if (proposedMax <= this.config.groupKiteFormationRadius) return true;
+      // Once outside the normal formation radius, kiting may only improve
+      // group cohesion. This keeps normal fire positions tight while still
+      // allowing an aggro holder to recover from an already split formation.
+      if (proposedMax < currentMax - 0.5 && proposedMax <= this.config.groupHardKiteTether) return true;
+      if (currentMax > this.config.groupHardKiteTether && proposedMax < currentMax - 0.5) return true;
+      this.metrics.kiteGroupSoftTetherBlocks += 1;
+      return false;
     }
 
     _kiteWaypoint(character, target) {
@@ -957,11 +999,14 @@
       if (this.session.policy.partyAssist && this.party && typeof this.party.preferredTargetId === 'function') {
         const preferredId = this.party.preferredTargetId();
         if (preferredId != null && this.session.targetId != null && String(preferredId) !== String(this.session.targetId)) {
-          const preferred = this.safeCandidates(this.session.policy)
-            .find(candidate => String(candidate.id) === String(preferredId));
-          const preferredAllowed = preferred && (!followerMirrorOnly
-            || (preferred.targetId && groupNames.has(String(preferred.targetId))));
-          if (preferredAllowed) {
+          const candidates = this.safeCandidates(this.session.policy);
+          const current = candidates.find(candidate => String(candidate.id) === String(this.session.targetId)) || null;
+          const currentSharedAggro = current && current.targetId && groupNames.has(String(current.targetId));
+          const preferred = candidates.find(candidate => String(candidate.id) === String(preferredId)) || null;
+          const preferredAllowed = !!preferred;
+          // Shared aggro is a rescue target and is not abandoned merely because
+          // the leader has selected the next routine target.
+          if (preferredAllowed && !(followerMirrorOnly && currentSharedAggro)) {
             this._clearGameTarget('PARTY_FOCUS_RETARGET');
             this.session.state = 'ACQUIRING';
           }
@@ -970,10 +1015,15 @@
 
       let target = this._freshTarget();
       if (target && followerMirrorOnly
-        && !(target.targetId && groupNames.has(String(target.targetId)))) {
-        this._clearGameTarget('GROUP_FOLLOWER_STALE_FOCUS');
-        target = null;
-        this.session.state = 'ACQUIRING';
+          && !(target.targetId && groupNames.has(String(target.targetId)))) {
+        const preferredId = this.session.policy.partyAssist && this.party && typeof this.party.preferredTargetId === 'function'
+          ? this.party.preferredTargetId()
+          : null;
+        if (preferredId == null || String(target.id) !== String(preferredId)) {
+          this._clearGameTarget('GROUP_FOLLOWER_STALE_FOCUS');
+          target = null;
+          this.session.state = 'ACQUIRING';
+        }
       }
       if (!target) {
         if (this.session.targetId) {
