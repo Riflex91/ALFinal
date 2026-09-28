@@ -268,3 +268,21 @@ test('H22 failed recovery is recorded without gameplay, transactional, UNKNOWN o
   assert.equal(status.policies.chatgptRequiredForNormalOperation, false);
   assert.ok(f.events.some(event => event.type === 'h22-known-recovery' && event.row.type === 'RECOVERY_FAILED'));
 });
+
+
+test('H22 known recovery is wired through build, runtime, observer and public API', () => {
+  const build = fs.readFileSync(new URL('../scripts/build.mjs', import.meta.url), 'utf8');
+  const runtime = fs.readFileSync(new URL('../src/runtime.js', import.meta.url), 'utf8');
+  const observer = fs.readFileSync(new URL('../src/autonomous-observer.js', import.meta.url), 'utf8');
+  const entry = fs.readFileSync(new URL('../src/entry.js', import.meta.url), 'utf8');
+
+  assert.match(build, /src\/known-recovery\.js/);
+  assert.match(runtime, /new ns\.KnownRecoveryCoordinator/);
+  assert.match(runtime, /id: 'known-recovery'/);
+  assert.match(runtime, /knownRecovery: this\.knownRecovery\.status\(\)/);
+  assert.match(runtime, /h22-known-recovery/);
+  assert.match(observer, /this\.bus\.on\('h22-known-recovery'/);
+  assert.match(entry, /recovery:\s*\{/);
+  assert.match(entry, /runtime\.knownRecovery\.plan/);
+  assert.match(entry, /Object\.freeze\(api\.recovery\)/);
+});
