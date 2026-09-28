@@ -9315,6 +9315,26 @@
         const initialReadiness = this._profileReadiness();
         const local = this._local();
         if (!local) return { state: 'BLOCKED', reason: 'CHARACTER_UNAVAILABLE' };
+
+        let initialFarmStatus = null;
+        try {
+          initialFarmStatus = this.runtime.farmIntelligence && typeof this.runtime.farmIntelligence.status === 'function'
+            ? this.runtime.farmIntelligence.status()
+            : null;
+        } catch (_) {}
+        if (initialFarmStatus && initialFarmStatus.active) {
+          const initialFarmOwner = initialFarmStatus.session ? String(initialFarmStatus.session.owner || '') : '';
+          if (initialFarmOwner !== 'full-autonomy') {
+            this.strategy.recordTraining(false);
+            return this.lastDecision = {
+              at: new Date().toISOString(),
+              state: 'BLOCKED',
+              reason: 'FULL_AUTONOMY_FOREIGN_FARM_INTELLIGENCE_OWNERSHIP',
+              foreignOwner: initialFarmOwner || null
+            };
+          }
+        }
+
         if (initialReadiness.onlineLimitExceeded) {
           this.strategy.recordTraining(false);
           return this.lastDecision = {
