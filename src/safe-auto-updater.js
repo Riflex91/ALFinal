@@ -10,6 +10,9 @@
   const DEFAULT_HANDSHAKE_TIMEOUT_MS = 12000;
   const DEFAULT_RETRY_BASE_MS = 5 * 60 * 1000;
   const DEFAULT_RETRY_MAX_MS = 6 * 60 * 60 * 1000;
+  const DEFAULT_GROUP_APPLY_DELAY_MS = 6500;
+  const DEFAULT_COORDINATION_RETRY_MS = 5000;
+  const UPDATE_COORDINATION_PROTOCOL = 'h22-synchronized-update-v1';
   const PENDING_KEY = 'albot:auto-update:pending:v1';
   const QUARANTINE_KEY = 'albot:auto-update:quarantine:v1';
 
@@ -112,8 +115,11 @@
         handshakeTimeoutMs: Math.max(3000, finite(globalConfig.handshakeTimeoutMs, DEFAULT_HANDSHAKE_TIMEOUT_MS)),
         retryBaseMs: Math.max(60000, finite(globalConfig.retryBaseMs, DEFAULT_RETRY_BASE_MS)),
         retryMaxMs: Math.max(5 * 60000, finite(globalConfig.retryMaxMs, DEFAULT_RETRY_MAX_MS)),
+        groupApplyDelayMs: Math.max(5000, finite(globalConfig.groupApplyDelayMs, DEFAULT_GROUP_APPLY_DELAY_MS)),
+        coordinationRetryMs: Math.max(2000, finite(globalConfig.coordinationRetryMs, DEFAULT_COORDINATION_RETRY_MS)),
         autoDownload: globalConfig.autoDownload !== false,
-        autoApply: globalConfig.autoApply === true,
+        autoApply: globalConfig.autoApply !== false,
+        coordinatedApply: globalConfig.coordinatedApply !== false,
         stagingSlots: Array.isArray(globalConfig.stagingSlots)
           ? [...new Set(globalConfig.stagingSlots.map(value => String(value)).filter(Boolean))].slice(0, 4)
           : []
@@ -129,6 +135,10 @@
       this.lastSafety = { safe: false, reasons: ['NOT_EVALUATED'] };
       this.lastApply = null;
       this.lastIncident = null;
+      this.preparedUpdate = null;
+      this.rolloutTimer = null;
+      this.coordinationRetryAtMs = 0;
+      this.lastCoordination = null;
       this.stats = {
         checks: 0,
         updatesFound: 0,
@@ -142,6 +152,11 @@
         rollbackFailures: 0,
         rearms: 0,
         quarantines: 0,
+        groupPrepares: 0,
+        groupCommits: 0,
+        groupCancels: 0,
+        groupDeferrals: 0,
+        coordinationFailures: 0,
         failures: 0
       };
       this._loadPending();
@@ -163,6 +178,9 @@
       if (value.handshakeTimeoutMs != null) this.config.handshakeTimeoutMs = Math.max(3000, finite(value.handshakeTimeoutMs, this.config.handshakeTimeoutMs));
       if (value.retryBaseMs != null) this.config.retryBaseMs = Math.max(60000, finite(value.retryBaseMs, this.config.retryBaseMs));
       if (value.retryMaxMs != null) this.config.retryMaxMs = Math.max(this.config.retryBaseMs, finite(value.retryMaxMs, this.config.retryMaxMs));
+      if (value.groupApplyDelayMs != null) this.config.groupApplyDelayMs = Math.max(5000, finite(value.groupApplyDelayMs, this.config.groupApplyDelayMs));
+      if (value.coordinationRetryMs != null) this.config.coordinationRetryMs = Math.max(2000, finite(value.coordinationRetryMs, this.config.coordinationRetryMs));
+      if (Object.prototype.hasOwnProperty.call(value, 'coordinatedApply')) this.config.coordinatedApply = value.coordinatedApply !== false;
       if (Array.isArray(value.stagingSlots)) {
         this.config.stagingSlots = [...new Set(value.stagingSlots.map(item => String(item)).filter(Boolean))].slice(0, 4);
       }
@@ -279,7 +297,9 @@
           });
         }, this.config.checkIntervalMs, { immediate: true });
         context.scope.interval('update-apply', () => {
-          if (!this.config.autoApply || !this.pending || this.busy) return;
+          if (!this.config.autoApply || this.busy) return;
+          if (!this.pending) this._loadPending();
+          if (!this.pending) return;
           Promise.resolve(this.applyPending()).catch(error => {
             this.stats.failures += 1;
             this.lastError = { at: new Date().toISOString(), reason: clean(error && error.message || error, 240) };
@@ -291,6 +311,14 @@
 
     stop() {
       this.active = false;
+      if (this.rolloutTimer != null) {
+        try {
+          const clear = this.root && this.root.clearTimeout || clearTimeout;
+          clear(this.rolloutTimer);
+        } catch (_) {}
+      }
+      this.rolloutTimer = null;
+      this.preparedUpdate = null;
       return this.status();
     }
 
@@ -406,61 +434,75 @@
       }
     }
 
-    safety() {
-      const reasons = [];
+    localProtection() {
+      const now = Date.now();
       const read = controller => {
         try { return controller && typeof controller.status === 'function' ? controller.status() : null; }
         catch (_) { return null; }
       };
-      const blockController = (name, status, busyKeys = []) => {
-        if (!status) return;
-        if (status.suspended === true) reasons.push(name + '_SUSPENDED');
-        for (const key of busyKeys) {
-          const value = status[key];
-          if (Array.isArray(value) ? value.length > 0 : !!value) reasons.push(name + '_' + key.toUpperCase());
-        }
-      };
-
-      if (!this.runtime.running) reasons.push('RUNTIME_NOT_RUNNING');
-      if (this.runtime.stopLatch && this.runtime.stopLatch.status().latched) reasons.push('EMERGENCY_STOP_LATCHED');
-
-      const combat = read(this.runtime.combat);
-      if (combat && combat.active) reasons.push('COMBAT_ACTIVE');
-      if (combat && combat.pendingAttack) reasons.push('COMBAT_PENDING_ATTACK');
-
-      const movement = read(this.runtime.movement);
-      if (movement && (movement.active || movement.activeOrder)) reasons.push('MOVEMENT_ACTIVE');
-
-      blockController('RESOURCE', read(this.runtime.resourceTopoff), ['pending']);
-      blockController('LIFECYCLE', read(this.runtime.lifecycle), ['currentAction', 'queue']);
-      blockController('LOGISTICS', read(this.runtime.partyLogistics), ['currentAction', 'queue']);
-      blockController('BANK', read(this.runtime.bank), ['pending', 'request']);
-      blockController('TRADE', read(this.runtime.trade), ['pending', 'request']);
-      blockController('UPGRADE', read(this.runtime.upgrade), ['pending', 'request']);
-      blockController('CRAFT', read(this.runtime.exchangeCraft), ['pending', 'request']);
-      blockController('ECONOMY', read(this.runtime.economy), ['currentAction']);
-      blockController('INVENTORY', read(this.runtime.inventory), ['pending', 'request', 'pendingLoot']);
-      blockController('MERCHANT', read(this.runtime.merchant), ['pending', 'request', 'delivery', 'currentAction']);
-      blockController('GEAR', read(this.runtime.gear), ['pending', 'request', 'delivery']);
-
-      const transport = read(this.runtime.lifecycleTransport);
-      if (transport && Array.isArray(transport.pending) && transport.pending.length) reasons.push('H19_REMOTE_REQUEST_PENDING');
-      if (transport && transport.partyRecoveryLease) reasons.push('H19_PARTY_RECOVERY_PENDING');
-
-      const full = read(this.runtime.fullAutonomy);
-      if (full && full.enabled === true) {
-        const state = full.lastDecision && String(full.lastDecision.state || '').toUpperCase();
-        if (!state || state !== 'RUNNING') reasons.push('FULL_AUTONOMY_UNSAFE_TRANSITION');
-      }
 
       let game = null;
-      try { game = this.runtime.game.snapshot(); } catch (_) {}
-      const character = game && game.character;
-      if (!character) reasons.push('CHARACTER_UNKNOWN');
-      if (character && (character.rip || character.dead)) reasons.push('CHARACTER_DEAD');
-      const hp = finite(character && character.hp, 0);
-      const maxHp = finite(character && (character.max_hp != null ? character.max_hp : character.maxHp), 0);
-      if (maxHp > 0 && hp / maxHp < 0.90) reasons.push('HP_BELOW_UPDATE_THRESHOLD');
+      try { game = this.runtime.game && typeof this.runtime.game.snapshot === 'function' ? this.runtime.game.snapshot() : null; }
+      catch (_) {}
+      const character = game && game.character || null;
+      const localName = clean(character && character.name || '', 120) || null;
+
+      const full = read(this.runtime.fullAutonomy);
+      const taskType = full && full.enabled === true
+        ? clean(full.config && full.config.taskType || '', 40).toUpperCase() || null
+        : null;
+      const event = taskType === 'EVENT';
+
+      const combat = read(this.runtime.combat);
+      const combatSession = combat && combat.session || null;
+      const targetType = clean(
+        combatSession && combatSession.targetType
+          || game && game.target && game.target.mtype
+          || '',
+        120
+      ) || null;
+
+      let boss = taskType === 'BOSS';
+      if (!boss && targetType) {
+        try {
+          const definition = this.runtime.game && typeof this.runtime.game.monsterDefinition === 'function'
+            ? this.runtime.game.monsterDefinition(targetType)
+            : null;
+          const engaged = !!(
+            combat && combat.active === true
+            || character && character.targetId
+            || game && game.target && game.target.targetId && localName
+              && String(game.target.targetId) === String(localName)
+          );
+          if (definition && definition.boss === true && engaged) boss = true;
+        } catch (_) {}
+      }
+
+      const reasons = [];
+      if (event) reasons.push('EVENT_ACTIVE');
+      if (boss) reasons.push('BOSS_COMBAT_ACTIVE');
+      return {
+        schemaVersion: 1,
+        protocol: UPDATE_COORDINATION_PROTOCOL,
+        coordinatedUpdateCapable: true,
+        observedAtMs: now,
+        characterName: localName,
+        blocked: event || boss,
+        event,
+        boss,
+        taskType,
+        targetType,
+        reasons
+      };
+    }
+
+    safety() {
+      const protection = this.localProtection();
+      const reasons = [];
+      if (!this.runtime.running) reasons.push('RUNTIME_NOT_RUNNING');
+      if (!protection.characterName) reasons.push('CHARACTER_UNKNOWN');
+      if (protection.event) reasons.push('EVENT_ACTIVE');
+      if (protection.boss) reasons.push('BOSS_COMBAT_ACTIVE');
 
       const safe = reasons.length === 0;
       const now = Date.now();
@@ -472,10 +514,454 @@
       this.lastSafety = {
         at: new Date(now).toISOString(),
         safe,
-        stable: safe && this.safeSince > 0 && now - this.safeSince >= this.config.safeHoldMs,
-        reasons
+        stable: safe,
+        reasons,
+        protection
       };
       return clone(this.lastSafety);
+    }
+
+    _releaseDescriptor(manifest) {
+      return manifest ? {
+        version: clean(manifest.version || '', 80),
+        commitSha: clean(manifest.commitSha || '', 80).toLowerCase(),
+        sha256: clean(manifest.sha256 || '', 80).toLowerCase(),
+        bytes: Math.floor(finite(manifest.bytes, 0))
+      } : null;
+    }
+
+    _releaseMatches(manifest, release) {
+      if (!manifest || !release) return false;
+      const local = this._releaseDescriptor(manifest);
+      return !!local
+        && local.version === clean(release.version || '', 80)
+        && local.commitSha === clean(release.commitSha || '', 80).toLowerCase()
+        && local.sha256 === clean(release.sha256 || '', 80).toLowerCase()
+        && local.bytes === Math.floor(finite(release.bytes, 0));
+    }
+
+    _localName() {
+      const protection = this.localProtection();
+      return protection.characterName || null;
+    }
+
+    _groupState() {
+      const local = this.localProtection();
+      const localName = local.characterName;
+      const transport = this.runtime.lifecycleTransport;
+      let peers = [];
+      try {
+        peers = transport && typeof transport.freshPeers === 'function' ? transport.freshPeers() : [];
+      } catch (_) {
+        peers = [];
+      }
+      const peerMap = new Map(peers.filter(Boolean).map(peer => [String(peer.name || ''), peer]));
+
+      let online = [];
+      try {
+        const roster = this.runtime.roster && typeof this.runtime.roster.refresh === 'function'
+          ? this.runtime.roster.refresh()
+          : null;
+        if (roster && roster.onlineStateAvailable === true && Array.isArray(roster.onlineCharacterNames)) {
+          online = roster.onlineCharacterNames.map(String);
+        }
+      } catch (_) {}
+      if (!online.length) online = [localName, ...peers.map(peer => peer && peer.name)].filter(Boolean).map(String);
+
+      const participants = [...new Set(online.filter(Boolean))].sort((a, b) => a.localeCompare(b));
+      if (localName && !participants.includes(String(localName))) participants.push(String(localName));
+      participants.sort((a, b) => a.localeCompare(b));
+
+      const reasons = [];
+      if (!localName) reasons.push('UPDATE_GROUP_LOCAL_IDENTITY_REQUIRED');
+      if (local.blocked) reasons.push(...local.reasons.map(reason => 'LOCAL_' + reason));
+
+      for (const name of participants) {
+        if (String(name) === String(localName || '')) continue;
+        const peer = peerMap.get(String(name));
+        if (!peer) {
+          reasons.push('UPDATE_GROUP_PEER_NOT_FRESH:' + name);
+          continue;
+        }
+        if (peer.running !== true) reasons.push('UPDATE_GROUP_PEER_RUNTIME_NOT_RUNNING:' + name);
+        if (peer.version && String(peer.version) !== String(this.runtime.version)) {
+          reasons.push('UPDATE_GROUP_PEER_VERSION_MISMATCH:' + name);
+        }
+        const protection = peer.updateProtection;
+        if (!protection || protection.coordinatedUpdateCapable !== true) {
+          reasons.push('UPDATE_GROUP_PEER_CAPABILITY_MISSING:' + name);
+          continue;
+        }
+        if (protection.event === true) reasons.push('REMOTE_EVENT_ACTIVE:' + name);
+        if (protection.boss === true) reasons.push('REMOTE_BOSS_COMBAT_ACTIVE:' + name);
+      }
+
+      const coordinator = participants.length ? participants[0] : localName;
+      return {
+        ready: reasons.length === 0,
+        localName,
+        coordinator,
+        participants,
+        peers: peers.map(peer => ({
+          name: peer.name,
+          running: peer.running === true,
+          version: peer.version || null,
+          updateProtection: clone(peer.updateProtection || null)
+        })),
+        localProtection: local,
+        reasons
+      };
+    }
+
+    async _verifyPendingForRelease(release) {
+      if (!this.pending) this._loadPending();
+      if (!this.pending || !this.pending.manifest || !this._releaseMatches(this.pending.manifest, release)) {
+        const checked = await this.checkAndDownload();
+        if (!checked || checked.accepted !== true) {
+          return { ok: false, reason: checked && checked.reason || 'UPDATE_GROUP_DOWNLOAD_FAILED' };
+        }
+      }
+      if (!this.pending || !this.pending.manifest || !this._releaseMatches(this.pending.manifest, release)) {
+        return { ok: false, reason: 'UPDATE_GROUP_RELEASE_MISMATCH' };
+      }
+
+      const manifestCheck = validateManifest(this.pending.manifest);
+      if (!manifestCheck.ok) return { ok: false, reason: manifestCheck.reason };
+      const manifest = manifestCheck.manifest;
+      const bytes = this._utf8Bytes(this.pending.bundle);
+      const sha256 = await this._sha256(this.pending.bundle);
+      const expectedBanner = '/* AL Bot ' + String(manifest.version) + ' | generated file | do not edit dist directly */';
+      if (bytes !== manifest.bytes || bytes > this.config.maxBundleBytes || sha256 !== manifest.sha256
+          || !String(this.pending.bundle).startsWith(expectedBanner + '\n')) {
+        return { ok: false, reason: 'UPDATE_PENDING_REVALIDATION_FAILED', bytes, sha256 };
+      }
+
+      const activeSlot = this._activeSlot();
+      const stagingSlot = this._stagingSlot(activeSlot);
+      if (activeSlot == null) return { ok: false, reason: 'UPDATE_ACTIVE_SLOT_UNKNOWN' };
+      if (stagingSlot == null) return { ok: false, reason: 'UPDATE_STAGING_SLOT_REQUIRED', activeSlot };
+
+      const safety = this.safety();
+      if (!safety.safe) return { ok: false, reason: 'UPDATE_EVENT_OR_BOSS_ACTIVE', safety };
+      return { ok: true, manifest, activeSlot, stagingSlot, bytes, sha256 };
+    }
+
+    async prepareCoordinatedUpdate(payload = {}, meta = {}) {
+      if (!this.config.enabled) return { accepted: false, reason: 'UPDATE_DISABLED' };
+      if (!this.config.autoApply) return { accepted: false, reason: 'UPDATE_AUTO_APPLY_DISABLED' };
+      if (!this.config.coordinatedApply) return { accepted: false, reason: 'UPDATE_GROUP_COORDINATION_DISABLED' };
+      if (this.busy) return { accepted: false, reason: 'UPDATE_BUSY' };
+
+      const release = payload && payload.release || null;
+      const releaseKey = clean(payload && payload.releaseKey || '', 300);
+      const expectedKey = release && release.version && release.commitSha && release.sha256
+        ? String(release.version) + '@' + String(release.commitSha).toLowerCase() + ':' + String(release.sha256).toLowerCase()
+        : null;
+      if (!release || !releaseKey || releaseKey !== expectedKey) return { accepted: false, reason: 'UPDATE_GROUP_RELEASE_INVALID' };
+
+      const coordinator = clean(payload.coordinator || '', 120);
+      const sender = clean(meta && meta.sender || '', 120);
+      if (!coordinator) return { accepted: false, reason: 'UPDATE_GROUP_COORDINATOR_REQUIRED' };
+      if (sender && sender !== coordinator) return { accepted: false, reason: 'UPDATE_GROUP_COORDINATOR_MISMATCH' };
+
+      const participants = Array.isArray(payload.participants)
+        ? [...new Set(payload.participants.map(value => clean(value, 120)).filter(Boolean))].sort((a, b) => a.localeCompare(b))
+        : [];
+      const localName = this._localName();
+      if (!localName || !participants.includes(localName)) return { accepted: false, reason: 'UPDATE_GROUP_LOCAL_NOT_PARTICIPANT' };
+
+      if (this.preparedUpdate && this.preparedUpdate.releaseKey !== releaseKey) {
+        return { accepted: false, reason: 'UPDATE_GROUP_DIFFERENT_RELEASE_ALREADY_PREPARED' };
+      }
+
+      const ready = await this._verifyPendingForRelease(release);
+      if (!ready.ok) return { accepted: false, reason: ready.reason, details: clone(ready) };
+
+      this.preparedUpdate = {
+        protocol: UPDATE_COORDINATION_PROTOCOL,
+        state: 'PREPARED',
+        releaseKey,
+        release: clone(release),
+        coordinator,
+        participants,
+        localName,
+        activeSlot: ready.activeSlot,
+        stagingSlot: ready.stagingSlot,
+        preparedAt: new Date().toISOString(),
+        preparedAtMs: Date.now(),
+        applyAt: null,
+        applyAtMs: null
+      };
+      this.stats.groupPrepares += 1;
+      return {
+        accepted: true,
+        state: 'PREPARED',
+        releaseKey,
+        localName,
+        activeSlot: ready.activeSlot,
+        stagingSlot: ready.stagingSlot
+      };
+    }
+
+    commitCoordinatedUpdate(payload = {}, meta = {}) {
+      const releaseKey = clean(payload && payload.releaseKey || '', 300);
+      const coordinator = clean(payload && payload.coordinator || '', 120);
+      const sender = clean(meta && meta.sender || '', 120);
+      if (!this.preparedUpdate || this.preparedUpdate.state !== 'PREPARED') {
+        return { accepted: false, reason: 'UPDATE_GROUP_NOT_PREPARED' };
+      }
+      if (!releaseKey || this.preparedUpdate.releaseKey !== releaseKey) {
+        return { accepted: false, reason: 'UPDATE_GROUP_RELEASE_MISMATCH' };
+      }
+      if (!coordinator || coordinator !== this.preparedUpdate.coordinator) {
+        return { accepted: false, reason: 'UPDATE_GROUP_COORDINATOR_MISMATCH' };
+      }
+      if (sender && sender !== coordinator) return { accepted: false, reason: 'UPDATE_GROUP_COORDINATOR_MISMATCH' };
+
+      const safety = this.safety();
+      if (!safety.safe) return { accepted: false, reason: 'UPDATE_EVENT_OR_BOSS_ACTIVE', safety };
+
+      const applyAtMs = Math.floor(finite(payload.applyAtMs, 0));
+      const now = Date.now();
+      if (applyAtMs < now + 250 || applyAtMs > now + 30000) {
+        return { accepted: false, reason: 'UPDATE_GROUP_APPLY_TIME_INVALID' };
+      }
+
+      if (this.rolloutTimer != null) {
+        try {
+          const clear = this.root && this.root.clearTimeout || clearTimeout;
+          clear(this.rolloutTimer);
+        } catch (_) {}
+      }
+
+      this.preparedUpdate = {
+        ...this.preparedUpdate,
+        state: 'COMMITTED',
+        applyAtMs,
+        applyAt: new Date(applyAtMs).toISOString(),
+        committedAt: new Date().toISOString()
+      };
+      const timer = this.root && this.root.setTimeout || setTimeout;
+      this.rolloutTimer = timer(() => {
+        this.rolloutTimer = null;
+        Promise.resolve(this.applyPending({
+          localOnly: true,
+          releaseKey,
+          coordinated: true
+        })).catch(error => {
+          this.stats.failures += 1;
+          this.lastError = { at: new Date().toISOString(), reason: clean(error && error.message || error, 240) };
+        });
+      }, Math.max(0, applyAtMs - now));
+
+      this.stats.groupCommits += 1;
+      return {
+        accepted: true,
+        state: 'COMMITTED',
+        releaseKey,
+        localName: this.preparedUpdate.localName,
+        applyAt: this.preparedUpdate.applyAt,
+        applyAtMs
+      };
+    }
+
+    cancelCoordinatedUpdate(payload = {}, meta = {}) {
+      const releaseKey = clean(payload && payload.releaseKey || '', 300);
+      const sender = clean(meta && meta.sender || '', 120);
+      if (this.preparedUpdate && releaseKey && this.preparedUpdate.releaseKey !== releaseKey) {
+        return { accepted: true, cancelled: false, reason: 'UPDATE_GROUP_OTHER_RELEASE_PREPARED' };
+      }
+      if (this.preparedUpdate && sender && this.preparedUpdate.coordinator && sender !== this.preparedUpdate.coordinator) {
+        return { accepted: false, cancelled: false, reason: 'UPDATE_GROUP_COORDINATOR_MISMATCH' };
+      }
+      if (this.rolloutTimer != null) {
+        try {
+          const clear = this.root && this.root.clearTimeout || clearTimeout;
+          clear(this.rolloutTimer);
+        } catch (_) {}
+      }
+      const previous = clone(this.preparedUpdate);
+      this.rolloutTimer = null;
+      this.preparedUpdate = null;
+      if (previous) this.stats.groupCancels += 1;
+      return { accepted: true, cancelled: !!previous, previous };
+    }
+
+    async _dispatchGroup(method, names, payload) {
+      const transport = this.runtime.lifecycleTransport;
+      if (!transport || typeof transport[method] !== 'function') {
+        return { ok: false, reason: 'UPDATE_GROUP_TRANSPORT_UNAVAILABLE', results: [] };
+      }
+      const commands = [];
+      for (const name of names) {
+        const command = transport[method](name, payload);
+        if (!command || command.state !== 'DISPATCHED' || !command.value) {
+          return {
+            ok: false,
+            reason: command && command.error && command.error.message || 'UPDATE_GROUP_COMMAND_NOT_DISPATCHED:' + name,
+            results: commands
+          };
+        }
+        commands.push({ name, command });
+      }
+      try {
+        const settled = await Promise.all(commands.map(async row => ({
+          name: row.name,
+          outcome: await row.command.value
+        })));
+        const failed = settled.find(row => !row.outcome || row.outcome.success !== true);
+        if (failed) {
+          return {
+            ok: false,
+            reason: failed.outcome && failed.outcome.reason || 'UPDATE_GROUP_REMOTE_REJECTED:' + failed.name,
+            results: settled
+          };
+        }
+        return { ok: true, results: settled };
+      } catch (error) {
+        return { ok: false, reason: clean(error && error.message || error, 240), results: [] };
+      }
+    }
+
+    async _cancelGroup(names, payload) {
+      const transport = this.runtime.lifecycleTransport;
+      if (!transport || typeof transport.requestUpdateCancel !== 'function') return;
+      const waits = [];
+      for (const name of names) {
+        try {
+          const command = transport.requestUpdateCancel(name, payload);
+          if (command && command.state === 'DISPATCHED' && command.value) waits.push(command.value.catch(() => null));
+        } catch (_) {}
+      }
+      if (waits.length) {
+        try { await Promise.all(waits); } catch (_) {}
+      }
+    }
+
+    _coordinationFailure(reason, details = {}) {
+      const now = Date.now();
+      this.stats.coordinationFailures += 1;
+      this.coordinationRetryAtMs = now + this.config.coordinationRetryMs;
+      this.lastCoordination = {
+        at: new Date(now).toISOString(),
+        state: 'FAILED',
+        reason: clean(reason, 240),
+        retryAt: new Date(this.coordinationRetryAtMs).toISOString(),
+        details: clone(details)
+      };
+      this._emitIncident('UPDATE_GROUP_COORDINATION_FAILED', this.lastCoordination);
+      return {
+        applied: false,
+        reason: this.lastCoordination.reason,
+        retryAt: this.lastCoordination.retryAt,
+        coordination: clone(this.lastCoordination)
+      };
+    }
+
+    async _coordinatePending(manifest) {
+      const now = Date.now();
+      if (now < this.coordinationRetryAtMs) {
+        return {
+          applied: false,
+          reason: 'UPDATE_GROUP_COORDINATION_BACKOFF',
+          retryAt: new Date(this.coordinationRetryAtMs).toISOString()
+        };
+      }
+      if (this.preparedUpdate) {
+        if (this.preparedUpdate.state === 'COMMITTED' && finite(this.preparedUpdate.applyAtMs, 0) <= now) {
+          return this.applyPending({
+            localOnly: true,
+            releaseKey: this.preparedUpdate.releaseKey,
+            coordinated: true
+          });
+        }
+        return {
+          applied: false,
+          reason: this.preparedUpdate.state === 'COMMITTED' ? 'UPDATE_GROUP_COMMITTED' : 'UPDATE_GROUP_PREPARED',
+          rollout: clone(this.preparedUpdate)
+        };
+      }
+
+      const group = this._groupState();
+      if (!group.ready) {
+        this.stats.groupDeferrals += 1;
+        this.lastCoordination = {
+          at: new Date().toISOString(),
+          state: 'DEFERRED',
+          reason: 'UPDATE_GROUP_NOT_READY',
+          details: clone(group)
+        };
+        return { applied: false, reason: 'UPDATE_GROUP_NOT_READY', group };
+      }
+      if (String(group.coordinator || '') !== String(group.localName || '')) {
+        return {
+          applied: false,
+          reason: 'UPDATE_WAITING_FOR_GROUP_COORDINATOR',
+          coordinator: group.coordinator,
+          participants: group.participants
+        };
+      }
+
+      const release = this._releaseDescriptor(manifest);
+      const releaseKey = this._releaseKey(manifest);
+      const payload = {
+        protocol: UPDATE_COORDINATION_PROTOCOL,
+        releaseKey,
+        release,
+        coordinator: group.coordinator,
+        participants: group.participants.slice()
+      };
+      const remoteNames = group.participants.filter(name => String(name) !== String(group.localName));
+
+      const localPrepare = await this.prepareCoordinatedUpdate(payload, {});
+      if (!localPrepare || localPrepare.accepted !== true) {
+        return this._coordinationFailure(localPrepare && localPrepare.reason || 'UPDATE_GROUP_LOCAL_PREPARE_FAILED', { group, localPrepare });
+      }
+      const remotePrepare = await this._dispatchGroup('requestUpdatePrepare', remoteNames, payload);
+      if (!remotePrepare.ok) {
+        await this._cancelGroup(remoteNames, { ...payload, reason: remotePrepare.reason });
+        this.cancelCoordinatedUpdate({ releaseKey, reason: remotePrepare.reason });
+        return this._coordinationFailure(remotePrepare.reason, { phase: 'PREPARE', group, remotePrepare });
+      }
+
+      const rechecked = this._groupState();
+      if (!rechecked.ready) {
+        await this._cancelGroup(remoteNames, { ...payload, reason: 'UPDATE_GROUP_PROTECTION_CHANGED' });
+        this.cancelCoordinatedUpdate({ releaseKey, reason: 'UPDATE_GROUP_PROTECTION_CHANGED' });
+        this.stats.groupDeferrals += 1;
+        return { applied: false, reason: 'UPDATE_GROUP_PROTECTION_CHANGED', group: rechecked };
+      }
+
+      const applyAtMs = Date.now() + this.config.groupApplyDelayMs;
+      const commitPayload = { ...payload, applyAtMs };
+      const localCommit = this.commitCoordinatedUpdate(commitPayload, {});
+      if (!localCommit || localCommit.accepted !== true) {
+        await this._cancelGroup(remoteNames, { ...payload, reason: localCommit && localCommit.reason || 'LOCAL_COMMIT_FAILED' });
+        this.cancelCoordinatedUpdate({ releaseKey, reason: localCommit && localCommit.reason || 'LOCAL_COMMIT_FAILED' });
+        return this._coordinationFailure(localCommit && localCommit.reason || 'UPDATE_GROUP_LOCAL_COMMIT_FAILED', { phase: 'COMMIT', localCommit });
+      }
+
+      const remoteCommit = await this._dispatchGroup('requestUpdateCommit', remoteNames, commitPayload);
+      if (!remoteCommit.ok) {
+        await this._cancelGroup(remoteNames, { ...payload, reason: remoteCommit.reason });
+        this.cancelCoordinatedUpdate({ releaseKey, reason: remoteCommit.reason });
+        return this._coordinationFailure(remoteCommit.reason, { phase: 'COMMIT', remoteCommit });
+      }
+
+      this.lastCoordination = {
+        at: new Date().toISOString(),
+        state: 'COMMITTED',
+        releaseKey,
+        coordinator: group.coordinator,
+        participants: group.participants.slice(),
+        applyAt: new Date(applyAtMs).toISOString(),
+        applyAtMs
+      };
+      return {
+        applied: false,
+        reason: 'UPDATE_GROUP_COMMITTED',
+        coordination: clone(this.lastCoordination)
+      };
     }
 
     _binding(name) {
@@ -610,7 +1096,8 @@
       return { ok: false, reason: last };
     }
 
-    async applyPending() {
+    async applyPending(options = {}) {
+      if (!this.pending) this._loadPending();
       if (!this.pending || !this.pending.manifest || typeof this.pending.bundle !== 'string') return { applied: false, reason: 'UPDATE_NOT_DOWNLOADED' };
       if (!this.config.autoApply) return { applied: false, reason: 'UPDATE_AUTO_APPLY_DISABLED' };
       if (this.busy) return { applied: false, reason: 'UPDATE_BUSY' };
@@ -636,9 +1123,26 @@
       }
 
       const safety = this.safety();
-      if (!safety.stable) {
+      if (!safety.safe) {
         this.stats.safeDeferrals += 1;
-        return { applied: false, reason: 'UPDATE_SAFE_WINDOW_REQUIRED', safety };
+        return { applied: false, reason: 'UPDATE_EVENT_OR_BOSS_ACTIVE', safety };
+      }
+
+      const releaseKey = this._releaseKey(manifest);
+      if (options.releaseKey && String(options.releaseKey) !== String(releaseKey)) {
+        return { applied: false, reason: 'UPDATE_GROUP_RELEASE_MISMATCH' };
+      }
+      if (!options.localOnly && this.config.coordinatedApply) {
+        return this._coordinatePending(manifest);
+      }
+      if (options.localOnly && options.coordinated === true) {
+        if (!this.preparedUpdate || this.preparedUpdate.state !== 'COMMITTED'
+            || this.preparedUpdate.releaseKey !== releaseKey) {
+          return { applied: false, reason: 'UPDATE_GROUP_COMMIT_REQUIRED' };
+        }
+        if (Date.now() + 50 < finite(this.preparedUpdate.applyAtMs, 0)) {
+          return { applied: false, reason: 'UPDATE_GROUP_APPLY_NOT_DUE', rollout: clone(this.preparedUpdate) };
+        }
       }
 
       const activeSlot = this._activeSlot();
@@ -742,6 +1246,15 @@
         };
         this.pending = null;
         this._persistPending();
+        if (this.rolloutTimer != null) {
+          try {
+            const clear = this.root && this.root.clearTimeout || clearTimeout;
+            clear(this.rolloutTimer);
+          } catch (_) {}
+        }
+        this.rolloutTimer = null;
+        this.preparedUpdate = null;
+        this.coordinationRetryAtMs = 0;
         this.lastError = null;
         return { applied: true, ...clone(this.lastApply) };
       } catch (error) {
@@ -793,8 +1306,11 @@
         applyIntervalMs: this.config.applyIntervalMs,
         safeHoldMs: this.config.safeHoldMs,
         handshakeTimeoutMs: this.config.handshakeTimeoutMs,
+        groupApplyDelayMs: this.config.groupApplyDelayMs,
+        coordinationRetryMs: this.config.coordinationRetryMs,
         autoDownload: this.config.autoDownload,
         autoApply: this.config.autoApply,
+        coordinatedApply: this.config.coordinatedApply,
         stagingSlots: this.config.stagingSlots.slice(),
         activeSlot,
         applyReady: !!(this.config.autoApply && activeSlot != null && this._stagingSlot(activeSlot) != null),
@@ -811,6 +1327,10 @@
         lastError: clone(this.lastError),
         lastApply: clone(this.lastApply),
         lastIncident: clone(this.lastIncident),
+        lastCoordination: clone(this.lastCoordination),
+        preparedUpdate: clone(this.preparedUpdate),
+        localProtection: this.localProtection(),
+        coordinationRetryAt: this.coordinationRetryAtMs ? new Date(this.coordinationRetryAtMs).toISOString() : null,
         quarantine: clone(this.quarantine),
         stats: { ...this.stats },
         policies: {
@@ -822,8 +1342,14 @@
           bundleRevalidatedBeforeApply: true,
           downgradeForbidden: true,
           automaticDownload: true,
+          automaticApplyEnabledByDefault: true,
           automaticApplyRequiresExplicitStagingSlots: true,
-          safeWindowRequiredBeforeApply: true,
+          coordinatedAllOnlineCharacters: true,
+          twoPhasePrepareCommit: true,
+          ordinaryCombatDoesNotBlockApply: true,
+          ordinaryGameplayDoesNotBlockApply: true,
+          eventOrBossDefersApply: true,
+          safeWindowRequiredBeforeApply: false,
           activeSlotNeverOverwrittenBeforeHandshake: true,
           rollbackLoadsPreviousSlot: true,
           rollbackHandshakeRequired: true,
