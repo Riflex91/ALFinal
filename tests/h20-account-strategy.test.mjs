@@ -110,7 +110,7 @@ test('FARM always selects exactly three farmers plus one Merchant and includes a
       { name: 'My_Warrior', ctype: 'warrior', level: 80, online: true },
       { name: 'My_Priest', ctype: 'priest', level: 80, online: true },
       { name: 'My_Ranger1', ctype: 'ranger', level: 80, online: true },
-      { name: 'My_Mage', ctype: 'mage', level: 60, online: false },
+      { name: 'My_Mage', ctype: 'mage', level: 40, online: false },
       { name: 'My_Rogue', ctype: 'rogue', level: 80, online: false },
       { name: 'My_Merchant', ctype: 'merchant', level: 70, online: true }
     ],
@@ -219,10 +219,18 @@ function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, localNa
       running: row.name === localName || state.onlineNames.includes(row.name)
     }));
   const strategy = {
-    profiles: () => clone(profiles.map(row => ({
-      ...row,
-      running: state.stoppedPeerName && row.name === state.stoppedPeerName ? false : row.running
-    }))),
+    profiles: () => clone(profiles.map(row => {
+      const online = state.onlineNames.includes(row.name);
+      const running = state.stoppedPeerName && row.name === state.stoppedPeerName
+        ? false
+        : (row.local || online);
+      return {
+        ...row,
+        online,
+        peerFresh: row.local || online,
+        running
+      };
+    })),
     optimizeTask: () => ({
       status: 'SELECTION_READY',
       taskType: 'FARM',
@@ -366,14 +374,16 @@ test('healthy non-coordinator does not run competing lifecycle autonomy', () => 
   assert.equal(state.lifecycleStarts, 0);
 });
 
-test('full autonomy refuses to start unless the configured four-character live roster is online', () => {
-  const { controller } = loadFullAutonomy();
-  controller.runtime.roster.refresh = () => ({
-    onlineCharacterNames: ['My_Priest', 'My_Ranger1', 'My_Warrior']
+test('full autonomy accepts a partial live roster and immediately enters lifecycle recovery toward the selected quartet', () => {
+  const { controller, state } = loadFullAutonomy({
+    onlineNames: ['My_Priest', 'My_Ranger1', 'My_Warrior']
   });
   const started = controller.startAutonomy({ taskType: 'FARM' });
-  assert.equal(started.accepted, false);
-  assert.equal(started.reason, 'FULL_AUTONOMY_EXPECTED_ONLINE_COUNT_MISMATCH');
+  assert.equal(started.accepted, true);
+  assert.equal(started.tick.state, 'WARMING');
+  assert.equal(started.tick.reason, 'FULL_AUTONOMY_RECOVERING_EXPECTED_ROSTER');
+  assert.equal(state.lifecycleStarts, 1);
+  assert.deepEqual([...started.tick.desiredCharacterNames], ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior']);
 });
 
 
@@ -451,11 +461,11 @@ test('Full Autonomy rotates an old farmer out when strategy selects a different 
   assert.equal(started.tick.state, 'WARMING');
   assert.equal(started.tick.reason, 'FULL_AUTONOMY_ROTATING_ACTIVITY_GROUP');
   assert.equal(started.tick.rotationRequired, true);
-  assert.deepEqual(started.tick.desiredCharacterNames, ['My_Mage', 'My_Merchant', 'My_Ranger1', 'My_Warrior']);
-  assert.deepEqual(started.tick.unexpectedOnlineNames, ['My_Priest']);
+  assert.deepEqual([...started.tick.desiredCharacterNames], ['My_Mage', 'My_Merchant', 'My_Ranger1', 'My_Warrior']);
+  assert.deepEqual([...started.tick.unexpectedOnlineNames], ['My_Priest']);
   assert.equal(state.lifecycleStarts, 1);
-  assert.deepEqual(state.lifecyclePolicy.desiredActiveNames, ['My_Mage', 'My_Merchant', 'My_Ranger1', 'My_Warrior']);
-  assert.deepEqual(state.lifecyclePolicy.desiredPartyMemberNames, ['My_Mage', 'My_Merchant', 'My_Ranger1', 'My_Warrior']);
+  assert.deepEqual([...state.lifecyclePolicy.desiredActiveNames], ['My_Mage', 'My_Merchant', 'My_Ranger1', 'My_Warrior']);
+  assert.deepEqual([...state.lifecyclePolicy.desiredPartyMemberNames], ['My_Mage', 'My_Merchant', 'My_Ranger1', 'My_Warrior']);
   assert.equal(state.farmStarts, 0);
 });
 
