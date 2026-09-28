@@ -218,7 +218,11 @@
       this.session.groupMemberNames = memberNames.slice();
       this.session.leaderOwnedPulls = leaderOwnedPulls;
 
-      if (this.combat && typeof this.combat.configureGroup === 'function') {
+      const combat = this._combatStatus();
+      if (combat && combat.active && combat.session
+          && String(combat.session.id) === String(this.session.combatSessionId)
+          && String(combat.session.owner || '') === 'farming-h8'
+          && this.combat && typeof this.combat.configureGroup === 'function') {
         this.combat.configureGroup({
           groupLeaderName: leaderName,
           groupMemberNames: memberNames,
