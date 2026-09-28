@@ -56,6 +56,16 @@
     replacedPrevious: !!previous
   });
 
+  const bridge = ns.WindowsBridgeTransportAdapter
+    ? new ns.WindowsBridgeTransportAdapter({
+        runtime,
+        root,
+        logger: runtime.logger,
+        bus: runtime.bus
+      })
+    : null;
+  runtime.bridge = bridge;
+
   if (root.document && root.document.body && ns.ControlCenter) {
     const ui = new ns.ControlCenter(runtime);
     runtime.ui = ui;
@@ -75,6 +85,15 @@
     selfTest: () => runtime.selfTest(),
     diagnostics: () => runtime.diagnostics(),
     performance_trick: () => runtime.performanceTrick(),
+
+    bridge: bridge ? {
+      identity: () => bridge.identity(),
+      status: () => bridge.status(),
+      snapshot: options => bridge.snapshot(options || {}),
+      events: (afterSeq, limit) => bridge.events(afterSeq, limit),
+      peekTelemetry: limit => bridge.peekTelemetry(limit),
+      acknowledgeTelemetry: maxSeq => bridge.ackThrough(maxSeq)
+    } : null,
 
     scheduler: {
       status: () => runtime.scheduler.status(),
@@ -437,6 +456,7 @@
     }
   };
 
+  if (api.bridge) Object.freeze(api.bridge);
   Object.freeze(api.scheduler);
   Object.freeze(api.modules);
   Object.freeze(api.game);
