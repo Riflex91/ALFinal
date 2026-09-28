@@ -44,6 +44,15 @@
       this.requestPartyJoinLocal = typeof options.requestPartyJoinLocal === 'function'
         ? options.requestPartyJoinLocal
         : async () => { throw new Error('H19_CROSS_WINDOW_PARTY_REQUEST_UNAVAILABLE'); };
+      this.prepareUpdateLocal = typeof options.prepareUpdateLocal === 'function'
+        ? options.prepareUpdateLocal
+        : async () => { throw new Error('H22_CROSS_WINDOW_UPDATE_PREPARE_UNAVAILABLE'); };
+      this.commitUpdateLocal = typeof options.commitUpdateLocal === 'function'
+        ? options.commitUpdateLocal
+        : async () => { throw new Error('H22_CROSS_WINDOW_UPDATE_COMMIT_UNAVAILABLE'); };
+      this.cancelUpdateLocal = typeof options.cancelUpdateLocal === 'function'
+        ? options.cancelUpdateLocal
+        : async () => ({ accepted: true, cancelled: false });
       this.now = typeof options.now === 'function' ? options.now : () => Date.now();
 
       this.config = {
@@ -343,6 +352,19 @@
           classificationOnly: true,
           actionAuthority: false
         } : null,
+        updateProtection: row.updateProtection && typeof row.updateProtection === 'object' ? {
+          schemaVersion: 1,
+          protocol: cleanText(row.updateProtection.protocol || '', 80) || null,
+          coordinatedUpdateCapable: row.updateProtection.coordinatedUpdateCapable === true,
+          blocked: row.updateProtection.blocked === true,
+          event: row.updateProtection.event === true,
+          boss: row.updateProtection.boss === true,
+          taskType: cleanText(row.updateProtection.taskType || '', 40).toUpperCase() || null,
+          targetType: cleanText(row.updateProtection.targetType || '', 120) || null,
+          observedAtMs: Number.isFinite(Number(row.updateProtection.observedAtMs))
+            ? Number(row.updateProtection.observedAtMs)
+            : Number(observedAtMs) || this.now()
+        } : null,
         observedAtMs: Number(observedAtMs) || this.now(),
         aliveUntilMs: (Number(observedAtMs) || this.now()) + this.config.staleMs
       };
@@ -373,7 +395,10 @@
           seq: Number.isFinite(Number(state.observation.seq)) ? Math.max(0, Number(state.observation.seq)) : 0,
           classificationOnly: true,
           actionAuthority: false
-        } : null
+        } : null,
+        updateProtection: state.updateProtection && typeof state.updateProtection === 'object'
+          ? clone(state.updateProtection)
+          : null
       };
     }
 
@@ -684,7 +709,10 @@
       const commandId = cleanText(envelope.messageId || '', 240);
       const sender = cleanText(envelope.senderCharacterName || '', 120);
       const commandType = cleanText(envelope.commandType || '', 80);
-      const supported = new Set(['START_RUNTIME', 'STOP_RUNTIME', 'LEAVE_PARTY', 'REQUEST_PARTY_JOIN']);
+      const supported = new Set([
+        'START_RUNTIME', 'STOP_RUNTIME', 'LEAVE_PARTY', 'REQUEST_PARTY_JOIN',
+        'PREPARE_UPDATE', 'COMMIT_UPDATE', 'CANCEL_UPDATE'
+      ]);
       if (!commandId || !sender || !supported.has(commandType)) return false;
       if (cleanText(envelope.targetSessionId || '', 240) !== this.sessionId) {
         this.metrics.rejectedSessionMismatch += 1;
@@ -720,6 +748,21 @@
           outcome = await this._executePartyLeave(sender);
         } else if (commandType === 'REQUEST_PARTY_JOIN') {
           outcome = await this._executePartyJoinRequest(sender);
+        } else if (commandType === 'PREPARE_UPDATE') {
+          const result = await this.prepareUpdateLocal(clone(envelope.payload || {}), sender);
+          if (!result || result.accepted !== true) {
+            throw new Error(result && result.reason || 'H22_CROSS_WINDOW_UPDATE_PREPARE_REJECTED');
+          }
+          outcome = { reason: 'H22_CROSS_WINDOW_UPDATE_PREPARED', details: clone(result) };
+        } else if (commandType === 'COMMIT_UPDATE') {
+          const result = await this.commitUpdateLocal(clone(envelope.payload || {}), sender);
+          if (!result || result.accepted !== true) {
+            throw new Error(result && result.reason || 'H22_CROSS_WINDOW_UPDATE_COMMIT_REJECTED');
+          }
+          outcome = { reason: 'H22_CROSS_WINDOW_UPDATE_COMMITTED', details: clone(result) };
+        } else if (commandType === 'CANCEL_UPDATE') {
+          const result = await this.cancelUpdateLocal(clone(envelope.payload || {}), sender);
+          outcome = { reason: 'H22_CROSS_WINDOW_UPDATE_CANCELLED', details: clone(result || {}) };
         }
         record.state = 'SETTLED';
         record.settlement = { success: true, reason: outcome && outcome.reason || 'H19_CROSS_WINDOW_SETTLED', details: outcome && outcome.details || null };
@@ -754,7 +797,8 @@
       const envelope = this._baseEnvelope('COMMAND', target, {
         commandType: cleanText(commandType || '', 80),
         targetSessionId: peer.sessionId,
-        validUntilMs: this.now() + this.config.settlementTimeoutMs
+        validUntilMs: this.now() + this.config.settlementTimeoutMs,
+        ...(options.payload && typeof options.payload === 'object' ? { payload: clone(options.payload) } : {})
       });
       const messageId = envelope.messageId;
       let resolvePromise;
@@ -821,6 +865,29 @@
       if (peer.running !== true) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H19_CROSS_WINDOW_PARTY_RUNTIME_NOT_RUNNING' } };
       if (peer.emergencyStopLatched === true) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H19_CROSS_WINDOW_PARTY_EMERGENCY_STOP_LATCHED' } };
       return this._requestCommand(target, 'REQUEST_PARTY_JOIN', { peer });
+    }
+
+    _requestUpdateCommand(targetName, commandType, payload = {}) {
+      const target = cleanText(targetName || '', 120);
+      const peer = this.freshPeer(target);
+      if (!peer) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H22_CROSS_WINDOW_UPDATE_PEER_NOT_FRESH' } };
+      if (peer.running !== true) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H22_CROSS_WINDOW_UPDATE_RUNTIME_NOT_RUNNING' } };
+      if (!peer.updateProtection || peer.updateProtection.coordinatedUpdateCapable !== true) {
+        return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H22_CROSS_WINDOW_UPDATE_CAPABILITY_MISSING' } };
+      }
+      return this._requestCommand(target, commandType, { peer, payload });
+    }
+
+    requestUpdatePrepare(targetName, payload = {}) {
+      return this._requestUpdateCommand(targetName, 'PREPARE_UPDATE', payload);
+    }
+
+    requestUpdateCommit(targetName, payload = {}) {
+      return this._requestUpdateCommand(targetName, 'COMMIT_UPDATE', payload);
+    }
+
+    requestUpdateCancel(targetName, payload = {}) {
+      return this._requestUpdateCommand(targetName, 'CANCEL_UPDATE', payload);
     }
 
     install() {
