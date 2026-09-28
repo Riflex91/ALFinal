@@ -412,7 +412,7 @@ test('H22 coordinator prepares every online peer before one shared group commit'
   assert.equal(calls[1].name, 'Bravo');
   assert.equal(calls[0].payload.releaseKey, calls[1].payload.releaseKey);
   assert.equal(calls[0].payload.coordinator, 'Alpha');
-  assert.deepEqual(calls[0].payload.participants, ['Alpha', 'Bravo']);
+  assert.deepEqual(Array.from(calls[0].payload.participants), ['Alpha', 'Bravo']);
   assert.ok(Number(calls[1].payload.applyAtMs) > Date.now());
   assert.equal(fixture.state.executes.length, 0);
   assert.equal(fixture.state.stops, 0);
