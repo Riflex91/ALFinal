@@ -207,7 +207,7 @@ test('H7 exposes normalized owned party roles and coordinator API', async t => {
   t.after(async () => { try { await ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {} });
   await ctx.ALBot.start();
 
-  assert.equal(ctx.ALBot.version, '0.22.4-h22');
+  assert.equal(ctx.ALBot.version, '0.22.5-h22');
   assert.equal(typeof ctx.ALBot.party.status, 'function');
   assert.equal(typeof ctx.ALBot.party.snapshot, 'function');
   assert.equal(ctx.ALBot.liveTests.status().recommendedId, 'h19-remote-recovery');

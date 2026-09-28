@@ -94,6 +94,7 @@ function fixture(options = {}) {
   let resolvePending = null;
   let rejectPending = null;
   const actions = {
+    available: name => !(Array.isArray(options.unavailableActions) && options.unavailableActions.includes(String(name))),
     dispatch: (name, args) => {
       state.dispatches.push({ name, args: clone(args) });
       if (options.syncUnknown) return { state: 'UNKNOWN', dispatched: true, error: { message: 'NETWORK_UNCERTAIN' } };
@@ -199,6 +200,7 @@ function fixture(options = {}) {
     party,
     storage,
     crossWindow,
+    sessionId: options.sessionId || 'h19-fixture-session',
     canAct: () => options.actionBlocked !== true,
     outcomeTimeoutMs: options.outcomeTimeoutMs == null ? 5000 : options.outcomeTimeoutMs,
     maxActionsPerSession: options.maxActionsPerSession == null ? 4 : options.maxActionsPerSession
@@ -668,6 +670,94 @@ test('H19 separate-window lifecycle uses fresh CM peer instead of runner-active 
   assert.equal(controller.status().metrics.crossWindowDispatches, 2);
 });
 
+test('H19 automatic character rotation never substitutes a cross-window runtime stop for a real character stop', () => {
+  const { controller, state } = fixture({
+    onlineNames: ['My_Merchant', 'My_Ranger', 'My_Priest', 'My_Warrior'],
+    runnerActiveNames: ['My_Ranger'],
+    freezeRunnerActive: true,
+    crossWindowPeers: [
+      { name: 'My_Priest', sessionId: 'priest-window-session', running: true, runEpoch: 4 },
+      { name: 'My_Merchant', sessionId: 'merchant-window-session', running: true, runEpoch: 2 }
+    ],
+    maxActionsPerSession: 4
+  });
+  state.account.push({ name: 'My_Mage', ctype: 'mage', online: false });
+
+  const desired = ['My_Mage', 'My_Merchant', 'My_Ranger', 'My_Warrior'];
+  const readiness = controller.characterRotationReadiness(desired);
+  assert.equal(readiness.ready, false);
+  assert.ok(readiness.blockers.includes('H19_ROTATION_STOP_NOT_RUNNER_CONTROLLABLE:My_Priest'));
+
+  assert.equal(controller.setPolicy({
+    desiredActiveNames: desired,
+    desiredPartyMemberNames: desired,
+    desiredPartyLeader: 'My_Ranger'
+  }).accepted, true);
+  assert.equal(controller.startAutonomy({ maxActions: 4 }).accepted, true);
+
+  const plan = controller.plan();
+  assert.equal(plan.state, 'READY');
+  assert.equal(plan.request.kind, 'STOP');
+  assert.equal(plan.request.targetName, 'My_Priest');
+  assert.equal(plan.request.requireCharacterStateChange, true);
+
+  const result = controller.tick();
+  assert.equal(result.accepted, false);
+  assert.equal(result.reason, 'H19_ROTATION_STOP_NOT_RUNNER_CONTROLLABLE');
+  assert.equal(state.crossWindowDispatches.length, 0);
+  assert.equal(state.dispatches.length, 0);
+  assert.equal(state.online.has('My_Priest'), true);
+});
+
+test('H19 stale pending from another runtime session is discarded without suspending the new session', () => {
+  const first = fixture({
+    sessionId: 'runtime-session-a',
+    manualSettlement: true,
+    noMutation: true,
+    onlineNames: ['My_Ranger', 'My_Priest'],
+    runnerActiveNames: ['My_Ranger', 'My_Priest']
+  });
+  assert.equal(first.controller.queueStop('My_Priest').accepted, true);
+  assert.equal(first.controller.tick().state, 'DISPATCHED');
+  first.controller.stop('TEST_OLD_RUNTIME_GONE');
+
+  const second = first.recreate({
+    sessionId: 'runtime-session-b',
+    manualSettlement: false,
+    noMutation: true
+  });
+  const status = second.controller.status();
+  assert.equal(status.currentAction, null);
+  assert.equal(status.suspended, false);
+  assert.equal(status.metrics.stalePendingDiscarded, 1);
+  assert.equal(status.lastAction.type, 'STALE_PENDING_DISCARDED');
+  assert.equal([...first.storage.map.keys()].some(key => key.includes(':pending:')), false);
+});
+
+test('H19 stale pending from another runtime session is reconciled when live character state proves success', () => {
+  const first = fixture({
+    sessionId: 'runtime-session-a',
+    manualSettlement: true,
+    onlineNames: ['My_Ranger', 'My_Priest'],
+    runnerActiveNames: ['My_Ranger', 'My_Priest']
+  });
+  assert.equal(first.controller.queueStart('My_Merchant').accepted, true);
+  assert.equal(first.controller.tick().state, 'DISPATCHED');
+  assert.equal(first.state.online.has('My_Merchant'), true);
+  first.controller.stop('TEST_OLD_RUNTIME_GONE');
+
+  const second = first.recreate({
+    sessionId: 'runtime-session-b',
+    manualSettlement: false
+  });
+  const status = second.controller.status();
+  assert.equal(status.currentAction, null);
+  assert.equal(status.suspended, false);
+  assert.equal(status.metrics.stalePendingReconciled, 1);
+  assert.equal(status.lastAction.type, 'STALE_PENDING_RECONCILED');
+  assert.equal(status.lastAction.evidence, 'STALE_ACTIVE_ROSTER_PRESENT');
+});
+
 test('H19 prefers direct child control when a runner-active target also has a CM heartbeat', async () => {
   const { controller, state } = fixture({
     onlineNames: ['My_Ranger', 'My_Merchant'],
@@ -839,7 +929,7 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(runtime, /rejectedDelta === 0/);
   assert.match(runtime, /unknownDelta === 0/);
   assert.match(runtime, /H19_REMOTE_TARGET_NOT_RESTORED/);
-  assert.match(runtime, /options\.version \|\| '0\.22\.4-h22'/);
+  assert.match(runtime, /options\.version \|\| '0\.22\.5-h22'/);
   assert.match(entry, /runtime\.lifecycle\.queueStart/);
   assert.match(entry, /runtime\.lifecycle\.queueStop/);
   assert.match(entry, /runtime\.lifecycle\.queueRespawn/);
@@ -879,8 +969,8 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(crossWindow, /partyRecoveryLease/);
   assert.match(build, /src\/cross-window-lifecycle\.js/);
   assert.match(build, /src\/lifecycle-recovery\.js/);
-  assert.match(build, /const runtimeVersion = '0\.22\.4-h22'/);
-  assert.match(dist, /AL Bot 0\.22\.4-h22/);
+  assert.match(build, /const runtimeVersion = '0\.22\.5-h22'/);
+  assert.match(dist, /AL Bot 0\.22\.5-h22/);
   assert.match(dist, /class H19CrossWindowLifecycleTransport/);
   assert.match(dist, /albot-h19-cross-window-v1/);
   assert.match(dist, /h19-cross-window-readiness/);
@@ -890,5 +980,5 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(dist, /class CharacterLifecycleController/);
   assert.match(dist, /H19_REMOTE_TARGET_NOT_RUNNER_CONTROLLABLE/);
   assert.match(dist, /H19_REMOTE_CONTROLLABLE_TARGET_UNAVAILABLE/);
-  assert.equal(pkg.version, '0.22.4');
+  assert.equal(pkg.version, '0.22.5');
 });

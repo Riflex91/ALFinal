@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.22.4-h22';
+      this.version = options.version || '0.22.5-h22';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -280,6 +280,7 @@
         party: this.party,
         storage: this.storage,
         crossWindow: this.lifecycleTransport,
+        sessionId: this.lifecycleTransport && this.lifecycleTransport.sessionId || null,
         canAct: action => this.actionAllowed(action)
       });
       this.accountStrategy = new ns.AccountStrategyController({
@@ -567,7 +568,7 @@
       this.modules.register({
         id: 'known-recovery',
         title: 'H22 Known Recovery Coordinator',
-        version: '0.22.4',
+        version: '0.22.5',
         watchdogMs: 5000,
         start: context => this.knownRecovery.start(context),
         stop: reason => this.knownRecovery.stop(reason),

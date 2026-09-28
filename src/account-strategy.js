@@ -352,8 +352,12 @@
         ? [...new Set(input.requiredCapabilities.map(value => cleanText(value, 40).toUpperCase()).filter(Boolean))]
         : defaults.required.slice();
       const progression = this.progressionPlan();
+      const allowedCharacterNames = Array.isArray(input.allowedCharacterNames)
+        ? new Set(input.allowedCharacterNames.map(name => cleanText(name, 120)).filter(Boolean))
+        : null;
       const scored = this._scoredProfiles()
         .filter(row => row.rip !== true && row.emergencyStopLatched !== true)
+        .filter(row => !allowedCharacterNames || allowedCharacterNames.has(String(row.name)))
         .filter(row => !defaults.combatOnly || row.ctype !== 'merchant')
         .slice(0, this.config.maxCandidates);
 
@@ -411,6 +415,7 @@
       }
       const merchants = this._scoredProfiles()
         .filter(row => row.rip !== true && row.emergencyStopLatched !== true && row.ctype === 'merchant')
+        .filter(row => !allowedCharacterNames || allowedCharacterNames.has(String(row.name)))
         .sort((a, b) =>
           Number(b.online && b.running === true) - Number(a.online && a.running === true)
           || b.strength - a.strength
@@ -422,6 +427,7 @@
         schemaVersion: 1,
         taskType,
         requiredCapabilities: required,
+        allowedCharacterNames: allowedCharacterNames ? [...allowedCharacterNames].sort((a, b) => a.localeCompare(b)) : null,
         status: selected && supportReady
           ? 'SELECTION_READY'
           : (selected && !supportReady ? 'NO_MERCHANT_SUPPORT' : 'NO_ALLOWED_COMBINATION'),
