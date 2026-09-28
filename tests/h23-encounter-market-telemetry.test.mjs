@@ -73,6 +73,55 @@ test('disabled set keeps future encounter content enabled by default', () => {
   assert.equal(catalog.bosses.find(row => row.id === 'boss2').enabled, true);
 });
 
+test('ALData refresh consumes the documented /trades WTS/WTB schema and drops stale owners', async () => {
+  const now = Date.now();
+  const { root, storage } = context({
+    character: { name: 'LocalMerchant', owner: 'local-owner' },
+    fetch: async (url) => {
+      assert.equal(url, 'https://aldata.earthiverse.ca/trades');
+      return {
+        ok: true,
+        status: 200,
+        json: async () => [
+          {
+            owner: 'remote-owner',
+            lastUpdated: now,
+            listings: [{
+              name: 'firestaff',
+              level: 9,
+              wts: { price: 50_000_000, quantity: 1 },
+              wtb: { price: 40_000_000, quantity: 2 }
+            }]
+          },
+          {
+            owner: 'stale-owner',
+            lastUpdated: now - 8 * 86400000,
+            listings: [{ name: 'firestaff', level: 9, wts: { price: 1 } }]
+          },
+          {
+            owner: 'local-owner',
+            lastUpdated: now,
+            listings: [{ name: 'firestaff', level: 9, wts: { price: 2 } }]
+          }
+        ]
+      };
+    }
+  });
+  vm.runInNewContext(marketSource, root);
+  const Market = root.__ALBOT_INTERNALS__.ALDataMarketIntelligence;
+  const market = new Market({ root, storage, game: {}, trade: null });
+  market.moduleActive = true;
+  const refreshed = await market.refresh();
+  assert.equal(refreshed.accepted, true);
+  assert.equal(refreshed.listings, 3);
+  assert.equal(refreshed.staleDropped, 1);
+  const info = market.item('firestaff', { level: 9 });
+  assert.equal(info.sampleCount, 2);
+  assert.equal(info.bestAsk.price, 50_000_000);
+  assert.equal(info.bestBid.price, 40_000_000);
+  assert.equal(market.status().endpoint, 'https://aldata.earthiverse.ca/trades');
+});
+
 test('market price band is advisory and cannot bypass live mutation safety', () => {
   const { root, storage } = context();
   vm.runInNewContext(marketSource, root);
