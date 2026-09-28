@@ -24089,7 +24089,9 @@
     ACK_TYPE
   });
 })(typeof globalThis !== 'undefined' ? globalThis : this);
-\n\n(function (root) {
+
+
+(function (root) {
   'use strict';
   const ns = root.__ALBOT_INTERNALS__;
   if (!ns || !ns.Scheduler) throw new Error('ALBOT_SCHEDULER_MISSING');
