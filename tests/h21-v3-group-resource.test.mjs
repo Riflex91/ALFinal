@@ -162,7 +162,10 @@ test('resource topoff suspends on UNKNOWN and never blindly retries', () => {
 
 function h9FollowerFixture({ leaderX = 300, leaderMap = 'main', farmActive = false, combatActive = false } = {}) {
   const { Controller } = loadController('src/farm-intelligence.js', 'FarmIntelligenceController');
-  const state = { moves: [], farmStarts: [], farmGroupConfigs: [], activeOrder: null, farmActive, combatActive, leaderVisible: true };
+  const state = {
+    moves: [], farmStarts: [], farmGroupConfigs: [], activeOrder: null,
+    farmActive, combatActive, leaderVisible: true, leaderX, nowMs: 10000
+  };
   const character = { name: 'My_Ranger1', ctype: 'ranger', map: 'main', x: 0, y: 0, hp: 2500, maxHp: 2500, mp: 700, maxMp: 900, rip: false };
   const game = {
     snapshot: () => ({ available: true, character: clone(character) }),
@@ -176,8 +179,8 @@ function h9FollowerFixture({ leaderX = 300, leaderMap = 'main', farmActive = fal
         ownedMemberNames: ['My_Ranger1', 'My_Priest', 'My_Warrior'],
         ownedMembers: [
           { name: 'My_Ranger1', local: true, map: 'main', x: 0, y: 0 },
-          ...(state.leaderVisible ? [{ name: 'My_Warrior', local: false, map: leaderMap, x: leaderX, y: 0 }] : []),
-          { name: 'My_Priest', local: false, map: 'main', x: Math.min(leaderX, 40), y: 20 }
+          ...(state.leaderVisible ? [{ name: 'My_Warrior', local: false, map: leaderMap, x: state.leaderX, y: 0 }] : []),
+          { name: 'My_Priest', local: false, map: 'main', x: Math.min(state.leaderX, 40), y: 20 }
         ]
       }
     }),
@@ -217,7 +220,7 @@ function h9FollowerFixture({ leaderX = 300, leaderMap = 'main', farmActive = fal
     status: () => ({ active: state.combatActive }),
     safeCandidates: () => []
   };
-  const controller = new Controller({ game, combat, farming, movement, party, now: () => 10000 });
+  const controller = new Controller({ game, combat, farming, movement, party, now: () => state.nowMs });
   controller.start({ scope: { interval: () => 'h9-loop' } });
   return { controller, state };
 }
@@ -236,6 +239,52 @@ test('group follower never chooses its own farm direction and smart-regroups to 
   assert.equal(f.state.moves[0].owner, 'farm-intelligence-h9-group-regroup');
   assert.equal(f.state.moves[0].destination.x, 300);
   assert.equal(f.state.farmStarts.length, 0);
+});
+
+test('active regroup ignores small/fast leader drift instead of retarget-chasing every tick', () => {
+  const f = h9FollowerFixture({ leaderX: 300 });
+  const started = f.controller.startAutonomy({
+    owner: 'full-autonomy',
+    groupLeaderName: 'My_Warrior',
+    groupMemberNames: ['My_Priest', 'My_Ranger1', 'My_Warrior']
+  });
+  assert.equal(started.tick.state, 'TRAVELLING');
+  assert.equal(f.state.moves.length, 1);
+
+  f.state.leaderX = 360;
+  f.state.nowMs = 12000;
+  const held = f.controller.tick();
+  assert.equal(held.state, 'TRAVELLING');
+  assert.equal(f.state.moves.length, 1);
+  assert.equal(f.controller.status().metrics.groupRetargets, 0);
+
+  f.state.leaderX = 410;
+  f.state.nowMs = 15050;
+  const retargeted = f.controller.tick();
+  assert.equal(retargeted.state, 'TRAVELLING');
+  assert.equal(f.state.moves.length, 2);
+  assert.equal(f.state.moves[1].kind, 'retarget');
+  assert.equal(f.controller.status().metrics.groupRetargets, 1);
+});
+
+test('rejoined follower cancels regroup before evaluating a stale leader retarget', () => {
+  const f = h9FollowerFixture({ leaderX: 300 });
+  const started = f.controller.startAutonomy({
+    owner: 'full-autonomy',
+    groupLeaderName: 'My_Warrior',
+    groupMemberNames: ['My_Priest', 'My_Ranger1', 'My_Warrior']
+  });
+  assert.equal(started.tick.state, 'TRAVELLING');
+  assert.equal(f.state.moves.length, 1);
+
+  f.state.leaderX = 80;
+  f.state.nowMs = 20000;
+  const rejoined = f.controller.tick();
+  assert.equal(rejoined.state, 'FARMING');
+  assert.equal(f.state.activeOrder, null);
+  assert.equal(f.state.moves.length, 1);
+  assert.equal(f.controller.status().metrics.groupRetargets, 0);
+  assert.equal(f.state.farmStarts.length, 1);
 });
 
 test('active regroup is cancelled when the leader position disappears', () => {
