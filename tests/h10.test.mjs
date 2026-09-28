@@ -342,7 +342,7 @@ test('H10 runtime, public API, UI and one-click live suite are wired', () => {
   assert.match(ui, /data-tab="inventory"/);
   assert.match(ui, /H10 Loot & Inventar/);
   assert.match(boundary, /loot: Object\.freeze\(\{ publicName: 'loot'/);
-  assert.equal(pkg.version, '0.22.7');
+  assert.equal(pkg.version, '0.23.0');
 });
 
 test('H10 source keeps destructive economy actions outside the controller', () => {
