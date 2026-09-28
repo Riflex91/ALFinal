@@ -855,5 +855,5 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(dist, /class CharacterLifecycleController/);
   assert.match(dist, /H19_REMOTE_TARGET_NOT_RUNNER_CONTROLLABLE/);
   assert.match(dist, /H19_REMOTE_CONTROLLABLE_TARGET_UNAVAILABLE/);
-  assert.equal(pkg.version, '0.20.0');
+  assert.equal(pkg.version, '0.21.0');
 });
