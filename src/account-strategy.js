@@ -27,12 +27,36 @@
   });
 
   const TASK_DEFAULTS = Object.freeze({
-    FARM: { minMembers: 1, maxMembers: 2, required: ['DPS'], combatOnly: true, progressionWeight: 0.20 },
-    QUEST: { minMembers: 1, maxMembers: 2, required: ['DPS'], combatOnly: true, progressionWeight: 0.16 },
-    BOSS: { minMembers: 3, maxMembers: 4, required: ['TANK', 'HEALER', 'DPS'], combatOnly: true, progressionWeight: 0 },
-    EVENT: { minMembers: 3, maxMembers: 4, required: ['TANK', 'HEALER', 'DPS'], combatOnly: true, progressionWeight: 0 },
-    SPECIAL: { minMembers: 2, maxMembers: 4, required: ['HEALER', 'DPS'], combatOnly: true, progressionWeight: 0.04 },
-    ECONOMY: { minMembers: 1, maxMembers: 1, required: ['ECONOMY'], combatOnly: false, progressionWeight: 0 }
+    FARM: {
+      minMembers: 3, maxMembers: 3, required: ['DPS'], combatOnly: true,
+      progressionWeight: 0.30, catchUpRequired: true, extraMemberCost: 0.90, offlineActivationCost: 0.08,
+      capabilityWeights: { DPS: 0.06, AOE: 0.10, RANGED: 0.035, HEALER: 0.04, TANK: 0.025, SUPPORT: 0.025 }
+    },
+    QUEST: {
+      minMembers: 3, maxMembers: 3, required: ['DPS'], combatOnly: true,
+      progressionWeight: 0.16, catchUpRequired: false, extraMemberCost: 0.78, offlineActivationCost: 0.10,
+      capabilityWeights: { DPS: 0.07, RANGED: 0.04, HEALER: 0.04, SUPPORT: 0.035, TANK: 0.02 }
+    },
+    BOSS: {
+      minMembers: 3, maxMembers: 3, required: ['TANK', 'HEALER', 'DPS'], combatOnly: true,
+      progressionWeight: 0.02, catchUpRequired: false, extraMemberCost: 0.10, offlineActivationCost: 0.12,
+      capabilityWeights: { TANK: 0.10, HEALER: 0.10, DPS: 0.06, SUPPORT: 0.04, RANGED: 0.02 }
+    },
+    EVENT: {
+      minMembers: 3, maxMembers: 3, required: ['TANK', 'HEALER', 'DPS'], combatOnly: true,
+      progressionWeight: 0.04, catchUpRequired: false, extraMemberCost: 0.08, offlineActivationCost: 0.10,
+      capabilityWeights: { AOE: 0.10, DPS: 0.06, HEALER: 0.08, TANK: 0.07, SUPPORT: 0.035 }
+    },
+    SPECIAL: {
+      minMembers: 3, maxMembers: 3, required: ['HEALER', 'DPS'], combatOnly: true,
+      progressionWeight: 0.06, catchUpRequired: false, extraMemberCost: 0.32, offlineActivationCost: 0.10,
+      capabilityWeights: { HEALER: 0.09, DPS: 0.06, SUPPORT: 0.05, TANK: 0.04, RANGED: 0.025 }
+    },
+    ECONOMY: {
+      minMembers: 1, maxMembers: 1, required: ['ECONOMY'], combatOnly: false,
+      progressionWeight: 0, catchUpRequired: false, extraMemberCost: 0, offlineActivationCost: 0,
+      capabilityWeights: { ECONOMY: 0.1, LOGISTICS: 0.05 }
+    }
   });
 
   function combinations(rows, minSize, maxSize) {
@@ -72,7 +96,7 @@
       this.config = {
         targetCorridor: clamp(options.targetCorridor == null ? 0.08 : options.targetCorridor, 0, 0.5),
         maxProfileAgeMs: Math.max(1500, Math.min(30000, Number(options.maxProfileAgeMs) || 9000)),
-        maxCandidates: Math.max(4, Math.min(12, Math.floor(Number(options.maxCandidates) || 8)))
+        maxCandidates: Math.max(4, Math.min(32, Math.floor(Number(options.maxCandidates) || 16)))
       };
     }
 
@@ -257,7 +281,7 @@
 
     _scoredProfiles() {
       const rows = this.profiles();
-      const usable = rows.filter(row => row.online && row.rip !== true && row.emergencyStopLatched !== true);
+      const usable = rows.filter(row => row.rip !== true && row.emergencyStopLatched !== true);
       const maxLevel = Math.max(1, ...usable.map(row => finite(row.level) || 1));
       const maxGear = Math.max(1, ...usable.map(row => finite(row.gearScore) || 0));
       const combatRaw = row => {
@@ -274,7 +298,9 @@
         const gearProgress = clamp((finite(row.gearScore) || 0) / maxGear);
         const combatProgress = clamp(combatRaw(row) / maxCombat);
         const survival = row.maxHp && row.hp != null ? clamp(Number(row.hp) / Number(row.maxHp)) : 0.75;
-        const strength = clamp(levelProgress * 0.42 + gearProgress * 0.23 + combatProgress * 0.27 + survival * 0.08);
+        const strength = row.fallback === true
+          ? clamp(levelProgress * 0.82 + survival * 0.18)
+          : clamp(levelProgress * 0.42 + gearProgress * 0.23 + combatProgress * 0.27 + survival * 0.08);
         const trainingShare = totalTraining > 0 ? Math.max(0, finite(row.trainingMs) || 0) / totalTraining : 0;
         return {
           ...row,
@@ -290,8 +316,8 @@
 
     progressionPlan() {
       const combat = this._scoredProfiles().filter(row =>
-        row.online
-        && row.rip !== true
+        row.rip !== true
+        && row.emergencyStopLatched !== true
         && row.ctype !== 'merchant'
         && row.capabilities.includes('DPS')
       );
@@ -299,7 +325,7 @@
       const ranking = combat.map(row => {
         const gap = Math.max(0, strongest - row.strength - this.config.targetCorridor);
         const trainingDeficit = Math.max(0, 1 - row.trainingShare);
-        const catchUp = clamp(gap * 0.72 + trainingDeficit * 0.28);
+        const catchUp = gap > 0 ? clamp(gap * 0.90 + trainingDeficit * 0.10) : 0;
         return { name: row.name, strength: row.strength, gap, trainingShare: row.trainingShare, catchUp, ctype: row.ctype };
       }).sort((a, b) => b.catchUp - a.catchUp || a.strength - b.strength || a.name.localeCompare(b.name));
       const result = {
@@ -316,14 +342,18 @@
     optimizeTask(input = {}) {
       const taskType = cleanText(input.type || input.taskType || 'FARM', 40).toUpperCase();
       const defaults = TASK_DEFAULTS[taskType] || TASK_DEFAULTS.FARM;
-      const minMembers = Math.max(1, Math.min(4, Math.floor(Number(input.minMembers) || defaults.minMembers)));
-      const maxMembers = Math.max(minMembers, Math.min(4, Math.floor(Number(input.maxMembers) || defaults.maxMembers)));
+      const minMembers = defaults.combatOnly
+        ? 3
+        : Math.max(1, Math.min(4, Math.floor(Number(input.minMembers) || defaults.minMembers)));
+      const maxMembers = defaults.combatOnly
+        ? 3
+        : Math.max(minMembers, Math.min(4, Math.floor(Number(input.maxMembers) || defaults.maxMembers)));
       const required = Array.isArray(input.requiredCapabilities) && input.requiredCapabilities.length
         ? [...new Set(input.requiredCapabilities.map(value => cleanText(value, 40).toUpperCase()).filter(Boolean))]
         : defaults.required.slice();
       const progression = this.progressionPlan();
       const scored = this._scoredProfiles()
-        .filter(row => row.online && row.rip !== true && row.emergencyStopLatched !== true)
+        .filter(row => row.rip !== true && row.emergencyStopLatched !== true)
         .filter(row => !defaults.combatOnly || row.ctype !== 'merchant')
         .slice(0, this.config.maxCandidates);
 
@@ -333,24 +363,36 @@
         const capabilities = new Set(members.flatMap(member => member.capabilities || []));
         if (!required.every(capability => capabilities.has(capability))) continue;
         const memberNameSet = new Set(members.map(member => String(member.name)));
-        const progressionRequired = (taskType === 'FARM' || taskType === 'QUEST')
+        const progressionRequired = defaults.catchUpRequired === true
           && progression.selectedCharacterName
           && scored.some(row => String(row.name) === String(progression.selectedCharacterName));
         if (progressionRequired && !memberNameSet.has(String(progression.selectedCharacterName))) continue;
         const memberNames = members.map(member => member.name).sort();
         const baseStrength = members.reduce((sum, member) => sum + member.strength, 0);
-        const roleDiversity = capabilities.size / 10;
+        const averageStrength = members.length ? baseStrength / members.length : 0;
+        const capabilityWeights = defaults.capabilityWeights || {};
+        const activityBonus = [...capabilities].reduce((sum, capability) => sum + Math.max(0, Number(capabilityWeights[capability]) || 0), 0);
         const containsProgression = progression.selectedCharacterName
           ? memberNames.includes(progression.selectedCharacterName)
           : false;
         const progressionBonus = containsProgression ? defaults.progressionWeight : 0;
-        const score = baseStrength + roleDiversity + progressionBonus;
+        const onlineReadyCount = members.filter(member => member.online && member.running === true).length;
+        const readinessBonus = onlineReadyCount * 0.005;
+        const offlineCount = members.length - onlineReadyCount;
+        const coordinationCost = Math.max(0, members.length - 1) * Math.max(0, Number(defaults.extraMemberCost) || 0);
+        const activationCost = offlineCount * Math.max(0, Number(defaults.offlineActivationCost) || 0);
+        const score = baseStrength + activityBonus + progressionBonus + readinessBonus - coordinationCost - activationCost;
         ranking.push({
           taskType,
           memberNames,
           score: Number(score.toFixed(6)),
           baseStrength: Number(baseStrength.toFixed(6)),
+          averageStrength: Number(averageStrength.toFixed(6)),
           progressionBonus,
+          activityBonus: Number(activityBonus.toFixed(6)),
+          readinessBonus: Number(readinessBonus.toFixed(6)),
+          coordinationCost: Number(coordinationCost.toFixed(6)),
+          activationCost: Number(activationCost.toFixed(6)),
           capabilities: [...capabilities].sort(),
           members: clone(members)
         });
@@ -367,20 +409,32 @@
         const strongest = selected.members.slice().sort((a,b) => b.strength - a.strength)[0];
         leaderName = tank && tank.name || healer && healer.name || strongest && strongest.name || null;
       }
-      const supportMemberNames = this._scoredProfiles()
-        .filter(row => row.online && row.rip !== true && row.ctype === 'merchant')
-        .map(row => row.name)
-        .sort();
+      const merchants = this._scoredProfiles()
+        .filter(row => row.rip !== true && row.emergencyStopLatched !== true && row.ctype === 'merchant')
+        .sort((a, b) =>
+          Number(b.online && b.running === true) - Number(a.online && a.running === true)
+          || b.strength - a.strength
+          || (finite(b.level) || 0) - (finite(a.level) || 0)
+          || a.name.localeCompare(b.name));
+      const supportMemberNames = merchants.length ? [merchants[0].name] : [];
+      const supportReady = !defaults.combatOnly || supportMemberNames.length === 1;
       const result = {
         schemaVersion: 1,
         taskType,
         requiredCapabilities: required,
-        status: selected ? 'SELECTION_READY' : 'NO_ALLOWED_COMBINATION',
+        status: selected && supportReady
+          ? 'SELECTION_READY'
+          : (selected && !supportReady ? 'NO_MERCHANT_SUPPORT' : 'NO_ALLOWED_COMBINATION'),
         selected: selected ? {
           memberNames: selected.memberNames,
           score: selected.score,
           baseStrength: selected.baseStrength,
+          averageStrength: selected.averageStrength,
           progressionBonus: selected.progressionBonus,
+          activityBonus: selected.activityBonus,
+          readinessBonus: selected.readinessBonus,
+          coordinationCost: selected.coordinationCost,
+          activationCost: selected.activationCost,
           capabilities: selected.capabilities
         } : null,
         leaderName,
@@ -390,7 +444,12 @@
           memberNames: row.memberNames,
           score: row.score,
           baseStrength: row.baseStrength,
+          averageStrength: row.averageStrength,
           progressionBonus: row.progressionBonus,
+          activityBonus: row.activityBonus,
+          readinessBonus: row.readinessBonus,
+          coordinationCost: row.coordinationCost,
+          activationCost: row.activationCost,
           capabilities: row.capabilities
         }))
       };

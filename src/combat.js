@@ -39,6 +39,7 @@
       this.classSkills = options.classSkills || null;
       this.party = options.party || null;
       this.farming = options.farming || null;
+      this.farmIntelligence = options.farmIntelligence || null;
       this.now = typeof options.now === 'function' ? options.now : () => Date.now();
 
       this.config = {
@@ -49,8 +50,14 @@
         resumeHpRatio: Math.max(0.1, Math.min(1, Number(options.resumeHpRatio) || 0.65)),
         minMpRatio: Math.max(0, Math.min(0.9, Number(options.minMpRatio) || 0.05)),
         preferredRangeRatio: Math.max(0.25, Math.min(0.95, Number(options.preferredRangeRatio) || 0.78)),
-        kiteTriggerRatio: Math.max(0.05, Math.min(0.8, Number(options.kiteTriggerRatio) || 0.30)),
+        kiteTriggerRatio: Math.max(0.05, Math.min(0.8, Number(options.kiteTriggerRatio) || 0.62)),
         kiteStep: Math.max(10, Math.min(120, Number(options.kiteStep) || 35)),
+        kiteDesiredRangeRatio: Math.max(0.55, Math.min(0.90, Number(options.kiteDesiredRangeRatio) || 0.72)),
+        kiteMaxRangeRatio: Math.max(0.65, Math.min(0.95, Number(options.kiteMaxRangeRatio) || 0.82)),
+        kiteMonsterBuffer: Math.max(8, Math.min(80, Number(options.kiteMonsterBuffer) || 20)),
+        kiteSpeedBufferSeconds: Math.max(0.2, Math.min(1.5, Number(options.kiteSpeedBufferSeconds) || 0.50)),
+        kiteStepSeconds: Math.max(0.3, Math.min(1.2, Number(options.kiteStepSeconds) || 0.65)),
+        groupHardKiteTether: Math.max(150, Math.min(350, Number(options.groupHardKiteTether) || 195)),
         maxAcquireDistance: Math.max(50, Math.min(1200, Number(options.maxAcquireDistance) || 450)),
         maxAttackToHpRatio: Math.max(0.01, Math.min(0.5, Number(options.maxAttackToHpRatio) || 0.08)),
         minExpectedHitChance: Math.max(0.05, Math.min(0.95, Number(options.minExpectedHitChance) || 0.25))
@@ -64,6 +71,7 @@
       this.sequence = 0;
       this.pendingAttack = null;
       this.targetConfirmDeadlineMs = null;
+      this.orbitDirectionByCharacter = new Map();
       this.metrics = {
         sessions: 0,
         targetsAcquired: 0,
@@ -77,7 +85,12 @@
         retreats: 0,
         blockedByMovement: 0,
         lowMpWaits: 0,
-        rejected: 0
+        rejected: 0,
+        kiteNoAggroHolds: 0,
+        meleeKiteBypasses: 0,
+        kiteOrbitMoves: 0,
+        kiteTerrainBlocks: 0,
+        kiteGroupTetherBlocks: 0
       };
     }
 
@@ -116,6 +129,11 @@
         allowUnknownAttack: options.allowUnknownAttack === true,
         partyAssist: options.partyAssist !== false,
         kiting: options.kiting === true,
+        leaderOwnedPulls: options.leaderOwnedPulls === true,
+        groupLeaderName: cleanText(options.groupLeaderName || '', 120) || null,
+        groupMemberNames: Array.isArray(options.groupMemberNames)
+          ? [...new Set(options.groupMemberNames.map(value => cleanText(value, 120)).filter(Boolean))].sort()
+          : [],
         preferredRangeRatio: Math.max(0.25, Math.min(0.95, Number(options.preferredRangeRatio) || this.config.preferredRangeRatio)),
         retreatHpRatio: Math.max(0.05, Math.min(0.9, Number(options.retreatHpRatio) || this.config.retreatHpRatio)),
         resumeHpRatio: Math.max(0.1, Math.min(1, Number(options.resumeHpRatio) || this.config.resumeHpRatio)),
@@ -186,6 +204,36 @@
         policy: this.session.policy
       });
       return { accepted: true, session: this._publicSession(this.session) };
+    }
+
+    configureGroup(options = {}) {
+      if (!this.session || !this.session.enabled) {
+        return { changed: false, reason: 'COMBAT_SESSION_NOT_ACTIVE' };
+      }
+      const leaderName = cleanText(options.groupLeaderName || '', 120) || null;
+      const memberNames = [...new Set((Array.isArray(options.groupMemberNames) ? options.groupMemberNames : [])
+        .map(value => cleanText(value, 120)).filter(Boolean))].sort();
+      const leaderOwnedPulls = options.leaderOwnedPulls === true || (!!leaderName && memberNames.length > 1);
+      const policy = this.session.policy || {};
+      const previousMembers = Array.isArray(policy.groupMemberNames) ? policy.groupMemberNames.map(String).sort() : [];
+      const changed = String(policy.groupLeaderName || '') !== String(leaderName || '')
+        || previousMembers.join('|') !== memberNames.join('|')
+        || policy.leaderOwnedPulls !== leaderOwnedPulls;
+
+      policy.groupLeaderName = leaderName;
+      policy.groupMemberNames = memberNames.slice();
+      policy.leaderOwnedPulls = leaderOwnedPulls;
+      this.session.policy = policy;
+
+      if (changed) {
+        this.session.lastDecision = {
+          at: new Date().toISOString(),
+          type: 'GROUP_POLICY_UPDATED',
+          groupLeaderName: leaderName,
+          groupMemberNames: memberNames.slice()
+        };
+      }
+      return { changed, groupLeaderName: leaderName, groupMemberNames: memberNames.slice() };
     }
 
     _combatMovementActive() {
@@ -272,6 +320,9 @@
       }
       if (this.farming && typeof this.farming.onCombatEnded === 'function') {
         try { this.farming.onCombatEnded(this.session.id, reason); } catch (_) {}
+      }
+      if (state === 'UNKNOWN' && this.farmIntelligence && typeof this.farmIntelligence.suspendFromCombatUnknown === 'function') {
+        try { this.farmIntelligence.suspendFromCombatUnknown(reason, details || null); } catch (_) {}
       }
       this.lastSession = this._publicSession(this.session);
       if (this.logger) this.logger.error('Combat fail-safe beendet', {
@@ -360,9 +411,30 @@
       const preferredId = this.session.policy.partyAssist && this.party && typeof this.party.preferredTargetId === 'function'
         ? this.party.preferredTargetId()
         : null;
-      const target = preferredId == null
-        ? candidates[0]
-        : (candidates.find(candidate => String(candidate.id) === String(preferredId)) || candidates[0]);
+      const localName = game && game.character && game.character.name ? String(game.character.name) : '';
+      const groupNames = new Set((this.session.policy.groupMemberNames || []).map(String));
+      const followerMirrorOnly = this.session.policy.leaderOwnedPulls === true
+        && this.session.policy.groupLeaderName
+        && localName
+        && localName !== String(this.session.policy.groupLeaderName);
+      const preferred = preferredId == null
+        ? null
+        : candidates.find(candidate => String(candidate.id) === String(preferredId)) || null;
+      const preferredSharedAggro = preferred && preferred.targetId && groupNames.has(String(preferred.targetId))
+        ? preferred
+        : null;
+      const sharedAggro = candidates.find(candidate => candidate.targetId && groupNames.has(String(candidate.targetId))) || null;
+      const target = followerMirrorOnly ? (preferredSharedAggro || sharedAggro) : (preferred || candidates[0]);
+      if (!target) {
+        this.session.state = 'WAITING_GROUP_TARGET';
+        this.session.lastDecision = {
+          at: new Date().toISOString(),
+          type: 'GROUP_FOLLOWER_WAIT',
+          leaderName: this.session.policy.groupLeaderName,
+          preferredTargetId: preferredId || null
+        };
+        return null;
+      }
       const raw = this.game.entityReference(target.id);
       if (!raw) {
         this.session.state = 'ACQUIRING';
@@ -620,36 +692,176 @@
       return true;
     }
 
+    _orbitDirection(character) {
+      const name = String(character && character.name || 'local');
+      if (this.orbitDirectionByCharacter.has(name)) return this.orbitDirectionByCharacter.get(name);
+      let hash = 0;
+      for (let index = 0; index < name.length; index += 1) hash = ((hash * 31) + name.charCodeAt(index)) | 0;
+      const direction = (Math.abs(hash) % 2) ? 1 : -1;
+      this.orbitDirectionByCharacter.set(name, direction);
+      return direction;
+    }
+
+    _segmentSafe(a, b, target, minimumDistance, options = {}) {
+      const ax = finite(a && a.x), ay = finite(a && a.y);
+      const bx = finite(b && b.x), by = finite(b && b.y);
+      const tx = finite(target && target.x), ty = finite(target && target.y);
+      if ([ax, ay, bx, by, tx, ty].some(value => value == null)) return false;
+      const startDistance = Math.hypot(ax - tx, ay - ty);
+      let previousDistance = startDistance;
+      const escapingFromInside = options.allowStartInside === true && startDistance < minimumDistance;
+      for (const t of [0.25, 0.5, 0.75, 1]) {
+        const x = ax + (bx - ax) * t;
+        const y = ay + (by - ay) * t;
+        const d = Math.hypot(x - tx, y - ty);
+        if (escapingFromInside) {
+          if (d <= previousDistance + 0.5) return false;
+          previousDistance = d;
+          continue;
+        }
+        if (d < minimumDistance) return false;
+      }
+      return escapingFromInside ? previousDistance > startDistance + 2 : true;
+    }
+
+    _groupTetherAllows(character, destination) {
+      const policy = this.session && this.session.policy || {};
+      if (policy.leaderOwnedPulls !== true || !Array.isArray(policy.groupMemberNames) || policy.groupMemberNames.length < 2) return true;
+      let status = null;
+      try { status = this.party && typeof this.party.status === 'function' ? this.party.status() : null; } catch (_) {}
+      const party = status && status.party || null;
+      const expectedNames = policy.groupMemberNames.map(String).filter(name => name !== String(character.name || ''));
+      const members = party && Array.isArray(party.ownedMembers)
+        ? party.ownedMembers.filter(row => row && expectedNames.includes(String(row.name)))
+        : [];
+      if (members.length !== expectedNames.length) return false;
+      for (const name of expectedNames) {
+        const row = members.find(member => String(member.name) === name);
+        if (!row || finite(row.x) == null || finite(row.y) == null) return false;
+        if (!row.map || !character.map || String(row.map) !== String(character.map)) return false;
+      }
+      const currentMax = Math.max(0, ...members.map(row => {
+        const x = finite(row.x), y = finite(row.y);
+        return Math.hypot(Number(character.x) - x, Number(character.y) - y);
+      }));
+      const proposedMax = Math.max(0, ...members.map(row => {
+        if (row.map && character.map && String(row.map) !== String(character.map)) return Number.POSITIVE_INFINITY;
+        const x = finite(row.x), y = finite(row.y);
+        return x == null || y == null ? Number.POSITIVE_INFINITY : Math.hypot(Number(destination.x) - x, Number(destination.y) - y);
+      }));
+      if (proposedMax <= this.config.groupHardKiteTether) return true;
+      return currentMax > this.config.groupHardKiteTether && proposedMax < currentMax;
+    }
+
+    _kiteWaypoint(character, target) {
+      const range = finite(character && character.range);
+      const cx = finite(character && character.x), cy = finite(character && character.y);
+      const tx = finite(target && target.x), ty = finite(target && target.y);
+      if ([range, cx, cy, tx, ty].some(value => value == null) || range < 60) return null;
+
+      let definition = null;
+      try { definition = this.game && this.game.monsterDefinition ? this.game.monsterDefinition(target.mtype) : null; } catch (_) {}
+      const monsterRange = Math.max(0, finite(target.range) || finite(definition && definition.range) || 25);
+      const monsterSpeed = Math.max(1, finite(target.speed) || finite(definition && definition.speed) || 40);
+      const hardSafeDistance = monsterRange + this.config.kiteMonsterBuffer + monsterSpeed * this.config.kiteSpeedBufferSeconds;
+      const maxRangeDistance = range * this.config.kiteMaxRangeRatio;
+      if (hardSafeDistance + 8 >= maxRangeDistance) return null;
+
+      const currentDistance = Math.hypot(cx - tx, cy - ty);
+      const desiredDistance = Math.min(maxRangeDistance, Math.max(range * this.config.kiteDesiredRangeRatio, hardSafeDistance + 16));
+      const speed = Math.max(1, finite(character.speed) || 40);
+      const preferred = this._orbitDirection(character);
+      const canMove = (x, y) => {
+        try {
+          const value = this.movement && typeof this.movement._canMoveTo === 'function' ? this.movement._canMoveTo(x, y) : null;
+          return value !== false;
+        } catch (_) { return false; }
+      };
+      const candidates = [];
+
+      if (currentDistance < hardSafeDistance + 4) {
+        const step = Math.max(8, Math.min(Math.max(1, desiredDistance - currentDistance), speed * this.config.kiteStepSeconds, Math.max(20, maxRangeDistance * 0.25)));
+        const base = Math.atan2(cy - ty, cx - tx);
+        for (const offsetDeg of [preferred * 12, preferred * 22, 0, -preferred * 12, -preferred * 22]) {
+          const angle = base + offsetDeg * Math.PI / 180;
+          const x = cx + Math.cos(angle) * step;
+          const y = cy + Math.sin(angle) * step;
+          const afterDistance = Math.hypot(x - tx, y - ty);
+          if (!canMove(x, y) || afterDistance <= currentDistance + 2 || afterDistance > maxRangeDistance) continue;
+          if (!this._segmentSafe(character, { x, y }, target, hardSafeDistance, { allowStartInside: true })) continue;
+          candidates.push({ x, y, afterDistance, direction: offsetDeg === 0 ? preferred : Math.sign(offsetDeg), escape: true, score: Math.abs(desiredDistance - afterDistance) + Math.abs(offsetDeg) * 0.02 });
+        }
+      } else {
+        const chordTarget = Math.max(10, Math.min(speed * this.config.kiteStepSeconds, range * 0.22));
+        const ratioValue = Math.min(0.98, chordTarget / Math.max(1, 2 * desiredDistance));
+        const baseDelta = Math.max(8 * Math.PI / 180, Math.min(28 * Math.PI / 180, 2 * Math.asin(ratioValue)));
+        const currentAngle = Math.atan2(cy - ty, cx - tx);
+        for (const direction of [preferred, -preferred]) {
+          for (const scale of [1, 0.72, 0.48]) {
+            const angle = currentAngle + baseDelta * scale * direction;
+            for (const radius of [desiredDistance, Math.max(hardSafeDistance + 8, Math.min(maxRangeDistance, currentDistance))]) {
+              const x = tx + Math.cos(angle) * radius;
+              const y = ty + Math.sin(angle) * radius;
+              if (!canMove(x, y)) continue;
+              if (!this._segmentSafe(character, { x, y }, target, hardSafeDistance)) continue;
+              const step = Math.hypot(x - cx, y - cy);
+              if (step < 4) continue;
+              candidates.push({
+                x, y, afterDistance: Math.hypot(x - tx, y - ty), direction, escape: false,
+                score: Math.abs(desiredDistance - Math.hypot(x - tx, y - ty)) + (direction === preferred ? 0 : 8) + Math.abs(1 - scale) * 4
+              });
+            }
+          }
+        }
+      }
+
+      candidates.sort((a, b) => a.score - b.score);
+      for (const candidate of candidates) {
+        if (!this._groupTetherAllows(character, candidate)) {
+          this.metrics.kiteGroupTetherBlocks += 1;
+          continue;
+        }
+        this.orbitDirectionByCharacter.set(String(character.name || 'local'), candidate.direction);
+        return candidate;
+      }
+      return null;
+    }
+
     _kite(game, target) {
       if (!this.session.policy.kiting) return false;
-      const range = finite(game.character.range);
-      const distance = finite(target.distance);
-      if (range == null || distance == null) return false;
-      if (distance > range * this.config.kiteTriggerRatio) return false;
+      const character = game && game.character;
+      const ctype = String(character && character.ctype || '').toLowerCase();
+      if (['warrior', 'paladin', 'rogue'].includes(ctype)) {
+        this.metrics.meleeKiteBypasses += 1;
+        return false;
+      }
+      if (!character || !target || String(target.targetId || '') !== String(character.name || '')) {
+        this.metrics.kiteNoAggroHolds += 1;
+        return false;
+      }
       if (this._foreignMovementActive() || this._combatMovementActive()) return false;
 
-      const cx = finite(game.character.x), cy = finite(game.character.y);
-      const tx = finite(target.x), ty = finite(target.y);
-      if (cx == null || cy == null || tx == null || ty == null) return false;
-      const dx = cx - tx;
-      const dy = cy - ty;
-      const length = Math.hypot(dx, dy);
-      if (length <= 0) return false;
-      const x = cx + (dx / length) * this.config.kiteStep;
-      const y = cy + (dy / length) * this.config.kiteStep;
-      const result = this.movement.moveLocal(x, y, {
+      const waypoint = this._kiteWaypoint(character, target);
+      if (!waypoint) {
+        this.metrics.kiteTerrainBlocks += 1;
+        return false;
+      }
+      const result = this.movement.moveLocal(waypoint.x, waypoint.y, {
         owner: 'combat-h5-kite',
         arrivalRadius: 8
       });
       if (result && result.accepted) {
         this.metrics.kites += 1;
+        this.metrics.kiteOrbitMoves += 1;
         this.session.counters.kites += 1;
         this.session.state = 'KITING';
         this.session.lastDecision = {
           at: new Date().toISOString(),
-          type: 'KITE',
+          type: waypoint.escape ? 'KITE_ESCAPE' : 'KITE_ORBIT',
           targetId: target.id,
-          destination: { x, y }
+          destination: { x: waypoint.x, y: waypoint.y },
+          afterDistance: waypoint.afterDistance,
+          groupTether: this.session.policy.leaderOwnedPulls === true
         };
         return true;
       }
@@ -736,12 +948,20 @@
 
       if (this._observePendingAttack()) return;
 
+      const localName = String(character.name || '');
+      const groupNames = new Set((this.session.policy.groupMemberNames || []).map(String));
+      const followerMirrorOnly = this.session.policy.leaderOwnedPulls === true
+        && this.session.policy.groupLeaderName
+        && localName !== String(this.session.policy.groupLeaderName);
+
       if (this.session.policy.partyAssist && this.party && typeof this.party.preferredTargetId === 'function') {
         const preferredId = this.party.preferredTargetId();
         if (preferredId != null && this.session.targetId != null && String(preferredId) !== String(this.session.targetId)) {
           const preferred = this.safeCandidates(this.session.policy)
             .find(candidate => String(candidate.id) === String(preferredId));
-          if (preferred) {
+          const preferredAllowed = preferred && (!followerMirrorOnly
+            || (preferred.targetId && groupNames.has(String(preferred.targetId))));
+          if (preferredAllowed) {
             this._clearGameTarget('PARTY_FOCUS_RETARGET');
             this.session.state = 'ACQUIRING';
           }
@@ -749,6 +969,12 @@
       }
 
       let target = this._freshTarget();
+      if (target && followerMirrorOnly
+        && !(target.targetId && groupNames.has(String(target.targetId)))) {
+        this._clearGameTarget('GROUP_FOLLOWER_STALE_FOCUS');
+        target = null;
+        this.session.state = 'ACQUIRING';
+      }
       if (!target) {
         if (this.session.targetId) {
           this._clearGameTarget('TARGET_LOST');
@@ -824,7 +1050,10 @@
         return;
       }
 
-      if (this._kite(game, target)) return;
+      if (this._kite(game, target)) {
+        if (!readiness.cooldown && readiness.canAttack) this._beginAttack(target);
+        return;
+      }
 
       if (readiness.cooldown || !readiness.canAttack) {
         this.session.state = readiness.cooldown ? 'WAITING_COOLDOWN' : 'WAITING_ATTACK_READY';

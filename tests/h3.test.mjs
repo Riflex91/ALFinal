@@ -180,7 +180,7 @@ test('H3 game adapter normalizes live character, position and target', () => {
   vm.runInNewContext(bundle, ctx, { filename: 'al-bot.js' });
 
   const snap = ctx.ALBot.game.snapshot();
-  assert.equal(ctx.ALBot.version, '0.20.0-h20');
+  assert.equal(ctx.ALBot.version, '0.21.0-h21');
   assert.equal(snap.available, true);
   assert.equal(snap.character.name, 'FarmerA');
   assert.equal(snap.character.ctype, 'ranger');
@@ -286,6 +286,7 @@ test('Knowledge refresh failure preserves Last Known Good and runtime stability'
   const { context: ctx } = runtimeContext({ fetch: mirror.fetch });
   vm.runInNewContext(bundle, ctx);
   await ctx.ALBot.start();
+  const resourcesBeforeRefresh = ctx.ALBot.scheduler.status().totalResources;
 
   await ctx.ALBot.knowledge.refresh();
   mirror.fail();
@@ -296,7 +297,7 @@ test('Knowledge refresh failure preserves Last Known Good and runtime stability'
   assert.equal(failed.lastKnownGood.generation, 7);
   assert.equal(ctx.ALBot.knowledge.fact('server.eu.i.monster.frog.spawn').wert.mtype, 'frog');
   assert.equal(ctx.ALBot.status().running, true);
-  assert.equal(ctx.ALBot.scheduler.status().totalResources, 15);
+  assert.equal(ctx.ALBot.scheduler.status().totalResources, resourcesBeforeRefresh);
 
   await ctx.ALBot.stop('DONE');
 });
@@ -305,13 +306,14 @@ test('Bridge outage without any LKG is diagnosable but does not crash core', asy
   const { context: ctx } = runtimeContext({ fetch: async () => response('{}', 503) });
   vm.runInNewContext(bundle, ctx);
   await ctx.ALBot.start();
+  const resourcesBeforeRefresh = ctx.ALBot.scheduler.status().totalResources;
 
   const status = await ctx.ALBot.knowledge.refresh();
   assert.equal(status.provider.state, 'UNAVAILABLE');
   assert.equal(status.lastKnownGood, null);
   assert.match(status.lastRefreshError, /KNOWLEDGE_FETCH_FAILED/);
   assert.equal(ctx.ALBot.status().running, true);
-  assert.equal(ctx.ALBot.scheduler.status().totalResources, 15);
+  assert.equal(ctx.ALBot.scheduler.status().totalResources, resourcesBeforeRefresh);
 
   await ctx.ALBot.stop('DONE');
 });

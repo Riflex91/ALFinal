@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.20.0-h20';
+      this.version = options.version || '0.21.0-h21';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -13,6 +13,7 @@
       this.startedAt = null;
       this.running = false;
       this.runEpoch = 0;
+      this._h19FullAutonomyRearmIntent = null;
       this.bus = new ns.EventBus();
       this.storage = new ns.StorageAdapter(this.root);
       this.logger = new ns.Logger({ bus: this.bus, limit: 400 });
@@ -38,6 +39,13 @@
         logger: this.logger,
         game: this.game,
         actions: this.actions
+      });
+      this.resourceTopoff = new ns.ResourceTopoffController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        classSkills: this.classSkills
       });
       this.combat = new ns.CombatController({
         root: this.root,
@@ -78,6 +86,7 @@
         movement: this.movement,
         party: this.party
       });
+      this.combat.farmIntelligence = this.farmIntelligence;
       this.inventory = new ns.LootInventoryController({
         root: this.root,
         logger: this.logger,
@@ -206,8 +215,39 @@
         getPartyState: () => this.party.snapshot(),
         leavePartyLocal: () => dispatchH19CrossWindowPartyAction('leave_party', []),
         requestPartyJoinLocal: leaderName => dispatchH19CrossWindowPartyAction('send_party_request', [leaderName]),
-        startRuntime: () => this.start(),
-        stopRuntime: reason => this.stop(reason)
+        startRuntime: async () => {
+          const status = await this.start();
+          const intent = this._h19FullAutonomyRearmIntent;
+          this._h19FullAutonomyRearmIntent = null;
+          if (intent && this.running && !this.stopLatch.status().latched && this.fullAutonomy) {
+            const armed = this.fullAutonomy.startAutonomy({
+              taskType: intent.taskType || 'FARM',
+              waitForRoster: true,
+              desiredCharacterNames: intent.desiredCharacterNames || []
+            });
+            if (!armed || armed.accepted !== true) {
+              this.logger.warn('Full Autonomy nach H19-Runtime-Restart nicht reaktiviert', {
+                reason: armed && armed.reason || 'FULL_AUTONOMY_REARM_REJECTED'
+              });
+            }
+          }
+          return status;
+        },
+        stopRuntime: reason => {
+          const text = String(reason || '');
+          let full = null;
+          try { full = this.fullAutonomy && this.fullAutonomy.status ? this.fullAutonomy.status() : null; } catch (_) {}
+          const terminalSafety = /EMERGENCY|UNKNOWN|UNVERIFIED|TERMINAL|SAFETY|SUSPEND|FAIL/i.test(text);
+          this._h19FullAutonomyRearmIntent = full && full.enabled === true
+            && !this.stopLatch.status().latched
+            && !terminalSafety
+            ? {
+              taskType: full.config && full.config.taskType || 'FARM',
+              desiredCharacterNames: Array.isArray(full.desiredCharacterNames) ? full.desiredCharacterNames.slice() : []
+            }
+            : null;
+          return this.stop(reason);
+        }
       });
       this.lifecycle = new ns.CharacterLifecycleController({
         root: this.root,
@@ -237,6 +277,7 @@
       });
       this.inventory.partyLogistics = this.partyLogistics;
       this.merchant.partyLogistics = this.partyLogistics;
+      this.merchant.economy = this.economy;
       this.economy.partyLogistics = this.partyLogistics;
       this.liveTests = new ns.LiveTestRunner({
         runtime: this,
@@ -308,6 +349,15 @@
         start: () => this.classSkills.start(),
         stop: reason => this.classSkills.stop(reason),
         status: () => this.classSkills.status()
+      });
+
+      this.modules.register({
+        id: 'resource-topoff',
+        title: 'Resource Topoff',
+        version: '0.21.0',
+        start: context => this.resourceTopoff.start(context),
+        stop: reason => this.resourceTopoff.stop(reason),
+        status: () => this.resourceTopoff.status()
       });
 
       this.modules.register({
@@ -5358,6 +5408,9 @@
 
     async stop(reason = 'MANUAL_STOP') {
       if (this._destroyed) return this.status();
+      if (/EMERGENCY|UNKNOWN|UNVERIFIED|TERMINAL|SAFETY|SUSPEND|FAIL/i.test(String(reason || ''))) {
+        this._h19FullAutonomyRearmIntent = null;
+      }
       this.running = false;
       await this.modules.stopAll(reason);
       this.scheduler.stop(reason);
@@ -5367,6 +5420,7 @@
     }
 
     async emergencyStop(reason = 'MANUAL_EMERGENCY_STOP') {
+      this._h19FullAutonomyRearmIntent = null;
       const stop = this.stopLatch.latch(reason);
       this.running = false;
       try { this.liveTests.cancel('EMERGENCY_STOP'); } catch (_) {}

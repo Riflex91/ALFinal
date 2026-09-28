@@ -137,6 +137,9 @@
         monsterType: options.monsterType || null,
         partyAssist: options.partyAssist !== false,
         kiting: true,
+        leaderOwnedPulls: options.leaderOwnedPulls === true,
+        groupLeaderName: cleanText(options.groupLeaderName || '', 120) || null,
+        groupMemberNames: Array.isArray(options.groupMemberNames) ? options.groupMemberNames.map(String) : [],
         allowContested: false,
         allowUnknownAttack: false,
         maxAcquireDistance: Number(options.maxAcquireDistance) || this.config.maxAcquireDistance,
@@ -156,6 +159,9 @@
         owner: cleanText(options.owner || 'adaptive-farming', 80) || 'adaptive-farming',
         combatSessionId: combatStart.session.id,
         monsterType: options.monsterType || null,
+        leaderOwnedPulls: options.leaderOwnedPulls === true,
+        groupLeaderName: cleanText(options.groupLeaderName || '', 120) || null,
+        groupMemberNames: Array.isArray(options.groupMemberNames) ? [...new Set(options.groupMemberNames.map(String))].sort() : [],
         startedAt: new Date().toISOString(),
         stoppedAt: null,
         reason: null
@@ -193,6 +199,37 @@
       const ended = clone(session);
       this.session = null;
       return { stopped: true, session: ended };
+    }
+
+    configureGroup(options = {}) {
+      if (!this.session || !this.session.enabled) {
+        return { changed: false, reason: 'H8_SESSION_NOT_ACTIVE' };
+      }
+      const leaderName = cleanText(options.groupLeaderName || '', 120) || null;
+      const memberNames = [...new Set((Array.isArray(options.groupMemberNames) ? options.groupMemberNames : [])
+        .map(value => cleanText(value, 120)).filter(Boolean))].sort();
+      const leaderOwnedPulls = options.leaderOwnedPulls === true || (!!leaderName && memberNames.length > 1);
+      const previousMembers = Array.isArray(this.session.groupMemberNames) ? this.session.groupMemberNames.map(String).sort() : [];
+      const changed = String(this.session.groupLeaderName || '') !== String(leaderName || '')
+        || previousMembers.join('|') !== memberNames.join('|')
+        || this.session.leaderOwnedPulls !== leaderOwnedPulls;
+
+      this.session.groupLeaderName = leaderName;
+      this.session.groupMemberNames = memberNames.slice();
+      this.session.leaderOwnedPulls = leaderOwnedPulls;
+
+      const combat = this._combatStatus();
+      if (combat && combat.active && combat.session
+          && String(combat.session.id) === String(this.session.combatSessionId)
+          && String(combat.session.owner || '') === 'farming-h8'
+          && this.combat && typeof this.combat.configureGroup === 'function') {
+        this.combat.configureGroup({
+          groupLeaderName: leaderName,
+          groupMemberNames: memberNames,
+          leaderOwnedPulls
+        });
+      }
+      return { changed, groupLeaderName: leaderName, groupMemberNames: memberNames.slice() };
     }
 
     onCombatEnded(combatSessionId, reason = 'COMBAT_ENDED') {
@@ -392,6 +429,9 @@
 
       const owned = this._ownedPartyNames(character.name);
       const engaged = safe.filter(monster => monster.targetId && owned.has(String(monster.targetId)));
+      const followerMirrorOnly = policy.leaderOwnedPulls === true
+        && policy.groupLeaderName
+        && String(character.name || '') !== String(policy.groupLeaderName);
       let primary = null;
       const targetId = combat && combat.session && combat.session.targetId;
       if (targetId != null) primary = safe.find(row => String(row.id) === String(targetId)) || null;
@@ -399,15 +439,29 @@
         const focus = this.party.preferredTargetId();
         if (focus != null) primary = safe.find(row => String(row.id) === String(focus)) || null;
       }
-      if (!primary) primary = engaged[0] || safe[0];
+      if (!primary) primary = engaged[0] || (followerMirrorOnly ? null : safe[0]);
+      if (!primary) {
+        this.metrics.singleTargetPlans += 1;
+        return this._rememberPlan({
+          state: 'SINGLE_TARGET',
+          reason: 'H8_GROUP_FOLLOWER_WAITING_FOR_LEADER_TARGET',
+          hpRatio,
+          capacity: 1,
+          aggregateAttack: 0,
+          pack: []
+        });
+      }
 
       const sameType = safe.filter(row => !primary.mtype || !row.mtype || String(row.mtype) === String(primary.mtype));
       const capacity = this._capacity(character, hpRatio);
       const maxAggregateAttack = Math.max(1, Number(character.maxHp || 0) * this.config.maxAggregateAttackToHpRatio);
-      const ordered = [
-        ...sameType.filter(row => row.targetId && owned.has(String(row.targetId))),
-        ...sameType.filter(row => !(row.targetId && owned.has(String(row.targetId))))
-      ].filter((row, index, array) => array.findIndex(other => String(other.id) === String(row.id)) === index);
+      const ordered = (followerMirrorOnly
+        ? sameType.filter(row => row.targetId && owned.has(String(row.targetId)))
+        : [
+          ...sameType.filter(row => row.targetId && owned.has(String(row.targetId))),
+          ...sameType.filter(row => !(row.targetId && owned.has(String(row.targetId))))
+        ])
+        .filter((row, index, array) => array.findIndex(other => String(other.id) === String(row.id)) === index);
 
       const pack = [];
       let aggregateAttack = 0;

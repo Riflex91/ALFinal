@@ -2,6 +2,7 @@
   'use strict';
   const ns = root.__ALBOT_INTERNALS__;
   if (!ns || !ns.ALBotRuntime) throw new Error('ALBOT_RUNTIME_MISSING');
+  const cleanText = ns.helpers && ns.helpers.cleanText ? ns.helpers.cleanText : (value => String(value == null ? '' : value));
 
   function resolveSharedHost(start) {
     let current = start;
@@ -50,7 +51,7 @@
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.20.0-h20',
+    version: '0.21.0-h21',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -144,6 +145,13 @@
       supported: ctype => runtime.classSkills.supportedSkills(ctype),
       live: ctype => runtime.classSkills.liveSkillSummary(ctype),
       preview: targetId => runtime.classSkills.preview(targetId)
+    },
+
+    resourceTopoff: {
+      status: () => runtime.resourceTopoff.status(),
+      supply: () => runtime.resourceTopoff.supply(),
+      tick: () => runtime.resourceTopoff.tick(),
+      reset: reason => runtime.resourceTopoff.resetSafety(reason || 'API_RESOURCE_TOPOFF_RESET')
     },
 
     party: {
@@ -363,6 +371,7 @@
   Object.freeze(api.movement);
   Object.freeze(api.combat);
   Object.freeze(api.classSkills);
+  Object.freeze(api.resourceTopoff);
   Object.freeze(api.party);
   Object.freeze(api.partyLogistics);
   Object.freeze(api.lifecycle);
@@ -395,7 +404,7 @@
     };
   } catch (_) {}
 
-  runtime.logger.info('AL Bot H20 geladen', {
+  runtime.logger.info('AL Bot H21 geladen', {
     version: api.version,
     bootCount,
     hotReload: !!previous,

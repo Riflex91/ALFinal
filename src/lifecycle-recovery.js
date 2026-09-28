@@ -701,11 +701,30 @@
         return { state: 'BLOCKED', reason: 'H19_ROSTER_LIVE_STATE_UNAVAILABLE' };
       }
 
-      const signalProposal = this._proposalPartySignal(roster);
-      if (signalProposal) return signalProposal;
-
       const active = this._onlineSet(roster);
       const localName = this._localName();
+      const desiredActive = new Set(this.policyState.desiredActiveNames.map(String));
+
+      // Rotation is deliberately stop-before-start. This check must happen
+      // before party-leader reconciliation: the current leader itself may be
+      // the farmer that is being rotated out.
+      const undesiredActive = [...active]
+        .filter(name => this._ownedRow(name, roster) && !desiredActive.has(String(name)))
+        .sort((a, b) => a.localeCompare(b));
+      for (const name of undesiredActive) {
+        if (String(name) === String(localName)) continue;
+        return {
+          state: 'READY',
+          reason: 'H19_UNDESIRED_CHARACTER_ACTIVE',
+          request: {
+            id: 'h19-auto-stop-' + name,
+            kind: 'STOP',
+            targetName: name,
+            queuedAt: nowIso(),
+            automatic: true
+          }
+        };
+      }
 
       for (const name of this.policyState.desiredRuntimeRunningNames) {
         if (name === localName) continue;
@@ -755,6 +774,12 @@
           };
         }
       }
+
+      // Only reconcile party invitations/leader topology after the desired
+      // four-character active/runtime set is healthy. During a farmer rotation
+      // the old party leader may still be visible in a stale party snapshot.
+      const signalProposal = this._proposalPartySignal(roster);
+      if (signalProposal) return signalProposal;
 
       const desiredPartyMembers = this.policyState.desiredPartyMemberNames;
       const leader = this.policyState.desiredPartyLeader;

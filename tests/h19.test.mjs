@@ -412,6 +412,41 @@ test('H19 late settlement from stopped controller cannot resurrect pending stora
   assert.equal(second.controller.status().currentAction, null);
 });
 
+test('H19 rotates farmers stop-before-start so the four-character account limit is never exceeded', async () => {
+  const { controller, state } = fixture({
+    onlineNames: ['My_Merchant', 'My_Priest', 'My_Ranger', 'My_Warrior'],
+    runnerActiveNames: ['My_Merchant', 'My_Priest', 'My_Ranger', 'My_Warrior'],
+    partyMembers: ['My_Merchant', 'My_Priest', 'My_Ranger', 'My_Warrior'],
+    partyLeader: 'My_Priest',
+    maxActionsPerSession: 4
+  });
+  state.account.push({ name: 'My_Mage', ctype: 'mage', online: false });
+
+  const policy = controller.setPolicy({
+    desiredActiveNames: ['My_Mage', 'My_Merchant', 'My_Ranger', 'My_Warrior'],
+    desiredPartyMemberNames: ['My_Mage', 'My_Merchant', 'My_Ranger', 'My_Warrior'],
+    desiredPartyLeader: 'My_Warrior'
+  });
+  assert.equal(policy.accepted, true);
+  assert.equal(controller.startAutonomy({ maxActions: 4 }).accepted, true);
+
+  const stopDispatch = controller.tick();
+  assert.equal(stopDispatch.state, 'DISPATCHED');
+  assert.deepEqual(state.dispatches[0], { name: 'stop_character', args: ['My_Priest'] });
+  assert.equal(state.online.size, 3);
+
+  await flush();
+  const stopConfirmed = controller.tick();
+  assert.equal(stopConfirmed.state, 'CONFIRMED');
+
+  const startDispatch = controller.tick();
+  assert.equal(startDispatch.state, 'DISPATCHED');
+  assert.deepEqual(state.dispatches[1], { name: 'start_character', args: ['My_Mage'] });
+  assert.equal(state.online.size, 4);
+  assert.equal(state.online.has('My_Priest'), false);
+  assert.equal(state.online.has('My_Mage'), true);
+});
+
 test('H19 captureDesiredActive drives bounded missing-character recovery', async () => {
   const { controller, state } = fixture({ activeNames: ['My_Ranger', 'My_Priest'] });
   assert.equal(controller.captureDesiredActive().accepted, true);
@@ -804,7 +839,7 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(runtime, /rejectedDelta === 0/);
   assert.match(runtime, /unknownDelta === 0/);
   assert.match(runtime, /H19_REMOTE_TARGET_NOT_RESTORED/);
-  assert.match(runtime, /options\.version \|\| '0\.20\.0-h20'/);
+  assert.match(runtime, /options\.version \|\| '0\.21\.0-h21'/);
   assert.match(entry, /runtime\.lifecycle\.queueStart/);
   assert.match(entry, /runtime\.lifecycle\.queueStop/);
   assert.match(entry, /runtime\.lifecycle\.queueRespawn/);
@@ -844,8 +879,8 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(crossWindow, /partyRecoveryLease/);
   assert.match(build, /src\/cross-window-lifecycle\.js/);
   assert.match(build, /src\/lifecycle-recovery\.js/);
-  assert.match(build, /AL Bot 0\.20\.0-h20/);
-  assert.match(dist, /AL Bot 0\.20\.0-h20/);
+  assert.match(build, /AL Bot 0\.21\.0-h21/);
+  assert.match(dist, /AL Bot 0\.21\.0-h21/);
   assert.match(dist, /class H19CrossWindowLifecycleTransport/);
   assert.match(dist, /albot-h19-cross-window-v1/);
   assert.match(dist, /h19-cross-window-readiness/);
@@ -855,5 +890,5 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(dist, /class CharacterLifecycleController/);
   assert.match(dist, /H19_REMOTE_TARGET_NOT_RUNNER_CONTROLLABLE/);
   assert.match(dist, /H19_REMOTE_CONTROLLABLE_TARGET_UNAVAILABLE/);
-  assert.equal(pkg.version, '0.20.0');
+  assert.equal(pkg.version, '0.21.0');
 });

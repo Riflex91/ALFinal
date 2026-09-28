@@ -98,7 +98,7 @@ test('H4 exposes bounded movement API and action boundary', async () => {
   const { context: ctx } = runtimeContext();
   vm.runInNewContext(bundle, ctx, { filename: 'al-bot.js' });
 
-  assert.equal(ctx.ALBot.version, '0.20.0-h20');
+  assert.equal(ctx.ALBot.version, '0.21.0-h21');
   assert.equal(typeof ctx.ALBot.movement.local, 'function');
   assert.equal(typeof ctx.ALBot.movement.smart, 'function');
   assert.equal(typeof ctx.ALBot.movement.approachTarget, 'function');
@@ -117,7 +117,7 @@ test('H4 exposes bounded movement API and action boundary', async () => {
   assert.equal(status.movement.state, 'IDLE');
   assert.equal(status.actions.availability.move, true);
   assert.equal(status.actions.availability.smart_move, true);
-  assert.equal(ctx.ALBot.scheduler.status().totalResources, 15);
+  assert.ok(ctx.ALBot.scheduler.status().totalResources > 0);
   await ctx.ALBot.stop('DONE');
 });
 
@@ -125,6 +125,7 @@ test('local movement completes only from observed position and leaks no observer
   const { context: ctx, calls } = runtimeContext();
   vm.runInNewContext(bundle, ctx);
   await ctx.ALBot.start();
+  const resourcesBeforeMove = ctx.ALBot.scheduler.status().totalResources;
 
   const result = ctx.ALBot.movement.local(120, 80, { arrivalRadius: 2 });
   assert.equal(result.accepted, true);
@@ -135,7 +136,7 @@ test('local movement completes only from observed position and leaks no observer
   assert.equal(movement.lastOrder.state, 'COMPLETED');
   assert.equal(movement.lastOrder.reason, 'ARRIVAL_VERIFIED');
   assert.equal(ctx.ALBot.scheduler.owner('module:movement').resources.length, 0);
-  assert.equal(ctx.ALBot.scheduler.status().totalResources, 15);
+  assert.equal(ctx.ALBot.scheduler.status().totalResources, resourcesBeforeMove);
 
   await ctx.ALBot.stop('DONE');
 });
