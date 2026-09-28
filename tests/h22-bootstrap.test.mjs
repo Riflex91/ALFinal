@@ -76,8 +76,8 @@ test('H22 committed release manifest matches the built immutable bundle', () => 
   const checked = api.validateManifest(manifest);
 
   assert.equal(checked.ok, true);
-  assert.equal(manifest.version, '0.22.4-h22');
-  assert.equal(manifest.packageVersion, '0.22.4');
+  assert.equal(manifest.version, '0.22.5-h22');
+  assert.equal(manifest.packageVersion, '0.22.5');
   assert.equal(manifest.minBootstrapVersion, '1.0.0');
   assert.equal(manifest.commitSha, manifest.sourceRef);
   assert.equal(
