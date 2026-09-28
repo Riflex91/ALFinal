@@ -95,7 +95,7 @@
       this.config = {
         targetCorridor: clamp(options.targetCorridor == null ? 0.08 : options.targetCorridor, 0, 0.5),
         maxProfileAgeMs: Math.max(1500, Math.min(30000, Number(options.maxProfileAgeMs) || 9000)),
-        maxCandidates: Math.max(4, Math.min(12, Math.floor(Number(options.maxCandidates) || 8)))
+        maxCandidates: Math.max(4, Math.min(32, Math.floor(Number(options.maxCandidates) || 16)))
       };
     }
 
