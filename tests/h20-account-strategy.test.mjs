@@ -104,7 +104,7 @@ test('account progression identifies the weaker combat character for catch-up tr
 });
 
 
-test('FARM uses the complete Warrior Priest Ranger combat trio and excludes Merchant', () => {
+test('FARM chooses the best task group dynamically instead of forcing the full combat trio', () => {
   const { controller } = loadStrategy({
     peers: [
       {
@@ -125,12 +125,12 @@ test('FARM uses the complete Warrior Priest Ranger combat trio and excludes Merc
   assert.equal(progression.selectedCharacterName, 'My_Ranger1');
   const plan = controller.optimizeTask({ type: 'FARM' });
   assert.equal(plan.status, 'SELECTION_READY');
-  assert.deepEqual([...plan.selected.memberNames], ['My_Priest', 'My_Ranger1', 'My_Warrior']);
-  assert.equal(plan.selected.memberNames.length, 3);
+  assert.deepEqual([...plan.selected.memberNames], ['My_Priest', 'My_Ranger1']);
   assert.equal(plan.selected.memberNames.includes('My_Merchant'), false);
-  assert.equal(plan.leaderName, 'My_Warrior');
-  assert.ok(plan.selected.capabilities.includes('TANK'));
-  assert.ok(plan.selected.capabilities.includes('HEALER'));
+  assert.equal(plan.leaderName, 'My_Priest');
+  assert.ok(plan.selected.coordinationCost > 0);
+  assert.ok(plan.ranking.some(row => row.memberNames.length === 1));
+  assert.ok(plan.ranking.some(row => row.memberNames.length === 3));
 });
 
 function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, localName = 'My_Warrior', partyHealthy = true, partyLeader = 'My_Warrior', selectedMembers = ['My_Priest', 'My_Ranger1', 'My_Warrior'], leaderName = 'My_Warrior', lifecycleSuspended = false, lifecycleSuspendedReason = null, farmSuspended = false, farmSuspendedReason = null, onlineNames = ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior'] } = {}) {
@@ -283,6 +283,45 @@ function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, localNa
   return { controller, state };
 }
 
+test('task optimizer can expand FARM to three members when the third member adds enough value', () => {
+  const { controller } = loadStrategy({
+    local: {
+      name: 'My_Warrior', ctype: 'warrior', level: 80, hp: 4000, maxHp: 4000,
+      mp: 900, maxMp: 900, attack: 900, armor: 600, resistance: 350,
+      frequency: 1.3, speed: 48, range: 45, rip: false, map: 'main'
+    },
+    peers: [
+      {
+        name: 'My_Priest', running: true, emergencyStopLatched: false, peerFresh: true,
+        profile: { name: 'My_Priest', ctype: 'priest', level: 80, hp: 3200, maxHp: 3200, attack: 700, armor: 350, resistance: 550, frequency: 1.1, speed: 48, range: 140, gearScore: 700, trainingMs: 1000 }
+      },
+      {
+        name: 'My_Ranger1', running: true, emergencyStopLatched: false, peerFresh: true,
+        profile: { name: 'My_Ranger1', ctype: 'ranger', level: 80, hp: 3000, maxHp: 3000, attack: 950, armor: 250, resistance: 250, frequency: 1.5, speed: 60, range: 240, gearScore: 700, trainingMs: 1000 }
+      },
+      {
+        name: 'My_Merchant', running: true, emergencyStopLatched: false, peerFresh: true,
+        profile: { name: 'My_Merchant', ctype: 'merchant', level: 70, hp: 2200, maxHp: 2200, attack: 120, frequency: 0.8, gearScore: 200, trainingMs: 1000 }
+      }
+    ]
+  });
+  const plan = controller.optimizeTask({ type: 'FARM' });
+  assert.equal(plan.status, 'SELECTION_READY');
+  assert.ok(plan.selected.memberNames.length >= 1 && plan.selected.memberNames.length <= 3);
+  assert.equal(plan.selected.memberNames.includes('My_Merchant'), false);
+  assert.ok(plan.ranking.some(row => row.memberNames.length !== plan.selected.memberNames.length));
+});
+
+test('BOSS remains capability-driven and requires a tank healer and DPS rather than named characters', () => {
+  const { controller } = loadStrategy();
+  const plan = controller.optimizeTask({ type: 'BOSS' });
+  assert.equal(plan.status, 'SELECTION_READY');
+  assert.ok(plan.selected.capabilities.includes('TANK'));
+  assert.ok(plan.selected.capabilities.includes('HEALER'));
+  assert.ok(plan.selected.capabilities.includes('DPS'));
+  assert.equal(plan.selected.memberNames.includes('My_Merchant'), false);
+});
+
 test('full autonomy waits fail-closed until every online character has a fresh bot profile', () => {
   const { controller, state } = loadFullAutonomy({ missingPeer: true });
   const started = controller.startAutonomy({ taskType: 'FARM' });
@@ -409,11 +448,11 @@ test('full autonomy honors a lifecycle self-stop and does not restart it on the 
 });
 
 
-test('all three combat windows execute FARM while the Merchant stays support economy', () => {
-  const selectedMembers = ['My_Priest', 'My_Ranger1', 'My_Warrior'];
-  const priest = loadFullAutonomy({ localName: 'My_Priest', selectedMembers, leaderName: 'My_Warrior', partyHealthy: true });
-  const ranger = loadFullAutonomy({ localName: 'My_Ranger1', selectedMembers, leaderName: 'My_Warrior', partyHealthy: true });
-  const warrior = loadFullAutonomy({ localName: 'My_Warrior', selectedMembers, leaderName: 'My_Warrior', partyHealthy: true });
+test('Full Autonomy applies the strategy-selected FARM group and leaves unselected combat characters on standby', () => {
+  const selectedMembers = ['My_Priest', 'My_Ranger1'];
+  const priest = loadFullAutonomy({ localName: 'My_Priest', selectedMembers, leaderName: 'My_Priest', partyHealthy: true });
+  const ranger = loadFullAutonomy({ localName: 'My_Ranger1', selectedMembers, leaderName: 'My_Priest', partyHealthy: true });
+  const warrior = loadFullAutonomy({ localName: 'My_Warrior', selectedMembers, leaderName: 'My_Priest', partyHealthy: true });
 
   const priestStart = priest.controller.startAutonomy({ taskType: 'FARM' });
   const rangerStart = ranger.controller.startAutonomy({ taskType: 'FARM' });
@@ -422,11 +461,13 @@ test('all three combat windows execute FARM while the Merchant stays support eco
   for (const started of [priestStart, rangerStart, warriorStart]) {
     assert.equal(started.accepted, true);
     assert.deepEqual(started.tick.executionMembers, selectedMembers);
-    assert.equal(started.tick.localRole, 'combat-farm');
   }
-  assert.deepEqual(priest.state.farmGroup, { groupLeaderName: 'My_Warrior', groupMemberNames: selectedMembers });
-  assert.deepEqual(ranger.state.farmGroup, { groupLeaderName: 'My_Warrior', groupMemberNames: selectedMembers });
-  assert.deepEqual(warrior.state.farmGroup, { groupLeaderName: 'My_Warrior', groupMemberNames: selectedMembers });
+  assert.equal(priestStart.tick.localRole, 'combat-farm');
+  assert.equal(rangerStart.tick.localRole, 'combat-farm');
+  assert.equal(warriorStart.tick.localRole, 'standby');
+  assert.deepEqual(priest.state.farmGroup, { groupLeaderName: 'My_Priest', groupMemberNames: selectedMembers });
+  assert.deepEqual(ranger.state.farmGroup, { groupLeaderName: 'My_Priest', groupMemberNames: selectedMembers });
+  assert.equal(warrior.state.farmGroup, null);
   assert.deepEqual(warrior.state.lifecyclePolicy.desiredPartyMemberNames, ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior']);
 });
 
