@@ -7354,6 +7354,7 @@
         safetyBlocks: 0,
         crossWindowDispatches: 0,
         crossWindowConfirms: 0,
+        crossWindowCharacterDisconnects: 0,
         rotationCapabilityBlocks: 0,
         stalePendingDiscarded: 0,
         stalePendingReconciled: 0
@@ -7763,30 +7764,44 @@
         .sort((a, b) => a.localeCompare(b));
       const missingDesiredNames = desired.filter(name => !online.has(String(name))).sort((a, b) => a.localeCompare(b));
       const blockers = [];
+      const remoteDisconnectNames = [];
+      const stopActionAvailable = this._actionAvailable('stop_character');
 
-      if (unexpectedOnlineNames.length && !this._actionAvailable('stop_character')) {
-        blockers.push('H19_ROTATION_STOP_ACTION_UNAVAILABLE');
-      }
       if (missingDesiredNames.length && !this._actionAvailable('start_character')) {
         blockers.push('H19_ROTATION_START_ACTION_UNAVAILABLE');
       }
       for (const name of unexpectedOnlineNames) {
-        if (String(name) === String(localName)) blockers.push('H19_ROTATION_WOULD_STOP_LOCAL:' + name);
-        else if (!runnerActive.has(String(name))) blockers.push('H19_ROTATION_STOP_NOT_RUNNER_CONTROLLABLE:' + name);
+        if (String(name) === String(localName)) {
+          blockers.push('H19_ROTATION_WOULD_STOP_LOCAL:' + name);
+          continue;
+        }
+        if (runnerActive.has(String(name))) {
+          if (!stopActionAvailable) blockers.push('H19_ROTATION_STOP_ACTION_UNAVAILABLE:' + name);
+          continue;
+        }
+        const peer = this.crossWindow && typeof this.crossWindow.freshPeer === 'function'
+          ? this.crossWindow.freshPeer(name)
+          : null;
+        if (peer && peer.running === true && peer.characterDisconnectCapable === true) {
+          remoteDisconnectNames.push(String(name));
+          continue;
+        }
+        blockers.push('H19_ROTATION_STOP_NOT_RUNNER_CONTROLLABLE:' + name);
       }
 
       const ready = blockers.length === 0;
       if (!ready) this.metrics.rotationCapabilityBlocks += 1;
       return {
         ready,
-        reason: ready ? 'H19_ROTATION_CHARACTER_CONTROL_READY' : blockers[0],
+        reason: ready ? 'H24_ROTATION_CHARACTER_CONTROL_READY' : blockers[0],
         blockers,
         desiredCharacterNames: desired,
         onlineCharacterNames: [...online].sort((a, b) => a.localeCompare(b)),
         runnerActiveCharacterNames: [...runnerActive].sort((a, b) => a.localeCompare(b)),
+        remoteDisconnectNames: remoteDisconnectNames.sort((a, b) => a.localeCompare(b)),
         unexpectedOnlineNames,
         missingDesiredNames,
-        stopActionAvailable: this._actionAvailable('stop_character'),
+        stopActionAvailable,
         startActionAvailable: this._actionAvailable('start_character')
       };
     }
@@ -7816,10 +7831,16 @@
       if (mode === 'STOP') {
         if (!active) return { ok: false, reason: 'H19_TARGET_ALREADY_STOPPED' };
         if (options.requireCharacterStateChange === true) {
-          if (!this._actionAvailable('stop_character')) return { ok: false, reason: 'H19_ROTATION_STOP_ACTION_UNAVAILABLE' };
           if (roster.activeStateAvailable !== true) return { ok: false, reason: 'H19_ROTATION_RUNNER_STATE_UNAVAILABLE' };
-          if (!runnerActive) return { ok: false, reason: 'H19_ROTATION_STOP_NOT_RUNNER_CONTROLLABLE' };
-          return { ok: true, roster, owned, active, runnerActive, peer, transport: 'child-character' };
+          if (runnerActive) {
+            if (!this._actionAvailable('stop_character')) return { ok: false, reason: 'H19_ROTATION_STOP_ACTION_UNAVAILABLE' };
+            return { ok: true, roster, owned, active, runnerActive, peer, transport: 'child-character' };
+          }
+          if (peer && peer.running === true && peer.characterDisconnectCapable === true
+              && this.crossWindow && typeof this.crossWindow.requestCharacterDisconnect === 'function') {
+            return { ok: true, roster, owned, active, runnerActive, peer, transport: 'cross-window-character-disconnect' };
+          }
+          return { ok: false, reason: 'H19_ROTATION_STOP_NOT_RUNNER_CONTROLLABLE' };
         }
         if (roster.activeStateAvailable === true && runnerActive) {
           return { ok: true, roster, owned, active, runnerActive, peer, transport: 'child-character' };
@@ -8410,6 +8431,13 @@
           }
           dispatched = this.crossWindow.requestRuntimeState(request.targetName, request.kind === 'START');
           this.metrics.crossWindowDispatches += 1;
+        } else if (request.kind === 'STOP' && action.transport === 'cross-window-character-disconnect') {
+          if (!this.crossWindow || typeof this.crossWindow.requestCharacterDisconnect !== 'function') {
+            throw new Error('H24_CROSS_WINDOW_CHARACTER_DISCONNECT_TRANSPORT_UNAVAILABLE');
+          }
+          dispatched = this.crossWindow.requestCharacterDisconnect(request.targetName);
+          this.metrics.crossWindowDispatches += 1;
+          this.metrics.crossWindowCharacterDisconnects += 1;
         } else {
           dispatched = this.actions.dispatch(actionName, args);
         }
@@ -8501,7 +8529,19 @@
 
       const settlementFinished = current.settlement !== 'PENDING' && current.settlement !== 'PREPARED';
       if (current.kind === 'START' || current.kind === 'STOP') {
-        if (current.transport === 'cross-window-runtime') {
+        if (current.transport === 'cross-window-character-disconnect') {
+          const roster = this._roster();
+          if (roster && roster.onlineStateAvailable === true) {
+            const active = this._onlineSet(roster).has(String(current.targetName || ''));
+            if (!active && current.before && current.before.targetWasActive === true) {
+              // Account-wide offline truth is the terminal mutation evidence.
+              // It is intentionally sufficient even if the CM settlement was
+              // lost because the target disconnected immediately afterwards.
+              this.metrics.crossWindowConfirms += 1;
+              return this._confirmCurrent({ evidence: 'ACTIVE_ROSTER_ABSENT_AFTER_REMOTE_SELF_DISCONNECT' });
+            }
+          }
+        } else if (current.transport === 'cross-window-runtime') {
           const desiredRunning = current.kind === 'START';
           const peer = this.crossWindow && typeof this.crossWindow.freshPeer === 'function'
             ? this.crossWindow.freshPeer(current.targetName)
@@ -8529,10 +8569,6 @@
             && !!peer.sessionId
             && String(peer.sessionId) !== String(current.before.targetSessionId);
           if (replacedSession && peer.running === desiredRunning) {
-            // A target window can reload while the transport command is in
-            // flight. A fresh replacement-session heartbeat proving the desired
-            // runtime state is independent live evidence and must win even when
-            // the dead session's transport settlement never arrives.
             this.metrics.crossWindowConfirms += 1;
             return this._confirmCurrent({
               evidence: 'CROSS_WINDOW_RUNTIME_REPLACED_SESSION_LIVE_STATE',
@@ -10425,61 +10461,22 @@
         let requiresRotation = readiness.unexpectedOnlineNames.length > 0
           || onlineDesiredCount !== 4
           || readiness.missing.length > 0;
-        let rotationFallback = null;
+        const rotationFallback = null;
 
         if (requiresRotation && this.runtime.lifecycle
             && typeof this.runtime.lifecycle.characterRotationReadiness === 'function') {
           const rotationReadiness = this.runtime.lifecycle.characterRotationReadiness(nextDesired);
           if (!rotationReadiness || rotationReadiness.ready !== true) {
-            const fallbackPlan = readiness.online.length === 4
-              ? this.strategy.optimizeTask({
-                type: effectiveTaskType,
-                allowedCharacterNames: readiness.online.slice()
-              })
-              : null;
-            const fallbackQuartet = fallbackPlan && fallbackPlan.status === 'SELECTION_READY'
-              ? this._desiredQuartet(fallbackPlan)
-              : { ok: false };
-            const fallbackNames = fallbackQuartet.ok ? fallbackQuartet.names.slice() : [];
-            const onlineSet = new Set(readiness.online.map(String));
-            const fallbackUsesExactOnlineQuartet = fallbackNames.length === 4
-              && readiness.online.length === 4
-              && fallbackNames.every(name => onlineSet.has(String(name)))
-              && readiness.online.every(name => fallbackNames.includes(String(name)));
-
-            if (fallbackUsesExactOnlineQuartet) {
-              rotationFallback = {
-                used: true,
-                reason: rotationReadiness && rotationReadiness.reason || 'H19_ROTATION_CHARACTER_CONTROL_UNAVAILABLE',
-                blockers: rotationReadiness && rotationReadiness.blockers || [],
-                requestedDesiredCharacterNames: nextDesired.slice(),
-                fallbackDesiredCharacterNames: fallbackNames.slice()
-              };
-              plan = fallbackPlan;
-              quartet = fallbackQuartet;
-              nextDesired = fallbackNames;
-              selectionChanged = nextDesired.join('|') !== this.desiredCharacterNames.slice().sort().join('|');
-              this.desiredCharacterNames = nextDesired.slice();
-              this.lastPlan = clone(plan);
-              readiness = this._profileReadiness();
-              desiredSet = new Set(nextDesired);
-              onlineDesiredCount = readiness.online.filter(name => desiredSet.has(String(name))).length;
-              requiresRotation = readiness.unexpectedOnlineNames.length > 0
-                || onlineDesiredCount !== 4
-                || readiness.missing.length > 0;
-            } else {
-              this.strategy.recordTraining(false);
-              return this.lastDecision = {
-                at: new Date().toISOString(),
-                state: 'BLOCKED',
-                reason: 'FULL_AUTONOMY_ROTATION_UNAVAILABLE_NO_ONLINE_FALLBACK',
-                expectedOnlineCount: 4,
-                requestedDesiredCharacterNames: nextDesired,
-                onlineCharacterNames: readiness.online,
-                rotationReadiness: clone(rotationReadiness),
-                fallbackPlan: clone(fallbackPlan)
-              };
-            }
+            this.strategy.recordTraining(false);
+            return this.lastDecision = {
+              at: new Date().toISOString(),
+              state: 'BLOCKED',
+              reason: 'FULL_AUTONOMY_ROTATION_UNAVAILABLE',
+              expectedOnlineCount: 4,
+              requestedDesiredCharacterNames: nextDesired,
+              onlineCharacterNames: readiness.online,
+              rotationReadiness: clone(rotationReadiness)
+            };
           }
         }
 
