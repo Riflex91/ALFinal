@@ -6,7 +6,7 @@ on:
     branches: [main]
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -35,20 +35,3 @@ jobs:
             echo "=== FILE $f ==="
             timeout 20s node --test "$f"
           done
-      - name: One-shot sync generated dist
-        if: ${{ github.event_name == 'pull_request' }}
-        env:
-          HEAD_REF: ${{ github.head_ref }}
-        run: |
-          git fetch origin "$HEAD_REF"
-          git checkout -B "$HEAD_REF" "origin/$HEAD_REF"
-          npm run build
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add dist/al-bot.js
-          if git diff --cached --quiet; then
-            echo "Generated dist already synchronized."
-            exit 0
-          fi
-          git commit -m "build: sync final H21 bundle"
-          git push origin "HEAD:$HEAD_REF"
