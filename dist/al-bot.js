@@ -6493,6 +6493,17 @@
         emergencyStopLatched: row.emergencyStopLatched === true,
         lifecycleAutonomyEnabled: typeof row.lifecycleAutonomyEnabled === 'boolean' ? row.lifecycleAutonomyEnabled : null,
         version: cleanText(row.version || '', 80) || null,
+        party: row.party && typeof row.party === 'object' ? {
+          available: row.party.available !== false,
+          partyId: cleanText(row.party.partyId || '', 160) || null,
+          leader: cleanText(row.party.leader || '', 120) || null,
+          memberNames: Array.isArray(row.party.memberNames)
+            ? [...new Set(row.party.memberNames.map(name => cleanText(name, 120)).filter(Boolean))].slice(0, 8)
+            : [],
+          foreignMemberNames: Array.isArray(row.party.foreignMemberNames)
+            ? [...new Set(row.party.foreignMemberNames.map(name => cleanText(name, 120)).filter(Boolean))].slice(0, 8)
+            : []
+        } : null,
         profile: row.profile && typeof row.profile === 'object' ? {
           schemaVersion: 1,
           name: cleanText(row.profile.name || target, 120) || target,
@@ -6550,6 +6561,8 @@
     _localStatePayload() {
       let state = {};
       try { state = this.getLocalState() || {}; } catch (_) {}
+      let party = null;
+      try { party = this._partySnapshot(); } catch (_) {}
       return {
         sessionId: this.sessionId,
         running: state.running === true,
@@ -6557,6 +6570,17 @@
         emergencyStopLatched: state.emergencyStopLatched === true,
         lifecycleAutonomyEnabled: typeof state.lifecycleAutonomyEnabled === 'boolean' ? state.lifecycleAutonomyEnabled : null,
         version: cleanText(state.version || '', 80) || null,
+        party: party && typeof party === 'object' ? {
+          available: party.available !== false,
+          partyId: cleanText(party.partyId || '', 160) || null,
+          leader: cleanText(party.leader || '', 120) || null,
+          memberNames: Array.isArray(party.memberNames)
+            ? [...new Set(party.memberNames.map(name => cleanText(name, 120)).filter(Boolean))].slice(0, 8)
+            : [],
+          foreignMemberNames: Array.isArray(party.foreignMemberNames)
+            ? [...new Set(party.foreignMemberNames.map(name => cleanText(name, 120)).filter(Boolean))].slice(0, 8)
+            : []
+        } : null,
         profile: state.profile && typeof state.profile === 'object' ? clone(state.profile) : null,
         observation: state.observation && typeof state.observation === 'object' ? {
           schemaVersion: 1,
@@ -9320,12 +9344,41 @@
         && [...desiredSetForLeader].every(name => memberNames.has(name))
         && !!currentLeader
         && desiredSetForLeader.has(String(currentLeader));
-      const leader = completeCurrentParty ? String(currentLeader) : preferredLeader;
+
+      const observedPartyLeaders = new Set();
+      const observeParty = snapshot => {
+        if (!snapshot || snapshot.available === false || !snapshot.partyId) return;
+        const foreign = Array.isArray(snapshot.foreignMemberNames)
+          ? snapshot.foreignMemberNames.map(String)
+          : [];
+        const members = Array.isArray(snapshot.memberNames)
+          ? snapshot.memberNames.map(String)
+          : [];
+        const observedLeader = cleanText(snapshot.leader || '', 120) || null;
+        if (foreign.length || !observedLeader || !desiredSetForLeader.has(observedLeader)) return;
+        if (!members.length || members.some(name => !desiredSetForLeader.has(String(name)))) return;
+        observedPartyLeaders.add(observedLeader);
+      };
+      observeParty(party);
+      try {
+        const peers = this.runtime.lifecycleTransport
+          && typeof this.runtime.lifecycleTransport.freshPeers === 'function'
+          ? this.runtime.lifecycleTransport.freshPeers()
+          : [];
+        for (const peer of peers || []) observeParty(peer && peer.party);
+      } catch (_) {}
+      const sharedObservedLeader = observedPartyLeaders.size === 1
+        ? [...observedPartyLeaders][0]
+        : null;
+      const leader = completeCurrentParty
+        ? String(currentLeader)
+        : (sharedObservedLeader || preferredLeader);
       if (!leader) return { ok: false, reason: 'FULL_AUTONOMY_PARTY_LEADER_UNAVAILABLE' };
 
-      // A complete healthy party may retain its established leader. For every
-      // incomplete/missing topology the coordinator comes only from the shared
-      // strategy plan + account-wide roster, never from a partial local snapshot.
+      // A complete healthy party retains its established leader. An incomplete
+      // owned-only party may also keep one account-wide observed leader, but
+      // that observation is shared over H19 heartbeats so every window reaches
+      // the same coordinator instead of trusting its local partial snapshot.
       const coordinatorName = onlineDesired.includes(String(leader || ''))
         ? String(leader)
         : (onlineDesired[0] || localName);
@@ -9370,8 +9423,12 @@
       const runtimeRecoveryRequired = coordinator && stoppedDesiredNames.length > 0;
       const rosterRecoveryRequired = coordinator && offlineDesiredNames.length > 0;
       const rotationRequired = coordinator && unexpectedOnlineNames.length > 0;
+      const partyRecoveryReady = Array.isArray(readiness.missing) && readiness.missing.length === 0;
       const shouldRunLifecycle = coordinator
-        && (!partyTopologyHealthy || runtimeRecoveryRequired || rosterRecoveryRequired || rotationRequired);
+        && (runtimeRecoveryRequired
+          || rosterRecoveryRequired
+          || rotationRequired
+          || (!partyTopologyHealthy && partyRecoveryReady));
       const current = lifecycle.status();
       const recoverySafetyBlocked = current.suspended === true
         || !!(current.currentAction && current.currentAction.unknownRecorded === true);
@@ -9418,6 +9475,8 @@
         runtimeRecoveryRequired,
         rosterRecoveryRequired,
         rotationRequired,
+        partyRecoveryReady,
+        observedPartyLeaders: [...observedPartyLeaders].sort((a, b) => a.localeCompare(b)),
         stoppedDesiredNames,
         offlineDesiredNames,
         unexpectedOnlineNames,
