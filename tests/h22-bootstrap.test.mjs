@@ -93,8 +93,8 @@ test('H22 committed release manifest is valid before promotion and matches the c
   } else {
     // During candidate CI the stable pointer intentionally remains on the last
     // verified release. Only the known previous stable release is accepted.
-    assert.equal(manifest.version, '0.24.0-h24');
-    assert.equal(manifest.packageVersion, '0.24.0');
+    assert.equal(manifest.version, '0.25.0-h25');
+    assert.equal(manifest.packageVersion, '0.25.0');
   }
 });
 
