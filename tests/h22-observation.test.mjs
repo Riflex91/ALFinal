@@ -244,8 +244,9 @@ test('H22 incident package captures bounded pre/post evidence and finalizes dete
   state.stopLatch = { latched: true, reason: 'TEST' };
   observer.tick();
   assert.ok(observer.status().openIncident);
-  clock += 1100;
+  clock += 500;
   observer._record('POST_EVENT', 'WARN', 'test', 'after');
+  clock += 600;
   observer.tick();
   const incidents = observer.listIncidents(10);
   assert.equal(incidents.length, 1);
