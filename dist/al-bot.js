@@ -1,4 +1,4 @@
-/* AL Bot 0.22.5-h22 | generated file | do not edit dist directly */
+/* AL Bot 0.22.6-h22 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -4402,6 +4402,26 @@
     return Math.max(0, Math.min(1, current / total));
   }
 
+  function rejectionText(value) {
+    if (value == null) return '';
+    if (typeof value === 'string') return cleanText(value, 500);
+    if (typeof value !== 'object') return cleanText(value, 500);
+    const keys = ['reason', 'message', 'code', 'type', 'name'];
+    for (const key of keys) {
+      const candidate = value[key];
+      if (typeof candidate === 'string' && candidate.trim()) return cleanText(candidate, 500);
+    }
+    const nested = value.error || value.response;
+    if (nested && typeof nested === 'object') {
+      for (const key of keys) {
+        const candidate = nested[key];
+        if (typeof candidate === 'string' && candidate.trim()) return cleanText(candidate, 500);
+      }
+    }
+    try { return cleanText(JSON.stringify(value), 500); } catch (_) {}
+    return cleanText(value, 500);
+  }
+
   function restoreAmount(meta, resource) {
     const gives = meta && meta.gives;
     if (Array.isArray(gives)) {
@@ -4614,12 +4634,12 @@
       }, error => {
         if (!this.pending || this.pending.id !== pending.id) return;
         pending.settlement = 'REJECTED';
-        pending.error = cleanText(error && error.message || error || 'RESOURCE_TOPOFF_REJECTED', 500);
+        pending.error = rejectionText(error) || 'RESOURCE_TOPOFF_REJECTED';
       }).catch(() => {});
     }
 
     _knownRejection(value) {
-      const text = cleanText(value && (value.reason || value.message) || value || '', 300).toLowerCase();
+      const text = rejectionText(value).toLowerCase();
       return /cooldown|safet|no_mp|no_hp|full|not_ready|cant_use|cannot_use|unavailable/.test(text);
     }
 
@@ -8200,7 +8220,18 @@
         };
       }
 
-      if (!this.autonomyEnabled) return this.lastPlan = { state: 'OBSERVE', reason: 'H19_AUTONOMY_DISABLED' };
+      if (!this.autonomyEnabled) {
+        // Non-coordinator windows stay passive for proactive lifecycle recovery,
+        // but they must still finish a validated inbound owned-party handshake.
+        // Otherwise the coordinator can invite forever while the target only
+        // observes the signal and never accepts it.
+        const roster = this._roster();
+        if (roster && roster.accountStateAvailable === true && roster.onlineStateAvailable === true) {
+          const signalProposal = this._proposalPartySignal(roster);
+          if (signalProposal) return this.lastPlan = signalProposal;
+        }
+        return this.lastPlan = { state: 'OBSERVE', reason: 'H19_AUTONOMY_DISABLED' };
+      }
       return this.lastPlan = this._proposalFromDesired();
     }
 
@@ -8446,6 +8477,24 @@
             this.metrics.crossWindowConfirms += 1;
             return this._confirmCurrent({
               evidence: restoredReconciled ? 'CROSS_WINDOW_RUNTIME_RECONCILED' : 'CROSS_WINDOW_RUNTIME_SETTLEMENT',
+              targetSessionId: peer.sessionId,
+              running: peer.running
+            });
+          }
+          const replacedSession = !!peer
+            && !!current.before
+            && !!current.before.targetSessionId
+            && !!peer.sessionId
+            && String(peer.sessionId) !== String(current.before.targetSessionId);
+          if (replacedSession && peer.running === desiredRunning) {
+            // A target window can reload while the transport command is in
+            // flight. A fresh replacement-session heartbeat proving the desired
+            // runtime state is independent live evidence and must win even when
+            // the dead session's transport settlement never arrives.
+            this.metrics.crossWindowConfirms += 1;
+            return this._confirmCurrent({
+              evidence: 'CROSS_WINDOW_RUNTIME_REPLACED_SESSION_LIVE_STATE',
+              previousTargetSessionId: current.before.targetSessionId,
               targetSessionId: peer.sessionId,
               running: peer.running
             });
@@ -22155,7 +22204,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.22.5-h22';
+      this.version = options.version || '0.22.6-h22';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -29827,7 +29876,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.22.5-h22',
+    version: '0.22.6-h22',
     bootCount,
     replacedPrevious: !!previous
   });

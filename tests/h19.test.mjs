@@ -164,17 +164,18 @@ function fixture(options = {}) {
         peer.running = desired;
         if (desired) peer.runEpoch += 1;
       }
+      const response = {
+        success: options.crossWindowReject !== true,
+        reason: options.crossWindowReject ? 'CROSS_WINDOW_REJECTED_TEST' : 'CROSS_WINDOW_SETTLED_TEST',
+        target: String(name),
+        targetSessionId: peer.sessionId,
+        state: { running: peer.running, runEpoch: peer.runEpoch }
+      };
       return {
         id: 'cm-' + state.crossWindowDispatches.length,
         state: 'DISPATCHED',
         dispatched: true,
-        value: Promise.resolve({
-          success: options.crossWindowReject !== true,
-          reason: options.crossWindowReject ? 'CROSS_WINDOW_REJECTED_TEST' : 'CROSS_WINDOW_SETTLED_TEST',
-          target: String(name),
-          targetSessionId: peer.sessionId,
-          state: { running: peer.running, runEpoch: peer.runEpoch }
-        })
+        value: options.crossWindowNeverSettle ? new Promise(() => {}) : Promise.resolve(response)
       };
     }
   } : null;
@@ -214,7 +215,8 @@ function fixture(options = {}) {
     ctx,
     resolve: value => resolvePending && resolvePending(value == null ? { success: true } : value),
     reject: error => rejectPending && rejectPending(error || new Error('PROMISE_REJECTED')),
-    recreate: extra => fixture({ ...options, ...(extra || {}), state, storage })
+    recreate: extra => fixture({ ...options, ...(extra || {}), state, storage }),
+    runtimePeers
   };
 }
 
@@ -929,7 +931,7 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(runtime, /rejectedDelta === 0/);
   assert.match(runtime, /unknownDelta === 0/);
   assert.match(runtime, /H19_REMOTE_TARGET_NOT_RESTORED/);
-  assert.match(runtime, /options\.version \|\| '0\.22\.5-h22'/);
+  assert.match(runtime, /options\.version \|\| '0\.22\.6-h22'/);
   assert.match(entry, /runtime\.lifecycle\.queueStart/);
   assert.match(entry, /runtime\.lifecycle\.queueStop/);
   assert.match(entry, /runtime\.lifecycle\.queueRespawn/);
@@ -969,8 +971,8 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(crossWindow, /partyRecoveryLease/);
   assert.match(build, /src\/cross-window-lifecycle\.js/);
   assert.match(build, /src\/lifecycle-recovery\.js/);
-  assert.match(build, /const runtimeVersion = '0\.22\.5-h22'/);
-  assert.match(dist, /AL Bot 0\.22\.5-h22/);
+  assert.match(build, /const runtimeVersion = '0\.22\.6-h22'/);
+  assert.match(dist, /AL Bot 0\.22\.6-h22/);
   assert.match(dist, /class H19CrossWindowLifecycleTransport/);
   assert.match(dist, /albot-h19-cross-window-v1/);
   assert.match(dist, /h19-cross-window-readiness/);
@@ -980,5 +982,70 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(dist, /class CharacterLifecycleController/);
   assert.match(dist, /H19_REMOTE_TARGET_NOT_RUNNER_CONTROLLABLE/);
   assert.match(dist, /H19_REMOTE_CONTROLLABLE_TARGET_UNAVAILABLE/);
-  assert.equal(pkg.version, '0.22.5');
+  assert.equal(pkg.version, '0.22.6');
+});
+
+
+test('H22 live regression: non-coordinator accepts a validated owned-party invite while proactive lifecycle autonomy stays disabled', async () => {
+  const f = fixture({ onlineNames: ['My_Ranger', 'My_Priest'], runnerActiveNames: ['My_Ranger', 'My_Priest'] });
+  const policy = f.controller.setPolicy({
+    desiredActiveNames: ['My_Ranger', 'My_Priest'],
+    desiredRuntimeRunningNames: [],
+    desiredPartyMemberNames: ['My_Ranger', 'My_Priest'],
+    desiredPartyLeader: 'My_Priest'
+  });
+  assert.equal(policy.accepted, true);
+  assert.equal(f.controller.status().autonomyEnabled, false);
+
+  assert.equal(f.controller._recordPartySignal('INVITE', 'My_Priest'), true);
+  const dispatched = f.controller.tick();
+  assert.equal(dispatched.state, 'DISPATCHED');
+  assert.equal(f.state.dispatches.length, 1);
+  assert.equal(f.state.dispatches[0].name, 'accept_party_invite');
+
+  await flush();
+  const confirmed = f.controller.tick();
+  assert.equal(confirmed.state, 'CONFIRMED');
+  assert.equal(confirmed.kind, 'PARTY_ACCEPT_INVITE');
+  assert.equal(f.controller.status().autonomyEnabled, false);
+  assert.equal(f.controller.status().suspended, false);
+  assert.equal(f.controller.status().metrics.partyAcceptsConfirmed, 1);
+});
+
+test('H22 live regression: replacement runtime heartbeat confirms even when the old session transport never settles', () => {
+  const f = fixture({
+    onlineNames: ['My_Ranger', 'My_Priest'],
+    runnerActiveNames: ['My_Ranger', 'My_Priest'],
+    crossWindowPeers: [{ name: 'My_Priest', sessionId: 'old-session', running: false, runEpoch: 1 }],
+    crossWindowNoMutation: true,
+    crossWindowNeverSettle: true
+  });
+  const policy = f.controller.setPolicy({
+    desiredActiveNames: ['My_Ranger', 'My_Priest'],
+    desiredRuntimeRunningNames: ['My_Priest'],
+    desiredPartyMemberNames: [],
+    desiredPartyLeader: null
+  });
+  assert.equal(policy.accepted, true);
+  assert.equal(f.controller.startAutonomy({ maxActions: 4 }).accepted, true);
+
+  const dispatched = f.controller.tick();
+  assert.equal(dispatched.state, 'DISPATCHED');
+  assert.equal(f.controller.status().currentAction.before.targetSessionId, 'old-session');
+  assert.equal(f.controller.status().currentAction.settlement, 'PENDING');
+
+  f.runtimePeers.set('My_Priest', {
+    name: 'My_Priest',
+    sessionId: 'replacement-session',
+    running: true,
+    runEpoch: 1
+  });
+
+  const reconciled = f.controller.tick();
+  assert.equal(reconciled.state, 'CONFIRMED');
+  assert.equal(reconciled.details.evidence, 'CROSS_WINDOW_RUNTIME_REPLACED_SESSION_LIVE_STATE');
+  assert.equal(reconciled.details.previousTargetSessionId, 'old-session');
+  assert.equal(reconciled.details.targetSessionId, 'replacement-session');
+  assert.equal(f.controller.status().suspended, false);
+  assert.equal(f.controller.status().metrics.actionsUnknown, 0);
 });

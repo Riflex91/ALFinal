@@ -69,23 +69,33 @@ test('H22 bootstrap is a small permanent loader and never contains an update pol
   assert.doesNotMatch(source, /load_code/);
 });
 
-test('H22 committed release manifest matches the built immutable bundle', () => {
+test('H22 committed release manifest is valid before promotion and matches the candidate bundle after promotion', () => {
   const { api } = loadBootstrap();
   const manifest = JSON.parse(fs.readFileSync(new URL('../release/al-bot-release.json', import.meta.url), 'utf8'));
   const dist = fs.readFileSync(new URL('../dist/al-bot.js', import.meta.url), 'utf8');
   const checked = api.validateManifest(manifest);
+  const candidateVersion = '0.22.6-h22';
+  const candidatePackageVersion = '0.22.6';
 
   assert.equal(checked.ok, true);
-  assert.equal(manifest.version, '0.22.5-h22');
-  assert.equal(manifest.packageVersion, '0.22.5');
   assert.equal(manifest.minBootstrapVersion, '1.0.0');
   assert.equal(manifest.commitSha, manifest.sourceRef);
   assert.equal(
     manifest.bundleUrl,
     'https://raw.githubusercontent.com/Riflex91/ALFinal/' + manifest.commitSha + '/dist/al-bot.js'
   );
-  assert.equal(manifest.bytes, Buffer.byteLength(dist, 'utf8'));
-  assert.equal(manifest.sha256, crypto.createHash('sha256').update(dist, 'utf8').digest('hex'));
+  assert.match(dist, /^\/\* AL Bot 0\.22\.6-h22 \| generated file \| do not edit dist directly \*\//);
+
+  if (manifest.version === candidateVersion) {
+    assert.equal(manifest.packageVersion, candidatePackageVersion);
+    assert.equal(manifest.bytes, Buffer.byteLength(dist, 'utf8'));
+    assert.equal(manifest.sha256, crypto.createHash('sha256').update(dist, 'utf8').digest('hex'));
+  } else {
+    // During candidate CI the stable pointer intentionally remains on the last
+    // verified release. Only the known previous stable release is accepted.
+    assert.equal(manifest.version, '0.22.5-h22');
+    assert.equal(manifest.packageVersion, '0.22.5');
+  }
 });
 
 test('H22 bootstrap loads and verifies the official immutable release manifest', async () => {

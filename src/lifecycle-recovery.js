@@ -1006,7 +1006,18 @@
         };
       }
 
-      if (!this.autonomyEnabled) return this.lastPlan = { state: 'OBSERVE', reason: 'H19_AUTONOMY_DISABLED' };
+      if (!this.autonomyEnabled) {
+        // Non-coordinator windows stay passive for proactive lifecycle recovery,
+        // but they must still finish a validated inbound owned-party handshake.
+        // Otherwise the coordinator can invite forever while the target only
+        // observes the signal and never accepts it.
+        const roster = this._roster();
+        if (roster && roster.accountStateAvailable === true && roster.onlineStateAvailable === true) {
+          const signalProposal = this._proposalPartySignal(roster);
+          if (signalProposal) return this.lastPlan = signalProposal;
+        }
+        return this.lastPlan = { state: 'OBSERVE', reason: 'H19_AUTONOMY_DISABLED' };
+      }
       return this.lastPlan = this._proposalFromDesired();
     }
 
@@ -1252,6 +1263,24 @@
             this.metrics.crossWindowConfirms += 1;
             return this._confirmCurrent({
               evidence: restoredReconciled ? 'CROSS_WINDOW_RUNTIME_RECONCILED' : 'CROSS_WINDOW_RUNTIME_SETTLEMENT',
+              targetSessionId: peer.sessionId,
+              running: peer.running
+            });
+          }
+          const replacedSession = !!peer
+            && !!current.before
+            && !!current.before.targetSessionId
+            && !!peer.sessionId
+            && String(peer.sessionId) !== String(current.before.targetSessionId);
+          if (replacedSession && peer.running === desiredRunning) {
+            // A target window can reload while the transport command is in
+            // flight. A fresh replacement-session heartbeat proving the desired
+            // runtime state is independent live evidence and must win even when
+            // the dead session's transport settlement never arrives.
+            this.metrics.crossWindowConfirms += 1;
+            return this._confirmCurrent({
+              evidence: 'CROSS_WINDOW_RUNTIME_REPLACED_SESSION_LIVE_STATE',
+              previousTargetSessionId: current.before.targetSessionId,
               targetSessionId: peer.sessionId,
               running: peer.running
             });
