@@ -259,7 +259,15 @@
         ? after.hpPotions < pending.before.hpPotions
         : after.mpPotions < pending.before.mpPotions;
 
-      if (resourceIncreased || potionDecreased) {
+      const response = pending.response && typeof pending.response === 'object' ? pending.response : null;
+      const explicitUseConfirmed = !!(response && (
+        response.used === true
+        || response.consumed === true
+        || response.potionUsed === true
+        || (response.success === true && ['use_hp', 'use_mp'].includes(String(response.action || response.place || '').toLowerCase()))
+      ));
+
+      if (potionDecreased || explicitUseConfirmed) {
         this.pending = null;
         this.metrics.confirmed += 1;
         this.lastUse = {
@@ -267,7 +275,8 @@
           action: pending.action,
           state: 'CONFIRMED',
           resourceIncreased,
-          potionDecreased
+          potionDecreased,
+          explicitUseConfirmed
         };
         return true;
       }
