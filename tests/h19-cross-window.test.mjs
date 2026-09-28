@@ -80,6 +80,7 @@ function makeContext(name, names, network, state, nowRef) {
       runEpoch: state.runEpoch,
       emergencyStopLatched: state.emergencyStopLatched,
       lifecycleAutonomyEnabled: state.autonomyEnabled === true,
+      characterDisconnectCapable: state.characterDisconnectCapable === true,
       version: '0.19.0-h19'
     }),
     startRuntime: async () => {
@@ -87,6 +88,10 @@ function makeContext(name, names, network, state, nowRef) {
       if (!state.running) { state.running = true; state.runEpoch += 1; }
     },
     stopRuntime: async () => { state.running = false; },
+    disconnectLocal: () => {
+      state.disconnects = (state.disconnects || 0) + 1;
+      state.disconnected = true;
+    },
     getPartyState: () => clone(state.party || { available: false, partyId: null, leader: null, memberNames: [], foreignMemberNames: [], size: 0 }),
     leavePartyLocal: async () => {
       const party = state.party;
@@ -195,6 +200,55 @@ test('H19 cross-window STOP and START settle against the target runtime without 
   assert.equal(a.transport.status().metrics.commandsSent, 2);
   assert.equal(a.transport.status().metrics.settlementsSucceeded, 2);
 
+  a.transport.destroy();
+  b.transport.destroy();
+});
+
+test('H24 cross-window character disconnect settles before the target self-disconnects', async () => {
+  const names = ['My_Ranger1', 'My_Priest'];
+  const network = new Map();
+  const nowRef = { value: 2500 };
+  const aState = { running: true, runEpoch: 1, emergencyStopLatched: false, characterDisconnectCapable: true };
+  const bState = { running: true, runEpoch: 3, emergencyStopLatched: false, characterDisconnectCapable: true, disconnects: 0 };
+  const a = makeContext('My_Ranger1', names, network, aState, nowRef);
+  const b = makeContext('My_Priest', names, network, bState, nowRef);
+  a.transport.install();
+  b.transport.install();
+  a.transport.broadcastHeartbeat();
+  b.transport.broadcastHeartbeat();
+
+  const peer = a.transport.freshPeer('My_Priest');
+  assert.equal(peer.characterDisconnectCapable, true);
+  const request = a.transport.requestCharacterDisconnect('My_Priest');
+  assert.equal(request.state, 'DISPATCHED');
+  const settlement = await request.value;
+  assert.equal(settlement.success, true);
+  assert.equal(settlement.reason, 'H24_CROSS_WINDOW_CHARACTER_DISCONNECT_ACCEPTED');
+  assert.equal(settlement.details.completionEvidence, 'ACCOUNT_ROSTER_OFFLINE_REQUIRED');
+  assert.equal(bState.disconnects, 0, 'disconnect must not run before the CM settlement is emitted');
+
+  await new Promise(resolve => setTimeout(resolve, 130));
+  assert.equal(bState.disconnects, 1);
+  assert.equal(bState.disconnected, true);
+  a.transport.destroy();
+  b.transport.destroy();
+});
+
+test('H24 cross-window character disconnect is unavailable without explicit target capability', () => {
+  const names = ['My_Ranger1', 'My_Priest'];
+  const network = new Map();
+  const nowRef = { value: 2700 };
+  const aState = { running: true, runEpoch: 1, emergencyStopLatched: false, characterDisconnectCapable: true };
+  const bState = { running: true, runEpoch: 3, emergencyStopLatched: false, characterDisconnectCapable: false };
+  const a = makeContext('My_Ranger1', names, network, aState, nowRef);
+  const b = makeContext('My_Priest', names, network, bState, nowRef);
+  a.transport.install();
+  b.transport.install();
+  b.transport.broadcastHeartbeat();
+  const request = a.transport.requestCharacterDisconnect('My_Priest');
+  assert.equal(request.state, 'UNAVAILABLE');
+  assert.equal(request.error.message, 'H24_CROSS_WINDOW_CHARACTER_DISCONNECT_CAPABILITY_MISSING');
+  assert.equal(bState.disconnects || 0, 0);
   a.transport.destroy();
   b.transport.destroy();
 });
