@@ -188,7 +188,10 @@ function autonomyFixture(options = {}) {
       startAutonomy: () => ({ accepted: true }),
       stopAutonomy: () => ({ accepted: true })
     },
-    lifecycleTransport: { broadcastHeartbeat: () => {} },
+    lifecycleTransport: {
+      broadcastHeartbeat: () => {},
+      freshPeers: () => clone(options.peerStates || [])
+    },
     stopLatch: { status: () => ({ latched: false }) }
   };
 
@@ -217,26 +220,38 @@ test('H22 Full Autonomy keeps the existing four online characters running when a
   assert.equal(calls.lifecycleStarts, 0);
 });
 
-test('H22 lifecycle coordinator and party leader are deterministic across different local party snapshots', () => {
+test('H22 lifecycle coordinator converges on one observed owned partial-party leader across different local snapshots', () => {
+  const ranger2Party = {
+    available: true,
+    partyId: 'old-ranger-party',
+    leader: 'My_Ranger2',
+    memberNames: ['My_Ranger2', 'My_Ranger3'],
+    foreignMemberNames: []
+  };
+  const noParty = {
+    available: false,
+    partyId: null,
+    leader: null,
+    memberNames: [],
+    foreignMemberNames: []
+  };
   const first = autonomyFixture({
     localName: 'My_Ranger1',
-    partySnapshot: {
-      available: true,
-      partyId: 'old-a',
-      leader: 'My_Ranger1',
-      memberNames: ['My_Ranger1', 'My_Ranger2'],
-      foreignMemberNames: []
-    }
+    partySnapshot: noParty,
+    peerStates: [
+      { name: 'My_Ranger2', running: true, party: ranger2Party },
+      { name: 'My_Ranger3', running: true, party: ranger2Party },
+      { name: 'My_Merchant', running: true, party: noParty }
+    ]
   });
   const second = autonomyFixture({
     localName: 'My_Ranger2',
-    partySnapshot: {
-      available: true,
-      partyId: 'old-b',
-      leader: 'My_Ranger2',
-      memberNames: ['My_Ranger2', 'My_Ranger3'],
-      foreignMemberNames: []
-    }
+    partySnapshot: ranger2Party,
+    peerStates: [
+      { name: 'My_Ranger1', running: true, party: noParty },
+      { name: 'My_Ranger3', running: true, party: ranger2Party },
+      { name: 'My_Merchant', running: true, party: noParty }
+    ]
   });
   const desired = ['My_Merchant', 'My_Ranger1', 'My_Ranger2', 'My_Ranger3'];
   const readiness = {
@@ -255,10 +270,12 @@ test('H22 lifecycle coordinator and party leader are deterministic across differ
 
   assert.equal(a.ok, true);
   assert.equal(b.ok, true);
-  assert.equal(a.coordinatorName, 'My_Ranger1');
-  assert.equal(b.coordinatorName, 'My_Ranger1');
-  assert.equal(a.leader, 'My_Ranger1');
-  assert.equal(b.leader, 'My_Ranger1');
-  assert.equal(first.calls.policies[0].desiredPartyLeader, 'My_Ranger1');
-  assert.equal(second.calls.policies[0].desiredPartyLeader, 'My_Ranger1');
+  assert.equal(a.coordinatorName, 'My_Ranger2');
+  assert.equal(b.coordinatorName, 'My_Ranger2');
+  assert.equal(a.leader, 'My_Ranger2');
+  assert.equal(b.leader, 'My_Ranger2');
+  assert.deepEqual(Array.from(a.observedPartyLeaders), ['My_Ranger2']);
+  assert.deepEqual(Array.from(b.observedPartyLeaders), ['My_Ranger2']);
+  assert.equal(first.calls.policies[0].desiredPartyLeader, 'My_Ranger2');
+  assert.equal(second.calls.policies[0].desiredPartyLeader, 'My_Ranger2');
 });
