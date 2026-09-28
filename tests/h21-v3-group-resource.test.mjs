@@ -55,6 +55,9 @@ function resourceFixture(options = {}) {
       state.dispatches.push(action);
       if (options.unknown === true) return { id: 'pot-unknown', state: 'UNKNOWN', error: { message: 'NETWORK_UNCERTAIN' } };
       if (options.pending === true) return { id: 'pot-pending', state: 'DISPATCHED', value: new Promise(() => {}) };
+      if (options.rejectObjectReason) {
+        return { id: 'pot-rejected', state: 'DISPATCHED', value: Promise.reject({ reason: options.rejectObjectReason }) };
+      }
       if (action === 'use_mp') {
         state.character.mp = Math.min(state.character.maxMp, state.character.mp + 400);
         const row = state.items.find(item => item.name === 'mpot0');
@@ -613,4 +616,22 @@ test('runtime and build wire resource topoff and safe H19 Full Live rearm', () =
   assert.match(build, /src\/resource-topoff\.js/);
   assert.match(boundary, /use_hp: Object\.freeze/);
   assert.match(boundary, /use_mp: Object\.freeze/);
+});
+
+
+test('H22 live regression: structured potion cooldown rejection stays a known reject instead of [object Object] UNKNOWN', async () => {
+  const f = resourceFixture({ mp: 100, rejectObjectReason: 'cooldown' });
+  const first = f.controller.tick();
+  assert.equal(first.state, 'DISPATCHED');
+  await Promise.resolve();
+  await Promise.resolve();
+
+  const observed = f.controller.tick();
+  assert.equal(observed.state, 'OBSERVED');
+  const status = f.controller.status();
+  assert.equal(status.suspended, false);
+  assert.equal(status.metrics.rejected, 1);
+  assert.equal(status.metrics.unknown, 0);
+  assert.equal(status.lastUse.state, 'REJECTED');
+  assert.equal(status.lastUse.reason, 'cooldown');
 });
