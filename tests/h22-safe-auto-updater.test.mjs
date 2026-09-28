@@ -41,7 +41,7 @@ function runtimeFixture(options = {}) {
     fetch: options.fetch || null,
     __ALBOT_AUTO_UPDATE_CONFIG__: options.config || {}
   };
-  const storage = memoryStorage();
+  const storage = options.storage || memoryStorage();
   const previousVersion = options.version || '0.22.3-h22';
   const previousBody = bundle(previousVersion);
   const previousRelease = options.previousRelease || manifestFor(previousVersion, previousBody, 'c'.repeat(64), '2'.repeat(40));
@@ -502,8 +502,10 @@ test('H22 mismatched rollback identity or release key prevents coordinated commi
     commitSha: '3'.repeat(40),
     bundleUrl: 'https://raw.githubusercontent.com/Riflex91/ALFinal/' + '3'.repeat(40) + '/dist/al-bot.js'
   };
+  const rolloutId = releaseKey + ':test:Alpha';
   const rejected = await updater.prepareCoordinatedUpdate({
     releaseKey,
+    rolloutId,
     release,
     previousRelease: badRollback,
     coordinator: 'Alpha',
@@ -514,6 +516,7 @@ test('H22 mismatched rollback identity or release key prevents coordinated commi
 
   const prepared = await updater.prepareCoordinatedUpdate({
     releaseKey,
+    rolloutId,
     release,
     previousRelease: fixture.state.activeRelease,
     coordinator: 'Alpha',
@@ -523,6 +526,7 @@ test('H22 mismatched rollback identity or release key prevents coordinated commi
 
   const committed = updater.commitCoordinatedUpdate({
     releaseKey: releaseKey + ':different',
+    rolloutId,
     release,
     previousRelease: fixture.state.activeRelease,
     coordinator: 'Alpha',
@@ -532,6 +536,97 @@ test('H22 mismatched rollback identity or release key prevents coordinated commi
   assert.equal(committed.accepted, false);
   assert.equal(committed.reason, 'UPDATE_GROUP_RELEASE_MISMATCH');
   updater.cancelCoordinatedUpdate({ releaseKey });
+});
+
+test('H22 coordinated health barrier makes healthy peers roll back when one peer fails', async () => {
+  const { Controller } = loadUpdater();
+  const sharedStorage = memoryStorage();
+  const body = bundle('0.22.4-h22');
+  const manifest = manifestFor('0.22.4-h22', body);
+  const releaseKey = manifest.version + '@' + manifest.commitSha + ':' + manifest.sha256;
+  const rolloutId = releaseKey + ':barrier:Alpha';
+  const participants = ['Alpha', 'Bravo'];
+  const peerProtection = {
+    schemaVersion: 1,
+    protocol: 'h22-synchronized-update-v1',
+    coordinatedUpdateCapable: true,
+    blocked: false,
+    event: false,
+    boss: false,
+    observedAtMs: Date.now()
+  };
+
+  const alpha = runtimeFixture({
+    storage: sharedStorage,
+    localName: 'Alpha',
+    config: { autoApply: true, coordinatedApply: true, handshakeTimeoutMs: 3000 },
+    rosterSnapshot: { onlineStateAvailable: true, onlineCharacterNames: participants },
+    freshPeers: [{ name: 'Bravo', running: true, version: '0.22.3-h22', updateProtection: peerProtection }]
+  });
+  const bravo = runtimeFixture({
+    storage: sharedStorage,
+    localName: 'Bravo',
+    config: { autoApply: true, coordinatedApply: true, handshakeTimeoutMs: 3000 },
+    rosterSnapshot: { onlineStateAvailable: true, onlineCharacterNames: participants },
+    freshPeers: [{ name: 'Alpha', running: true, version: '0.22.3-h22', updateProtection: peerProtection }],
+    executeRelease: (release, _code, { root }) => {
+      if (release.version === '0.22.4-h22') throw new Error('BRAVO_BOOT_FAIL');
+      root.ALBot = {
+        version: release.version,
+        status: () => ({ running: true, version: release.version, bootCount: 3 }),
+        fullAutonomy: { start: async () => ({ accepted: true }) }
+      };
+      return { executed: true, manifest: release };
+    }
+  });
+
+  const alphaUpdater = new Controller({ runtime: alpha.runtime, root: alpha.root, storage: sharedStorage, sha256: async () => manifest.sha256 });
+  const bravoUpdater = new Controller({ runtime: bravo.runtime, root: bravo.root, storage: sharedStorage, sha256: async () => manifest.sha256 });
+  alpha.root.ALBot = { version: '0.22.3-h22', status: () => ({ running: true, version: '0.22.3-h22', bootCount: 1 }) };
+  bravo.root.ALBot = { version: '0.22.3-h22', status: () => ({ running: true, version: '0.22.3-h22', bootCount: 1 }) };
+  alphaUpdater.pending = { downloadedAt: new Date().toISOString(), manifest, bundle: body };
+  bravoUpdater.pending = { downloadedAt: new Date().toISOString(), manifest, bundle: body };
+
+  const previousRelease = alpha.state.activeRelease;
+  const rolloutBase = {
+    protocol: 'h22-synchronized-update-v1',
+    state: 'COMMITTED',
+    releaseKey,
+    rolloutId,
+    release: {
+      version: manifest.version,
+      commitSha: manifest.commitSha,
+      sha256: manifest.sha256,
+      bytes: manifest.bytes,
+      bundleUrl: manifest.bundleUrl
+    },
+    previousRelease,
+    coordinator: 'Alpha',
+    participants,
+    applyAtMs: Date.now() - 1,
+    applyAt: new Date(Date.now() - 1).toISOString(),
+    rearmIntent: null
+  };
+  alphaUpdater.preparedUpdate = { ...rolloutBase, localName: 'Alpha' };
+  bravoUpdater.preparedUpdate = { ...rolloutBase, localName: 'Bravo' };
+  alphaUpdater._waitHandshake = async (_api, version) => ({ ok: true, version, bootCount: version === '0.22.4-h22' ? 2 : 3, heartbeatActive: true });
+  bravoUpdater._waitHandshake = async (_api, version) => ({ ok: true, version, bootCount: 3, heartbeatActive: true });
+
+  const [alphaResult, bravoResult] = await Promise.all([
+    alphaUpdater.applyPending({ localOnly: true, coordinated: true, releaseKey }),
+    bravoUpdater.applyPending({ localOnly: true, coordinated: true, releaseKey })
+  ]);
+
+  assert.equal(alphaResult.applied, false);
+  assert.match(alphaResult.reason, /UPDATE_GROUP_MEMBER_FAILED:Bravo:ROLLBACK_OK/);
+  assert.equal(bravoResult.applied, false);
+  assert.match(bravoResult.reason, /UPDATE_EXECUTION_FAILED:BRAVO_BOOT_FAIL:ROLLBACK_OK/);
+  assert.equal(alpha.state.activeRelease.version, '0.22.3-h22');
+  assert.equal(bravo.state.activeRelease.version, '0.22.3-h22');
+  assert.deepEqual(alpha.state.executes.map(row => row.version), ['0.22.4-h22', '0.22.3-h22']);
+  assert.deepEqual(bravo.state.executes.map(row => row.version), ['0.22.4-h22', '0.22.3-h22']);
+  assert.equal(alphaUpdater.status().stats.rollbacks, 1);
+  assert.equal(bravoUpdater.status().stats.rollbacks, 1);
 });
 
 test('H22 group rollout is deferred when any online peer reports event or boss protection', async () => {
