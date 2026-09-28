@@ -260,17 +260,26 @@
       const onlineDesired = desiredPartyAll
         .filter(name => onlineSet.has(String(name)))
         .sort((a, b) => a.localeCompare(b));
+      const currentLeader = cleanText(party && party.leader || '', 120) || null;
       const preferredLeader = plan.leaderName && desiredPartyAll.includes(plan.leaderName)
         ? String(plan.leaderName)
         : (support[0] || desiredPartyAll[0] || null);
-      const leader = preferredLeader;
+      const desiredSetForLeader = new Set(desiredPartyAll.map(String));
+      const completeCurrentParty = !!party
+        && party.available !== false
+        && foreignNames.length === 0
+        && memberNames.size === desiredSetForLeader.size
+        && [...desiredSetForLeader].every(name => memberNames.has(name))
+        && !!currentLeader
+        && desiredSetForLeader.has(String(currentLeader));
+      const leader = completeCurrentParty ? String(currentLeader) : preferredLeader;
       if (!leader) return { ok: false, reason: 'FULL_AUTONOMY_PARTY_LEADER_UNAVAILABLE' };
 
-      // Coordinator selection must be identical in every window. It is derived
-      // from the shared strategy plan + account-wide online roster only, never
-      // from the window-local current party snapshot.
-      const coordinatorName = onlineDesired.includes(String(preferredLeader || ''))
-        ? String(preferredLeader)
+      // A complete healthy party may retain its established leader. For every
+      // incomplete/missing topology the coordinator comes only from the shared
+      // strategy plan + account-wide roster, never from a partial local snapshot.
+      const coordinatorName = onlineDesired.includes(String(leader || ''))
+        ? String(leader)
         : (onlineDesired[0] || localName);
       const coordinator = localName === String(coordinatorName);
       const desiredActiveNames = stableDesired.slice();
