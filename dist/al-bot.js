@@ -25289,6 +25289,13 @@
       push('character-lifecycle-controller', !!this.lifecycle.status() && typeof this.lifecycle.plan === 'function' && typeof this.lifecycle.queueStart === 'function' && typeof this.lifecycle.queueRespawn === 'function', this.lifecycle.status());
       push('account-strategy-controller', !!this.accountStrategy.status() && typeof this.accountStrategy.optimizeTask === 'function' && typeof this.accountStrategy.progressionPlan === 'function', this.accountStrategy.status());
       push('full-autonomy-controller', !!this.fullAutonomy.status() && typeof this.fullAutonomy.startAutonomy === 'function' && typeof this.fullAutonomy.stopAutonomy === 'function', this.fullAutonomy.status());
+      const updaterStatus = this.safeUpdater.status();
+      push('h22-safe-auto-updater', !!updaterStatus
+        && updaterStatus.policies
+        && updaterStatus.policies.githubReadOnly === true
+        && updaterStatus.policies.bundleUrlMustPinCommitSha === true
+        && typeof this.safeUpdater.checkAndDownload === 'function'
+        && typeof this.safeUpdater.applyPending === 'function', updaterStatus);
       push('live-test-runner', !!this.liveTests.status() && typeof this.liveTests.startRecommended === 'function', this.liveTests.status());
       push('knowledge-service', !!this.knowledge.status());
       push('windows-bridge-provider-readonly', this.knowledge.status().provider && this.knowledge.status().provider.readOnly === true, this.knowledge.status().provider);
@@ -27433,6 +27440,16 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
       tick: () => runtime.fullAutonomy.tick()
     },
 
+    updater: {
+      status: () => runtime.safeUpdater.status(),
+      configure: options => runtime.safeUpdater.configure(options || {}),
+      check: () => runtime.safeUpdater.checkAndDownload(),
+      tick: () => runtime.safeUpdater.cycle(),
+      apply: () => runtime.safeUpdater.applyPending(),
+      discard: reason => runtime.safeUpdater.discardPending(reason || 'API_UPDATE_DISCARD')
+    },
+
+    // Backwards-compatible alias for the first H22 branch iterations.
     updates: {
       status: () => runtime.safeUpdater.status(),
       configure: options => runtime.safeUpdater.configure(options || {}),
@@ -27611,6 +27628,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
   Object.freeze(api.lifecycle);
   Object.freeze(api.accountStrategy);
   Object.freeze(api.fullAutonomy);
+  Object.freeze(api.updater);
   Object.freeze(api.updates);
   Object.freeze(api.farming);
   Object.freeze(api.farmIntelligence);
