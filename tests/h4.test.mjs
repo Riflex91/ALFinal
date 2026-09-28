@@ -98,7 +98,7 @@ test('H4 exposes bounded movement API and action boundary', async () => {
   const { context: ctx } = runtimeContext();
   vm.runInNewContext(bundle, ctx, { filename: 'al-bot.js' });
 
-  assert.equal(ctx.ALBot.version, '0.21.0-h21');
+  assert.equal(ctx.ALBot.version, '0.22.0-h22');
   assert.equal(typeof ctx.ALBot.movement.local, 'function');
   assert.equal(typeof ctx.ALBot.movement.smart, 'function');
   assert.equal(typeof ctx.ALBot.movement.approachTarget, 'function');
