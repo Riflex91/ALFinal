@@ -589,8 +589,12 @@
       return protection.characterName || null;
     }
 
-    _groupState() {
+    _groupState(options = {}) {
       const local = this.localProtection();
+      const acceptedVersions = new Set([
+        String(this.runtime.version || ''),
+        ...(Array.isArray(options.acceptedVersions) ? options.acceptedVersions.map(value => String(value || '')) : [])
+      ].filter(Boolean));
       const localName = local.characterName;
       const transport = this.runtime.lifecycleTransport;
       let peers = [];
@@ -629,7 +633,7 @@
         }
         if (peer.running !== true) reasons.push('UPDATE_GROUP_PEER_RUNTIME_NOT_RUNNING:' + name);
         if (peer.emergencyStopLatched === true) reasons.push('UPDATE_GROUP_PEER_EMERGENCY_STOP:' + name);
-        if (peer.version && String(peer.version) !== String(this.runtime.version)) {
+        if (peer.version && !acceptedVersions.has(String(peer.version))) {
           reasons.push('UPDATE_GROUP_PEER_VERSION_MISMATCH:' + name);
         }
         const protection = peer.updateProtection;
@@ -1244,7 +1248,7 @@
           return { applied: false, reason: 'UPDATE_GROUP_APPLY_NOT_DUE', rollout };
         }
 
-        const finalGroup = this._groupState();
+        const finalGroup = this._groupState({ acceptedVersions: [manifest.version] });
         const expectedParticipants = Array.isArray(rollout.participants) ? rollout.participants.slice().sort() : [];
         const actualParticipants = Array.isArray(finalGroup.participants) ? finalGroup.participants.slice().sort() : [];
         if (!finalGroup.ready || JSON.stringify(expectedParticipants) !== JSON.stringify(actualParticipants)) {
