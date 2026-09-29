@@ -35,6 +35,8 @@
         logisticsProbeMs: 30000,
         standProbeMs: 60000,
         autoManageMerchantStand: true,
+        selectionStabilityMs: 12000,
+        rotationCooldownMs: 45000,
         lifecycleMaxActions: 20,
         economyMaxActions: 100,
         logisticsMaxActions: 10,
@@ -43,6 +45,10 @@
       this.lastLogisticsProbeAtMs = 0;
       this.lastStandProbeAtMs = 0;
       this.desiredCharacterNames = [];
+      this.selectionCandidateNames = [];
+      this.selectionCandidateSinceMs = null;
+      this.desiredChangedAtMs = null;
+      this.desiredSource = null;
       this.tickResourceId = null;
       this.lifecycleArmed = false;
       this.standManagedByFullAutonomy = false;
@@ -76,6 +82,12 @@
         this.config.standProbeMs = Math.max(15000, Math.min(600000, Math.floor(Number(options.standProbeMs) || 60000)));
       }
       if (options.autoManageMerchantStand != null) this.config.autoManageMerchantStand = options.autoManageMerchantStand === true;
+      if (options.selectionStabilityMs != null) {
+        this.config.selectionStabilityMs = Math.max(3000, Math.min(120000, Math.floor(Number(options.selectionStabilityMs) || 12000)));
+      }
+      if (options.rotationCooldownMs != null) {
+        this.config.rotationCooldownMs = Math.max(10000, Math.min(600000, Math.floor(Number(options.rotationCooldownMs) || 45000)));
+      }
       // Adventure Land Full Live is always a four-character group: 3 farmers + 1 Merchant.
       this.config.expectedOnlineCount = 4;
       return clone(this.config);
@@ -113,6 +125,10 @@
       // A supplied desired quartet is only a bootstrap hint (for H19 re-arm).
       // The strategy recomputes 3 farmers + 1 merchant on every tick.
       this.desiredCharacterNames = requestedDesired.slice();
+      this.selectionCandidateNames = [];
+      this.selectionCandidateSinceMs = null;
+      this.desiredChangedAtMs = requestedDesired.length === 4 ? Date.now() : null;
+      this.desiredSource = requestedDesired.length === 4 ? 'bootstrap-hint' : null;
       this.lifecycleArmed = false;
       this.enabled = true;
       this.startedAt = new Date().toISOString();
@@ -153,6 +169,10 @@
       this.tickResourceId = null;
       this.enabled = false;
       this.desiredCharacterNames = [];
+      this.selectionCandidateNames = [];
+      this.selectionCandidateSinceMs = null;
+      this.desiredChangedAtMs = null;
+      this.desiredSource = null;
       this.lifecycleArmed = false;
       this.standManagedByFullAutonomy = false;
       this.started = { lifecycle: false, farming: false, economy: false, partyLogistics: false, encounters: false };
@@ -176,6 +196,110 @@
       } catch (_) {
         return [];
       }
+    }
+
+    _normalizeDesired(names) {
+      return [...new Set((Array.isArray(names) ? names : [])
+        .map(value => cleanText(value, 120))
+        .filter(Boolean))].sort();
+    }
+
+    _alignPlanToDesired(plan, desiredNames, merchantName, leaderHint = null) {
+      const desired = this._normalizeDesired(desiredNames);
+      const merchant = cleanText(merchantName || '', 120);
+      const farmers = desired.filter(name => name !== merchant);
+      const aligned = clone(plan || {});
+      aligned.selected = aligned.selected && typeof aligned.selected === 'object' ? clone(aligned.selected) : {};
+      aligned.selected.memberNames = farmers.slice();
+      aligned.supportMemberNames = merchant ? [merchant] : [];
+      const hintedLeader = cleanText(leaderHint || '', 120);
+      aligned.leaderName = hintedLeader && farmers.includes(hintedLeader)
+        ? hintedLeader
+        : (farmers.includes(cleanText(aligned.leaderName || '', 120))
+          ? cleanText(aligned.leaderName || '', 120)
+          : (farmers[0] || null));
+      return aligned;
+    }
+
+    _merchantSelectionPeer(merchantName) {
+      const local = this._local();
+      const merchant = cleanText(merchantName || '', 120);
+      if (!local || !merchant || String(local.name) === merchant) return null;
+      try {
+        const transport = this.runtime && this.runtime.lifecycleTransport;
+        const peer = transport && typeof transport.freshPeer === 'function'
+          ? transport.freshPeer(merchant)
+          : null;
+        if (!peer || peer.running !== true || peer.fullAutonomyEnabled !== true) return null;
+        const desired = this._normalizeDesired(peer.fullAutonomyDesiredCharacterNames);
+        if (desired.length !== 4 || !desired.includes(merchant)) return null;
+        return { peer, desired };
+      } catch (_) {
+        return null;
+      }
+    }
+
+    _stabilizeAuthoritativeDesired(candidateNames, readiness) {
+      const candidate = this._normalizeDesired(candidateNames);
+      const current = this._normalizeDesired(this.desiredCharacterNames);
+      const now = Date.now();
+      if (candidate.length !== 4) return current;
+
+      if (current.length !== 4) {
+        this.desiredCharacterNames = candidate.slice();
+        this.selectionCandidateNames = [];
+        this.selectionCandidateSinceMs = null;
+        this.desiredChangedAtMs = now;
+        this.desiredSource = 'merchant-authority';
+        return candidate;
+      }
+
+      if (candidate.join('|') === current.join('|')) {
+        this.selectionCandidateNames = [];
+        this.selectionCandidateSinceMs = null;
+        return current;
+      }
+
+      let lifecycleBusy = false;
+      try {
+        const lifecycle = this.runtime && this.runtime.lifecycle && this.runtime.lifecycle.status
+          ? this.runtime.lifecycle.status()
+          : null;
+        lifecycleBusy = !!(lifecycle && lifecycle.currentAction);
+      } catch (_) {}
+
+      const online = new Set(readiness && Array.isArray(readiness.online) ? readiness.online.map(String) : []);
+      const currentSet = new Set(current);
+      const currentRosterMismatch = current.some(name => !online.has(name))
+        || [...online].some(name => !currentSet.has(name));
+      if (lifecycleBusy || currentRosterMismatch) {
+        this.selectionCandidateNames = [];
+        this.selectionCandidateSinceMs = null;
+        return current;
+      }
+
+      if (Number.isFinite(this.desiredChangedAtMs)
+          && now - this.desiredChangedAtMs < this.config.rotationCooldownMs) {
+        return current;
+      }
+
+      if (this.selectionCandidateNames.join('|') !== candidate.join('|')) {
+        this.selectionCandidateNames = candidate.slice();
+        this.selectionCandidateSinceMs = now;
+        return current;
+      }
+
+      if (!Number.isFinite(this.selectionCandidateSinceMs)
+          || now - this.selectionCandidateSinceMs < this.config.selectionStabilityMs) {
+        return current;
+      }
+
+      this.desiredCharacterNames = candidate.slice();
+      this.selectionCandidateNames = [];
+      this.selectionCandidateSinceMs = null;
+      this.desiredChangedAtMs = now;
+      this.desiredSource = 'merchant-authority';
+      return candidate;
     }
 
     _profileReadiness() {
@@ -336,9 +460,13 @@
       // owned-only party may also keep one account-wide observed leader, but
       // that observation is shared over H19 heartbeats so every window reaches
       // the same coordinator instead of trusting its local partial snapshot.
-      const coordinatorName = onlineDesired.includes(String(leader || ''))
-        ? String(leader)
-        : (onlineDesired[0] || localName);
+      const stableMerchantCoordinator = support[0] && onlineDesired.includes(String(support[0]))
+        ? String(support[0])
+        : null;
+      const coordinatorName = stableMerchantCoordinator
+        || (onlineDesired.includes(String(leader || ''))
+          ? String(leader)
+          : (onlineDesired[0] || localName));
       const coordinator = localName === String(coordinatorName);
       const desiredActiveNames = stableDesired.slice();
       const desiredPartyMembers = desiredPartyAll.slice();
@@ -776,10 +904,49 @@
           };
         }
 
-        let nextDesired = quartet.names.slice();
-        let selectionChanged = nextDesired.join('|') !== this.desiredCharacterNames.slice().sort().join('|');
-        this.desiredCharacterNames = nextDesired;
+        const merchantName = quartet.support && quartet.support[0] ? String(quartet.support[0]) : null;
         let readiness = this._profileReadiness();
+        const localName = String(local.name || '');
+        const merchantPeerSelection = this._merchantSelectionPeer(merchantName);
+        let nextDesired;
+        let selectionSource;
+        if (merchantPeerSelection) {
+          nextDesired = merchantPeerSelection.desired.slice();
+          plan = this._alignPlanToDesired(
+            plan,
+            nextDesired,
+            merchantName,
+            merchantPeerSelection.peer.fullAutonomyLeaderName || null
+          );
+          quartet = this._desiredQuartet(plan);
+          this.desiredCharacterNames = nextDesired.slice();
+          this.selectionCandidateNames = [];
+          this.selectionCandidateSinceMs = null;
+          this.desiredSource = 'merchant-peer';
+          selectionSource = 'merchant-peer';
+        } else if (localName === String(merchantName || '') || !readiness.online.includes(String(merchantName || ''))) {
+          nextDesired = this._stabilizeAuthoritativeDesired(quartet.names, readiness);
+          plan = this._alignPlanToDesired(plan, nextDesired, merchantName, plan.leaderName || null);
+          quartet = this._desiredQuartet(plan);
+          selectionSource = localName === String(merchantName || '') ? 'merchant-authority' : 'merchant-offline-fallback';
+        } else {
+          try {
+            if (this.runtime.lifecycleTransport && typeof this.runtime.lifecycleTransport.broadcastHeartbeat === 'function') {
+              this.runtime.lifecycleTransport.broadcastHeartbeat();
+            }
+          } catch (_) {}
+          return this.lastDecision = {
+            at: new Date().toISOString(),
+            state: 'WARMING',
+            reason: 'FULL_AUTONOMY_WAITING_MERCHANT_SELECTION',
+            merchantName,
+            onlineCharacterNames: readiness.online
+          };
+        }
+
+        let selectionChanged = nextDesired.join('|') !== this._normalizeDesired(this.desiredCharacterNames).join('|');
+        this.desiredCharacterNames = nextDesired.slice();
+        readiness = this._profileReadiness();
         let desiredSet = new Set(nextDesired);
         let onlineDesiredCount = readiness.online.filter(name => desiredSet.has(String(name))).length;
         let requiresRotation = readiness.unexpectedOnlineNames.length > 0
@@ -846,7 +1013,8 @@
             stoppedDesiredNames: lifecycle.stoppedDesiredNames || readiness.stoppedNames,
             offlineDesiredNames: lifecycle.offlineDesiredNames || [],
             lifecycleCoordinator: lifecycle.coordinatorName,
-            progressionTarget: plan.progression && plan.progression.selectedCharacterName || null
+            progressionTarget: plan.progression && plan.progression.selectedCharacterName || null,
+            desiredSelectionSource: selectionSource
           };
         }
 
@@ -899,7 +1067,8 @@
           partyTopologyHealthy: lifecycle.partyTopologyHealthy === true,
           missingDesiredCharacters: this.desiredCharacterNames.filter(name => !readiness.online.includes(name)),
           progressionTarget: plan.progression && plan.progression.selectedCharacterName || null,
-          rotationFallback: clone(rotationFallback)
+          rotationFallback: clone(rotationFallback),
+          desiredSelectionSource: selectionSource
         };
       } catch (error) {
         this.lastError = {
@@ -920,6 +1089,10 @@
         config: clone(this.config),
         startedControllers: clone(this.started),
         desiredCharacterNames: clone(this.desiredCharacterNames),
+        selectionCandidateNames: clone(this.selectionCandidateNames),
+        selectionCandidateSinceMs: this.selectionCandidateSinceMs,
+        desiredChangedAtMs: this.desiredChangedAtMs,
+        desiredSource: this.desiredSource,
         tickScheduled: !!this.tickResourceId,
         lifecycleArmed: this.lifecycleArmed,
         standManagedByFullAutonomy: this.standManagedByFullAutonomy,
