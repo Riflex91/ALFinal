@@ -470,9 +470,9 @@ test('H9 control center and one-click live suite are wired', () => {
   assert.match(runtime, /visibleSafe\.length > 0/);
   assert.match(runtime, /h9-adaptive-decisions/);
   assert.match(runtime, /timeoutMs: 85000/);
-  assert.match(entry, /0\.26\.6-h26/);
+  assert.match(entry, /0\.26\.7-h26/);
   assert.match(entry, /farmIntelligence:/);
-  assert.match(build, /const runtimeVersion = '0\.26\.6-h26'/);
+  assert.match(build, /const runtimeVersion = '0\.26\.7-h26'/);
 });
 
 test('H9 game adapter normalizes live farm data for scoring', () => {
@@ -566,4 +566,29 @@ test('H9 exposes incomplete group wait as an explicit decision instead of appear
   assert.equal(status.lastPlan.reason, 'H9_GROUP_LEADER_POSITION_UNAVAILABLE');
   assert.equal(status.lastPlan.group.leaderName, 'My_Priest');
   assert.equal(status.lastPlan.group.complete, false);
+});
+
+
+// H27 regression: an armed but targetless follower is formation-waiting, not fighting.
+test('H9 does not treat WAITING_GROUP_TARGET without a live target as an active encounter', () => {
+  const f = makeFixture();
+  const farm = { active: true, session: { owner: 'farm-intelligence-h9' } };
+  const group = {
+    members: [
+      { name: 'Leader', targetId: null },
+      { name: 'Follower', targetId: null }
+    ]
+  };
+  const waiting = {
+    active: true,
+    state: 'WAITING_GROUP_TARGET',
+    pendingAttack: null,
+    session: { targetId: null }
+  };
+
+  assert.equal(f.controller._groupEncounterActive(group, farm, waiting), false);
+  assert.equal(f.controller._groupEncounterActive(group, farm, { ...waiting, session: { targetId: 'goo-1' } }), true);
+  assert.equal(f.controller._groupEncounterActive({
+    members: [{ name: 'Leader', targetId: 'goo-2' }, { name: 'Follower', targetId: null }]
+  }, farm, waiting), true);
 });

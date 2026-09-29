@@ -209,7 +209,7 @@ test('activity requirements change the exact three-farmer composition without ha
 });
 
 
-function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, inactiveFullAutonomyName = null, localName = 'My_Warrior', partyHealthy = true, partyLeader = 'My_Warrior', partyMembers = null, profileRows: customProfileRows = null, selectedMembers = ['My_Priest', 'My_Ranger1', 'My_Warrior'], supportMembers = ['My_Merchant'], leaderName = 'My_Warrior', merchantDesiredNames = null, merchantLeaderName = null, lifecycleSuspended = false, lifecycleSuspendedReason = null, farmSuspended = false, farmSuspendedReason = null, farmOwner = 'full-autonomy', onlineNames = ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior'] } = {}) {
+function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, inactiveFullAutonomyName = null, localName = 'My_Warrior', partyHealthy = true, partyLeader = 'My_Warrior', partyMembers = null, profileRows: customProfileRows = null, selectedMembers = ['My_Priest', 'My_Ranger1', 'My_Warrior'], supportMembers = ['My_Merchant'], leaderName = 'My_Warrior', merchantDesiredNames = null, merchantLeaderName = null, lifecycleSuspended = false, lifecycleSuspendedReason = null, farmSuspended = false, farmSuspendedReason = null, farmOwner = 'full-autonomy', onlineNames = ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior'], economyPlan = { state: 'READY', reason: 'TEST_READY', selected: { kind: 'TEST' } } } = {}) {
   const source = fs.readFileSync(path.resolve(here, '../src/full-autonomy.js'), 'utf8');
   const clone = value => value == null ? value : JSON.parse(JSON.stringify(value));
   const ctx = {
@@ -339,6 +339,7 @@ function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, inactiv
   };
   const economy = {
     status: () => ({ autonomyEnabled: state.economyActive, currentAction: null, suspendedReason: null }),
+    plan: () => clone(economyPlan),
     startAutonomy: () => { state.economyStarts += 1; state.economyActive = true; return { accepted: true }; },
     stopAutonomy: () => { state.economyStops += 1; state.economyActive = false; return {}; }
   };
@@ -864,4 +865,27 @@ test('H26 Merchant selection hysteresis prevents Rogue-Warrior ping-pong and ado
   assert.equal(adopted.state, 'WARMING');
   assert.equal(adopted.reason, 'FULL_AUTONOMY_ROTATING_ACTIVITY_GROUP');
   assert.equal(adopted.lifecycleCoordinator, 'My_Merchant');
+});
+
+
+test('Full Autonomy leaves no-op Economy released so Merchant Stand is not permanently blocked', () => {
+  const { controller, state } = loadFullAutonomy({
+    localName: 'My_Merchant',
+    partyLeader: 'My_Priest',
+    selectedMembers: ['My_Priest', 'My_Ranger1', 'My_Warrior'],
+    economyPlan: {
+      state: 'IDLE',
+      reason: 'H17_NO_SAFE_ECONOMY_ACTION',
+      selected: null,
+      proposals: []
+    }
+  });
+
+  const started = controller.startAutonomy({ taskType: 'FARM' });
+  assert.equal(started.accepted, true);
+  assert.equal(started.tick.state, 'RUNNING');
+  assert.equal(state.standAutoManage, true);
+  assert.ok(state.standTicks >= 1);
+  assert.equal(state.economyStarts, 0);
+  assert.equal(state.economyActive, false);
 });

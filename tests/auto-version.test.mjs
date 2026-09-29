@@ -173,6 +173,7 @@ test('functional bot runtime change bumps patch version and keeps stable manifes
     assert.match(sample, /0\\\.26\\\.3-h26/);
     assert.match(h22, /candidateVersion = '0\.26\.3-h26'/);
     assert.match(h22, /candidatePackageVersion = '0\.26\.3'/);
+    assert.ok(h22.includes("AL Bot 0\\.26\\.3-h26"));
     assert.match(h22, /manifest\.version, '0\.26\.2-h26'/);
     assert.match(h22, /manifest\.packageVersion, '0\.26\.2'/);
   } finally {

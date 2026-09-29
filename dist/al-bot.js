@@ -1,4 +1,4 @@
-/* AL Bot 0.26.6-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.7-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -3207,7 +3207,7 @@
       const now = this.now();
       this._trimHistory(now);
       const key = this._destinationKey(destination);
-      if (options.safety === true) return { ok: true, key };
+      if (options.safety === true || options.transient === true) return { ok: true, key };
       const last = this.destinationHistory[this.destinationHistory.length - 1] || null;
 
       if (last && last.key !== key && !options.retarget && now - last.atMs < this.config.rapidSwitchMs) {
@@ -3498,11 +3498,12 @@
         commandSettlement: 'NOT_SENT',
         commandResponse: null,
         commandError: null,
+        transient: options.transient === true,
         retargetedFrom: options.retargetedFrom || null
       };
 
       this.activeOrder = order;
-      this._recordDestination(check.key, kind);
+      if (options.transient !== true) this._recordDestination(check.key, kind);
 
       const action = kind === 'local' ? 'move' : 'smart_move';
       const args = kind === 'local'
@@ -11332,14 +11333,29 @@
 
       const currentEconomy = economy.status();
       const currentLogistics = logistics.status();
+      let economyPlan = null;
       if (!currentLogistics.autonomyEnabled && !currentLogistics.currentAction && !currentEconomy.autonomyEnabled) {
-        const started = economy.startAutonomy({ maxActions: this.config.economyMaxActions });
-        if (started && started.accepted === true) this.started.economy = true;
-        else if (!started || !String(started.reason || '').includes('ALREADY')) {
-          return { ok: false, reason: started && started.reason || 'FULL_AUTONOMY_ECONOMY_START_REJECTED' };
+        try { economyPlan = typeof economy.plan === 'function' ? economy.plan() : null; } catch (_) {}
+        const noSafeEconomyAction = !!(economyPlan
+          && economyPlan.state === 'IDLE'
+          && economyPlan.reason === 'H17_NO_SAFE_ECONOMY_ACTION'
+          && !economyPlan.selected);
+        if (!noSafeEconomyAction) {
+          const started = economy.startAutonomy({ maxActions: this.config.economyMaxActions });
+          if (started && started.accepted === true) this.started.economy = true;
+          else if (!started || !String(started.reason || '').includes('ALREADY')) {
+            return { ok: false, reason: started && started.reason || 'FULL_AUTONOMY_ECONOMY_START_REJECTED' };
+          }
+        } else {
+          this.started.economy = false;
         }
       }
-      return { ok: true, merchant: true, owner: this.runtime.economy.status().autonomyEnabled ? 'economy' : 'idle' };
+      return {
+        ok: true,
+        merchant: true,
+        owner: this.runtime.economy.status().autonomyEnabled ? 'economy' : 'idle',
+        plan: economyPlan ? clone(economyPlan) : null
+      };
     }
 
     tick() {
@@ -14161,6 +14177,18 @@
       return !!(status && status.active && session && String(session.owner || '') === 'farm-intelligence-h9');
     }
 
+    _groupEncounterActive(group, farmStatus = this._farmingStatus(), combatStatus = null) {
+      if (!this._ownedFarming(farmStatus) || !combatStatus || combatStatus.active !== true) return false;
+      if (combatStatus.pendingAttack) return true;
+      const session = combatStatus.session || null;
+      if (session && session.targetId != null) return true;
+      const peerHasTarget = !!(group && Array.isArray(group.members)
+        && group.members.some(row => row && row.targetId != null));
+      if (peerHasTarget) return true;
+      const state = cleanText(combatStatus.state || session && session.state || '', 80).toUpperCase();
+      return state !== 'WAITING_GROUP_TARGET';
+    }
+
     _stopOwnedMovement(reason) {
       const movement = this._movementStatus();
       if (!this._ownedMovement(movement)) return false;
@@ -14383,7 +14411,7 @@
 
       const farm = this._farmingStatus();
       const combat = this.combat && typeof this.combat.status === 'function' ? this.combat.status() : null;
-      const activeEncounter = !!(this._ownedFarming(farm) && combat && combat.active);
+      const activeEncounter = this._groupEncounterActive(group, farm, combat);
       const hardDistance = Number(group.maxPairDistance);
 
       if (!group.sameMap) {
@@ -14429,7 +14457,8 @@
           if (shifted != null && shifted >= this.config.groupRetargetDistance && moveAge >= this.config.groupRetargetMs) {
             const retarget = this.movement.retarget(formation, {
               owner: 'farm-intelligence-h9-group-regroup',
-              arrivalRadius: this.config.groupRegroupStopDistance
+              arrivalRadius: this.config.groupRegroupStopDistance,
+              transient: true
             });
             if (retarget && retarget.accepted) {
               this.groupMove = { atMs: this.now(), destination: clone(formation) };
@@ -14453,7 +14482,8 @@
         const destination = formation || { map: group.leader.map, x: group.leader.x, y: group.leader.y };
         const move = this.movement.smartMove(destination, {
           owner: 'farm-intelligence-h9-group-regroup',
-          arrivalRadius: this.config.groupRegroupStopDistance
+          arrivalRadius: this.config.groupRegroupStopDistance,
+          transient: true
         });
         if (!move || move.accepted !== true) {
           return { state: 'WAITING', reason: move && move.reason || 'H9_GROUP_REGROUP_REJECTED', distance: group.distance };
@@ -14479,7 +14509,7 @@
       const movement = this._movementStatus();
       const farm = this._farmingStatus();
       const combat = this.combat && typeof this.combat.status === 'function' ? this.combat.status() : null;
-      const activeEncounter = !!(this._ownedFarming(farm) && combat && combat.active);
+      const activeEncounter = this._groupEncounterActive(group, farm, combat);
 
       if (!group.complete) {
         if (!activeEncounter) {
@@ -14552,7 +14582,8 @@
       }
       const move = this.movement.moveLocal(waypoint.x, waypoint.y, {
         owner: 'farm-intelligence-h9-leader-regroup',
-        arrivalRadius: 8
+        arrivalRadius: 8,
+        transient: true
       });
       if (!move || move.accepted !== true) {
         this.metrics.groupLeaderHolds += 1;
@@ -26439,7 +26470,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.6-h26';
+      this.version = options.version || '0.26.7-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -34508,7 +34539,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.6-h26',
+    version: '0.26.7-h26',
     bootCount,
     replacedPrevious: !!previous
   });

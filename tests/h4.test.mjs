@@ -98,7 +98,7 @@ test('H4 exposes bounded movement API and action boundary', async () => {
   const { context: ctx } = runtimeContext();
   vm.runInNewContext(bundle, ctx, { filename: 'al-bot.js' });
 
-  assert.equal(ctx.ALBot.version, '0.26.6-h26');
+  assert.equal(ctx.ALBot.version, '0.26.7-h26');
   assert.equal(typeof ctx.ALBot.movement.local, 'function');
   assert.equal(typeof ctx.ALBot.movement.smart, 'function');
   assert.equal(typeof ctx.ALBot.movement.approachTarget, 'function');
@@ -459,4 +459,34 @@ test('hot reload during active movement cancels observer and movement best-effor
   assert.equal(status.movement.active, false);
   assert.equal(status.movement.lastOrder.state, 'CANCELLED');
   assert.ok(calls.stop.length + calls.skills.length >= 1);
+});
+
+
+test('transient formation movement bypasses rapid-switch history without weakening strategic pingpong guards', async () => {
+  const { context: ctx } = runtimeContext();
+  vm.runInNewContext(bundle, ctx);
+  await ctx.ALBot.start();
+
+  ctx.ALBot.__runtime.movement.config.rapidSwitchMs = 10000;
+  ctx.ALBot.__runtime.movement.config.pingPongWindowMs = 10000;
+
+  const strategic = ctx.ALBot.movement.local(100, 0, { owner: 'farm-intelligence-h9' });
+  assert.equal(strategic.accepted, true);
+  assert.equal(ctx.ALBot.movement.status().recentDestinations.length, 1);
+
+  const formation = ctx.ALBot.movement.local(200, 0, {
+    owner: 'farm-intelligence-h9-leader-regroup',
+    transient: true
+  });
+  assert.equal(formation.accepted, true);
+  assert.equal(ctx.ALBot.movement.status().recentDestinations.length, 1);
+
+  const resume = ctx.ALBot.movement.local(100, 0, { owner: 'farm-intelligence-h9' });
+  assert.equal(resume.accepted, true);
+
+  const unrelated = ctx.ALBot.movement.local(300, 0, { owner: 'manual' });
+  assert.equal(unrelated.accepted, false);
+  assert.equal(unrelated.reason, 'MOVEMENT_RAPID_SWITCH_BLOCKED');
+
+  await ctx.ALBot.stop('DONE');
 });
