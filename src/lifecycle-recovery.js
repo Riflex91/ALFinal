@@ -478,7 +478,7 @@
           : null;
         const desiredRuntimeRunning = !!(desiredPeer && desiredPeer.running === true);
         const desiredFullAutonomyEnabled = !!(desiredPeer && desiredPeer.fullAutonomyEnabled === true);
-        if (oldGone && desiredRuntimeRunning && desiredFullAutonomyEnabled) {
+        if (oldGone && desiredPresent && desiredRuntimeRunning && desiredFullAutonomyEnabled) {
           return {
             confirmed: true,
             evidence: 'STALE_BROWSER_SWAP_NEW_RUNTIME_READY',
@@ -1378,7 +1378,16 @@
       if (request.kind === 'PARTY_ACCEPT_INVITE' || request.kind === 'PARTY_ACCEPT_REQUEST') this.metrics.partyAcceptsDispatched += 1;
       this._persistCurrent();
       this._watchSettlement(dispatched.value, action);
-      this.lastAction = { at: nowIso(), type: request.kind + '_DISPATCHED', actionId: action.id, targetName: action.targetName };
+      this.lastAction = { at: nowIso(), type: request.kind + '_DISPATCHED', actionId: action.id, targetName: action.targetName, desiredName: action.desiredName || null };
+      if (request.kind === 'BROWSER_SWAP' && this.logger) {
+        this.logger.info('H25 Browser Character Rotation gesendet', {
+          actionId: action.id,
+          fromCharacterName: action.targetName,
+          desiredCharacterName: action.desiredName,
+          targetSessionId: action.before && action.before.targetSessionId || null,
+          deadlineAtMs: action.deadlineAtMs
+        });
+      }
       return { accepted: true, state: 'DISPATCHED', currentAction: clone(action) };
     }
 
@@ -1419,6 +1428,14 @@
         lateConfirmed,
         ...clone(details)
       };
+      if (current.kind === 'BROWSER_SWAP' && this.logger) {
+        this.logger.info('H25 Browser Character Rotation bestätigt', {
+          fromCharacterName: current.targetName,
+          desiredCharacterName: current.desiredName || null,
+          evidence: details && details.evidence || null,
+          desiredSessionId: details && details.desiredSessionId || null
+        });
+      }
       return {
         state: 'CONFIRMED',
         kind: current.kind,
@@ -1462,7 +1479,7 @@
             : null;
           const desiredRuntimeRunning = !!(desiredPeer && desiredPeer.running === true);
           const desiredFullAutonomyEnabled = !!(desiredPeer && desiredPeer.fullAutonomyEnabled === true);
-          if (oldGone && desiredRuntimeRunning && desiredFullAutonomyEnabled) {
+          if (oldGone && desiredPresent && desiredRuntimeRunning && desiredFullAutonomyEnabled) {
             this.metrics.crossWindowConfirms += 1;
             return this._confirmCurrent({
               evidence: 'BROWSER_SWAP_NEW_RUNTIME_READY',
@@ -1572,6 +1589,26 @@
 
       if (current.settlement === 'REJECTED') {
         const error = cleanText(current.error || '', 300);
+        if (current.kind === 'BROWSER_SWAP' && Date.now() < Number(current.deadlineAtMs || 0)) {
+          if (!current.transportRejectLogged) {
+            current.transportRejectLogged = true;
+            this.currentAction = current;
+            this._persistCurrent();
+            if (this.logger) {
+              this.logger.warn('H25 Browser Rotation: Transport unklar, warte auf Live-Zustand', {
+                fromCharacterName: current.targetName,
+                desiredCharacterName: current.desiredName || null,
+                error,
+                deadlineAtMs: current.deadlineAtMs
+              });
+            }
+          }
+          return {
+            state: 'PENDING',
+            reason: 'H25_BROWSER_SWAP_TRANSPORT_REJECTED_AWAITING_LIVE_OUTCOME',
+            currentAction: clone(current)
+          };
+        }
         if (current.kind === 'START' && current.requireCharacterStateChange === true && transientStartRejection(error)) {
           const targetName = cleanText(current.targetName || '', 120);
           const retryAtMs = Date.now() + this.config.startRetryBackoffMs;
