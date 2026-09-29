@@ -571,7 +571,13 @@
       if (item.expiresAt) return 'ITEM_EXPIRING';
       if (!meta) return 'ITEM_DEFINITION_UNKNOWN';
       if (meta.quest === true || String(meta.type || '').toLowerCase() === 'quest') return 'QUEST_ITEM';
-      if (meta.cash === true || meta.cash_item === true || meta.soulbound === true || meta.soul_bound === true) return 'SPECIAL_ITEM_PROTECTED';
+      if (meta.event === true
+          || meta.cash === true || finite(meta.cash, 0) > 0
+          || meta.cash_item === true
+          || meta.soulbound === true || meta.soul_bound === true
+          || meta.exchange === true || meta.e != null) {
+        return 'SPECIAL_ITEM_PROTECTED';
+      }
       return null;
     }
 
@@ -641,7 +647,10 @@
 
       if (protection) {
         const family = meta.compound ? 'COMPOUND' : meta.upgrade ? 'UPGRADE' : 'GEAR';
-        const action = protection.targetLevel > levelOf(item) ? family : 'GEAR';
+        const needsMutation = protection.targetLevel > levelOf(item);
+        const action = needsMutation && family === 'COMPOUND' && sameCount < 3
+          ? 'ACCUMULATE'
+          : needsMutation ? family : 'GEAR';
         return {
           checked: true,
           protected: true,
