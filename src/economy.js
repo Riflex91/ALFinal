@@ -389,9 +389,17 @@
 
       const pressure = merchantPlan && merchantPlan.pressure && merchantPlan.pressure.state || 'NORMAL';
       const bankRows = bankPlan && bankPlan.safeDepositRows || [];
-      if (['HIGH', 'CRITICAL'].includes(String(pressure)) && bankRows.length) {
+      // Safe BANK dispositions are already filtered by H10/H12. Keep the Merchant
+      // productive even at normal inventory pressure instead of waiting until the
+      // bag is nearly full before mounting the bank.
+      if (bankRows.length) {
         if (bankPlan && bankPlan.state === 'NEEDS_BANK') {
-          const proposal = this._proposal('BANK_MOUNT', 'bank', { key: 'bank', pressure, risk: 0 });
+          const proposal = this._proposal('BANK_MOUNT', 'bank', {
+            key: 'bank',
+            pressure,
+            maintenance: !['HIGH', 'CRITICAL'].includes(String(pressure)),
+            risk: 0
+          });
           if (proposal) proposals.push(proposal);
         } else if (bankPlan && bankPlan.state === 'READY') {
           const row = bankRows[0];
@@ -401,6 +409,7 @@
             inventorySlot: Number(row.slot),
             quantity: Math.max(1, Math.floor(Number(row.quantity) || 1)),
             pressure,
+            maintenance: !['HIGH', 'CRITICAL'].includes(String(pressure)),
             risk: 0
           });
           if (proposal) proposals.push(proposal);
