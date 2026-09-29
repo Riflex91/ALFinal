@@ -442,5 +442,5 @@ test('H17 runtime, API, UI, build and generated bundle are wired without direct 
   assert.match(dist, /AL Bot 0\.26\.1-h26/);
   assert.match(dist, /class EconomyController/);
   assert.doesNotMatch(source, /actions\.dispatch/);
-  assert.equal(pkg.version, '0.26.1');
+  assert.equal(pkg.version, '0.26.2');
 });
