@@ -1,0 +1,71 @@
+name: Auto Version
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: albot-auto-version-main
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Bump, rebuild, verify and publish version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for attempt in 1 2 3; do
+            echo "=== auto-version attempt ${attempt} ==="
+            git fetch origin main
+            BASE_SHA="$(git rev-parse origin/main)"
+            git reset --hard "$BASE_SHA"
+
+            node .github/scripts/auto-version.mjs
+
+            if git diff --quiet; then
+              echo "No automatic version bump required."
+              exit 0
+            fi
+
+            CI=false npm run build
+            npm test
+
+            git fetch origin main
+            if [ "$(git rev-parse origin/main)" != "$BASE_SHA" ]; then
+              echo "main advanced while versioning; recomputing from newest main."
+              continue
+            fi
+
+            VERSION="$(node -p "require('./package.json').version")"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add package.json scripts/build.mjs src tests dist/al-bot.js
+            git commit -m "chore(version): bump AL Bot to ${VERSION}"
+
+            if git push origin HEAD:main; then
+              echo "Published AL Bot version ${VERSION}."
+              exit 0
+            fi
+
+            echo "main advanced during push; retrying from newest main."
+          done
+
+          echo "Auto-version could not obtain a stable main head after 3 attempts." >&2
+          exit 1
