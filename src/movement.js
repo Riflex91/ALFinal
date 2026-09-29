@@ -169,7 +169,7 @@
       const now = this.now();
       this._trimHistory(now);
       const key = this._destinationKey(destination);
-      if (options.safety === true) return { ok: true, key };
+      if (options.safety === true || options.transient === true) return { ok: true, key };
       const last = this.destinationHistory[this.destinationHistory.length - 1] || null;
 
       if (last && last.key !== key && !options.retarget && now - last.atMs < this.config.rapidSwitchMs) {
@@ -460,11 +460,12 @@
         commandSettlement: 'NOT_SENT',
         commandResponse: null,
         commandError: null,
+        transient: options.transient === true,
         retargetedFrom: options.retargetedFrom || null
       };
 
       this.activeOrder = order;
-      this._recordDestination(check.key, kind);
+      if (options.transient !== true) this._recordDestination(check.key, kind);
 
       const action = kind === 'local' ? 'move' : 'smart_move';
       const args = kind === 'local'

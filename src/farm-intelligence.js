@@ -658,6 +658,15 @@
       return !!(status && status.active && session && String(session.owner || '') === 'farm-intelligence-h9');
     }
 
+    _groupEncounterActive(group, farmStatus = this._farmingStatus(), combatStatus = null) {
+      if (!this._ownedFarming(farmStatus) || !combatStatus || combatStatus.active !== true) return false;
+      if (combatStatus.pendingAttack) return true;
+      const session = combatStatus.session || null;
+      if (session && session.targetId != null) return true;
+      return !!(group && Array.isArray(group.members)
+        && group.members.some(row => row && row.targetId != null));
+    }
+
     _stopOwnedMovement(reason) {
       const movement = this._movementStatus();
       if (!this._ownedMovement(movement)) return false;
@@ -880,7 +889,7 @@
 
       const farm = this._farmingStatus();
       const combat = this.combat && typeof this.combat.status === 'function' ? this.combat.status() : null;
-      const activeEncounter = !!(this._ownedFarming(farm) && combat && combat.active);
+      const activeEncounter = this._groupEncounterActive(group, farm, combat);
       const hardDistance = Number(group.maxPairDistance);
 
       if (!group.sameMap) {
@@ -926,7 +935,8 @@
           if (shifted != null && shifted >= this.config.groupRetargetDistance && moveAge >= this.config.groupRetargetMs) {
             const retarget = this.movement.retarget(formation, {
               owner: 'farm-intelligence-h9-group-regroup',
-              arrivalRadius: this.config.groupRegroupStopDistance
+              arrivalRadius: this.config.groupRegroupStopDistance,
+              transient: true
             });
             if (retarget && retarget.accepted) {
               this.groupMove = { atMs: this.now(), destination: clone(formation) };
@@ -950,7 +960,8 @@
         const destination = formation || { map: group.leader.map, x: group.leader.x, y: group.leader.y };
         const move = this.movement.smartMove(destination, {
           owner: 'farm-intelligence-h9-group-regroup',
-          arrivalRadius: this.config.groupRegroupStopDistance
+          arrivalRadius: this.config.groupRegroupStopDistance,
+          transient: true
         });
         if (!move || move.accepted !== true) {
           return { state: 'WAITING', reason: move && move.reason || 'H9_GROUP_REGROUP_REJECTED', distance: group.distance };
@@ -976,7 +987,7 @@
       const movement = this._movementStatus();
       const farm = this._farmingStatus();
       const combat = this.combat && typeof this.combat.status === 'function' ? this.combat.status() : null;
-      const activeEncounter = !!(this._ownedFarming(farm) && combat && combat.active);
+      const activeEncounter = this._groupEncounterActive(group, farm, combat);
 
       if (!group.complete) {
         if (!activeEncounter) {
@@ -1049,7 +1060,8 @@
       }
       const move = this.movement.moveLocal(waypoint.x, waypoint.y, {
         owner: 'farm-intelligence-h9-leader-regroup',
-        arrivalRadius: 8
+        arrivalRadius: 8,
+        transient: true
       });
       if (!move || move.accepted !== true) {
         this.metrics.groupLeaderHolds += 1;

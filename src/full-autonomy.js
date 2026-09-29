@@ -823,14 +823,29 @@
 
       const currentEconomy = economy.status();
       const currentLogistics = logistics.status();
+      let economyPlan = null;
       if (!currentLogistics.autonomyEnabled && !currentLogistics.currentAction && !currentEconomy.autonomyEnabled) {
-        const started = economy.startAutonomy({ maxActions: this.config.economyMaxActions });
-        if (started && started.accepted === true) this.started.economy = true;
-        else if (!started || !String(started.reason || '').includes('ALREADY')) {
-          return { ok: false, reason: started && started.reason || 'FULL_AUTONOMY_ECONOMY_START_REJECTED' };
+        try { economyPlan = typeof economy.plan === 'function' ? economy.plan() : null; } catch (_) {}
+        const noSafeEconomyAction = !!(economyPlan
+          && economyPlan.state === 'IDLE'
+          && economyPlan.reason === 'H17_NO_SAFE_ECONOMY_ACTION'
+          && !economyPlan.selected);
+        if (!noSafeEconomyAction) {
+          const started = economy.startAutonomy({ maxActions: this.config.economyMaxActions });
+          if (started && started.accepted === true) this.started.economy = true;
+          else if (!started || !String(started.reason || '').includes('ALREADY')) {
+            return { ok: false, reason: started && started.reason || 'FULL_AUTONOMY_ECONOMY_START_REJECTED' };
+          }
+        } else {
+          this.started.economy = false;
         }
       }
-      return { ok: true, merchant: true, owner: this.runtime.economy.status().autonomyEnabled ? 'economy' : 'idle' };
+      return {
+        ok: true,
+        merchant: true,
+        owner: this.runtime.economy.status().autonomyEnabled ? 'economy' : 'idle',
+        plan: economyPlan ? clone(economyPlan) : null
+      };
     }
 
     tick() {

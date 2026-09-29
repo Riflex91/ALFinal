@@ -567,3 +567,27 @@ test('H9 exposes incomplete group wait as an explicit decision instead of appear
   assert.equal(status.lastPlan.group.leaderName, 'My_Priest');
   assert.equal(status.lastPlan.group.complete, false);
 });
+
+
+test('H9 does not treat WAITING_GROUP_TARGET without a live target as an active encounter', () => {
+  const f = makeFixture();
+  const farm = { active: true, session: { owner: 'farm-intelligence-h9' } };
+  const group = {
+    members: [
+      { name: 'Leader', targetId: null },
+      { name: 'Follower', targetId: null }
+    ]
+  };
+  const waiting = {
+    active: true,
+    state: 'WAITING_GROUP_TARGET',
+    pendingAttack: null,
+    session: { targetId: null }
+  };
+
+  assert.equal(f.controller._groupEncounterActive(group, farm, waiting), false);
+  assert.equal(f.controller._groupEncounterActive(group, farm, { ...waiting, session: { targetId: 'goo-1' } }), true);
+  assert.equal(f.controller._groupEncounterActive({
+    members: [{ name: 'Leader', targetId: 'goo-2' }, { name: 'Follower', targetId: null }]
+  }, farm, waiting), true);
+});
