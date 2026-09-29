@@ -148,6 +148,7 @@ function fixture(options = {}) {
     }
   ]));
   state.crossWindowDispatches = state.crossWindowDispatches || [];
+  state.localNavigations = state.localNavigations || [];
   const crossWindow = options.crossWindowPeers ? {
     freshPeer(name) {
       const peer = runtimePeers.get(String(name));
@@ -251,6 +252,17 @@ function fixture(options = {}) {
     storage,
     crossWindow,
     sessionId: options.sessionId || 'h19-fixture-session',
+    navigateCharacterLocal: desiredName => {
+      state.localNavigations.push({ from: String(state.character.name), to: String(desiredName) });
+      if (options.localNavigationNoMutation !== true) {
+        state.online.delete(String(state.character.name));
+        state.active.delete(String(state.character.name));
+        state.active.add(String(desiredName));
+        if (options.browserSwapAccountOnlineLag !== true) state.online.add(String(desiredName));
+      }
+      return { accepted: true, desiredCharacterName: String(desiredName) };
+    },
+    canNavigateCharacterLocal: () => options.localNavigationUnavailable !== true,
     canAct: () => options.actionBlocked !== true,
     outcomeTimeoutMs: options.outcomeTimeoutMs == null ? 5000 : options.outcomeTimeoutMs,
     startOutcomeTimeoutMs: options.startOutcomeTimeoutMs == null ? 15000 : options.startOutcomeTimeoutMs,
@@ -1262,4 +1274,42 @@ test('H26 transient start authorization rejection waits and retries without susp
   const second = f.controller.tick();
   assert.equal(second.state, 'DISPATCHED');
   assert.equal(f.state.dispatches.length, 2);
+});
+
+
+test('H26 local outgoing browser can rotate itself to the missing desired character', () => {
+  const { controller, state } = fixture({
+    onlineNames: ['My_Merchant', 'My_Ranger', 'My_Priest', 'My_Warrior'],
+    runnerActiveNames: ['My_Priest'],
+    freezeRunnerActive: true,
+    browserSwapAccountOnlineLag: true,
+    maxActionsPerSession: 4
+  });
+  state.character.name = 'My_Priest';
+  state.character.ctype = 'priest';
+  state.account.push({ name: 'My_Mage', ctype: 'mage', online: false });
+
+  const desired = ['My_Mage', 'My_Merchant', 'My_Ranger', 'My_Warrior'];
+  const readiness = controller.characterRotationReadiness(desired);
+  assert.equal(readiness.ready, true);
+  assert.deepEqual(clone(readiness.browserSwapPairs), [{ from: 'My_Priest', to: 'My_Mage', local: true }]);
+
+  assert.equal(controller.setPolicy({
+    desiredActiveNames: desired,
+    desiredPartyMemberNames: desired,
+    desiredPartyLeader: 'My_Ranger'
+  }).accepted, true);
+  assert.equal(controller.startAutonomy({ maxActions: 4 }).accepted, true);
+
+  const plan = controller.plan();
+  assert.equal(plan.state, 'READY');
+  assert.equal(plan.reason, 'H25_LOCAL_BROWSER_CHARACTER_ROTATION');
+  assert.equal(plan.request.kind, 'BROWSER_SWAP');
+  assert.equal(plan.request.targetName, 'My_Priest');
+  assert.equal(plan.request.desiredName, 'My_Mage');
+
+  const dispatched = controller.tick();
+  assert.equal(dispatched.state, 'DISPATCHED');
+  assert.deepEqual(clone(state.localNavigations), [{ from: 'My_Priest', to: 'My_Mage' }]);
+  assert.equal(state.dispatches.filter(row => row.name === 'stop_character' || row.name === 'start_character').length, 0);
 });
