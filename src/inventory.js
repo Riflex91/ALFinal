@@ -20,6 +20,7 @@
       this.actions = options.actions || null;
       this.goals = options.goals || null;
       this.partyLogistics = options.partyLogistics || null;
+      this.gearProgression = options.gearProgression || null;
       this.moduleActive = false;
       this.scope = null;
       this.pendingLoot = null;
@@ -112,26 +113,28 @@
       return names;
     }
 
-    _classify(item, goalTargets) {
+    _classify(item, goalTargets, futureGear = null) {
       const definition = item && item.definition || {};
       const name = cleanText(item && item.name || '', 160);
       const level = finite(item && item.level) || 0;
       const type = cleanText(definition.type || '', 80).toLowerCase();
-      const explicit = [
+
+      const explicitProtected = [
         ['reserveNames', 'RESERVE', 'RULE_RESERVE'],
         ['keepNames', 'KEEP', 'RULE_KEEP'],
         ['exchangeNames', 'EXCHANGE', 'RULE_EXCHANGE'],
-        ['bankNames', 'BANK', 'RULE_BANK'],
-        ['sellNames', 'SELL', 'RULE_SELL']
+        ['bankNames', 'BANK', 'RULE_BANK']
       ];
-      for (const [rule, disposition, reason] of explicit) {
-        if (this.rules[rule].has(name)) return { disposition, reason, protected: disposition !== 'SELL' };
+      for (const [rule, disposition, reason] of explicitProtected) {
+        if (this.rules[rule].has(name)) return { disposition, reason, protected: true };
       }
 
+      // A destructive operator allow-list is capability, not authority: hard
+      // live protection and V3 future-gear safety still have to pass.
       if (item.locked) return { disposition: 'PROTECT', reason: 'ITEM_LOCKED', protected: true };
       if (item.giveaway) return { disposition: 'PROTECT', reason: 'ITEM_GIVEAWAY', protected: true };
+      if (item.gift) return { disposition: 'PROTECT', reason: 'ITEM_GIFT', protected: true };
       if (item.expiresAt) return { disposition: 'PROTECT', reason: 'ITEM_EXPIRING', protected: true };
-      if (level > 0) return { disposition: 'PROTECT', reason: 'LEVELED_ITEM', protected: true };
       if (goalTargets.has(name)) return { disposition: 'RESERVE', reason: 'ACTIVE_COLLECTION_GOAL', protected: true };
       if (type === 'quest' || definition.quest === true) {
         return { disposition: 'RESERVE', reason: 'QUEST_ITEM', protected: true };
@@ -141,9 +144,43 @@
         'weapon', 'shield', 'helmet', 'coat', 'pants', 'gloves', 'shoes',
         'cape', 'ring', 'earring', 'amulet', 'belt', 'orb', 'source', 'quiver'
       ]);
-      if (equipmentTypes.has(type) || definition.upgrade || definition.compound) {
+      const progressionRelevant = equipmentTypes.has(type) || definition.upgrade === true || definition.compound === true;
+
+      if (progressionRelevant && this.gearProgression) {
+        if (!futureGear || futureGear.checked !== true) {
+          return {
+            disposition: 'PROTECT',
+            reason: 'FUTURE_GEAR_EVALUATION_REQUIRED',
+            protected: true,
+            futureGearEvaluation: futureGear ? clone(futureGear) : null
+          };
+        }
+        if (futureGear.sellSafe === true && futureGear.protected !== true && futureGear.action === 'SELL') {
+          return {
+            disposition: 'SELL',
+            reason: this.rules.sellNames.has(name) ? 'RULE_SELL_FUTURE_GEAR_SAFE' : 'FUTURE_GEAR_EVALUATED_SAFE',
+            protected: false,
+            futureGearEvaluation: clone(futureGear)
+          };
+        }
+        return {
+          disposition: 'PROTECT',
+          reason: futureGear.action === 'GEAR'
+            ? 'CURRENT_OR_FUTURE_GEAR_UPGRADE'
+            : futureGear.action === 'ACCUMULATE'
+              ? 'FUTURE_GEAR_COMPOUND_ACCUMULATION'
+              : 'FUTURE_GEAR_OR_ECONOMIC_PROGRESSION',
+          protected: true,
+          futureGearEvaluation: clone(futureGear)
+        };
+      }
+
+      if (progressionRelevant) {
         return { disposition: 'PROTECT', reason: 'GEAR_OR_UPGRADE_ITEM', protected: true };
       }
+      if (level > 0) return { disposition: 'PROTECT', reason: 'LEVELED_ITEM', protected: true };
+
+      if (this.rules.sellNames.has(name)) return { disposition: 'SELL', reason: 'RULE_SELL', protected: false };
 
       if (definition.e != null || definition.exchange === true) {
         return { disposition: 'EXCHANGE', reason: 'LIVE_ITEM_EXCHANGEABLE', protected: true };
@@ -165,8 +202,16 @@
         ? this.game.chestSnapshot()
         : { available: false, chests: [] };
       const goalTargets = this._activeGoalTargets();
+      let futureGearPlan = null;
+      if (this.gearProgression && typeof this.gearProgression.evaluateInventory === 'function') {
+        try { futureGearPlan = this.gearProgression.evaluateInventory(inventory); } catch (_) {}
+      }
+      const futureBySlot = new Map(
+        (futureGearPlan && Array.isArray(futureGearPlan.evaluations) ? futureGearPlan.evaluations : [])
+          .map(row => [Number(row.slot), row])
+      );
       const items = (inventory.items || []).map(item => {
-        const classification = this._classify(item, goalTargets);
+        const classification = this._classify(item, goalTargets, futureBySlot.get(Number(item.slot)) || null);
         return { ...item, ...classification };
       });
       const counts = {};
@@ -191,6 +236,7 @@
         },
         items,
         counts,
+        futureGearEvaluation: futureGearPlan ? clone(futureGearPlan) : null,
         chests: clone(chests.chests || []),
         lootableChestIds: lootable.map(row => row.id),
         reserveFreeSlots: this.config.reserveFreeSlots

@@ -35,6 +35,7 @@
       this.game = options.game || null;
       this.actions = options.actions || null;
       this.combat = options.combat || null;
+      this.gearProgression = options.gearProgression || null;
       this.moduleActive = false;
       this.scope = null;
       this.pending = null;
@@ -76,7 +77,8 @@
         compoundsRejected: 0,
         compoundsUnknown: 0,
         budgetBlocks: 0,
-        safetyBlocks: 0
+        safetyBlocks: 0,
+        progressionBlocks: 0
       };
     }
 
@@ -265,11 +267,44 @@
       return { ok: true, itemValueAtRisk, consumableCost };
     }
 
+    _progressionPlan(inventory) {
+      if (!this.gearProgression || typeof this.gearProgression.evaluateInventory !== 'function') return null;
+      try { return this.gearProgression.evaluateInventory(inventory); }
+      catch (_) { return { state: 'BLOCKED', reason: 'H15_FUTURE_GEAR_EVALUATION_FAILED', evaluations: [] }; }
+    }
+
+    _mutationGate(row, kind, inventory, progressionPlan = null) {
+      if (!this.gearProgression) return { ok: true, evaluation: null };
+      const plan = progressionPlan || this._progressionPlan(inventory);
+      if (!plan || plan.state !== 'READY') {
+        return { ok: false, reason: plan && plan.reason || 'H15_FUTURE_GEAR_EVALUATION_REQUIRED', evaluation: null };
+      }
+      const evaluation = (plan.evaluations || []).find(candidate =>
+        Number(candidate.slot) === Number(row && row.slot)
+        && String(candidate.item || '') === String(row && row.name || '')
+        && Math.max(0, Number(candidate.observedLevel) || 0) === Math.max(0, Number(row && row.level) || 0)
+      ) || null;
+      if (!evaluation || evaluation.checked !== true) {
+        return { ok: false, reason: 'H15_FUTURE_GEAR_EVALUATION_REQUIRED', evaluation };
+      }
+      if (String(evaluation.action || '').toUpperCase() !== String(kind || '').toUpperCase()) {
+        return {
+          ok: false,
+          reason: 'H15_MUTATION_NOT_RECOMMENDED',
+          recommendedAction: evaluation.action || null,
+          evaluation
+        };
+      }
+      return { ok: true, evaluation };
+    }
+
     _upgradeCandidate(row, inventory, options = {}) {
       if (!this._safeItem(row)) return { ok: false, reason: 'H15_ITEM_NOT_AUTOMATION_SAFE' };
       const definition = this._definition(row.name);
       if (!definition || definition.upgradeable !== true) return { ok: false, reason: 'H15_ITEM_NOT_UPGRADEABLE' };
       if (!this._safeDefinition(definition)) return { ok: false, reason: 'H15_ITEM_DEFINITION_PROTECTED' };
+      const progression = this._mutationGate(row, 'UPGRADE', inventory, options.progressionPlan || null);
+      if (!progression.ok) return { ok: false, reason: progression.reason, progression: progression.evaluation || null, recommendedAction: progression.recommendedAction || null };
       const level = Math.max(0, Number(row.level) || 0);
       const targetLevel = level + 1;
       const grade = this._grade(definition, level);
@@ -296,7 +331,8 @@
         scroll: clone(scroll),
         scrollName,
         offering: offering.row ? clone(offering.row) : null,
-        budget
+        budget,
+        progression: progression.evaluation ? clone(progression.evaluation) : null
       };
     }
 
@@ -310,6 +346,8 @@
       const definition = this._definition(rows[0].name);
       if (!definition || definition.compoundable !== true) return { ok: false, reason: 'H15_ITEM_NOT_COMPOUNDABLE' };
       if (!this._safeDefinition(definition)) return { ok: false, reason: 'H15_ITEM_DEFINITION_PROTECTED' };
+      const progression = this._mutationGate(rows[0], 'COMPOUND', inventory, options.progressionPlan || null);
+      if (!progression.ok) return { ok: false, reason: progression.reason, progression: progression.evaluation || null, recommendedAction: progression.recommendedAction || null };
       const level = Math.max(0, Number(rows[0].level) || 0);
       const targetLevel = level + 1;
       const grade = this._grade(definition, level);
@@ -337,7 +375,8 @@
         scroll: clone(scroll),
         scrollName,
         offering: offering.row ? clone(offering.row) : null,
-        budget
+        budget,
+        progression: progression.evaluation ? clone(progression.evaluation) : null
       };
     }
 
@@ -349,10 +388,14 @@
         return clone(this.lastPlan);
       }
       const rows = inventory.items || [];
+      const progressionPlan = this._progressionPlan(inventory);
       const upgradeCandidates = [];
       for (const row of rows) {
-        const candidate = this._upgradeCandidate(row, inventory);
+        const candidate = this._upgradeCandidate(row, inventory, { progressionPlan });
         if (candidate.ok) upgradeCandidates.push(candidate);
+        else if (this.gearProgression && ['H15_FUTURE_GEAR_EVALUATION_REQUIRED', 'H15_FUTURE_GEAR_EVALUATION_FAILED', 'H15_MUTATION_NOT_RECOMMENDED'].includes(candidate.reason)) {
+          this.metrics.progressionBlocks += 1;
+        }
       }
 
       const groups = new Map();
@@ -368,8 +411,11 @@
       for (const rowsForKey of groups.values()) {
         const sorted = rowsForKey.slice().sort((a, b) => Number(a.slot) - Number(b.slot));
         for (let offset = 0; offset + 2 < sorted.length; offset += 3) {
-          const candidate = this._compoundCandidate(sorted.slice(offset, offset + 3), inventory);
+          const candidate = this._compoundCandidate(sorted.slice(offset, offset + 3), inventory, { progressionPlan });
           if (candidate.ok) compoundCandidates.push(candidate);
+          else if (this.gearProgression && ['H15_FUTURE_GEAR_EVALUATION_REQUIRED', 'H15_FUTURE_GEAR_EVALUATION_FAILED', 'H15_MUTATION_NOT_RECOMMENDED'].includes(candidate.reason)) {
+            this.metrics.progressionBlocks += 1;
+          }
         }
       }
 
@@ -404,6 +450,7 @@
           pendingActive: !!this.pending
         },
         policy: clone(this.config),
+        futureGearEvaluation: progressionPlan ? clone(progressionPlan) : null,
         upgradeCandidates: clone(upgradeCandidates),
         compoundCandidates: clone(compoundCandidates)
       };
@@ -432,6 +479,7 @@
         offeringSlot: candidate.offering ? Number(candidate.offering.slot) : null,
         offeringName: candidate.offering ? candidate.offering.name : null,
         budget: clone(candidate.budget),
+        progression: candidate.progression ? clone(candidate.progression) : null,
         queuedAt: nowIso(),
         useOffering: options.useOffering === true
       };
@@ -669,6 +717,11 @@
 
       const definition = this._definition(rows[0].name);
       if (!this._safeDefinition(definition)) return { ok: false, reason: 'H15_ITEM_DEFINITION_PROTECTED' };
+      const progression = this._mutationGate(rows[0], request.kind, inventory, this._progressionPlan(inventory));
+      if (!progression.ok) {
+        this.metrics.progressionBlocks += 1;
+        return { ok: false, reason: progression.reason };
+      }
       const budget = this._budget(rows[0], definition, scroll,
         request.offeringSlot == null ? null : this._rowAt(inventory, request.offeringSlot),
         request.targetLevel, request.kind, request.kind === 'COMPOUND' ? 3 : 1);

@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.2-h26';
+      this.version = options.version || '0.26.3-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -139,12 +139,24 @@
         roster: this.roster,
         combat: this.combat
       });
+      this.gearProgression = new ns.FutureGearEconomyEvaluator({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        gear: this.gear,
+        getProfiles: () => this.accountStrategy && typeof this.accountStrategy.profiles === 'function'
+          ? this.accountStrategy.profiles()
+          : []
+      });
+      this.inventory.gearProgression = this.gearProgression;
+      this.trade.gearProgression = this.gearProgression;
       this.upgrade = new ns.UpgradeCompoundController({
         root: this.root,
         logger: this.logger,
         game: this.game,
         actions: this.actions,
-        combat: this.combat
+        combat: this.combat,
+        gearProgression: this.gearProgression
       });
       this.exchangeCraft = new ns.ExchangeCraftController({
         root: this.root,
@@ -168,6 +180,7 @@
         bank: this.bank,
         trade: this.trade,
         gear: this.gear,
+        gearProgression: this.gearProgression,
         upgrade: this.upgrade,
         exchangeCraft: this.exchangeCraft,
         canAct: action => this.actionAllowed(action)
@@ -5769,6 +5782,7 @@
         bank: this.bank.status(),
         trade: this.trade.status(),
         gear: this.gear.status(),
+        gearProgression: this.gearProgression.status(),
         upgrade: this.upgrade.status(),
         exchangeCraft: this.exchangeCraft.status(),
         economy: this.economy.status(),
@@ -5814,6 +5828,7 @@
         bank: this.bank.status(),
         trade: this.trade.status(),
         gear: this.gear.status(),
+        gearProgression: this.gearProgression.status(),
         upgrade: this.upgrade.status(),
         exchangeCraft: this.exchangeCraft.status(),
         economy: this.economy.status(),
@@ -5860,6 +5875,9 @@
       push('bank-controller', !!this.bank.status() && typeof this.bank.plan === 'function' && typeof this.bank.reconcile === 'function', this.bank.status());
       push('trade-controller', !!this.trade.status() && typeof this.trade.marketAnalysis === 'function' && typeof this.trade.queueAcquire === 'function', this.trade.status());
       push('gear-controller', !!this.gear.status() && typeof this.gear.plan === 'function' && typeof this.gear.queueBestLocal === 'function', this.gear.status());
+      push('future-gear-economy', !!this.gearProgression.status()
+        && typeof this.gearProgression.evaluateInventory === 'function'
+        && typeof this.gearProgression.futureSellSafetyFor === 'function', this.gearProgression.status());
       push('upgrade-compound-controller', !!this.upgrade.status() && typeof this.upgrade.plan === 'function' && typeof this.upgrade.queueBest === 'function', this.upgrade.status());
       push('exchange-craft-controller', !!this.exchangeCraft.status() && typeof this.exchangeCraft.plan === 'function' && typeof this.exchangeCraft.productionPlan === 'function', this.exchangeCraft.status());
       push('economy-controller', !!this.economy.status() && typeof this.economy.plan === 'function' && typeof this.economy.startAutonomy === 'function', this.economy.status());

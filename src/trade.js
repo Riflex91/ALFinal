@@ -30,6 +30,7 @@
       this.actions = options.actions || null;
       this.movement = options.movement || null;
       this.inventory = options.inventory || null;
+      this.gearProgression = options.gearProgression || null;
       this.moduleActive = false;
       this.scope = null;
       this.suspendedReason = null;
@@ -177,16 +178,31 @@
     _safeSellRows() {
       const plan = this._inventoryPlan();
       if (!plan || plan.state !== 'READY') return [];
-      return (plan.items || []).filter(row =>
-        row && row.name
-        && String(row.disposition || '').toUpperCase() === 'SELL'
-        && row.locked !== true
-        && row.giveaway !== true
-        && row.gift !== true
-        && !row.expiresAt
-        && Math.max(0, Number(row.level) || 0) === 0
-        && !(row.definition && (row.definition.quest === true || row.definition.upgrade === true || row.definition.compound === true))
-      );
+      const equipmentTypes = new Set([
+        'weapon', 'shield', 'helmet', 'coat', 'pants', 'gloves', 'shoes',
+        'cape', 'ring', 'earring', 'amulet', 'belt', 'orb', 'source', 'quiver'
+      ]);
+      return (plan.items || []).filter(row => {
+        if (!row || !row.name || String(row.disposition || '').toUpperCase() !== 'SELL') return false;
+        if (row.locked === true || row.giveaway === true || row.gift === true || row.expiresAt) return false;
+        const definition = row.definition || {};
+        if (definition.quest === true || String(definition.type || '').toLowerCase() === 'quest') return false;
+
+        const progressionRelevant = Math.max(0, Number(row.level) || 0) > 0
+          || definition.upgrade === true
+          || definition.compound === true
+          || equipmentTypes.has(String(definition.type || '').toLowerCase());
+        if (!progressionRelevant) return true;
+
+        // V3 semantics: category blockers may be bypassed only after the exact
+        // physical item received a completed negative future-gear evaluation.
+        const future = row.futureGearEvaluation || null;
+        return !!(future
+          && future.checked === true
+          && future.protected !== true
+          && future.sellSafe === true
+          && String(future.action || '').toUpperCase() === 'SELL');
+      });
     }
 
     marketAnalysis(itemName = null, options = {}) {
