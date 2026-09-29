@@ -1191,10 +1191,39 @@
       const character = game && game.character;
       if (!game || !game.available || !character) return this._suspend('CHARACTER_UNAVAILABLE');
       const group = this._groupContext(character);
-      if (group.enabled && !group.isLeader) return this._tickGroupFollower(character, group);
+      if (group.enabled && !group.isLeader) {
+        this.metrics.decisions += 1;
+        const groupDecision = this._tickGroupFollower(character, group);
+        this.lastPlan = {
+          at: new Date().toISOString(),
+          ...clone(groupDecision),
+          group: {
+            leaderName: group.leaderName,
+            memberNames: group.memberNames.slice(),
+            complete: group.complete === true,
+            sameMap: group.sameMap === true
+          },
+          candidates: []
+        };
+        return groupDecision;
+      }
       if (group.enabled && group.isLeader) {
         const leaderDecision = this._tickGroupLeader(character, group);
-        if (leaderDecision) return leaderDecision;
+        if (leaderDecision) {
+          this.metrics.decisions += 1;
+          this.lastPlan = {
+            at: new Date().toISOString(),
+            ...clone(leaderDecision),
+            group: {
+              leaderName: group.leaderName,
+              memberNames: group.memberNames.slice(),
+              complete: group.complete === true,
+              sameMap: group.sameMap === true
+            },
+            candidates: []
+          };
+          return leaderDecision;
+        }
       }
       const plan = this.plan();
       return this._apply(plan);
