@@ -34,6 +34,12 @@
       this.party = options.party || null;
       this.storage = options.storage || null;
       this.crossWindow = options.crossWindow || null;
+      this.navigateCharacterLocal = typeof options.navigateCharacterLocal === 'function'
+        ? options.navigateCharacterLocal
+        : null;
+      this.canNavigateCharacterLocal = typeof options.canNavigateCharacterLocal === 'function'
+        ? options.canNavigateCharacterLocal
+        : () => false;
       this.sessionId = cleanText(
         options.sessionId || this.crossWindow && this.crossWindow.sessionId || '',
         240
@@ -574,7 +580,15 @@
 
       for (const name of unexpectedOnlineNames) {
         if (String(name) === String(localName)) {
-          blockers.push('H19_ROTATION_WOULD_STOP_LOCAL:' + name);
+          if (remainingMissing.length
+              && this.navigateCharacterLocal
+              && this.canNavigateCharacterLocal() === true) {
+            browserSwapPairs.push({ from: String(name), to: String(remainingMissing.shift()), local: true });
+            continue;
+          }
+          blockers.push(remainingMissing.length
+            ? 'H25_ROTATION_LOCAL_BROWSER_NAVIGATION_UNAVAILABLE:' + name
+            : 'H19_ROTATION_WOULD_STOP_LOCAL:' + name);
           continue;
         }
         if (runnerActive.has(String(name))) {
@@ -634,7 +648,8 @@
         return { ok: false, reason: 'H19_TARGET_NOT_OWNED' };
       }
       const localName = this._localName();
-      if (String(owned.name) === String(localName)) {
+      const isLocal = String(owned.name) === String(localName);
+      if (isLocal && mode !== 'BROWSER_SWAP') {
         return { ok: false, reason: 'H19_REMOTE_TARGET_IS_LOCAL' };
       }
 
@@ -680,6 +695,12 @@
         if (!active) return { ok: false, reason: 'H25_BROWSER_SWAP_SOURCE_NOT_ONLINE' };
         if (!desiredName || !desiredOwned || desiredName === targetName) return { ok: false, reason: 'H25_BROWSER_SWAP_TARGET_INVALID' };
         if (desiredPresent) return { ok: false, reason: 'H25_BROWSER_SWAP_TARGET_ALREADY_PRESENT' };
+        if (isLocal) {
+          if (!this.navigateCharacterLocal || this.canNavigateCharacterLocal() !== true) {
+            return { ok: false, reason: 'H25_LOCAL_BROWSER_SWAP_NAVIGATION_UNAVAILABLE' };
+          }
+          return { ok: true, roster, owned, active, runnerActive, peer: null, desiredOwned, desiredName, transport: 'local-browser-navigation' };
+        }
         if (!peer || peer.running !== true || peer.characterNavigateCapable !== true
             || !this.crossWindow || typeof this.crossWindow.requestCharacterNavigation !== 'function') {
           return { ok: false, reason: 'H25_BROWSER_SWAP_NAVIGATION_UNAVAILABLE' };
@@ -987,7 +1008,27 @@
         .sort((a, b) => a.localeCompare(b));
       const remainingMissing = missingDesired.slice();
       for (const name of undesiredActive) {
-        if (String(name) === String(localName)) continue;
+        if (String(name) === String(localName)) {
+          if (remainingMissing.length
+              && this.navigateCharacterLocal
+              && this.canNavigateCharacterLocal() === true) {
+            const desiredName = remainingMissing.shift();
+            return {
+              state: 'READY',
+              reason: 'H25_LOCAL_BROWSER_CHARACTER_ROTATION',
+              request: {
+                id: 'h25-auto-local-browser-swap-' + name + '-to-' + desiredName,
+                kind: 'BROWSER_SWAP',
+                targetName: name,
+                desiredName,
+                queuedAt: nowIso(),
+                automatic: true,
+                requireCharacterStateChange: true
+              }
+            };
+          }
+          continue;
+        }
         const peer = this.crossWindow && typeof this.crossWindow.freshPeer === 'function'
           ? this.crossWindow.freshPeer(name)
           : null;
@@ -1315,7 +1356,17 @@
 
       let dispatched;
       try {
-        if (request.kind === 'BROWSER_SWAP' && action.transport === 'cross-window-browser-navigation') {
+        if (request.kind === 'BROWSER_SWAP' && action.transport === 'local-browser-navigation') {
+          if (!this.navigateCharacterLocal) throw new Error('H25_LOCAL_BROWSER_NAVIGATION_TRANSPORT_UNAVAILABLE');
+          const value = this.navigateCharacterLocal(request.desiredName);
+          dispatched = {
+            id: 'h25-local-navigation-' + this.sequence,
+            state: 'DISPATCHED',
+            dispatched: true,
+            value: Promise.resolve({ success: true, reason: 'H25_LOCAL_BROWSER_NAVIGATION_ACCEPTED', details: value || null })
+          };
+          this.metrics.browserSwapsDispatched += 1;
+        } else if (request.kind === 'BROWSER_SWAP' && action.transport === 'cross-window-browser-navigation') {
           if (!this.crossWindow || typeof this.crossWindow.requestCharacterNavigation !== 'function') {
             throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TRANSPORT_UNAVAILABLE');
           }
