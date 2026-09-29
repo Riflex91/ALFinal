@@ -255,6 +255,7 @@ function fixture(options = {}) {
     outcomeTimeoutMs: options.outcomeTimeoutMs == null ? 5000 : options.outcomeTimeoutMs,
     startOutcomeTimeoutMs: options.startOutcomeTimeoutMs == null ? 15000 : options.startOutcomeTimeoutMs,
     browserSwapTimeoutMs: options.browserSwapTimeoutMs == null ? 20000 : options.browserSwapTimeoutMs,
+    startRetryBackoffMs: options.startRetryBackoffMs == null ? 750 : options.startRetryBackoffMs,
     maxActionsPerSession: options.maxActionsPerSession == null ? 4 : options.maxActionsPerSession
   });
   controller.start({ scope: { interval: () => 'h19-resource' } });
@@ -1225,4 +1226,40 @@ test('H22 live regression: replacement runtime heartbeat confirms even when the 
   assert.equal(reconciled.details.targetSessionId, 'replacement-session');
   assert.equal(f.controller.status().suspended, false);
   assert.equal(f.controller.status().metrics.actionsUnknown, 0);
+});
+
+
+test('H26 transient start authorization rejection waits and retries without suspending lifecycle autonomy', async () => {
+  const f = fixture({
+    onlineNames: ['My_Ranger'],
+    runnerActiveNames: ['My_Ranger'],
+    noMutation: true,
+    rejectPromise: true,
+    rejectReason: 'authorization_in_progress',
+    startRetryBackoffMs: 750
+  });
+  assert.equal(f.controller.setPolicy({
+    desiredActiveNames: ['My_Ranger', 'My_Merchant'],
+    desiredRuntimeRunningNames: [],
+    desiredPartyMemberNames: [],
+    desiredPartyLeader: null
+  }).accepted, true);
+  assert.equal(f.controller.startAutonomy({ maxActions: 4 }).accepted, true);
+
+  assert.equal(f.controller.tick().state, 'DISPATCHED');
+  await flush();
+  const waiting = f.controller.tick();
+  assert.equal(waiting.state, 'WAITING');
+  assert.equal(waiting.reason, 'H19_START_AUTHORIZATION_IN_PROGRESS');
+  assert.equal(f.controller.status().suspended, false);
+  assert.equal(f.controller.status().autonomyEnabled, true);
+  assert.equal(f.controller.status().metrics.transientStartRejects, 1);
+  assert.equal(f.state.dispatches.length, 1);
+
+  const retry = f.controller.transientStartRetries.get('My_Merchant');
+  assert.ok(retry);
+  retry.retryAtMs = Date.now() - 1;
+  const second = f.controller.tick();
+  assert.equal(second.state, 'DISPATCHED');
+  assert.equal(f.state.dispatches.length, 2);
 });
