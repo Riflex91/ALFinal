@@ -171,6 +171,43 @@ test('smart_move resolution alone is not arrival evidence and stuck movement is 
   await ctx.ALBot.stop('DONE');
 });
 
+test('map-only smart_move treats live movement as progress until the map transition', async () => {
+  const { context: ctx, character, calls } = runtimeContext({
+    smartMove: destination => {
+      calls.smart.push(destination);
+      character.moving = true;
+      return Promise.resolve({ success: true });
+    }
+  });
+  vm.runInNewContext(bundle, ctx);
+  await ctx.ALBot.start();
+
+  ctx.ALBot.__runtime.movement.config.pollMs = 25;
+  ctx.ALBot.__runtime.movement.config.stuckMs = 100;
+  ctx.ALBot.__runtime.movement.config.mapOnlyStuckMs = 500;
+
+  const result = ctx.ALBot.movement.smart('winterland');
+  assert.equal(result.accepted, true);
+
+  await sleep(260);
+  let movement = ctx.ALBot.movement.status();
+  assert.equal(movement.active, true);
+  assert.equal(movement.activeOrder.state, 'ACTIVE');
+  assert.ok(movement.activeOrder.progressEvents > 0);
+
+  character.map = 'winterland';
+  character.moving = false;
+  await sleep(80);
+
+  movement = ctx.ALBot.movement.status();
+  assert.equal(movement.active, false);
+  assert.equal(movement.lastOrder.state, 'COMPLETED');
+  assert.equal(movement.lastOrder.reason, 'ARRIVAL_VERIFIED');
+  assert.equal(calls.smart.length, 1);
+
+  await ctx.ALBot.stop('DONE');
+});
+
 test('smart_move is completed by fresh observed arrival even if command resolved earlier', async () => {
   const { context: ctx, character } = runtimeContext({
     smartMove: destination => {
