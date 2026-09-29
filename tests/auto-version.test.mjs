@@ -67,7 +67,11 @@ function fixture() {
   ].join('\n'));
   write(root, 'src/entry.js', "const api = { version: '0.26.2-h26' };\n");
   write(root, 'src/runtime.js', "this.version = options.version || '0.26.2-h26';\n");
-  write(root, 'src/feature.js', 'export const feature = 1; // baseline comment\n');
+  write(root, 'src/feature.js', [
+    'export const feature = 1; // baseline explanation',
+    'export const endpoint = "https://example.test/path"; /* old docs */',
+    ''
+  ].join('\n'));
   write(root, 'host/telemetry-recorder.mjs', 'export const hostProtocol = 1;\n');
   write(root, 'bootstrap/al-bot-bootstrap.js', 'const BOOTSTRAP_VERSION = "1.0.0";\n');
   write(root, 'docs/readme.md', '# Baseline\n');
@@ -159,19 +163,6 @@ test('functional bot runtime change bumps patch version and keeps stable manifes
 test('comment-only JavaScript change does not bump version, including URL strings and inline comments', () => {
   const root = fixture();
   try {
-    write(root, 'src/feature.js', [
-      'export const feature = 1; // changed explanation only',
-      'export const endpoint = "https://example.test/path"; /* docs only */',
-      ''
-    ].join('\n'));
-    // Put the same executable endpoint into the baseline first, then change comments only.
-    git(root, ['reset', '--soft', 'HEAD^']);
-    write(root, 'src/feature.js', [
-      'export const feature = 1; // baseline explanation',
-      'export const endpoint = "https://example.test/path"; /* old docs */',
-      ''
-    ].join('\n'));
-    commitAll(root, 'baseline with endpoint');
     write(root, 'src/feature.js', [
       'export const feature = 1; // changed explanation only',
       'export const endpoint = "https://example.test/path"; /* docs only */',
