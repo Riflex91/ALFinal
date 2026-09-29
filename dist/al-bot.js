@@ -26393,7 +26393,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.4-h26';
+      this.version = options.version || '0.26.5-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -26688,6 +26688,13 @@
             emergencyStopLatched: this.stopLatch.status().latched,
             lifecycleAutonomyEnabled: this.lifecycle ? this.lifecycle.status().autonomyEnabled === true : null,
             fullAutonomyEnabled: this.fullAutonomy ? this.fullAutonomy.status().enabled === true : null,
+            fullAutonomyDesiredCharacterNames: this.fullAutonomy
+              ? this.fullAutonomy.status().desiredCharacterNames || []
+              : [],
+            fullAutonomyLeaderName: this.fullAutonomy
+              && this.fullAutonomy.status().lastPlan
+              ? this.fullAutonomy.status().lastPlan.leaderName || null
+              : null,
             characterDisconnectCapable: this.actions.available('disconnect') === true,
             characterNavigateCapable: h25BrowserNavigationCapability(),
             version: this.version,
@@ -26765,6 +26772,8 @@
         storage: this.storage,
         crossWindow: this.lifecycleTransport,
         sessionId: this.lifecycleTransport && this.lifecycleTransport.sessionId || null,
+        navigateCharacterLocal: desiredName => navigateH25BrowserCharacter(desiredName),
+        canNavigateCharacterLocal: () => h25BrowserNavigationCapability(),
         canAct: action => this.actionAllowed(action)
       });
       this.accountStrategy = new ns.AccountStrategyController({
