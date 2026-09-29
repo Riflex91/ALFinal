@@ -175,10 +175,16 @@ test('H22 bootstrap first start creates ALBot and starts the runtime without a p
   const body = executableBundle('0.22.4-h22');
   const manifest = manifestFor('0.22.4-h22', body);
   const manifestUrl = 'https://raw.githubusercontent.com/Riflex91/ALFinal/main/release/al-bot-release.json';
+  const manifestRequests = [];
   const { context, api } = loadBootstrap({
-    fetch: async url => String(url) === manifestUrl
-      ? { ok: true, status: 200, json: async () => manifest }
-      : { ok: true, status: 200, text: async () => body }
+    fetch: async (url, options) => {
+      const parsed = new URL(String(url));
+      if (parsed.origin + parsed.pathname === manifestUrl) {
+        manifestRequests.push({ url: String(url), options });
+        return { ok: true, status: 200, json: async () => manifest };
+      }
+      return { ok: true, status: 200, text: async () => body };
+    }
   });
 
   assert.equal(context.ALBot, undefined);
@@ -190,6 +196,11 @@ test('H22 bootstrap first start creates ALBot and starts the runtime without a p
   assert.equal(typeof context.ALBot.fullAutonomy.start, 'function');
   assert.equal(api.activeRelease().version, '0.22.4-h22');
   assert.equal(api.activeRelease().bundleUrl, manifest.bundleUrl);
+  assert.equal(manifestRequests.length, 1);
+  const requestUrl = new URL(manifestRequests[0].url);
+  assert.equal(requestUrl.origin + requestUrl.pathname, manifestUrl);
+  assert.match(requestUrl.searchParams.get('_albot_cb') || '', /^\d+-\d+$/);
+  assert.equal(manifestRequests[0].options.cache, 'no-store');
 });
 
 test('H22 bootstrap does not independently check for updates once ALBot already exists', async () => {
