@@ -663,8 +663,11 @@
       if (combatStatus.pendingAttack) return true;
       const session = combatStatus.session || null;
       if (session && session.targetId != null) return true;
-      return !!(group && Array.isArray(group.members)
+      const peerHasTarget = !!(group && Array.isArray(group.members)
         && group.members.some(row => row && row.targetId != null));
+      if (peerHasTarget) return true;
+      const state = cleanText(combatStatus.state || session && session.state || '', 80).toUpperCase();
+      return state !== 'WAITING_GROUP_TARGET';
     }
 
     _stopOwnedMovement(reason) {

@@ -227,13 +227,12 @@ function updateH22BootstrapTest(source, nextRuntimeVersion, nextPackageVersion, 
     "const candidateVersion = '" + nextRuntimeVersion + "';"
   );
   block = block.replace(
-    /const candidatePackageVersion = '[^']+';/,
-    "const candidatePackageVersion = '" + nextPackageVersion + "';"
+    /^\s*assert\.match\(dist,[^\n]+\);$/m,
+    "  assert.match(dist, /^\\/\\* AL Bot " + escapedVersion(nextRuntimeVersion) + " \\| generated file \\| do not edit dist directly \\*\\//);"
   );
-  block = block.replace(
-    /assert\.match\(dist, \/\^\\\/\\\* AL Bot [^/]+\/\);/,
-    "assert.match(dist, /^\\/\\* AL Bot " + escapedVersion(nextRuntimeVersion) + " \\| generated file \\| do not edit dist directly \\*\\//);"
-  );
+  if (!block.includes("AL Bot " + escapedVersion(nextRuntimeVersion))) {
+    throw new Error('AUTO_VERSION_H22_DIST_ASSERTION_MISSING');
+  }
 
   const stablePattern = /(\/\/ During candidate CI[\s\S]*?assert\.equal\(manifest\.version, ')[^']+('\);\n\s*assert\.equal\(manifest\.packageVersion, ')[^']+('\);)/;
   if (!stablePattern.test(block)) throw new Error('AUTO_VERSION_H22_STABLE_ASSERTIONS_MISSING');
