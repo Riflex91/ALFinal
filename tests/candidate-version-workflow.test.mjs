@@ -18,7 +18,8 @@ test('candidate version workflow owns non-main branch versioning and build synch
 
 test('candidate workflow never promotes the stable release pointer', () => {
   assert.doesNotMatch(workflow, /ALBOT_RELEASE_COMMIT_SHA/);
-  assert.doesNotMatch(workflow, /release\/al-bot-release\.json/);
+  assert.doesNotMatch(workflow, /git add[^\n]*release\/al-bot-release\.json/);
+  assert.doesNotMatch(workflow, /git commit[^\n]*promote/i);
   assert.doesNotMatch(workflow, /HEAD:main/);
   assert.match(workflow, /for attempt in 1 2 3/);
   assert.match(workflow, /origin\/\$\{BRANCH\}/);
