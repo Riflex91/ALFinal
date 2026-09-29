@@ -227,6 +227,10 @@ function updateH22BootstrapTest(source, nextRuntimeVersion, nextPackageVersion, 
     "const candidateVersion = '" + nextRuntimeVersion + "';"
   );
   block = block.replace(
+    /const candidatePackageVersion = '[^']+';/,
+    "const candidatePackageVersion = '" + nextPackageVersion + "';"
+  );
+  block = block.replace(
     /^\s*assert\.match\(dist,[^\n]+\);$/m,
     "  assert.match(dist, /^\\/\\* AL Bot " + escapedVersion(nextRuntimeVersion) + " \\| generated file \\| do not edit dist directly \\*\\//);"
   );
