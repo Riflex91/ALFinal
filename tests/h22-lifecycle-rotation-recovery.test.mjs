@@ -190,6 +190,16 @@ function autonomyFixture(options = {}) {
     },
     lifecycleTransport: {
       broadcastHeartbeat: () => {},
+      freshPeer: name => {
+        if (String(name) !== 'My_Merchant' || localName === 'My_Merchant') return null;
+        return {
+          name: 'My_Merchant',
+          running: true,
+          fullAutonomyEnabled: true,
+          fullAutonomyDesiredCharacterNames: ['My_Merchant', 'My_Ranger1', 'My_Ranger2', 'My_Rogue'],
+          fullAutonomyLeaderName: 'My_Ranger1'
+        };
+      },
       freshPeers: () => clone(options.peerStates || [])
     },
     stopLatch: { status: () => ({ latched: false }) }
@@ -270,8 +280,8 @@ test('H22 lifecycle coordinator converges on one observed owned partial-party le
 
   assert.equal(a.ok, true);
   assert.equal(b.ok, true);
-  assert.equal(a.coordinatorName, 'My_Ranger2');
-  assert.equal(b.coordinatorName, 'My_Ranger2');
+  assert.equal(a.coordinatorName, 'My_Merchant');
+  assert.equal(b.coordinatorName, 'My_Merchant');
   assert.equal(a.leader, 'My_Ranger2');
   assert.equal(b.leader, 'My_Ranger2');
   assert.deepEqual(Array.from(a.observedPartyLeaders), ['My_Ranger2']);
