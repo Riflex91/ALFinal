@@ -1,0 +1,102 @@
+name: Candidate Version
+
+on:
+  push:
+    branches-ignore:
+      - main
+    paths:
+      - 'src/**/*.js'
+      - 'src/**/*.mjs'
+      - 'src/**/*.cjs'
+      - 'src/**/*.json'
+      - 'host/**/*.js'
+      - 'host/**/*.mjs'
+      - 'host/**/*.cjs'
+      - 'host/**/*.json'
+      - 'bootstrap/**/*.js'
+      - 'bootstrap/**/*.mjs'
+      - 'bootstrap/**/*.cjs'
+      - 'bootstrap/**/*.json'
+      - 'scripts/build.mjs'
+      - 'package.json'
+      - '.github/scripts/auto-version.mjs'
+      - '.github/workflows/candidate-version.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: albot-candidate-version-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  candidate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Version, build and verify candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          BRANCH="${GITHUB_REF_NAME}"
+
+          for attempt in 1 2 3; do
+            echo "=== candidate-version attempt ${attempt} on ${BRANCH} ==="
+            git fetch origin "${BRANCH}" main
+            BASE_SHA="$(git rev-parse "origin/${BRANCH}")"
+            git reset --hard "$BASE_SHA"
+
+            node .github/scripts/auto-version.mjs
+
+            CANDIDATE_VERSION="$(node -p "require('./package.json').version")"
+            STABLE_VERSION="$(node -p "require('./release/al-bot-release.json').packageVersion")"
+            VERSION_AHEAD="$(node -e "const p=v=>{const m=String(v||'').match(/^(\\d+)\\.(\\d+)\\.(\\d+)$/);if(!m)throw new Error('INVALID_VERSION:'+v);return m.slice(1).map(Number)};const a=p(process.argv[1]),b=p(process.argv[2]);let c=0;for(let i=0;i<3;i++){if(a[i]>b[i]){c=1;break}if(a[i]<b[i]){c=-1;break}}process.stdout.write(c>0?'true':'false')" "$CANDIDATE_VERSION" "$STABLE_VERSION")"
+
+            if git diff --quiet && [ "$VERSION_AHEAD" != "true" ]; then
+              echo "No executable candidate change requires versioning."
+              exit 0
+            fi
+
+            # When auto-version bumped the candidate, or the branch already
+            # carries an ahead candidate version, generate and verify the exact
+            # bundle that PR CI and the later stable promotion will consume.
+            CI=false npm run build
+            CI=true npm test
+
+            git add package.json scripts/build.mjs src tests dist/al-bot.js
+            if git diff --cached --quiet; then
+              echo "Candidate ${CANDIDATE_VERSION} is already fully synchronized."
+              exit 0
+            fi
+
+            git commit -m "chore(candidate): prepare AL Bot ${CANDIDATE_VERSION}"
+
+            git fetch origin "${BRANCH}"
+            if [ "$(git rev-parse "origin/${BRANCH}")" != "$BASE_SHA" ]; then
+              echo "Branch advanced while preparing candidate; recomputing from newest head."
+              continue
+            fi
+
+            if git push origin HEAD:"${BRANCH}"; then
+              echo "Prepared AL Bot candidate ${CANDIDATE_VERSION} on ${BRANCH}."
+              exit 0
+            fi
+
+            echo "Branch advanced during candidate push; retrying."
+          done
+
+          echo "Candidate versioning could not obtain a stable branch head after 3 attempts." >&2
+          exit 1
