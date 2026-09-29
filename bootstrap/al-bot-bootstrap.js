@@ -115,9 +115,15 @@
     return request.toString();
   }
 
+  let manifestRequestSequence = 0;
+
   async function fetchJson(url) {
     if (!root || typeof root.fetch !== 'function') throw new Error('BOOTSTRAP_FETCH_UNAVAILABLE');
-    const response = await root.fetch(manifestRequestUrl(url), { cache: 'no-store' });
+    const requestUrl = manifestRequestUrl(url);
+    manifestRequestSequence += 1;
+    const freshUrl = new URL(requestUrl);
+    freshUrl.searchParams.set('_albot_cb', String(Date.now()) + '-' + String(manifestRequestSequence));
+    const response = await root.fetch(freshUrl.toString(), { cache: 'no-store' });
     if (!response || response.ok !== true) throw new Error('BOOTSTRAP_MANIFEST_HTTP_' + String(response && response.status || 'FAILED'));
     return response.json();
   }
