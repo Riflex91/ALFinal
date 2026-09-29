@@ -148,6 +148,24 @@
       return Number(total.toFixed(4));
     }
 
+    _localEquipment(character) {
+      if (!character || !character.name || !this.game || typeof this.game.equipmentSnapshot !== 'function') return null;
+      let equipment = null;
+      try { equipment = this.game.equipmentSnapshot(character.name); } catch (_) {}
+      if (!equipment || equipment.available === false || !equipment.slots) return null;
+      const out = {};
+      for (const [slot, row] of Object.entries(equipment.slots)) {
+        if (!row || !row.name) continue;
+        out[cleanText(slot, 40)] = {
+          name: cleanText(row.name, 160),
+          level: Math.max(0, Math.floor(finite(row.level) || 0)),
+          statType: cleanText(row.statType != null ? row.statType : row.stat_type || '', 80) || null,
+          property: row.property == null ? (row.p == null ? null : clone(row.p)) : clone(row.property)
+        };
+      }
+      return out;
+    }
+
     localProfile() {
       let snapshot = null;
       try { snapshot = this.game && this.game.snapshot ? this.game.snapshot() : null; } catch (_) {}
@@ -172,6 +190,7 @@
         rip: character.rip === true,
         map: cleanText(character.map || '', 120) || null,
         gearScore: this._localGearScore(character),
+        equipment: this._localEquipment(character),
         trainingMs: Math.max(0, Math.floor(this.trainingMs)),
         capabilities: clone(ROLE_CAPABILITIES[ctype] || []),
         observedAtMs: this.now()
@@ -199,6 +218,7 @@
         rip: false,
         map: null,
         gearScore: 0,
+        equipment: null,
         trainingMs: 0,
         capabilities: clone(ROLE_CAPABILITIES[ctype] || []),
         observedAtMs: null,
@@ -274,6 +294,7 @@
         rip: raw.rip === true,
         map: cleanText(raw.map || '', 120) || null,
         gearScore: Math.max(0, finite(raw.gearScore) || 0),
+        equipment: raw.equipment && typeof raw.equipment === 'object' ? clone(raw.equipment) : null,
         trainingMs: Math.max(0, finite(raw.trainingMs) || 0),
         capabilities: clone(ROLE_CAPABILITIES[ctype] || []),
         observedAtMs: finite(raw.observedAtMs)
