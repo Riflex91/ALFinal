@@ -224,7 +224,9 @@ function fixture(options = {}) {
         dispatched: true,
         value: options.crossWindowNeverSettle
           ? new Promise(() => {})
-          : Promise.resolve({ success: true, reason: 'H25_CROSS_WINDOW_CHARACTER_NAVIGATION_ACCEPTED' })
+          : (options.browserSwapRejectPromise
+            ? Promise.reject(new Error('H25_TEST_TRANSPORT_REJECTED'))
+            : Promise.resolve({ success: true, reason: 'H25_CROSS_WINDOW_CHARACTER_NAVIGATION_ACCEPTED' }))
       };
     }
   } : null;
@@ -1262,4 +1264,97 @@ test('H26 transient start authorization rejection waits and retries without susp
   const second = f.controller.tick();
   assert.equal(second.state, 'DISPATCHED');
   assert.equal(f.state.dispatches.length, 2);
+});
+
+
+test('H25 browser swap does not confirm from a stale replacement peer without live character evidence', async () => {
+  const { controller, state, runtimePeers } = fixture({
+    onlineNames: ['My_Merchant', 'My_Ranger', 'My_Priest', 'My_Warrior'],
+    runnerActiveNames: ['My_Ranger'],
+    freezeRunnerActive: true,
+    crossWindowNoMutation: true,
+    crossWindowPeers: [
+      { name: 'My_Priest', sessionId: 'priest-window-session', running: true, runEpoch: 4, characterDisconnectCapable: true, characterNavigateCapable: true }
+    ],
+    maxActionsPerSession: 4
+  });
+  state.account.push({ name: 'My_Mage', ctype: 'mage', online: false });
+  const desired = ['My_Mage', 'My_Merchant', 'My_Ranger', 'My_Warrior'];
+  controller.setPolicy({
+    desiredActiveNames: desired,
+    desiredPartyMemberNames: desired,
+    desiredPartyLeader: 'My_Ranger'
+  });
+  controller.startAutonomy({ maxActions: 4 });
+  assert.equal(controller.tick().state, 'DISPATCHED');
+  await flush();
+
+  state.online.delete('My_Priest');
+  state.active.delete('My_Priest');
+  runtimePeers.delete('My_Priest');
+  runtimePeers.set('My_Mage', {
+    name: 'My_Mage',
+    sessionId: 'stale-mage-session',
+    running: true,
+    runEpoch: 7,
+    fullAutonomyEnabled: true,
+    characterDisconnectCapable: true,
+    characterNavigateCapable: true
+  });
+
+  const stalePeerOnly = controller.tick();
+  assert.equal(stalePeerOnly.state, 'PENDING');
+  assert.equal(controller.status().metrics.browserSwapsConfirmed, 0);
+
+  state.active.add('My_Mage');
+  const live = controller.tick();
+  assert.equal(live.state, 'CONFIRMED');
+  assert.equal(live.details.evidence, 'BROWSER_SWAP_NEW_RUNTIME_READY');
+});
+
+test('H25 ambiguous browser-swap transport rejection waits for live outcome instead of suspending immediately', async () => {
+  const { controller, state, runtimePeers } = fixture({
+    onlineNames: ['My_Merchant', 'My_Ranger', 'My_Priest', 'My_Warrior'],
+    runnerActiveNames: ['My_Ranger'],
+    freezeRunnerActive: true,
+    crossWindowNoMutation: true,
+    browserSwapRejectPromise: true,
+    crossWindowPeers: [
+      { name: 'My_Priest', sessionId: 'priest-window-session', running: true, runEpoch: 4, characterDisconnectCapable: true, characterNavigateCapable: true }
+    ],
+    maxActionsPerSession: 4
+  });
+  state.account.push({ name: 'My_Mage', ctype: 'mage', online: false });
+  const desired = ['My_Mage', 'My_Merchant', 'My_Ranger', 'My_Warrior'];
+  controller.setPolicy({
+    desiredActiveNames: desired,
+    desiredPartyMemberNames: desired,
+    desiredPartyLeader: 'My_Ranger'
+  });
+  controller.startAutonomy({ maxActions: 4 });
+  assert.equal(controller.tick().state, 'DISPATCHED');
+  await flush();
+
+  const waiting = controller.tick();
+  assert.equal(waiting.state, 'PENDING');
+  assert.equal(waiting.reason, 'H25_BROWSER_SWAP_TRANSPORT_REJECTED_AWAITING_LIVE_OUTCOME');
+  assert.equal(controller.status().suspended, false);
+
+  state.online.delete('My_Priest');
+  state.active.delete('My_Priest');
+  state.active.add('My_Mage');
+  runtimePeers.delete('My_Priest');
+  runtimePeers.set('My_Mage', {
+    name: 'My_Mage',
+    sessionId: 'mage-window-session',
+    running: true,
+    runEpoch: 1,
+    fullAutonomyEnabled: true,
+    characterDisconnectCapable: true,
+    characterNavigateCapable: true
+  });
+
+  const confirmed = controller.tick();
+  assert.equal(confirmed.state, 'CONFIRMED');
+  assert.equal(controller.status().suspended, false);
 });
