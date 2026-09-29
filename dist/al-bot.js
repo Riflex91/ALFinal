@@ -7390,6 +7390,12 @@
     return text || fallback;
   }
 
+  function transientStartRejection(value) {
+    const normalized = cleanText(value, 300).trim().toLowerCase().replace(/[\s.-]+/g, '_');
+    return normalized === 'authorization_in_progress'
+      || normalized.includes('authorization_in_progress');
+  }
+
   class CharacterLifecycleController {
     constructor(options = {}) {
       this.root = options.root || root;
@@ -7411,6 +7417,7 @@
         outcomeTimeoutMs: Math.max(3000, Math.min(120000, Number(options.outcomeTimeoutMs) || 15000)),
         startOutcomeTimeoutMs: Math.max(15000, Math.min(120000, Number(options.startOutcomeTimeoutMs) || 60000)),
         browserSwapTimeoutMs: Math.max(20000, Math.min(180000, Number(options.browserSwapTimeoutMs) || 90000)),
+        startRetryBackoffMs: Math.max(750, Math.min(15000, Number(options.startRetryBackoffMs) || 2000)),
         respawnGraceMs: Math.max(12000, Math.min(30000, Number(options.respawnGraceMs) || 13000)),
         maxActionsPerSession: Math.max(1, Math.min(20, Number(options.maxActionsPerSession) || 4)),
         maxQueue: Math.max(1, Math.min(32, Number(options.maxQueue) || 12))
@@ -7431,6 +7438,7 @@
       this.restoredPending = false;
       this.deathObservedAtMs = null;
       this.partySignals = [];
+      this.transientStartRetries = new Map();
       this.previousPartyInviteHandler = null;
       this.previousPartyRequestHandler = null;
       this.partyInviteHandler = null;
@@ -7449,6 +7457,8 @@
         actionsConfirmed: 0,
         actionsRejected: 0,
         actionsUnknown: 0,
+        transientStartRejects: 0,
+        transientStartRetryBlocks: 0,
         startsQueued: 0,
         startsConfirmed: 0,
         stopsQueued: 0,
@@ -8421,6 +8431,17 @@
         if (!this._ownedRow(name, roster)) continue;
         if (crossWindowManaged.has(name)) continue;
         if (!startEvidence.has(name)) {
+          const retry = this.transientStartRetries.get(String(name)) || null;
+          if (retry && Number(retry.retryAtMs || 0) > Date.now()) {
+            this.metrics.transientStartRetryBlocks += 1;
+            return {
+              state: 'WAITING',
+              reason: 'H19_START_AUTHORIZATION_IN_PROGRESS',
+              targetName: name,
+              retryAtMs: Number(retry.retryAtMs)
+            };
+          }
+          if (retry && Number(retry.retryAtMs || 0) <= Date.now()) this.transientStartRetries.delete(String(name));
           return {
             state: 'READY',
             reason: 'H19_DESIRED_CHARACTER_OFFLINE',
@@ -8923,6 +8944,32 @@
 
       if (current.settlement === 'REJECTED') {
         const error = cleanText(current.error || '', 300);
+        if (current.kind === 'START' && current.requireCharacterStateChange === true && transientStartRejection(error)) {
+          const targetName = cleanText(current.targetName || '', 120);
+          const retryAtMs = Date.now() + this.config.startRetryBackoffMs;
+          this.currentAction = null;
+          this._removeStorage('pending');
+          this.metrics.actionsRejected += 1;
+          this.metrics.transientStartRejects += 1;
+          if (targetName) this.transientStartRetries.set(targetName, { retryAtMs, error });
+          this.lastAction = {
+            at: nowIso(),
+            type: 'START_TRANSIENT_REJECTED',
+            reason: 'H19_START_AUTHORIZATION_IN_PROGRESS',
+            serverReason: error,
+            targetName: targetName || null,
+            retryAtMs,
+            autonomyStopped: false
+          };
+          return {
+            state: 'WAITING',
+            reason: 'H19_START_AUTHORIZATION_IN_PROGRESS',
+            serverReason: error,
+            targetName: targetName || null,
+            retryAtMs,
+            autonomyStopped: false
+          };
+        }
         if (current.kind === 'RESPAWN' && error === 'cant_respawn') {
           this.currentAction = null;
           this._removeStorage('pending');
@@ -10427,6 +10474,7 @@
         requireAllOnlineProfiles: true,
         logisticsProbeMs: 30000,
         standProbeMs: 60000,
+        autoManageMerchantStand: true,
         lifecycleMaxActions: 20,
         economyMaxActions: 100,
         logisticsMaxActions: 10,
@@ -10437,6 +10485,7 @@
       this.desiredCharacterNames = [];
       this.tickResourceId = null;
       this.lifecycleArmed = false;
+      this.standManagedByFullAutonomy = false;
     }
 
     start(context = {}) {
@@ -10466,6 +10515,7 @@
       if (options.standProbeMs != null) {
         this.config.standProbeMs = Math.max(15000, Math.min(600000, Math.floor(Number(options.standProbeMs) || 60000)));
       }
+      if (options.autoManageMerchantStand != null) this.config.autoManageMerchantStand = options.autoManageMerchantStand === true;
       // Adventure Land Full Live is always a four-character group: 3 farmers + 1 Merchant.
       this.config.expectedOnlineCount = 4;
       return clone(this.config);
@@ -10533,6 +10583,9 @@
         if (this.started.encounters && runtime.encounters) {
           try { runtime.encounters.stopAutonomy(reason); } catch (_) {}
         }
+        if (this.standManagedByFullAutonomy && runtime.merchantStand && typeof runtime.merchantStand.configure === 'function') {
+          try { runtime.merchantStand.configure({ autoManage: false }); } catch (_) {}
+        }
       }
       if (this.tickResourceId && this.scope && typeof this.scope.cancel === 'function') {
         try { this.scope.cancel(this.tickResourceId, reason); } catch (_) {}
@@ -10541,6 +10594,7 @@
       this.enabled = false;
       this.desiredCharacterNames = [];
       this.lifecycleArmed = false;
+      this.standManagedByFullAutonomy = false;
       this.started = { lifecycle: false, farming: false, economy: false, partyLogistics: false, encounters: false };
       this.lastDecision = { at: new Date().toISOString(), type: 'STOP', reason: cleanText(reason, 200) };
       return this.status();
@@ -10979,6 +11033,13 @@
       const economy = this.runtime.economy;
       const logistics = this.runtime.partyLogistics;
       const stand = this.runtime.merchantStand || null;
+      if (stand && this.config.autoManageMerchantStand === true && typeof stand.status === 'function' && typeof stand.configure === 'function') {
+        const before = stand.status();
+        if (before && before.autoManage !== true) {
+          stand.configure({ autoManage: true });
+          this.standManagedByFullAutonomy = true;
+        }
+      }
       const economyStatus = economy.status();
       const logisticsStatus = logistics.status();
       let standStatus = stand && typeof stand.status === 'function' ? stand.status() : null;
@@ -11301,6 +11362,7 @@
         desiredCharacterNames: clone(this.desiredCharacterNames),
         tickScheduled: !!this.tickResourceId,
         lifecycleArmed: this.lifecycleArmed,
+        standManagedByFullAutonomy: this.standManagedByFullAutonomy,
         lastPlan: clone(this.lastPlan),
         lastDecision: clone(this.lastDecision),
         lastError: clone(this.lastError)
@@ -14350,10 +14412,39 @@
       const character = game && game.character;
       if (!game || !game.available || !character) return this._suspend('CHARACTER_UNAVAILABLE');
       const group = this._groupContext(character);
-      if (group.enabled && !group.isLeader) return this._tickGroupFollower(character, group);
+      if (group.enabled && !group.isLeader) {
+        this.metrics.decisions += 1;
+        const groupDecision = this._tickGroupFollower(character, group);
+        this.lastPlan = {
+          at: new Date().toISOString(),
+          ...clone(groupDecision),
+          group: {
+            leaderName: group.leaderName,
+            memberNames: group.memberNames.slice(),
+            complete: group.complete === true,
+            sameMap: group.sameMap === true
+          },
+          candidates: []
+        };
+        return groupDecision;
+      }
       if (group.enabled && group.isLeader) {
         const leaderDecision = this._tickGroupLeader(character, group);
-        if (leaderDecision) return leaderDecision;
+        if (leaderDecision) {
+          this.metrics.decisions += 1;
+          this.lastPlan = {
+            at: new Date().toISOString(),
+            ...clone(leaderDecision),
+            group: {
+              leaderName: group.leaderName,
+              memberNames: group.memberNames.slice(),
+              complete: group.complete === true,
+              sameMap: group.sameMap === true
+            },
+            candidates: []
+          };
+          return leaderDecision;
+        }
       }
       const plan = this.plan();
       return this._apply(plan);
@@ -15457,8 +15548,13 @@
       }
       let economy = null;
       try { economy = this.economy && typeof this.economy.status === 'function' ? this.economy.status() : null; } catch (_) {}
-      if (economy && (economy.autonomyEnabled === true || economy.currentAction
-          || Array.isArray(economy.queue) && economy.queue.length)) {
+      const economyPlanState = cleanText(economy && economy.lastPlan && economy.lastPlan.state || '', 40).toUpperCase();
+      const economyOwnsMutation = !!(economy && (
+        economy.currentAction
+        || Array.isArray(economy.queue) && economy.queue.length
+        || economy.autonomyEnabled === true && economyPlanState && !['IDLE', 'OBSERVE', 'BLOCKED', 'WAITING'].includes(economyPlanState)
+      ));
+      if (economyOwnsMutation) {
         this.metrics.ownershipBlocks += 1;
         return { state: 'WAITING', reason: 'H11_ECONOMY_OWNERSHIP', plan };
       }
@@ -21211,9 +21307,17 @@
 
       const pressure = merchantPlan && merchantPlan.pressure && merchantPlan.pressure.state || 'NORMAL';
       const bankRows = bankPlan && bankPlan.safeDepositRows || [];
-      if (['HIGH', 'CRITICAL'].includes(String(pressure)) && bankRows.length) {
+      // Safe BANK dispositions are already filtered by H10/H12. Keep the Merchant
+      // productive even at normal inventory pressure instead of waiting until the
+      // bag is nearly full before mounting the bank.
+      if (bankRows.length) {
         if (bankPlan && bankPlan.state === 'NEEDS_BANK') {
-          const proposal = this._proposal('BANK_MOUNT', 'bank', { key: 'bank', pressure, risk: 0 });
+          const proposal = this._proposal('BANK_MOUNT', 'bank', {
+            key: 'bank',
+            pressure,
+            maintenance: !['HIGH', 'CRITICAL'].includes(String(pressure)),
+            risk: 0
+          });
           if (proposal) proposals.push(proposal);
         } else if (bankPlan && bankPlan.state === 'READY') {
           const row = bankRows[0];
@@ -21223,6 +21327,7 @@
             inventorySlot: Number(row.slot),
             quantity: Math.max(1, Math.floor(Number(row.quantity) || 1)),
             pressure,
+            maintenance: !['HIGH', 'CRITICAL'].includes(String(pressure)),
             risk: 0
           });
           if (proposal) proposals.push(proposal);
