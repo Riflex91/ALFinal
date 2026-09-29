@@ -84,12 +84,15 @@
       this.party = options.party || null;
       this.crossWindow = options.crossWindow || null;
       this.gear = options.gear || null;
+      this.storage = options.storage || null;
       this.now = typeof options.now === 'function' ? options.now : () => Date.now();
+      this.trainingKeyPrefix = cleanText(options.trainingKeyPrefix || 'albot:account-strategy:training:v1:', 180);
       this.moduleActive = false;
       this.scope = null;
       this.heartbeat = null;
       this.trainingMs = 0;
       this.lastTrainingTickMs = null;
+      this.lastTrainingName = null;
       this.lastProfiles = [];
       this.lastProgression = null;
       this.lastTaskPlan = null;
@@ -120,15 +123,63 @@
       return this.status();
     }
 
+    _trainingKey(name) {
+      const value = cleanText(name || '', 120);
+      return value ? this.trainingKeyPrefix + value : null;
+    }
+
+    _storedTrainingMs(name) {
+      const key = this._trainingKey(name);
+      if (!key || !this.storage || typeof this.storage.get !== 'function') return 0;
+      try {
+        const value = Number(this.storage.get(key));
+        return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+      } catch (_) {
+        return 0;
+      }
+    }
+
+    _trainingMsFor(name) {
+      const value = cleanText(name || '', 120);
+      if (value && value === this.lastTrainingName) return Math.max(0, Math.floor(this.trainingMs));
+      return this._storedTrainingMs(value);
+    }
+
+    _persistTrainingMs(name, value) {
+      const key = this._trainingKey(name);
+      if (!key || !this.storage || typeof this.storage.set !== 'function') return false;
+      try { return this.storage.set(key, String(Math.max(0, Math.floor(Number(value) || 0)))) === true; }
+      catch (_) { return false; }
+    }
+
     recordTraining(active) {
       const now = this.now();
+      let localName = null;
+      try {
+        const snapshot = this.game && this.game.snapshot ? this.game.snapshot() : null;
+        localName = cleanText(snapshot && snapshot.character && snapshot.character.name || '', 120) || null;
+      } catch (_) {}
+
+      if (localName && localName !== this.lastTrainingName) {
+        this.lastTrainingName = localName;
+        this.trainingMs = this._storedTrainingMs(localName);
+        this.lastTrainingTickMs = now;
+        return this.trainingMs;
+      }
       if (this.lastTrainingTickMs == null) {
         this.lastTrainingTickMs = now;
+        if (localName) {
+          this.lastTrainingName = localName;
+          this.trainingMs = this._storedTrainingMs(localName);
+        }
         return this.trainingMs;
       }
       const delta = Math.max(0, Math.min(10000, now - this.lastTrainingTickMs));
       this.lastTrainingTickMs = now;
-      if (active === true) this.trainingMs += delta;
+      if (active === true) {
+        this.trainingMs += delta;
+        if (localName) this._persistTrainingMs(localName, this.trainingMs);
+      }
       return this.trainingMs;
     }
 
@@ -191,7 +242,7 @@
         map: cleanText(character.map || '', 120) || null,
         gearScore: this._localGearScore(character),
         equipment: this._localEquipment(character),
-        trainingMs: Math.max(0, Math.floor(this.trainingMs)),
+        trainingMs: this._trainingMsFor(character.name),
         capabilities: clone(ROLE_CAPABILITIES[ctype] || []),
         observedAtMs: this.now()
       };
@@ -219,7 +270,7 @@
         map: null,
         gearScore: 0,
         equipment: null,
-        trainingMs: 0,
+        trainingMs: this._storedTrainingMs(row.name),
         capabilities: clone(ROLE_CAPABILITIES[ctype] || []),
         observedAtMs: null,
         fallback: true,
