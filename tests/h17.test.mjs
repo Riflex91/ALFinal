@@ -444,3 +444,30 @@ test('H17 runtime, API, UI, build and generated bundle are wired without direct 
   assert.doesNotMatch(source, /actions\.dispatch/);
   assert.equal(pkg.version, '0.26.3');
 });
+
+
+test('H17 performs safe bank maintenance at normal inventory pressure', () => {
+  const f = fixture({
+    pressure: 'NORMAL',
+    bankState: 'NEEDS_BANK',
+    bankRows: [{ slot: 3, name: 'junk', quantity: 5 }]
+  });
+  const plan = f.economy.plan();
+  assert.equal(plan.state, 'READY');
+  assert.equal(plan.selected.kind, 'BANK_MOUNT');
+  const mount = plan.proposals.find(row => row.kind === 'BANK_MOUNT');
+  assert.ok(mount);
+  assert.equal(mount.maintenance, true);
+});
+
+test('H17 normal-pressure bank maintenance queues the existing safe H12 mount path', () => {
+  const f = fixture({
+    pressure: 'NORMAL',
+    bankState: 'NEEDS_BANK',
+    bankRows: [{ slot: 3, name: 'junk', quantity: 5 }]
+  });
+  assert.equal(f.economy.startAutonomy({ maxActions: 2 }).accepted, true);
+  const tick = f.economy.tick();
+  assert.equal(tick.state, 'QUEUED');
+  assert.deepEqual(f.calls[0], { module: 'bank', kind: 'MOUNT' });
+});
