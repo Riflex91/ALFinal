@@ -129,6 +129,25 @@ test('GitHub auto-version watches executable components but excludes docs/tests/
   assert.match(workflowSource, /npm test/);
 });
 
+test('GitHub auto-version atomically promotes only a newer verified candidate to stable', () => {
+  assert.match(workflowSource, /\.github\/workflows\/auto-version\.yml/);
+  assert.match(workflowSource, /\.github\/scripts\/auto-version\.mjs/);
+  assert.match(workflowSource, /CANDIDATE_VERSION=/);
+  assert.match(workflowSource, /STABLE_VERSION=/);
+  assert.match(workflowSource, /PROMOTE_STABLE=/);
+  assert.match(workflowSource, /compare > 0 \? 'true' : 'false'/);
+  assert.match(workflowSource, /CI=true npm test/);
+  assert.match(workflowSource, /RELEASE_SHA="\$\(git rev-parse HEAD\)"/);
+  assert.match(workflowSource, /ALBOT_RELEASE_COMMIT_SHA="\$RELEASE_SHA"/);
+  assert.match(workflowSource, /ALBOT_RELEASED_AT="\$RELEASED_AT"/);
+  assert.match(workflowSource, /node --test tests\/h22-bootstrap\.test\.mjs/);
+  assert.match(workflowSource, /git diff --quiet -- dist\/al-bot\.js/);
+  assert.match(workflowSource, /git add release\/al-bot-release\.json/);
+  assert.match(workflowSource, /main advanced while versioning\/promoting/);
+  assert.match(workflowSource, /git push origin HEAD:main/);
+  assert.match(workflowSource, /github\.actor != 'github-actions\[bot\]'/);
+});
+
 test('functional bot runtime change bumps patch version and keeps stable manifest as H22 fallback', () => {
   const root = fixture();
   try {
