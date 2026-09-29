@@ -579,14 +579,15 @@ test('Full Autonomy rotates an old farmer out when strategy selects a different 
   assert.equal(started.tick.rotationRequired, true);
   assert.deepEqual([...started.tick.desiredCharacterNames], ['My_Mage', 'My_Merchant', 'My_Ranger1', 'My_Warrior']);
   assert.deepEqual([...started.tick.unexpectedOnlineNames], ['My_Priest']);
-  assert.equal(state.lifecycleStarts, 1);
+  assert.equal(started.tick.lifecycleCoordinator, 'My_Merchant');
+  assert.equal(state.lifecycleStarts, 0);
   assert.deepEqual([...state.lifecyclePolicy.desiredActiveNames], ['My_Mage', 'My_Merchant', 'My_Ranger1', 'My_Warrior']);
   assert.deepEqual([...state.lifecyclePolicy.desiredPartyMemberNames], ['My_Mage', 'My_Merchant', 'My_Ranger1', 'My_Warrior']);
   assert.equal(state.farmStarts, 0);
 });
 
 test('full autonomy honors a lifecycle self-stop and does not restart it on the next tick', () => {
-  const { controller, state } = loadFullAutonomy({ partyHealthy: false });
+  const { controller, state } = loadFullAutonomy({ localName: 'My_Merchant', partyHealthy: false });
   const started = controller.startAutonomy({ taskType: 'FARM' });
   assert.equal(started.accepted, true);
   assert.equal(state.lifecycleStarts, 1);
@@ -687,7 +688,7 @@ test('Full Autonomy stops an already-active owned H9 session when the local farm
 });
 
 test('full autonomy arms an already-active lifecycle and blocks if it later stops', () => {
-  const { controller, state } = loadFullAutonomy({ partyHealthy: false });
+  const { controller, state } = loadFullAutonomy({ localName: 'My_Merchant', partyHealthy: false });
   state.lifecycleAutonomyEnabled = true;
 
   const started = controller.startAutonomy({ taskType: 'FARM' });
@@ -706,7 +707,7 @@ test('full autonomy arms an already-active lifecycle and blocks if it later stop
 });
 
 test('stopped desired peer triggers lifecycle recovery even when party topology is healthy', () => {
-  const { controller, state } = loadFullAutonomy({ stoppedPeerName: 'My_Ranger1' });
+  const { controller, state } = loadFullAutonomy({ localName: 'My_Merchant', stoppedPeerName: 'My_Ranger1' });
   const started = controller.startAutonomy({ taskType: 'FARM' });
   assert.equal(started.accepted, true);
   assert.equal(started.tick.state, 'WARMING');
@@ -729,7 +730,8 @@ test('full autonomy pauses owned FARM work before recovering a dropped pinned ro
   assert.equal(next.reason, 'FULL_AUTONOMY_RECOVERING_EXPECTED_ROSTER');
   assert.equal(state.farmActive, false);
   assert.equal(state.farmStops, 1);
-  assert.equal(state.lifecycleStarts, 1);
+  assert.equal(next.lifecycleCoordinator, 'My_Merchant');
+  assert.equal(state.lifecycleStarts, 0);
 });
 
 test('suspended Farm Intelligence blocks Full Autonomy instead of reporting RUNNING', () => {
