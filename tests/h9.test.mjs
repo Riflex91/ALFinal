@@ -569,6 +569,7 @@ test('H9 exposes incomplete group wait as an explicit decision instead of appear
 });
 
 
+// H27 regression: an armed but targetless follower is formation-waiting, not fighting.
 test('H9 does not treat WAITING_GROUP_TARGET without a live target as an active encounter', () => {
   const f = makeFixture();
   const farm = { active: true, session: { owner: 'farm-intelligence-h9' } };
