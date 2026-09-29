@@ -135,7 +135,8 @@ test('GitHub auto-version atomically promotes only a newer verified candidate to
   assert.match(workflowSource, /CANDIDATE_VERSION=/);
   assert.match(workflowSource, /STABLE_VERSION=/);
   assert.match(workflowSource, /PROMOTE_STABLE=/);
-  assert.match(workflowSource, /compare > 0 \? 'true' : 'false'/);
+  assert.match(workflowSource, /c>0\?'true':'false'/);
+  assert.doesNotMatch(workflowSource, /<<'NODE'/);
   assert.match(workflowSource, /CI=true npm test/);
   assert.match(workflowSource, /RELEASE_SHA="\$\(git rev-parse HEAD\)"/);
   assert.match(workflowSource, /ALBOT_RELEASE_COMMIT_SHA="\$RELEASE_SHA"/);
