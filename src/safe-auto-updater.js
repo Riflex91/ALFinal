@@ -359,9 +359,15 @@
       return this.status();
     }
 
+    _manifestRequestUrl(url) {
+      const request = new URL(String(url));
+      request.searchParams.set('_albot_cb', String(Date.now()) + '-' + String(this.stats.checks));
+      return request.toString();
+    }
+
     async _fetchJson(url) {
       if (typeof this.fetchFn !== 'function') throw new Error('UPDATE_FETCH_UNAVAILABLE');
-      const response = await this.fetchFn.call(this.root, url, { cache: 'no-store' });
+      const response = await this.fetchFn.call(this.root, this._manifestRequestUrl(url), { cache: 'no-store' });
       if (!response || response.ok !== true) throw new Error('UPDATE_HTTP_' + String(response && response.status || 'FAILED'));
       return response.json();
     }
