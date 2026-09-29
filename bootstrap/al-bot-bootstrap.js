@@ -108,10 +108,16 @@
     }
   }
 
-  async function fetchJson(url) {
+  function manifestRequestUrl(url) {
     if (String(url) !== MANIFEST_URL) throw new Error('BOOTSTRAP_MANIFEST_URL_NOT_OFFICIAL');
+    const request = new URL(MANIFEST_URL);
+    request.searchParams.set('_albot_cb', String(Date.now()));
+    return request.toString();
+  }
+
+  async function fetchJson(url) {
     if (!root || typeof root.fetch !== 'function') throw new Error('BOOTSTRAP_FETCH_UNAVAILABLE');
-    const response = await root.fetch(url, { cache: 'no-store' });
+    const response = await root.fetch(manifestRequestUrl(url), { cache: 'no-store' });
     if (!response || response.ok !== true) throw new Error('BOOTSTRAP_MANIFEST_HTTP_' + String(response && response.status || 'FAILED'));
     return response.json();
   }
