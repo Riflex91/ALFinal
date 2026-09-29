@@ -10960,21 +10960,24 @@
       const sharedObservedLeader = observedPartyLeaders.size === 1
         ? [...observedPartyLeaders][0]
         : null;
-      const leader = completeCurrentParty
+      const selectedLeader = completeCurrentParty
         ? String(currentLeader)
         : (sharedObservedLeader || preferredLeader);
-      if (!leader) return { ok: false, reason: 'FULL_AUTONOMY_PARTY_LEADER_UNAVAILABLE' };
+      if (!selectedLeader) return { ok: false, reason: 'FULL_AUTONOMY_PARTY_LEADER_UNAVAILABLE' };
 
-      // A complete healthy party retains its established leader. An incomplete
-      // owned-only party may also keep one account-wide observed leader, but
-      // that observation is shared over H19 heartbeats so every window reaches
-      // the same coordinator instead of trusting its local partial snapshot.
+      // Keep an already-complete owned party intact, but make the Merchant the
+      // deterministic bootstrap/recovery leader whenever the party is absent or
+      // incomplete. This prevents crossed request/invite handshakes while the
+      // combat leader remains free to lead farming independently.
       const stableMerchantCoordinator = support[0] && onlineDesired.includes(String(support[0]))
         ? String(support[0])
         : null;
+      const effectiveLeader = completeCurrentParty
+        ? String(currentLeader)
+        : (stableMerchantCoordinator || selectedLeader);
       const coordinatorName = stableMerchantCoordinator
-        || (onlineDesired.includes(String(leader || ''))
-          ? String(leader)
+        || (onlineDesired.includes(String(effectiveLeader || ''))
+          ? String(effectiveLeader)
           : (onlineDesired[0] || localName));
       const coordinator = localName === String(coordinatorName);
       const desiredActiveNames = stableDesired.slice();
@@ -10986,7 +10989,6 @@
           .sort()
         : [];
 
-      const effectiveLeader = leader;
       const policy = lifecycle.setPolicy({
         desiredActiveNames,
         desiredRuntimeRunningNames,
@@ -11535,6 +11537,40 @@
         if (!lifecycle.ok) {
           this.strategy.recordTraining(false);
           return this.lastDecision = { at: new Date().toISOString(), state: 'BLOCKED', reason: lifecycle.reason };
+        }
+
+        if (!lifecycle.partyTopologyHealthy) {
+          this.strategy.recordTraining(false);
+          try {
+            const farmStatus = this.runtime.farmIntelligence && this.runtime.farmIntelligence.status
+              ? this.runtime.farmIntelligence.status()
+              : null;
+            if (farmStatus && farmStatus.active && farmStatus.session
+                && String(farmStatus.session.owner || '') === 'full-autonomy') {
+              this.runtime.farmIntelligence.stopAutonomy('FULL_AUTONOMY_WAITING_PARTY_TOPOLOGY');
+              this.started.farming = false;
+            }
+          } catch (_) {}
+          return this.lastDecision = {
+            at: new Date().toISOString(),
+            state: 'WARMING',
+            reason: 'FULL_AUTONOMY_WAITING_PARTY_TOPOLOGY',
+            local: local.name,
+            taskType: plan.taskType,
+            executionMembers: plan.selected.memberNames,
+            supportMembers: plan.supportMemberNames,
+            desiredParty: lifecycle.partyNames,
+            executionLeader: plan.leaderName || null,
+            partyLeader: lifecycle.leader || null,
+            lifecycleCoordinator: lifecycle.coordinatorName,
+            localLifecycleCoordinator: lifecycle.coordinator === true,
+            lifecycleRecoveryRequired: lifecycle.recoveryRequired === true,
+            lifecycleRecoveryBlocked: lifecycle.recoverySafetyBlocked === true,
+            lifecycleRecoveryBlockReason: lifecycle.recoveryBlockReason || null,
+            partyTopologyHealthy: false,
+            missingDesiredCharacters: this.desiredCharacterNames.filter(name => !readiness.online.includes(name)),
+            desiredSelectionSource: selectionSource
+          };
         }
 
         const combat = this._ensureCombatRole(plan);
