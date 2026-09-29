@@ -575,7 +575,7 @@
           || meta.cash === true || finite(meta.cash, 0) > 0
           || meta.cash_item === true
           || meta.soulbound === true || meta.soul_bound === true
-          || meta.exchange === true || meta.e != null) {
+          || meta.exchange === true || finite(meta.e, 0) > 0) {
         return 'SPECIAL_ITEM_PROTECTED';
       }
       return null;
