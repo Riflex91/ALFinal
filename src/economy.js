@@ -52,6 +52,7 @@
       this.bank = options.bank || null;
       this.trade = options.trade || null;
       this.gear = options.gear || null;
+      this.gearProgression = options.gearProgression || null;
       this.upgrade = options.upgrade || null;
       this.exchangeCraft = options.exchangeCraft || null;
       this.partyLogistics = options.partyLogistics || null;
@@ -449,6 +450,7 @@
           inventorySlot: Number(upgradeCandidate.itemSlot),
           itemName: upgradeCandidate.itemName || upgradeCandidate.name || null,
           fromLevel: Number(upgradeCandidate.fromLevel || 0),
+          progression: upgradeCandidate.progression ? clone(upgradeCandidate.progression) : null,
           risk: Math.max(0, finite(upgradeCandidate.budget && upgradeCandidate.budget.itemValueAtRisk) || 0)
         });
         if (proposal) proposals.push(proposal);
@@ -461,6 +463,7 @@
           inventorySlots: clone(compoundCandidate.itemSlots || []),
           itemName: compoundCandidate.itemName || compoundCandidate.name || null,
           fromLevel: Number(compoundCandidate.fromLevel || 0),
+          progression: compoundCandidate.progression ? clone(compoundCandidate.progression) : null,
           risk: Math.max(0, finite(compoundCandidate.budget && compoundCandidate.budget.itemValueAtRisk) || 0)
         });
         if (proposal) proposals.push(proposal);
@@ -495,6 +498,9 @@
         actionsThisSession: this.actionsThisSession,
         maxActionsPerSession: this.config.maxActionsPerSession,
         pressure,
+        futureGearEvaluation: upgradePlan && upgradePlan.futureGearEvaluation
+          ? clone(upgradePlan.futureGearEvaluation)
+          : null,
         selected: selected ? clone(selected) : null,
         proposals: clone(proposals),
         blockers: clone(blockers),
@@ -711,6 +717,9 @@
         rejectionBackoff: Array.from(this.rejectionBackoff.entries()).map(([proposalId, untilMs]) => ({ proposalId, untilMs })),
         lastPlan: clone(this.lastPlan),
         lastAction: clone(this.lastAction),
+        futureGearPolicy: this.gearProgression && typeof this.gearProgression.status === 'function'
+          ? clone(this.gearProgression.status())
+          : null,
         config: clone(this.config),
         metrics: clone(this.metrics)
       };
