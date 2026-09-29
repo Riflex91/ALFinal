@@ -176,7 +176,7 @@ test('V3 compound policy accumulates until three identical items exist, then aut
 test('future gear disposal remains fail-closed when a live party profile lacks equipment evidence', () => {
   const profiles = [
     localWarrior(),
-    { name: 'RemoteRanger', ctype: 'ranger', level: 80, online: true, peerFresh: true, rip: false, equipment: null }
+    { name: 'RemoteWarrior', ctype: 'warrior', level: 80, online: true, peerFresh: true, rip: false, equipment: null }
   ];
   const { evaluator } = evaluatorFixture(profiles);
   const result = evaluator.evaluateInventory(inventory([item(0, 'junk_sword')])).evaluations[0];
