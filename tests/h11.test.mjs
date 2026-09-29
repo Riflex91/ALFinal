@@ -364,5 +364,5 @@ test('H11 runtime, API, UI, build and ActionBoundary are wired', () => {
   assert.match(build, /const runtimeVersion = '0\.26\.1-h26'/);
   assert.match(boundary, /send_item: Object\.freeze\(\{ publicName: 'send_item'/);
   assert.match(adapter, /playerCondition\(name, conditionId\)/);
-  assert.equal(pkg.version, '0.26.1');
+  assert.equal(pkg.version, '0.26.2');
 });
