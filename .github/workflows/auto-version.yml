@@ -18,6 +18,8 @@ on:
       - 'bootstrap/**/*.json'
       - 'scripts/build.mjs'
       - 'package.json'
+      - '.github/workflows/auto-version.yml'
+      - '.github/scripts/auto-version.mjs'
 
 permissions:
   contents: write
@@ -39,46 +41,106 @@ jobs:
         with:
           node-version: 22
 
-      - name: Bump, rebuild, verify and publish version
+      - name: Version, verify and promote stable
         shell: bash
         run: |
           set -euo pipefail
 
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
           for attempt in 1 2 3; do
-            echo "=== auto-version attempt ${attempt} ==="
+            echo "=== auto-version/stable attempt ${attempt} ==="
             git fetch origin main
             BASE_SHA="$(git rev-parse origin/main)"
             git reset --hard "$BASE_SHA"
 
             node .github/scripts/auto-version.mjs
 
-            if git diff --quiet; then
-              echo "No executable version bump required."
+            VERSION_CHANGED=false
+            if ! git diff --quiet; then
+              VERSION_CHANGED=true
+            fi
+
+            CANDIDATE_VERSION="$(node -p "require('./package.json').version")"
+            STABLE_VERSION="$(node -p "require('./release/al-bot-release.json').packageVersion")"
+            PROMOTE_STABLE="$(node - "$CANDIDATE_VERSION" "$STABLE_VERSION" <<'NODE'
+const [candidate, stable] = process.argv.slice(2);
+function parts(value) {
+  const match = String(value || '').match(/^(\d+)\.(\d+)\.(\d+)$/);
+  if (!match) throw new Error('INVALID_VERSION:' + String(value || ''));
+  return match.slice(1).map(Number);
+}
+const a = parts(candidate);
+const b = parts(stable);
+let compare = 0;
+for (let i = 0; i < 3; i += 1) {
+  if (a[i] > b[i]) { compare = 1; break; }
+  if (a[i] < b[i]) { compare = -1; break; }
+}
+process.stdout.write(compare > 0 ? 'true' : 'false');
+NODE
+)"
+
+            if [ "$PROMOTE_STABLE" != "true" ]; then
+              if [ "$VERSION_CHANGED" = "true" ]; then
+                echo "Auto-version produced candidate $CANDIDATE_VERSION but stable is $STABLE_VERSION; refusing non-forward promotion." >&2
+                exit 1
+              fi
+              echo "Stable $STABLE_VERSION already covers candidate $CANDIDATE_VERSION; nothing to publish."
               exit 0
             fi
 
-            CI=false npm run build
-            npm test
+            if [ "$VERSION_CHANGED" = "true" ]; then
+              CI=false npm run build
+              CI=true npm test
+
+              VERSION="$(node -p "require('./package.json').version")"
+              git add package.json scripts/build.mjs src tests dist/al-bot.js
+              git commit -m "chore(version): bump AL Bot to ${VERSION}"
+            else
+              # A PR may already carry the correct next version. Verify the exact
+              # committed bundle before promoting that tested main revision.
+              CI=true npm test
+            fi
+
+            RELEASE_SHA="$(git rev-parse HEAD)"
+            RELEASED_AT="$(git show -s --format=%cI "$RELEASE_SHA")"
+            RUNTIME_VERSION="$(node -e "const fs=require('fs');const s=fs.readFileSync('scripts/build.mjs','utf8');const m=s.match(/const runtimeVersion = '([^']+)'/);if(!m)process.exit(2);process.stdout.write(m[1]);")"
+
+            ALBOT_RELEASE_COMMIT_SHA="$RELEASE_SHA" \
+            ALBOT_RELEASED_AT="$RELEASED_AT" \
+            CI=true npm run build
+
+            # The promotion build may only change the stable pointer. If dist
+            # changes here, the release SHA would not describe the tested bundle.
+            if ! git diff --quiet -- dist/al-bot.js; then
+              echo "Promotion changed dist/al-bot.js after verification; refusing release." >&2
+              exit 1
+            fi
+
+            node --test tests/h22-bootstrap.test.mjs
+
+            git add release/al-bot-release.json
+            if git diff --cached --quiet; then
+              echo "Stable manifest already matches candidate ${RUNTIME_VERSION}."
+              exit 0
+            fi
+            git commit -m "chore(release): promote AL Bot ${RUNTIME_VERSION} to stable"
 
             git fetch origin main
             if [ "$(git rev-parse origin/main)" != "$BASE_SHA" ]; then
-              echo "main advanced while versioning; recomputing from newest main."
+              echo "main advanced while versioning/promoting; recomputing from newest main."
               continue
             fi
 
-            VERSION="$(node -p "require('./package.json').version")"
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add package.json scripts/build.mjs src tests dist/al-bot.js
-            git commit -m "chore(version): bump AL Bot to ${VERSION}"
-
             if git push origin HEAD:main; then
-              echo "Published AL Bot version ${VERSION}."
+              echo "Published and promoted AL Bot ${RUNTIME_VERSION} from ${RELEASE_SHA}."
               exit 0
             fi
 
-            echo "main advanced during push; retrying from newest main."
+            echo "main advanced during publish; retrying from newest main."
           done
 
-          echo "Auto-version could not obtain a stable main head after 3 attempts." >&2
+          echo "Auto-version/stable promotion could not obtain a stable main head after 3 attempts." >&2
           exit 1
