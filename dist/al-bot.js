@@ -1,4 +1,4 @@
-/* AL Bot 0.26.5-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.6-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -3079,6 +3079,7 @@
         localTimeoutMs: Math.max(3000, Math.min(60000, Number(options.localTimeoutMs) || 15000)),
         smartTimeoutMs: Math.max(10000, Math.min(10 * 60 * 1000, Number(options.smartTimeoutMs) || 120000)),
         stuckMs: Math.max(1500, Math.min(30000, Number(options.stuckMs) || 6000)),
+        mapOnlyStuckMs: Math.max(6000, Math.min(120000, Number(options.mapOnlyStuckMs) || 30000)),
         progressEpsilon: Math.max(0.5, Math.min(20, Number(options.progressEpsilon) || 2)),
         arrivalRadius: Math.max(2, Math.min(100, Number(options.arrivalRadius) || 12)),
         retargetMinAgeMs: Math.max(250, Math.min(10000, Number(options.retargetMinAgeMs) || 1000)),
@@ -3387,12 +3388,20 @@
         return;
       }
 
+      const mapOnlySmart = order.kind === 'smart'
+        && !!order.destination.map
+        && order.destination.x == null
+        && order.destination.y == null;
       let progress = false;
       if (order.lastMap != null && String(character.map || '') !== String(order.lastMap)) progress = true;
       if (currentDistance != null && (order.bestDistance == null || currentDistance < order.bestDistance - this.config.progressEpsilon)) {
         order.bestDistance = currentDistance;
         progress = true;
       }
+      // For map-only smart_move targets there is no coordinate distance to
+      // measure before the map transition. A live movement flag is therefore
+      // valid bounded progress evidence and must not be mistaken for a stall.
+      if (mapOnlySmart && character.moving === true) progress = true;
       if (progress) {
         order.lastProgressAtMs = now;
         order.progressEvents += 1;
@@ -3404,7 +3413,8 @@
         return;
       }
 
-      if (now - order.lastProgressAtMs >= this.config.stuckMs) {
+      const stuckLimitMs = mapOnlySmart ? this.config.mapOnlyStuckMs : this.config.stuckMs;
+      if (now - order.lastProgressAtMs >= stuckLimitMs) {
         this._finish('STUCK', 'MOVEMENT_STUCK_NO_PROGRESS', { lastObserved: observed });
         return;
       }
@@ -10950,21 +10960,24 @@
       const sharedObservedLeader = observedPartyLeaders.size === 1
         ? [...observedPartyLeaders][0]
         : null;
-      const leader = completeCurrentParty
+      const selectedLeader = completeCurrentParty
         ? String(currentLeader)
         : (sharedObservedLeader || preferredLeader);
-      if (!leader) return { ok: false, reason: 'FULL_AUTONOMY_PARTY_LEADER_UNAVAILABLE' };
+      if (!selectedLeader) return { ok: false, reason: 'FULL_AUTONOMY_PARTY_LEADER_UNAVAILABLE' };
 
-      // A complete healthy party retains its established leader. An incomplete
-      // owned-only party may also keep one account-wide observed leader, but
-      // that observation is shared over H19 heartbeats so every window reaches
-      // the same coordinator instead of trusting its local partial snapshot.
+      // Keep an already-complete owned party intact, but make the Merchant the
+      // deterministic bootstrap/recovery leader whenever the party is absent or
+      // incomplete. This prevents crossed request/invite handshakes while the
+      // combat leader remains free to lead farming independently.
       const stableMerchantCoordinator = support[0] && onlineDesired.includes(String(support[0]))
         ? String(support[0])
         : null;
+      const effectiveLeader = completeCurrentParty
+        ? String(currentLeader)
+        : (stableMerchantCoordinator || selectedLeader);
       const coordinatorName = stableMerchantCoordinator
-        || (onlineDesired.includes(String(leader || ''))
-          ? String(leader)
+        || (onlineDesired.includes(String(effectiveLeader || ''))
+          ? String(effectiveLeader)
           : (onlineDesired[0] || localName));
       const coordinator = localName === String(coordinatorName);
       const desiredActiveNames = stableDesired.slice();
@@ -10976,7 +10989,6 @@
           .sort()
         : [];
 
-      const effectiveLeader = leader;
       const policy = lifecycle.setPolicy({
         desiredActiveNames,
         desiredRuntimeRunningNames,
@@ -11525,6 +11537,40 @@
         if (!lifecycle.ok) {
           this.strategy.recordTraining(false);
           return this.lastDecision = { at: new Date().toISOString(), state: 'BLOCKED', reason: lifecycle.reason };
+        }
+
+        if (!lifecycle.partyTopologyHealthy) {
+          this.strategy.recordTraining(false);
+          try {
+            const farmStatus = this.runtime.farmIntelligence && this.runtime.farmIntelligence.status
+              ? this.runtime.farmIntelligence.status()
+              : null;
+            if (farmStatus && farmStatus.active && farmStatus.session
+                && String(farmStatus.session.owner || '') === 'full-autonomy') {
+              this.runtime.farmIntelligence.stopAutonomy('FULL_AUTONOMY_WAITING_PARTY_TOPOLOGY');
+              this.started.farming = false;
+            }
+          } catch (_) {}
+          return this.lastDecision = {
+            at: new Date().toISOString(),
+            state: 'WARMING',
+            reason: 'FULL_AUTONOMY_WAITING_PARTY_TOPOLOGY',
+            local: local.name,
+            taskType: plan.taskType,
+            executionMembers: plan.selected.memberNames,
+            supportMembers: plan.supportMemberNames,
+            desiredParty: lifecycle.partyNames,
+            executionLeader: plan.leaderName || null,
+            partyLeader: lifecycle.leader || null,
+            lifecycleCoordinator: lifecycle.coordinatorName,
+            localLifecycleCoordinator: lifecycle.coordinator === true,
+            lifecycleRecoveryRequired: lifecycle.recoveryRequired === true,
+            lifecycleRecoveryBlocked: lifecycle.recoverySafetyBlocked === true,
+            lifecycleRecoveryBlockReason: lifecycle.recoveryBlockReason || null,
+            partyTopologyHealthy: false,
+            missingDesiredCharacters: this.desiredCharacterNames.filter(name => !readiness.online.includes(name)),
+            desiredSelectionSource: selectionSource
+          };
         }
 
         const combat = this._ensureCombatRole(plan);
@@ -26393,7 +26439,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.5-h26';
+      this.version = options.version || '0.26.6-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -34462,7 +34508,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.5-h26',
+    version: '0.26.6-h26',
     bootCount,
     replacedPrevious: !!previous
   });

@@ -412,7 +412,7 @@ test('H18 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(runtime, /new ns\.PartyLogisticsController/);
   assert.match(runtime, /id: 'party-logistics'/);
   assert.match(runtime, /id: 'h18-party-logistics'/);
-  assert.match(runtime, /options\.version \|\| '0\.26\.5-h26'/);
+  assert.match(runtime, /options\.version \|\| '0\.26\.6-h26'/);
   assert.match(entry, /runtime\.partyLogistics\.queueSupply/);
   assert.match(entry, /runtime\.partyLogistics\.queueGold/);
   assert.match(entry, /Object\.freeze\(api\.partyLogistics\)/);
@@ -422,8 +422,8 @@ test('H18 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(fs.readFileSync(path.resolve(here, '../src/merchant.js'), 'utf8'), /H11_PARTY_LOGISTICS_OWNERSHIP/);
   assert.match(fs.readFileSync(path.resolve(here, '../src/economy.js'), 'utf8'), /partyLogistics/);
   assert.match(build, /src\/party-logistics\.js/);
-  assert.match(build, /const runtimeVersion = '0\.26\.5-h26'/);
-  assert.match(dist, /AL Bot 0\.26\.5-h26/);
+  assert.match(build, /const runtimeVersion = '0\.26\.6-h26'/);
+  assert.match(dist, /AL Bot 0\.26\.6-h26/);
   assert.match(dist, /class PartyLogisticsController/);
-  assert.equal(pkg.version, '0.26.5');
+  assert.equal(pkg.version, '0.26.6');
 });

@@ -41,6 +41,7 @@
         localTimeoutMs: Math.max(3000, Math.min(60000, Number(options.localTimeoutMs) || 15000)),
         smartTimeoutMs: Math.max(10000, Math.min(10 * 60 * 1000, Number(options.smartTimeoutMs) || 120000)),
         stuckMs: Math.max(1500, Math.min(30000, Number(options.stuckMs) || 6000)),
+        mapOnlyStuckMs: Math.max(6000, Math.min(120000, Number(options.mapOnlyStuckMs) || 30000)),
         progressEpsilon: Math.max(0.5, Math.min(20, Number(options.progressEpsilon) || 2)),
         arrivalRadius: Math.max(2, Math.min(100, Number(options.arrivalRadius) || 12)),
         retargetMinAgeMs: Math.max(250, Math.min(10000, Number(options.retargetMinAgeMs) || 1000)),
@@ -349,12 +350,20 @@
         return;
       }
 
+      const mapOnlySmart = order.kind === 'smart'
+        && !!order.destination.map
+        && order.destination.x == null
+        && order.destination.y == null;
       let progress = false;
       if (order.lastMap != null && String(character.map || '') !== String(order.lastMap)) progress = true;
       if (currentDistance != null && (order.bestDistance == null || currentDistance < order.bestDistance - this.config.progressEpsilon)) {
         order.bestDistance = currentDistance;
         progress = true;
       }
+      // For map-only smart_move targets there is no coordinate distance to
+      // measure before the map transition. A live movement flag is therefore
+      // valid bounded progress evidence and must not be mistaken for a stall.
+      if (mapOnlySmart && character.moving === true) progress = true;
       if (progress) {
         order.lastProgressAtMs = now;
         order.progressEvents += 1;
@@ -366,7 +375,8 @@
         return;
       }
 
-      if (now - order.lastProgressAtMs >= this.config.stuckMs) {
+      const stuckLimitMs = mapOnlySmart ? this.config.mapOnlyStuckMs : this.config.stuckMs;
+      if (now - order.lastProgressAtMs >= stuckLimitMs) {
         this._finish('STUCK', 'MOVEMENT_STUCK_NO_PROGRESS', { lastObserved: observed });
         return;
       }

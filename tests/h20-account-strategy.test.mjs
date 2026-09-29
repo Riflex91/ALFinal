@@ -480,6 +480,26 @@ test('full autonomy applies one shared party policy and starts the selected comb
 });
 
 
+test('H26 incomplete party bootstrap is Merchant-led while the combat leader stays independent', () => {
+  const { controller, state } = loadFullAutonomy({
+    localName: 'My_Merchant',
+    partyHealthy: false,
+    leaderName: 'My_Ranger1',
+    selectedMembers: ['My_Priest', 'My_Ranger1', 'My_Warrior']
+  });
+  const started = controller.startAutonomy({ taskType: 'FARM' });
+
+  assert.equal(started.accepted, true);
+  assert.equal(started.tick.state, 'WARMING');
+  assert.equal(started.tick.reason, 'FULL_AUTONOMY_WAITING_PARTY_TOPOLOGY');
+  assert.equal(started.tick.executionLeader, 'My_Ranger1');
+  assert.equal(started.tick.partyLeader, 'My_Merchant');
+  assert.equal(started.tick.lifecycleCoordinator, 'My_Merchant');
+  assert.equal(state.lifecyclePolicy.desiredPartyLeader, 'My_Merchant');
+  assert.equal(state.lifecycleStarts, 1);
+  assert.equal(state.farmStarts, 0);
+});
+
 test('healthy non-coordinator does not run competing lifecycle autonomy', () => {
   const { controller, state } = loadFullAutonomy({ localName: 'My_Priest', partyHealthy: true });
   const started = controller.startAutonomy({ taskType: 'FARM' });
@@ -693,7 +713,9 @@ test('full autonomy arms an already-active lifecycle and blocks if it later stop
 
   const started = controller.startAutonomy({ taskType: 'FARM' });
   assert.equal(started.accepted, true);
-  assert.equal(started.tick.state, 'RUNNING');
+  assert.equal(started.tick.state, 'WARMING');
+  assert.equal(started.tick.reason, 'FULL_AUTONOMY_WAITING_PARTY_TOPOLOGY');
+  assert.equal(started.tick.partyLeader, 'My_Merchant');
   assert.equal(state.lifecycleStarts, 0);
   assert.equal(controller.status().lifecycleArmed, true);
 
@@ -796,9 +818,13 @@ test('H26 non-Merchant windows follow the Merchant shared desired quartet instea
   assert.equal(started.accepted, true);
   assert.deepEqual([...controller.status().desiredCharacterNames], ['My_Merchant', 'My_Ranger1', 'My_Ranger2', 'My_Rogue']);
   assert.equal(controller.status().desiredSource, 'merchant-peer');
+  assert.equal(started.tick.state, 'WARMING');
+  assert.equal(started.tick.reason, 'FULL_AUTONOMY_WAITING_PARTY_TOPOLOGY');
   assert.deepEqual([...state.lifecyclePolicy.desiredActiveNames], ['My_Merchant', 'My_Ranger1', 'My_Ranger2', 'My_Rogue']);
+  assert.equal(state.lifecyclePolicy.desiredPartyLeader, 'My_Merchant');
   assert.equal(started.tick.lifecycleCoordinator, 'My_Merchant');
-  assert.equal(state.lifecycleStarts, 0, 'only the Merchant window may own proactive rotation while it is online');
+  assert.equal(state.lifecycleStarts, 0, 'only the Merchant window may own proactive party recovery while it is online');
+  assert.equal(state.farmStarts, 0);
 });
 
 test('H26 Merchant selection hysteresis prevents Rogue-Warrior ping-pong and adopts only a stable candidate', () => {

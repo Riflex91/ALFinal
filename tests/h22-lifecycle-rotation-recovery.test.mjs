@@ -230,7 +230,7 @@ test('H24 Full Autonomy preserves the requested catch-up quartet and fails close
   assert.equal(calls.lifecycleStarts, 0);
 });
 
-test('H22 lifecycle coordinator converges on one observed owned partial-party leader across different local snapshots', () => {
+test('H26 incomplete party recovery converges on the Merchant bootstrap leader across different local snapshots', () => {
   const ranger2Party = {
     available: true,
     partyId: 'old-ranger-party',
@@ -282,10 +282,10 @@ test('H22 lifecycle coordinator converges on one observed owned partial-party le
   assert.equal(b.ok, true);
   assert.equal(a.coordinatorName, 'My_Merchant');
   assert.equal(b.coordinatorName, 'My_Merchant');
-  assert.equal(a.leader, 'My_Ranger2');
-  assert.equal(b.leader, 'My_Ranger2');
+  assert.equal(a.leader, 'My_Merchant');
+  assert.equal(b.leader, 'My_Merchant');
   assert.deepEqual(Array.from(a.observedPartyLeaders), ['My_Ranger2']);
   assert.deepEqual(Array.from(b.observedPartyLeaders), ['My_Ranger2']);
-  assert.equal(first.calls.policies[0].desiredPartyLeader, 'My_Ranger2');
-  assert.equal(second.calls.policies[0].desiredPartyLeader, 'My_Ranger2');
+  assert.equal(first.calls.policies[0].desiredPartyLeader, 'My_Merchant');
+  assert.equal(second.calls.policies[0].desiredPartyLeader, 'My_Merchant');
 });
