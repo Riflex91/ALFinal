@@ -941,7 +941,9 @@
             state: 'WARMING',
             reason: 'FULL_AUTONOMY_WAITING_MERCHANT_SELECTION',
             merchantName,
-            onlineCharacterNames: readiness.online
+            onlineCharacterNames: readiness.online,
+            missingProfiles: readiness.missing || [],
+            missingPeerNames: readiness.missingPeerNames || []
           };
         }
 
