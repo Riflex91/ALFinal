@@ -18,6 +18,22 @@ function readJson(relativePath) {
   return JSON.parse(readText(relativePath));
 }
 
+function git(args, options = {}) {
+  return execFileSync('git', args, {
+    cwd: root,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', options.quiet ? 'ignore' : 'pipe']
+  }).trim();
+}
+
+function tryGit(args) {
+  try {
+    return git(args, { quiet: true });
+  } catch (_) {
+    return null;
+  }
+}
+
 function incrementPatch(version) {
   const match = String(version || '').match(/^(\d+)\.(\d+)\.(\d+)$/);
   if (!match) throw new Error('AUTO_VERSION_INVALID_PACKAGE_VERSION:' + String(version || ''));
@@ -33,17 +49,169 @@ function escapedVersion(version) {
   return String(version).replace(/\./g, '\\.');
 }
 
-function previousPackageVersion() {
+function normalizePath(value) {
+  return String(value || '').replaceAll('\\', '/');
+}
+
+function isExecutableVersionPath(relativePath) {
+  const name = normalizePath(relativePath);
+  if (name === 'package.json' || name === 'scripts/build.mjs') return true;
+  return /^(?:src|host|bootstrap)\/.+\.(?:js|mjs|cjs|json)$/.test(name);
+}
+
+function listFilesAt(ref) {
+  const output = tryGit(['ls-tree', '-r', '--name-only', ref]);
+  if (!output) return [];
+  return output.split('\n').map(normalizePath).filter(Boolean);
+}
+
+function readFileAt(ref, relativePath) {
   try {
-    const previous = execFileSync('git', ['show', 'HEAD^:package.json'], {
+    return execFileSync('git', ['show', ref + ':' + normalizePath(relativePath)], {
       cwd: root,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore']
     });
-    return JSON.parse(previous).version || null;
   } catch (_) {
     return null;
   }
+}
+
+function packageVersionAt(ref) {
+  const source = readFileAt(ref, 'package.json');
+  if (!source) return null;
+  try {
+    return String(JSON.parse(source).version || '') || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function findCurrentVersionBaseline(currentVersion) {
+  const history = tryGit(['rev-list', '--first-parent', '--max-count=500', 'HEAD']);
+  if (!history) return null;
+  for (const commit of history.split('\n').filter(Boolean)) {
+    if (packageVersionAt(commit) !== currentVersion) continue;
+    const parent = tryGit(['rev-parse', commit + '^']);
+    const parentVersion = parent ? packageVersionAt(parent) : null;
+    if (parentVersion !== currentVersion) return commit;
+  }
+  return null;
+}
+
+function stripJsComments(source) {
+  const text = String(source || '').replace(/\r\n/g, '\n');
+  let out = '';
+  let state = 'code';
+  let quote = '';
+  let escaped = false;
+
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    const next = text[i + 1] || '';
+
+    if (state === 'line-comment') {
+      if (ch === '\n') {
+        out += '\n';
+        state = 'code';
+      }
+      continue;
+    }
+
+    if (state === 'block-comment') {
+      if (ch === '*' && next === '/') {
+        out += ' ';
+        state = 'code';
+        i += 1;
+      } else if (ch === '\n') {
+        out += '\n';
+      }
+      continue;
+    }
+
+    if (state === 'string') {
+      out += ch;
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (ch === quote) {
+        state = 'code';
+        quote = '';
+      }
+      continue;
+    }
+
+    if (ch === '/' && next === '/') {
+      state = 'line-comment';
+      i += 1;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      state = 'block-comment';
+      i += 1;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      state = 'string';
+      quote = ch;
+      out += ch;
+      continue;
+    }
+    out += ch;
+  }
+
+  return out;
+}
+
+function stableSortJson(value) {
+  if (Array.isArray(value)) return value.map(stableSortJson);
+  if (!value || typeof value !== 'object') return value;
+  const out = {};
+  for (const key of Object.keys(value).sort()) out[key] = stableSortJson(value[key]);
+  return out;
+}
+
+function semanticProjection(relativePath, source) {
+  if (source == null) return null;
+  const name = normalizePath(relativePath);
+
+  if (name.endsWith('.json')) {
+    try {
+      const parsed = JSON.parse(source);
+      if (name === 'package.json' && parsed && typeof parsed === 'object') delete parsed.version;
+      return JSON.stringify(stableSortJson(parsed));
+    } catch (_) {
+      return String(source).replace(/\s+/g, ' ').trim();
+    }
+  }
+
+  return stripJsComments(source)
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean)
+    .join('\n');
+}
+
+function executableChangesSince(baseRef, headRef = 'HEAD') {
+  if (!baseRef) {
+    return [{ path: null, reason: 'VERSION_BASELINE_UNAVAILABLE' }];
+  }
+  const candidates = new Set([
+    ...listFilesAt(baseRef).filter(isExecutableVersionPath),
+    ...listFilesAt(headRef).filter(isExecutableVersionPath)
+  ]);
+  const changed = [];
+  for (const relativePath of [...candidates].sort()) {
+    const before = semanticProjection(relativePath, readFileAt(baseRef, relativePath));
+    const after = semanticProjection(relativePath, readFileAt(headRef, relativePath));
+    if (before !== after) changed.push({ path: relativePath, reason: before == null ? 'ADDED' : after == null ? 'DELETED' : 'SEMANTIC_CHANGE' });
+  }
+  return changed;
 }
 
 function updateH22BootstrapTest(source, nextRuntimeVersion, nextPackageVersion, stableManifest) {
@@ -87,10 +255,10 @@ function updateVersionReferences(directory, currentPackageVersion, nextPackageVe
       continue;
     }
     if (!entry.isFile() || !/\.(?:js|mjs)$/.test(entry.name)) continue;
-    if (relative.replaceAll('\\', '/') === 'tests/h22-bootstrap.test.mjs') continue;
+    if (normalizePath(relative) === 'tests/h22-bootstrap.test.mjs') continue;
 
     const original = readText(relative);
-    let updated = original
+    const updated = original
       .split(currentRuntimeVersion).join(nextRuntimeVersion)
       .split(escapedVersion(currentRuntimeVersion)).join(escapedVersion(nextRuntimeVersion))
       .split(currentPackageVersion).join(nextPackageVersion);
@@ -100,22 +268,29 @@ function updateVersionReferences(directory, currentPackageVersion, nextPackageVe
 
 const pkg = readJson('package.json');
 const currentPackageVersion = String(pkg.version || '');
-const previousVersion = previousPackageVersion();
-
-if (previousVersion && previousVersion !== currentPackageVersion) {
-  console.log('AUTO_VERSION_SKIP_ALREADY_VERSIONED', {
-    previousVersion,
-    currentPackageVersion
-  });
-  process.exit(0);
-}
-
 const entrySource = readText('src/entry.js');
 const runtimeMatch = entrySource.match(/version:\s*'(\d+\.\d+\.\d+)-(h\d+)'/);
 if (!runtimeMatch) throw new Error('AUTO_VERSION_RUNTIME_SUFFIX_NOT_FOUND');
 const currentRuntimeVersion = runtimeMatch[1] + '-' + runtimeMatch[2];
 if (runtimeMatch[1] !== currentPackageVersion) {
   throw new Error('AUTO_VERSION_PACKAGE_RUNTIME_MISMATCH:' + currentPackageVersion + ':' + currentRuntimeVersion);
+}
+
+const versionBaseline = findCurrentVersionBaseline(currentPackageVersion);
+const relevantChanges = executableChangesSince(versionBaseline, 'HEAD');
+if (relevantChanges.length === 0) {
+  console.log('AUTO_VERSION_SKIP_NO_EXECUTABLE_CHANGE', {
+    version: currentRuntimeVersion,
+    baseline: versionBaseline
+  });
+  process.exit(0);
+}
+if (versionBaseline === tryGit(['rev-parse', 'HEAD'])) {
+  console.log('AUTO_VERSION_SKIP_ALREADY_VERSIONED', {
+    version: currentRuntimeVersion,
+    baseline: versionBaseline
+  });
+  process.exit(0);
 }
 
 const nextPackageVersion = incrementPatch(currentPackageVersion);
@@ -153,16 +328,17 @@ updateVersionReferences('scripts', currentPackageVersion, nextPackageVersion, cu
 updateVersionReferences('tests', currentPackageVersion, nextPackageVersion, currentRuntimeVersion, nextRuntimeVersion);
 
 const h22Path = 'tests/h22-bootstrap.test.mjs';
-const h22Updated = updateH22BootstrapTest(
+writeText(h22Path, updateH22BootstrapTest(
   readText(h22Path),
   nextRuntimeVersion,
   nextPackageVersion,
   stableManifest
-);
-writeText(h22Path, h22Updated);
+));
 
 console.log('AUTO_VERSION_BUMPED', {
   from: currentRuntimeVersion,
   to: nextRuntimeVersion,
+  baseline: versionBaseline,
+  relevantChanges,
   stable: stableManifest.version
 });

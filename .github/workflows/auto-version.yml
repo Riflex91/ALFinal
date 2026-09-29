@@ -4,7 +4,20 @@ on:
   push:
     branches: [main]
     paths:
-      - 'src/**'
+      - 'src/**/*.js'
+      - 'src/**/*.mjs'
+      - 'src/**/*.cjs'
+      - 'src/**/*.json'
+      - 'host/**/*.js'
+      - 'host/**/*.mjs'
+      - 'host/**/*.cjs'
+      - 'host/**/*.json'
+      - 'bootstrap/**/*.js'
+      - 'bootstrap/**/*.mjs'
+      - 'bootstrap/**/*.cjs'
+      - 'bootstrap/**/*.json'
+      - 'scripts/build.mjs'
+      - 'package.json'
 
 permissions:
   contents: write
@@ -20,7 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -40,7 +53,7 @@ jobs:
             node .github/scripts/auto-version.mjs
 
             if git diff --quiet; then
-              echo "No automatic version bump required."
+              echo "No executable version bump required."
               exit 0
             fi
 
