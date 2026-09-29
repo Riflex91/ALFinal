@@ -470,9 +470,9 @@ test('H9 control center and one-click live suite are wired', () => {
   assert.match(runtime, /visibleSafe\.length > 0/);
   assert.match(runtime, /h9-adaptive-decisions/);
   assert.match(runtime, /timeoutMs: 85000/);
-  assert.match(entry, /0\.26\.6-h26/);
+  assert.match(entry, /0\.26\.7-h26/);
   assert.match(entry, /farmIntelligence:/);
-  assert.match(build, /const runtimeVersion = '0\.26\.6-h26'/);
+  assert.match(build, /const runtimeVersion = '0\.26\.7-h26'/);
 });
 
 test('H9 game adapter normalizes live farm data for scoring', () => {
