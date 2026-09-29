@@ -209,8 +209,30 @@
       return new Set(rows.map(String).filter(name => owned.has(name)));
     }
 
-    _resolveSendCm() {
+    _communicationRoots() {
+      const out = [];
+      const push = candidate => {
+        if (candidate && !out.includes(candidate)) out.push(candidate);
+      };
+
       for (const candidate of this._roots()) {
+        push(candidate);
+        try {
+          const frame = candidate && candidate.maincode;
+          if (frame && frame.contentWindow) push(frame.contentWindow);
+        } catch (_) {}
+        try {
+          const frame = candidate && candidate.document && typeof candidate.document.getElementById === 'function'
+            ? candidate.document.getElementById('maincode')
+            : null;
+          if (frame && frame.contentWindow) push(frame.contentWindow);
+        } catch (_) {}
+      }
+      return out;
+    }
+
+    _resolveSendCm() {
+      for (const candidate of this._communicationRoots()) {
         try {
           if (candidate && typeof candidate.send_cm === 'function') {
             return { owner: candidate, fn: candidate.send_cm };
@@ -221,10 +243,15 @@
     }
 
     _resolveCharacterCmEmitter() {
-      for (const candidate of this._roots()) {
+      for (const candidate of this._communicationRoots()) {
         try {
           const character = candidate && candidate.character;
-          if (character && typeof character.on === 'function') return character;
+          const officialCodeProxy = !!character
+            && character.proxy_character === true
+            && typeof character.on === 'function'
+            && typeof character.remove === 'function'
+            && typeof character.trigger === 'function';
+          if (officialCodeProxy) return character;
         } catch (_) {}
       }
       return null;
