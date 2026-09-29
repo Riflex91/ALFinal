@@ -1,4 +1,4 @@
-/* AL Bot 0.26.1-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.2-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -33145,7 +33145,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.1-h26',
+    version: '0.26.2-h26',
     bootCount,
     replacedPrevious: !!previous
   });
