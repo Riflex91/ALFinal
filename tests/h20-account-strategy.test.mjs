@@ -209,7 +209,7 @@ test('activity requirements change the exact three-farmer composition without ha
 });
 
 
-function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, inactiveFullAutonomyName = null, localName = 'My_Warrior', partyHealthy = true, partyLeader = 'My_Warrior', partyMembers = null, profileRows: customProfileRows = null, selectedMembers = ['My_Priest', 'My_Ranger1', 'My_Warrior'], supportMembers = ['My_Merchant'], leaderName = 'My_Warrior', lifecycleSuspended = false, lifecycleSuspendedReason = null, farmSuspended = false, farmSuspendedReason = null, farmOwner = 'full-autonomy', onlineNames = ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior'] } = {}) {
+function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, inactiveFullAutonomyName = null, localName = 'My_Warrior', partyHealthy = true, partyLeader = 'My_Warrior', partyMembers = null, profileRows: customProfileRows = null, selectedMembers = ['My_Priest', 'My_Ranger1', 'My_Warrior'], supportMembers = ['My_Merchant'], leaderName = 'My_Warrior', merchantDesiredNames = null, merchantLeaderName = null, lifecycleSuspended = false, lifecycleSuspendedReason = null, farmSuspended = false, farmSuspendedReason = null, farmOwner = 'full-autonomy', onlineNames = ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior'] } = {}) {
   const source = fs.readFileSync(path.resolve(here, '../src/full-autonomy.js'), 'utf8');
   const clone = value => value == null ? value : JSON.parse(JSON.stringify(value));
   const ctx = {
@@ -249,6 +249,9 @@ function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, inactiv
     logisticsStops: 0,
     logisticsActive: false,
     stoppedPeerName,
+    selectedMembers: selectedMembers.slice(),
+    merchantDesiredNames: (merchantDesiredNames || [...selectedMembers, ...supportMembers]).slice().sort(),
+    merchantLeaderName: merchantLeaderName || leaderName,
     broadcasts: 0,
     training: []
   };
@@ -286,7 +289,7 @@ function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, inactiv
     optimizeTask: () => ({
       status: 'SELECTION_READY',
       taskType: 'FARM',
-      selected: { memberNames: selectedMembers.slice() },
+      selected: { memberNames: state.selectedMembers.slice() },
       supportMemberNames: supportMembers.slice(),
       leaderName,
       progression: { selectedCharacterName: 'My_Ranger1' }
@@ -312,7 +315,12 @@ function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, inactiv
       state.lifecycleAutonomyEnabled = false;
       state.lifecycleLastAction = { type: 'AUTONOMY_STOPPED', reason };
       return { accepted: true };
-    }
+    },
+    characterRotationReadiness: desired => ({
+      ready: true,
+      reason: 'H25_ROTATION_CHARACTER_CONTROL_READY',
+      desiredCharacterNames: desired.slice()
+    })
   };
   const farmIntelligence = {
     status: () => ({
@@ -392,7 +400,24 @@ function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, inactiv
     economy,
     merchantStand,
     partyLogistics,
-    lifecycleTransport: { broadcastHeartbeat: () => { state.broadcasts += 1; } }
+    lifecycleTransport: {
+      broadcastHeartbeat: () => { state.broadcasts += 1; },
+      freshPeer: name => {
+        const merchant = supportMembers[0];
+        if (String(name) !== String(merchant)
+            || String(localName) === String(merchant)
+            || missingPeer
+            || !state.onlineNames.includes(String(merchant))) return null;
+        return {
+          name: String(merchant),
+          running: true,
+          fullAutonomyEnabled: true,
+          fullAutonomyDesiredCharacterNames: state.merchantDesiredNames.slice(),
+          fullAutonomyLeaderName: state.merchantLeaderName
+        };
+      },
+      freshPeers: () => []
+    }
   };
   const controller = new Controller({ runtime, strategy });
   controller.start({});
@@ -461,7 +486,7 @@ test('healthy non-coordinator does not run competing lifecycle autonomy', () => 
   assert.equal(started.accepted, true);
   assert.equal(started.tick.state, 'RUNNING');
   assert.equal(started.tick.localLifecycleCoordinator, false);
-  assert.equal(started.tick.lifecycleCoordinator, 'My_Warrior');
+  assert.equal(started.tick.lifecycleCoordinator, 'My_Merchant');
   assert.equal(state.lifecycleStarts, 0);
 });
 
@@ -490,7 +515,7 @@ test('healthy full-live roles continue while lifecycle recovery remains safely s
   assert.equal(started.accepted, true);
   assert.equal(started.tick.state, 'RUNNING');
   assert.equal(started.tick.partyTopologyHealthy, true);
-  assert.equal(started.tick.lifecycleCoordinator, 'My_Priest');
+  assert.equal(started.tick.lifecycleCoordinator, 'My_Merchant');
   assert.equal(started.tick.lifecycleRecoveryRequired, false);
   assert.equal(started.tick.lifecycleRecoveryBlocked, true);
   assert.equal(started.tick.lifecycleRecoveryBlockReason, 'H19_STOP_UNVERIFIED_TIMEOUT');
@@ -554,14 +579,15 @@ test('Full Autonomy rotates an old farmer out when strategy selects a different 
   assert.equal(started.tick.rotationRequired, true);
   assert.deepEqual([...started.tick.desiredCharacterNames], ['My_Mage', 'My_Merchant', 'My_Ranger1', 'My_Warrior']);
   assert.deepEqual([...started.tick.unexpectedOnlineNames], ['My_Priest']);
-  assert.equal(state.lifecycleStarts, 1);
+  assert.equal(started.tick.lifecycleCoordinator, 'My_Merchant');
+  assert.equal(state.lifecycleStarts, 0);
   assert.deepEqual([...state.lifecyclePolicy.desiredActiveNames], ['My_Mage', 'My_Merchant', 'My_Ranger1', 'My_Warrior']);
   assert.deepEqual([...state.lifecyclePolicy.desiredPartyMemberNames], ['My_Mage', 'My_Merchant', 'My_Ranger1', 'My_Warrior']);
   assert.equal(state.farmStarts, 0);
 });
 
 test('full autonomy honors a lifecycle self-stop and does not restart it on the next tick', () => {
-  const { controller, state } = loadFullAutonomy({ partyHealthy: false });
+  const { controller, state } = loadFullAutonomy({ localName: 'My_Merchant', partyHealthy: false });
   const started = controller.startAutonomy({ taskType: 'FARM' });
   assert.equal(started.accepted, true);
   assert.equal(state.lifecycleStarts, 1);
@@ -662,7 +688,7 @@ test('Full Autonomy stops an already-active owned H9 session when the local farm
 });
 
 test('full autonomy arms an already-active lifecycle and blocks if it later stops', () => {
-  const { controller, state } = loadFullAutonomy({ partyHealthy: false });
+  const { controller, state } = loadFullAutonomy({ localName: 'My_Merchant', partyHealthy: false });
   state.lifecycleAutonomyEnabled = true;
 
   const started = controller.startAutonomy({ taskType: 'FARM' });
@@ -681,7 +707,7 @@ test('full autonomy arms an already-active lifecycle and blocks if it later stop
 });
 
 test('stopped desired peer triggers lifecycle recovery even when party topology is healthy', () => {
-  const { controller, state } = loadFullAutonomy({ stoppedPeerName: 'My_Ranger1' });
+  const { controller, state } = loadFullAutonomy({ localName: 'My_Merchant', stoppedPeerName: 'My_Ranger1' });
   const started = controller.startAutonomy({ taskType: 'FARM' });
   assert.equal(started.accepted, true);
   assert.equal(started.tick.state, 'WARMING');
@@ -704,7 +730,8 @@ test('full autonomy pauses owned FARM work before recovering a dropped pinned ro
   assert.equal(next.reason, 'FULL_AUTONOMY_RECOVERING_EXPECTED_ROSTER');
   assert.equal(state.farmActive, false);
   assert.equal(state.farmStops, 1);
-  assert.equal(state.lifecycleStarts, 1);
+  assert.equal(next.lifecycleCoordinator, 'My_Merchant');
+  assert.equal(state.lifecycleStarts, 0);
 });
 
 test('suspended Farm Intelligence blocks Full Autonomy instead of reporting RUNNING', () => {
@@ -745,4 +772,70 @@ test('Full Autonomy enables safe Merchant Stand management and restores default-
   controller.stopAutonomy('TEST_STOP');
   assert.equal(state.standAutoManage, false);
   assert.equal(controller.status().standManagedByFullAutonomy, false);
+});
+
+
+test('H26 non-Merchant windows follow the Merchant shared desired quartet instead of rotating independently', () => {
+  const { controller, state } = loadFullAutonomy({
+    localName: 'My_Rogue',
+    partyHealthy: false,
+    profileRows: [
+      { name: 'My_Rogue', ctype: 'rogue' },
+      { name: 'My_Warrior', ctype: 'warrior' },
+      { name: 'My_Ranger1', ctype: 'ranger' },
+      { name: 'My_Ranger2', ctype: 'ranger' },
+      { name: 'My_Merchant', ctype: 'merchant' }
+    ],
+    selectedMembers: ['My_Ranger1', 'My_Ranger2', 'My_Warrior'],
+    merchantDesiredNames: ['My_Merchant', 'My_Ranger1', 'My_Ranger2', 'My_Rogue'],
+    merchantLeaderName: 'My_Ranger1',
+    onlineNames: ['My_Merchant', 'My_Ranger1', 'My_Ranger2', 'My_Rogue']
+  });
+
+  const started = controller.startAutonomy({ taskType: 'FARM' });
+  assert.equal(started.accepted, true);
+  assert.deepEqual([...controller.status().desiredCharacterNames], ['My_Merchant', 'My_Ranger1', 'My_Ranger2', 'My_Rogue']);
+  assert.equal(controller.status().desiredSource, 'merchant-peer');
+  assert.deepEqual([...state.lifecyclePolicy.desiredActiveNames], ['My_Merchant', 'My_Ranger1', 'My_Ranger2', 'My_Rogue']);
+  assert.equal(started.tick.lifecycleCoordinator, 'My_Merchant');
+  assert.equal(state.lifecycleStarts, 0, 'only the Merchant window may own proactive rotation while it is online');
+});
+
+test('H26 Merchant selection hysteresis prevents Rogue-Warrior ping-pong and adopts only a stable candidate', () => {
+  const { controller, state } = loadFullAutonomy({
+    localName: 'My_Merchant',
+    partyHealthy: true,
+    partyLeader: 'My_Ranger1',
+    partyMembers: ['My_Merchant', 'My_Ranger1', 'My_Ranger2', 'My_Rogue'],
+    profileRows: [
+      { name: 'My_Rogue', ctype: 'rogue' },
+      { name: 'My_Warrior', ctype: 'warrior' },
+      { name: 'My_Ranger1', ctype: 'ranger' },
+      { name: 'My_Ranger2', ctype: 'ranger' },
+      { name: 'My_Merchant', ctype: 'merchant' }
+    ],
+    selectedMembers: ['My_Ranger1', 'My_Ranger2', 'My_Rogue'],
+    supportMembers: ['My_Merchant'],
+    leaderName: 'My_Ranger1',
+    onlineNames: ['My_Merchant', 'My_Ranger1', 'My_Ranger2', 'My_Rogue']
+  });
+
+  const started = controller.startAutonomy({ taskType: 'FARM', selectionStabilityMs: 3000, rotationCooldownMs: 10000 });
+  assert.equal(started.accepted, true);
+  assert.deepEqual([...controller.status().desiredCharacterNames], ['My_Merchant', 'My_Ranger1', 'My_Ranger2', 'My_Rogue']);
+
+  state.selectedMembers = ['My_Ranger1', 'My_Ranger2', 'My_Warrior'];
+  controller.desiredChangedAtMs = Date.now() - 20000;
+  const candidate = controller.tick();
+  assert.deepEqual([...controller.status().desiredCharacterNames], ['My_Merchant', 'My_Ranger1', 'My_Ranger2', 'My_Rogue']);
+  assert.deepEqual([...controller.status().selectionCandidateNames], ['My_Merchant', 'My_Ranger1', 'My_Ranger2', 'My_Warrior']);
+  assert.equal(candidate.state, 'RUNNING');
+
+  controller.selectionCandidateSinceMs = Date.now() - 4000;
+  const adopted = controller.tick();
+  assert.deepEqual([...controller.status().desiredCharacterNames], ['My_Merchant', 'My_Ranger1', 'My_Ranger2', 'My_Warrior']);
+  assert.equal(controller.status().selectionCandidateNames.length, 0);
+  assert.equal(adopted.state, 'WARMING');
+  assert.equal(adopted.reason, 'FULL_AUTONOMY_ROTATING_ACTIVITY_GROUP');
+  assert.equal(adopted.lifecycleCoordinator, 'My_Merchant');
 });

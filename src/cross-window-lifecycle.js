@@ -338,6 +338,10 @@
         emergencyStopLatched: row.emergencyStopLatched === true,
         lifecycleAutonomyEnabled: typeof row.lifecycleAutonomyEnabled === 'boolean' ? row.lifecycleAutonomyEnabled : null,
         fullAutonomyEnabled: typeof row.fullAutonomyEnabled === 'boolean' ? row.fullAutonomyEnabled : null,
+        fullAutonomyDesiredCharacterNames: Array.isArray(row.fullAutonomyDesiredCharacterNames)
+          ? [...new Set(row.fullAutonomyDesiredCharacterNames.map(name => cleanText(name, 120)).filter(Boolean))].sort().slice(0, 4)
+          : [],
+        fullAutonomyLeaderName: cleanText(row.fullAutonomyLeaderName || '', 120) || null,
         characterDisconnectCapable: row.characterDisconnectCapable === true,
         characterNavigateCapable: row.characterNavigateCapable === true,
         version: cleanText(row.version || '', 80) || null,
@@ -430,6 +434,10 @@
         emergencyStopLatched: state.emergencyStopLatched === true,
         lifecycleAutonomyEnabled: typeof state.lifecycleAutonomyEnabled === 'boolean' ? state.lifecycleAutonomyEnabled : null,
         fullAutonomyEnabled: typeof state.fullAutonomyEnabled === 'boolean' ? state.fullAutonomyEnabled : null,
+        fullAutonomyDesiredCharacterNames: Array.isArray(state.fullAutonomyDesiredCharacterNames)
+          ? [...new Set(state.fullAutonomyDesiredCharacterNames.map(name => cleanText(name, 120)).filter(Boolean))].sort().slice(0, 4)
+          : [],
+        fullAutonomyLeaderName: cleanText(state.fullAutonomyLeaderName || '', 120) || null,
         characterDisconnectCapable: state.characterDisconnectCapable === true,
         characterNavigateCapable: state.characterNavigateCapable === true,
         version: cleanText(state.version || '', 80) || null,

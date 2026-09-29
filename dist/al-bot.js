@@ -1,4 +1,4 @@
-/* AL Bot 0.26.4-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.5-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -6537,6 +6537,10 @@
         emergencyStopLatched: row.emergencyStopLatched === true,
         lifecycleAutonomyEnabled: typeof row.lifecycleAutonomyEnabled === 'boolean' ? row.lifecycleAutonomyEnabled : null,
         fullAutonomyEnabled: typeof row.fullAutonomyEnabled === 'boolean' ? row.fullAutonomyEnabled : null,
+        fullAutonomyDesiredCharacterNames: Array.isArray(row.fullAutonomyDesiredCharacterNames)
+          ? [...new Set(row.fullAutonomyDesiredCharacterNames.map(name => cleanText(name, 120)).filter(Boolean))].sort().slice(0, 4)
+          : [],
+        fullAutonomyLeaderName: cleanText(row.fullAutonomyLeaderName || '', 120) || null,
         characterDisconnectCapable: row.characterDisconnectCapable === true,
         characterNavigateCapable: row.characterNavigateCapable === true,
         version: cleanText(row.version || '', 80) || null,
@@ -6629,6 +6633,10 @@
         emergencyStopLatched: state.emergencyStopLatched === true,
         lifecycleAutonomyEnabled: typeof state.lifecycleAutonomyEnabled === 'boolean' ? state.lifecycleAutonomyEnabled : null,
         fullAutonomyEnabled: typeof state.fullAutonomyEnabled === 'boolean' ? state.fullAutonomyEnabled : null,
+        fullAutonomyDesiredCharacterNames: Array.isArray(state.fullAutonomyDesiredCharacterNames)
+          ? [...new Set(state.fullAutonomyDesiredCharacterNames.map(name => cleanText(name, 120)).filter(Boolean))].sort().slice(0, 4)
+          : [],
+        fullAutonomyLeaderName: cleanText(state.fullAutonomyLeaderName || '', 120) || null,
         characterDisconnectCapable: state.characterDisconnectCapable === true,
         characterNavigateCapable: state.characterNavigateCapable === true,
         version: cleanText(state.version || '', 80) || null,
@@ -7406,6 +7414,12 @@
       this.party = options.party || null;
       this.storage = options.storage || null;
       this.crossWindow = options.crossWindow || null;
+      this.navigateCharacterLocal = typeof options.navigateCharacterLocal === 'function'
+        ? options.navigateCharacterLocal
+        : null;
+      this.canNavigateCharacterLocal = typeof options.canNavigateCharacterLocal === 'function'
+        ? options.canNavigateCharacterLocal
+        : () => false;
       this.sessionId = cleanText(
         options.sessionId || this.crossWindow && this.crossWindow.sessionId || '',
         240
@@ -7946,7 +7960,15 @@
 
       for (const name of unexpectedOnlineNames) {
         if (String(name) === String(localName)) {
-          blockers.push('H19_ROTATION_WOULD_STOP_LOCAL:' + name);
+          if (remainingMissing.length
+              && this.navigateCharacterLocal
+              && this.canNavigateCharacterLocal() === true) {
+            browserSwapPairs.push({ from: String(name), to: String(remainingMissing.shift()), local: true });
+            continue;
+          }
+          blockers.push(remainingMissing.length
+            ? 'H25_ROTATION_LOCAL_BROWSER_NAVIGATION_UNAVAILABLE:' + name
+            : 'H19_ROTATION_WOULD_STOP_LOCAL:' + name);
           continue;
         }
         if (runnerActive.has(String(name))) {
@@ -8006,7 +8028,8 @@
         return { ok: false, reason: 'H19_TARGET_NOT_OWNED' };
       }
       const localName = this._localName();
-      if (String(owned.name) === String(localName)) {
+      const isLocal = String(owned.name) === String(localName);
+      if (isLocal && mode !== 'BROWSER_SWAP') {
         return { ok: false, reason: 'H19_REMOTE_TARGET_IS_LOCAL' };
       }
 
@@ -8052,6 +8075,12 @@
         if (!active) return { ok: false, reason: 'H25_BROWSER_SWAP_SOURCE_NOT_ONLINE' };
         if (!desiredName || !desiredOwned || desiredName === targetName) return { ok: false, reason: 'H25_BROWSER_SWAP_TARGET_INVALID' };
         if (desiredPresent) return { ok: false, reason: 'H25_BROWSER_SWAP_TARGET_ALREADY_PRESENT' };
+        if (isLocal) {
+          if (!this.navigateCharacterLocal || this.canNavigateCharacterLocal() !== true) {
+            return { ok: false, reason: 'H25_LOCAL_BROWSER_SWAP_NAVIGATION_UNAVAILABLE' };
+          }
+          return { ok: true, roster, owned, active, runnerActive, peer: null, desiredOwned, desiredName, transport: 'local-browser-navigation' };
+        }
         if (!peer || peer.running !== true || peer.characterNavigateCapable !== true
             || !this.crossWindow || typeof this.crossWindow.requestCharacterNavigation !== 'function') {
           return { ok: false, reason: 'H25_BROWSER_SWAP_NAVIGATION_UNAVAILABLE' };
@@ -8359,7 +8388,27 @@
         .sort((a, b) => a.localeCompare(b));
       const remainingMissing = missingDesired.slice();
       for (const name of undesiredActive) {
-        if (String(name) === String(localName)) continue;
+        if (String(name) === String(localName)) {
+          if (remainingMissing.length
+              && this.navigateCharacterLocal
+              && this.canNavigateCharacterLocal() === true) {
+            const desiredName = remainingMissing.shift();
+            return {
+              state: 'READY',
+              reason: 'H25_LOCAL_BROWSER_CHARACTER_ROTATION',
+              request: {
+                id: 'h25-auto-local-browser-swap-' + name + '-to-' + desiredName,
+                kind: 'BROWSER_SWAP',
+                targetName: name,
+                desiredName,
+                queuedAt: nowIso(),
+                automatic: true,
+                requireCharacterStateChange: true
+              }
+            };
+          }
+          continue;
+        }
         const peer = this.crossWindow && typeof this.crossWindow.freshPeer === 'function'
           ? this.crossWindow.freshPeer(name)
           : null;
@@ -8687,7 +8736,17 @@
 
       let dispatched;
       try {
-        if (request.kind === 'BROWSER_SWAP' && action.transport === 'cross-window-browser-navigation') {
+        if (request.kind === 'BROWSER_SWAP' && action.transport === 'local-browser-navigation') {
+          if (!this.navigateCharacterLocal) throw new Error('H25_LOCAL_BROWSER_NAVIGATION_TRANSPORT_UNAVAILABLE');
+          const value = this.navigateCharacterLocal(request.desiredName);
+          dispatched = {
+            id: 'h25-local-navigation-' + this.sequence,
+            state: 'DISPATCHED',
+            dispatched: true,
+            value: Promise.resolve({ success: true, reason: 'H25_LOCAL_BROWSER_NAVIGATION_ACCEPTED', details: value || null })
+          };
+          this.metrics.browserSwapsDispatched += 1;
+        } else if (request.kind === 'BROWSER_SWAP' && action.transport === 'cross-window-browser-navigation') {
           if (!this.crossWindow || typeof this.crossWindow.requestCharacterNavigation !== 'function') {
             throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TRANSPORT_UNAVAILABLE');
           }
@@ -10475,6 +10534,8 @@
         logisticsProbeMs: 30000,
         standProbeMs: 60000,
         autoManageMerchantStand: true,
+        selectionStabilityMs: 12000,
+        rotationCooldownMs: 45000,
         lifecycleMaxActions: 20,
         economyMaxActions: 100,
         logisticsMaxActions: 10,
@@ -10483,6 +10544,10 @@
       this.lastLogisticsProbeAtMs = 0;
       this.lastStandProbeAtMs = 0;
       this.desiredCharacterNames = [];
+      this.selectionCandidateNames = [];
+      this.selectionCandidateSinceMs = null;
+      this.desiredChangedAtMs = null;
+      this.desiredSource = null;
       this.tickResourceId = null;
       this.lifecycleArmed = false;
       this.standManagedByFullAutonomy = false;
@@ -10516,6 +10581,12 @@
         this.config.standProbeMs = Math.max(15000, Math.min(600000, Math.floor(Number(options.standProbeMs) || 60000)));
       }
       if (options.autoManageMerchantStand != null) this.config.autoManageMerchantStand = options.autoManageMerchantStand === true;
+      if (options.selectionStabilityMs != null) {
+        this.config.selectionStabilityMs = Math.max(3000, Math.min(120000, Math.floor(Number(options.selectionStabilityMs) || 12000)));
+      }
+      if (options.rotationCooldownMs != null) {
+        this.config.rotationCooldownMs = Math.max(10000, Math.min(600000, Math.floor(Number(options.rotationCooldownMs) || 45000)));
+      }
       // Adventure Land Full Live is always a four-character group: 3 farmers + 1 Merchant.
       this.config.expectedOnlineCount = 4;
       return clone(this.config);
@@ -10553,6 +10624,10 @@
       // A supplied desired quartet is only a bootstrap hint (for H19 re-arm).
       // The strategy recomputes 3 farmers + 1 merchant on every tick.
       this.desiredCharacterNames = requestedDesired.slice();
+      this.selectionCandidateNames = [];
+      this.selectionCandidateSinceMs = null;
+      this.desiredChangedAtMs = requestedDesired.length === 4 ? Date.now() : null;
+      this.desiredSource = requestedDesired.length === 4 ? 'bootstrap-hint' : null;
       this.lifecycleArmed = false;
       this.enabled = true;
       this.startedAt = new Date().toISOString();
@@ -10593,6 +10668,10 @@
       this.tickResourceId = null;
       this.enabled = false;
       this.desiredCharacterNames = [];
+      this.selectionCandidateNames = [];
+      this.selectionCandidateSinceMs = null;
+      this.desiredChangedAtMs = null;
+      this.desiredSource = null;
       this.lifecycleArmed = false;
       this.standManagedByFullAutonomy = false;
       this.started = { lifecycle: false, farming: false, economy: false, partyLogistics: false, encounters: false };
@@ -10616,6 +10695,110 @@
       } catch (_) {
         return [];
       }
+    }
+
+    _normalizeDesired(names) {
+      return [...new Set((Array.isArray(names) ? names : [])
+        .map(value => cleanText(value, 120))
+        .filter(Boolean))].sort();
+    }
+
+    _alignPlanToDesired(plan, desiredNames, merchantName, leaderHint = null) {
+      const desired = this._normalizeDesired(desiredNames);
+      const merchant = cleanText(merchantName || '', 120);
+      const farmers = desired.filter(name => name !== merchant);
+      const aligned = clone(plan || {});
+      aligned.selected = aligned.selected && typeof aligned.selected === 'object' ? clone(aligned.selected) : {};
+      aligned.selected.memberNames = farmers.slice();
+      aligned.supportMemberNames = merchant ? [merchant] : [];
+      const hintedLeader = cleanText(leaderHint || '', 120);
+      aligned.leaderName = hintedLeader && farmers.includes(hintedLeader)
+        ? hintedLeader
+        : (farmers.includes(cleanText(aligned.leaderName || '', 120))
+          ? cleanText(aligned.leaderName || '', 120)
+          : (farmers[0] || null));
+      return aligned;
+    }
+
+    _merchantSelectionPeer(merchantName) {
+      const local = this._local();
+      const merchant = cleanText(merchantName || '', 120);
+      if (!local || !merchant || String(local.name) === merchant) return null;
+      try {
+        const transport = this.runtime && this.runtime.lifecycleTransport;
+        const peer = transport && typeof transport.freshPeer === 'function'
+          ? transport.freshPeer(merchant)
+          : null;
+        if (!peer || peer.running !== true || peer.fullAutonomyEnabled !== true) return null;
+        const desired = this._normalizeDesired(peer.fullAutonomyDesiredCharacterNames);
+        if (desired.length !== 4 || !desired.includes(merchant)) return null;
+        return { peer, desired };
+      } catch (_) {
+        return null;
+      }
+    }
+
+    _stabilizeAuthoritativeDesired(candidateNames, readiness) {
+      const candidate = this._normalizeDesired(candidateNames);
+      const current = this._normalizeDesired(this.desiredCharacterNames);
+      const now = Date.now();
+      if (candidate.length !== 4) return current;
+
+      if (current.length !== 4) {
+        this.desiredCharacterNames = candidate.slice();
+        this.selectionCandidateNames = [];
+        this.selectionCandidateSinceMs = null;
+        this.desiredChangedAtMs = now;
+        this.desiredSource = 'merchant-authority';
+        return candidate;
+      }
+
+      if (candidate.join('|') === current.join('|')) {
+        this.selectionCandidateNames = [];
+        this.selectionCandidateSinceMs = null;
+        return current;
+      }
+
+      let lifecycleBusy = false;
+      try {
+        const lifecycle = this.runtime && this.runtime.lifecycle && this.runtime.lifecycle.status
+          ? this.runtime.lifecycle.status()
+          : null;
+        lifecycleBusy = !!(lifecycle && lifecycle.currentAction);
+      } catch (_) {}
+
+      const online = new Set(readiness && Array.isArray(readiness.online) ? readiness.online.map(String) : []);
+      const currentSet = new Set(current);
+      const currentRosterMismatch = current.some(name => !online.has(name))
+        || [...online].some(name => !currentSet.has(name));
+      if (lifecycleBusy || currentRosterMismatch) {
+        this.selectionCandidateNames = [];
+        this.selectionCandidateSinceMs = null;
+        return current;
+      }
+
+      if (Number.isFinite(this.desiredChangedAtMs)
+          && now - this.desiredChangedAtMs < this.config.rotationCooldownMs) {
+        return current;
+      }
+
+      if (this.selectionCandidateNames.join('|') !== candidate.join('|')) {
+        this.selectionCandidateNames = candidate.slice();
+        this.selectionCandidateSinceMs = now;
+        return current;
+      }
+
+      if (!Number.isFinite(this.selectionCandidateSinceMs)
+          || now - this.selectionCandidateSinceMs < this.config.selectionStabilityMs) {
+        return current;
+      }
+
+      this.desiredCharacterNames = candidate.slice();
+      this.selectionCandidateNames = [];
+      this.selectionCandidateSinceMs = null;
+      this.desiredChangedAtMs = now;
+      this.desiredSource = 'merchant-authority';
+      return candidate;
     }
 
     _profileReadiness() {
@@ -10776,9 +10959,13 @@
       // owned-only party may also keep one account-wide observed leader, but
       // that observation is shared over H19 heartbeats so every window reaches
       // the same coordinator instead of trusting its local partial snapshot.
-      const coordinatorName = onlineDesired.includes(String(leader || ''))
-        ? String(leader)
-        : (onlineDesired[0] || localName);
+      const stableMerchantCoordinator = support[0] && onlineDesired.includes(String(support[0]))
+        ? String(support[0])
+        : null;
+      const coordinatorName = stableMerchantCoordinator
+        || (onlineDesired.includes(String(leader || ''))
+          ? String(leader)
+          : (onlineDesired[0] || localName));
       const coordinator = localName === String(coordinatorName);
       const desiredActiveNames = stableDesired.slice();
       const desiredPartyMembers = desiredPartyAll.slice();
@@ -10817,9 +11004,9 @@
         .sort();
       const offlineDesiredNames = stableDesired.filter(name => !onlineSet.has(String(name))).sort();
       const unexpectedOnlineNames = readiness.online.filter(name => !stableDesired.includes(String(name))).sort();
-      const runtimeRecoveryRequired = coordinator && stoppedDesiredNames.length > 0;
-      const rosterRecoveryRequired = coordinator && offlineDesiredNames.length > 0;
-      const rotationRequired = coordinator && unexpectedOnlineNames.length > 0;
+      const runtimeRecoveryRequired = stoppedDesiredNames.length > 0;
+      const rosterRecoveryRequired = offlineDesiredNames.length > 0;
+      const rotationRequired = unexpectedOnlineNames.length > 0;
       const partyRecoveryReady = Array.isArray(readiness.missing) && readiness.missing.length === 0;
       const shouldRunLifecycle = coordinator
         && (runtimeRecoveryRequired
@@ -11216,10 +11403,53 @@
           };
         }
 
-        let nextDesired = quartet.names.slice();
-        let selectionChanged = nextDesired.join('|') !== this.desiredCharacterNames.slice().sort().join('|');
-        this.desiredCharacterNames = nextDesired;
+        const merchantName = quartet.support && quartet.support[0] ? String(quartet.support[0]) : null;
+        const previousDesired = this._normalizeDesired(this.desiredCharacterNames);
         let readiness = this._profileReadiness();
+        const localName = String(local.name || '');
+        const merchantPeerSelection = this._merchantSelectionPeer(merchantName);
+        let nextDesired;
+        let selectionSource;
+        if (merchantPeerSelection) {
+          nextDesired = merchantPeerSelection.desired.slice();
+          plan = this._alignPlanToDesired(
+            plan,
+            nextDesired,
+            merchantName,
+            merchantPeerSelection.peer.fullAutonomyLeaderName || null
+          );
+          quartet = this._desiredQuartet(plan);
+          this.desiredCharacterNames = nextDesired.slice();
+          this.selectionCandidateNames = [];
+          this.selectionCandidateSinceMs = null;
+          this.desiredSource = 'merchant-peer';
+          selectionSource = 'merchant-peer';
+        } else if (localName === String(merchantName || '') || !readiness.online.includes(String(merchantName || ''))) {
+          nextDesired = this._stabilizeAuthoritativeDesired(quartet.names, readiness);
+          plan = this._alignPlanToDesired(plan, nextDesired, merchantName, plan.leaderName || null);
+          quartet = this._desiredQuartet(plan);
+          selectionSource = localName === String(merchantName || '') ? 'merchant-authority' : 'merchant-offline-fallback';
+        } else {
+          try {
+            if (this.runtime.lifecycleTransport && typeof this.runtime.lifecycleTransport.broadcastHeartbeat === 'function') {
+              this.runtime.lifecycleTransport.broadcastHeartbeat();
+            }
+          } catch (_) {}
+          return this.lastDecision = {
+            at: new Date().toISOString(),
+            state: 'WARMING',
+            reason: 'FULL_AUTONOMY_WAITING_MERCHANT_SELECTION',
+            merchantName,
+            onlineCharacterNames: readiness.online,
+            missingProfiles: [...new Set([...(readiness.missing || []), merchantName].filter(Boolean))].sort(),
+            missingPeerNames: [...new Set([...(readiness.missingPeerNames || []), merchantName].filter(Boolean))].sort()
+          };
+        }
+
+        const selectionChanged = nextDesired.join('|') !== previousDesired.join('|');
+        this.desiredCharacterNames = nextDesired.slice();
+        this.lastPlan = clone(plan);
+        readiness = this._profileReadiness();
         let desiredSet = new Set(nextDesired);
         let onlineDesiredCount = readiness.online.filter(name => desiredSet.has(String(name))).length;
         let requiresRotation = readiness.unexpectedOnlineNames.length > 0
@@ -11286,7 +11516,8 @@
             stoppedDesiredNames: lifecycle.stoppedDesiredNames || readiness.stoppedNames,
             offlineDesiredNames: lifecycle.offlineDesiredNames || [],
             lifecycleCoordinator: lifecycle.coordinatorName,
-            progressionTarget: plan.progression && plan.progression.selectedCharacterName || null
+            progressionTarget: plan.progression && plan.progression.selectedCharacterName || null,
+            desiredSelectionSource: selectionSource
           };
         }
 
@@ -11339,7 +11570,8 @@
           partyTopologyHealthy: lifecycle.partyTopologyHealthy === true,
           missingDesiredCharacters: this.desiredCharacterNames.filter(name => !readiness.online.includes(name)),
           progressionTarget: plan.progression && plan.progression.selectedCharacterName || null,
-          rotationFallback: clone(rotationFallback)
+          rotationFallback: clone(rotationFallback),
+          desiredSelectionSource: selectionSource
         };
       } catch (error) {
         this.lastError = {
@@ -11360,6 +11592,10 @@
         config: clone(this.config),
         startedControllers: clone(this.started),
         desiredCharacterNames: clone(this.desiredCharacterNames),
+        selectionCandidateNames: clone(this.selectionCandidateNames),
+        selectionCandidateSinceMs: this.selectionCandidateSinceMs,
+        desiredChangedAtMs: this.desiredChangedAtMs,
+        desiredSource: this.desiredSource,
         tickScheduled: !!this.tickResourceId,
         lifecycleArmed: this.lifecycleArmed,
         standManagedByFullAutonomy: this.standManagedByFullAutonomy,
@@ -26157,7 +26393,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.4-h26';
+      this.version = options.version || '0.26.5-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -26452,6 +26688,13 @@
             emergencyStopLatched: this.stopLatch.status().latched,
             lifecycleAutonomyEnabled: this.lifecycle ? this.lifecycle.status().autonomyEnabled === true : null,
             fullAutonomyEnabled: this.fullAutonomy ? this.fullAutonomy.status().enabled === true : null,
+            fullAutonomyDesiredCharacterNames: this.fullAutonomy
+              ? this.fullAutonomy.status().desiredCharacterNames || []
+              : [],
+            fullAutonomyLeaderName: this.fullAutonomy
+              && this.fullAutonomy.status().lastPlan
+              ? this.fullAutonomy.status().lastPlan.leaderName || null
+              : null,
             characterDisconnectCapable: this.actions.available('disconnect') === true,
             characterNavigateCapable: h25BrowserNavigationCapability(),
             version: this.version,
@@ -26529,6 +26772,8 @@
         storage: this.storage,
         crossWindow: this.lifecycleTransport,
         sessionId: this.lifecycleTransport && this.lifecycleTransport.sessionId || null,
+        navigateCharacterLocal: desiredName => navigateH25BrowserCharacter(desiredName),
+        canNavigateCharacterLocal: () => h25BrowserNavigationCapability(),
         canAct: action => this.actionAllowed(action)
       });
       this.accountStrategy = new ns.AccountStrategyController({
@@ -34217,7 +34462,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.4-h26',
+    version: '0.26.5-h26',
     bootCount,
     replacedPrevious: !!previous
   });
