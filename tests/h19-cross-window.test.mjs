@@ -42,6 +42,7 @@ function makeContext(name, names, network, state, nowRef) {
   let characterListenerSeq = 0;
   const character = {
     name,
+    proxy_character: true,
     on(event, fn) {
       const id = ++characterListenerSeq;
       characterListeners.set(id, { event: String(event), fn });
@@ -50,10 +51,13 @@ function makeContext(name, names, network, state, nowRef) {
     remove(id) {
       characterListeners.delete(id);
     },
-    __emit(event, payload) {
+    trigger(event, payload) {
       for (const row of characterListeners.values()) {
         if (row.event === String(event)) row.fn(clone(payload));
       }
+    },
+    __emit(event, payload) {
+      this.trigger(event, payload);
     }
   };
   const ctx = {
@@ -168,6 +172,45 @@ test('H26 cross-window transport prefers the current character cm event and remo
   assert.equal(setup.transport.status().receiveMode, 'character-event');
   assert.equal(setup.characterListeners.size, 1);
   assert.equal(setup.ctx.on_cm, null, 'legacy on_cm must remain untouched when character events are available');
+
+  setup.transport.destroy();
+  assert.equal(setup.characterListeners.size, 0);
+});
+
+test('H27 cross-window transport ignores a page character emitter and resolves the official CODE proxy in maincode', () => {
+  const names = ['My_Ranger1'];
+  const network = new Map();
+  const nowRef = { value: 850 };
+  const state = { running: true, runEpoch: 1, emergencyStopLatched: false };
+  const setup = makeContext('My_Ranger1', names, network, state, nowRef);
+  let pageCharacterSubscriptions = 0;
+
+  const frame = { contentWindow: setup.ctx };
+  const pageRoot = {
+    character: {
+      name: 'My_Ranger1',
+      on() {
+        pageCharacterSubscriptions += 1;
+        return 'wrong-emitter';
+      }
+    },
+    server_region: 'EU',
+    server_identifier: 'I',
+    maincode: frame,
+    document: {
+      getElementById(id) {
+        return id === 'maincode' ? frame : null;
+      }
+    },
+    parent: null
+  };
+  pageRoot.parent = pageRoot;
+  setup.transport.root = pageRoot;
+
+  setup.transport.install();
+  assert.equal(setup.transport.status().receiveMode, 'character-event');
+  assert.equal(setup.characterListeners.size, 1);
+  assert.equal(pageCharacterSubscriptions, 0, 'PIXI/page character must never be used as the CODE CM emitter');
 
   setup.transport.destroy();
   assert.equal(setup.characterListeners.size, 0);
