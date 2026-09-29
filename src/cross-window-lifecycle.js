@@ -370,6 +370,18 @@
           rip: row.profile.rip === true,
           map: cleanText(row.profile.map || '', 120) || null,
           gearScore: Number.isFinite(Number(row.profile.gearScore)) ? Math.max(0, Number(row.profile.gearScore)) : 0,
+          equipment: row.profile.equipment && typeof row.profile.equipment === 'object'
+            ? Object.fromEntries(Object.entries(row.profile.equipment).slice(0, 20).map(([slot, item]) => {
+                const key = cleanText(slot, 40);
+                if (!key || !item || typeof item !== 'object' || !item.name) return null;
+                return [key, {
+                  name: cleanText(item.name, 160),
+                  level: Math.max(0, Math.floor(Number(item.level) || 0)),
+                  statType: cleanText(item.statType != null ? item.statType : item.stat_type || '', 80) || null,
+                  property: item.property == null ? (item.p == null ? null : clone(item.p)) : clone(item.property)
+                }];
+              }).filter(Boolean))
+            : null,
           trainingMs: Number.isFinite(Number(row.profile.trainingMs)) ? Math.max(0, Number(row.profile.trainingMs)) : 0,
           observedAtMs: Number.isFinite(Number(row.profile.observedAtMs)) ? Number(row.profile.observedAtMs) : Number(observedAtMs) || this.now()
         } : null,
