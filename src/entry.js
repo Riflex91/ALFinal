@@ -377,6 +377,16 @@
       deliver: (targetName, inventorySlot) => runtime.gear.queueDelivery(targetName, inventorySlot)
     },
 
+    gearProgression: {
+      status: () => runtime.gearProgression.status(),
+      plan: () => runtime.gearProgression.evaluateInventory(),
+      evaluation: slot => runtime.gearProgression.evaluationFor(slot),
+      futureProtection: (character, slot, itemName, level) =>
+        runtime.gearProgression.futureProtectionFor(character, slot, itemName, level),
+      futureSellSafety: (character, slot, itemName, level) =>
+        runtime.gearProgression.futureSellSafetyFor(character, slot, itemName, level)
+    },
+
     upgrade: {
       status: () => runtime.upgrade.status(),
       plan: () => runtime.upgrade.plan(),
@@ -484,6 +494,7 @@
   Object.freeze(api.bank);
   Object.freeze(api.trade);
   Object.freeze(api.gear);
+  Object.freeze(api.gearProgression);
   Object.freeze(api.upgrade);
   Object.freeze(api.exchangeCraft);
   Object.freeze(api.economy);
