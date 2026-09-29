@@ -812,3 +812,45 @@ test('H22 runtime and public API expose updater diagnostics and stable updater n
   assert.match(entry, /Object\.freeze\(api\.updater\)/);
   assert.match(entry, /updates:\s*\{/);
 });
+
+
+test('H22 runtime updater cache-busts every mutable stable-manifest request', async () => {
+  const { Controller } = loadUpdater();
+  const body = bundle('0.22.4-h22');
+  const manifest = manifestFor('0.22.4-h22', body);
+  const manifestRequests = [];
+  const fixture = runtimeFixture({
+    fetch: async (url, options) => {
+      const parsed = new URL(String(url));
+      if (parsed.pathname.endsWith('/release/al-bot-release.json')) {
+        manifestRequests.push({ url: String(url), options });
+        return { ok: true, status: 200, json: async () => manifest };
+      }
+      return { ok: true, status: 200, text: async () => body };
+    }
+  });
+  const updater = new Controller({
+    runtime: fixture.runtime,
+    root: fixture.root,
+    storage: fixture.storage,
+    sha256: async () => manifest.sha256
+  });
+
+  const first = await updater.checkAndDownload();
+  assert.equal(first.accepted, true);
+  assert.equal(first.updateAvailable, true);
+  updater.pending = null;
+  const second = await updater.checkAndDownload();
+  assert.equal(second.accepted, true);
+  assert.equal(manifestRequests.length, 2);
+
+  const firstUrl = new URL(manifestRequests[0].url);
+  const secondUrl = new URL(manifestRequests[1].url);
+  assert.equal(firstUrl.pathname, '/Riflex91/ALFinal/main/release/al-bot-release.json');
+  assert.equal(secondUrl.pathname, firstUrl.pathname);
+  assert.match(firstUrl.searchParams.get('_albot_cb') || '', /^\d+-1$/);
+  assert.match(secondUrl.searchParams.get('_albot_cb') || '', /^\d+-2$/);
+  assert.notEqual(firstUrl.searchParams.get('_albot_cb'), secondUrl.searchParams.get('_albot_cb'));
+  assert.equal(manifestRequests[0].options.cache, 'no-store');
+  assert.equal(manifestRequests[1].options.cache, 'no-store');
+});
