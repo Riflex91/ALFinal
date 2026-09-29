@@ -505,9 +505,9 @@
         .sort();
       const offlineDesiredNames = stableDesired.filter(name => !onlineSet.has(String(name))).sort();
       const unexpectedOnlineNames = readiness.online.filter(name => !stableDesired.includes(String(name))).sort();
-      const runtimeRecoveryRequired = coordinator && stoppedDesiredNames.length > 0;
-      const rosterRecoveryRequired = coordinator && offlineDesiredNames.length > 0;
-      const rotationRequired = coordinator && unexpectedOnlineNames.length > 0;
+      const runtimeRecoveryRequired = stoppedDesiredNames.length > 0;
+      const rosterRecoveryRequired = offlineDesiredNames.length > 0;
+      const rotationRequired = unexpectedOnlineNames.length > 0;
       const partyRecoveryReady = Array.isArray(readiness.missing) && readiness.missing.length === 0;
       const shouldRunLifecycle = coordinator
         && (runtimeRecoveryRequired
@@ -942,8 +942,8 @@
             reason: 'FULL_AUTONOMY_WAITING_MERCHANT_SELECTION',
             merchantName,
             onlineCharacterNames: readiness.online,
-            missingProfiles: readiness.missing || [],
-            missingPeerNames: readiness.missingPeerNames || []
+            missingProfiles: [...new Set([...(readiness.missing || []), merchantName].filter(Boolean))].sort(),
+            missingPeerNames: [...new Set([...(readiness.missingPeerNames || []), merchantName].filter(Boolean))].sort()
           };
         }
 
