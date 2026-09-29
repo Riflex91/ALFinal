@@ -57,6 +57,157 @@ test('encounter catalog enables all newly discovered bosses and events by defaul
   assert.equal(catalog.events.find(row => row.id === 'seasonal').enabled, false);
 });
 
+test('Anniversary celebration without a live claimable visit does not preempt FARM', () => {
+  const now = Date.now();
+  const { root, storage } = context({
+    server_region: 'EU',
+    server_identifier: 'II',
+    character: { name: 'My_Ranger1', ctype: 'ranger', gold: 200000, items: [], s: {} },
+    G: { monsters: {}, craft: {} },
+    S: { anniversary: { active: true, live: false, next: now + 60000 } }
+  });
+  vm.runInNewContext(encounterSource, root);
+  const Controller = root.__ALBOT_INTERNALS__.EncounterController;
+  const controller = new Controller({
+    root, storage,
+    game: { visibleMonsters: () => [], monsterDefinition: () => null, npcLocation: () => ({ npcId: 'anniversary_baker', map: 'main', x: 64, y: -88 }) }
+  });
+  const event = controller.catalog().events.find(row => row.id === 'anniversary');
+  assert.equal(event.active, true, 'celebration remains visible in the catalog');
+  assert.equal(controller.preferredTask(), null, 'inactive visit window must not replace normal FARM');
+  assert.equal(controller.status().anniversary.visit.reason, 'ANNIVERSARY_NO_LIVE_VISIT');
+});
+
+test('Anniversary live round becomes actionable only with matching visit ticket and exposes workshop readiness', () => {
+  const now = Date.now();
+  const round = 123;
+  const ticket = { ms: 240000, round, realm: 'EU II', expires: now + 240000 };
+  const { root, storage } = context({
+    server_region: 'EU',
+    server_identifier: 'II',
+    character: {
+      name: 'My_Priest', ctype: 'priest', gold: 150000,
+      items: [
+        { name: 'slice_strawberry', q: 1 }, { name: 'slice_citrus', q: 1 },
+        { name: 'slice_honey', q: 1 }, { name: 'slice_mint', q: 1 },
+        { name: 'slice_blueberry', q: 1 }, { name: 'slice_nightberry', q: 1 }
+      ],
+      s: { anniversary_visit: ticket }
+    },
+    G: {
+      monsters: {},
+      craft: {
+        sixcake: {
+          cost: 100000,
+          items: [
+            [1, 'slice_strawberry', 0], [1, 'slice_citrus', 0], [1, 'slice_honey', 0],
+            [1, 'slice_mint', 0], [1, 'slice_blueberry', 0], [1, 'slice_nightberry', 0]
+          ]
+        }
+      }
+    },
+    S: {
+      anniversary: {
+        active: true, live: true, id: 'FeaturedPlayerId', target: 'FeaturedPlayer',
+        map: 'main', x: 420, y: 180, round, expires: now + 240000, available: true
+      }
+    }
+  });
+  vm.runInNewContext(encounterSource, root);
+  const Controller = root.__ALBOT_INTERNALS__.EncounterController;
+  const controller = new Controller({
+    root, storage,
+    game: { visibleMonsters: () => [], monsterDefinition: () => null, npcLocation: () => ({ npcId: 'anniversary_baker', map: 'main', x: 64, y: -88 }) }
+  });
+  const preferred = controller.preferredTask();
+  assert.equal(preferred.taskType, 'EVENT');
+  assert.equal(preferred.actionability.interaction, 'ANNIVERSARY_VISIT');
+  const plan = controller.plan({ taskType: 'EVENT' });
+  assert.equal(plan.state, 'READY');
+  assert.equal(plan.reason, 'ANNIVERSARY_VISIT_READY');
+  assert.equal(plan.targetId, 'FeaturedPlayerId');
+  assert.equal(plan.location.map, 'main');
+  assert.equal(plan.location.x, 420);
+  const anniversary = controller.status().anniversary;
+  assert.equal(anniversary.workshop.map, 'main');
+  assert.equal(anniversary.workshop.x, 64);
+  assert.equal(anniversary.inventory.sixcakeRecipe.ready, true);
+  assert.equal(anniversary.policies.automaticCraftingEnabled, false);
+  assert.equal(anniversary.policies.automaticRewardOpeningEnabled, false);
+});
+
+test('Anniversary visit travels to featured player and dispatches I Kiss You only inside the live window', async () => {
+  const now = Date.now();
+  const round = 456;
+  const character = {
+    name: 'My_Warrior', ctype: 'warrior', map: 'main', x: 0, y: 0, gold: 0, items: [],
+    s: { anniversary_visit: { ms: 240000, round, realm: 'EU II', expires: now + 240000 } }
+  };
+  const moves = [];
+  const actions = [];
+  let nearby = false;
+  const { root, storage } = context({
+    server_region: 'EU',
+    server_identifier: 'II',
+    character,
+    G: { monsters: {}, craft: {} },
+    S: {
+      anniversary: {
+        active: true, live: true, id: 'FeaturedPlayerId', target: 'FeaturedPlayer',
+        map: 'main', x: 100, y: 0, round, expires: now + 240000, available: true
+      }
+    }
+  });
+  vm.runInNewContext(encounterSource, root);
+  const Controller = root.__ALBOT_INTERNALS__.EncounterController;
+  const movement = {
+    status: () => ({ activeOrder: null }),
+    smartMove(destination, options) {
+      moves.push({ destination: clone(destination), options: clone(options) });
+      return { accepted: true, order: { owner: options.owner } };
+    },
+    cancel: () => ({ cancelled: true })
+  };
+  const game = {
+    snapshot: () => ({ character: clone(character) }),
+    visibleMonsters: () => [],
+    monsterDefinition: () => null,
+    visiblePlayers: () => nearby ? [{ id: 'FeaturedPlayerId', name: 'FeaturedPlayer', distance: 20 }] : [],
+    npcLocation: () => ({ npcId: 'anniversary_baker', map: 'main', x: 64, y: -88 })
+  };
+  const controller = new Controller({
+    root, storage, game, movement,
+    combat: { status: () => ({ session: null, lastSession: null }) },
+    actions: {
+      dispatch(action, args) {
+        actions.push({ action, args: clone(args) });
+        return { dispatched: true, value: Promise.resolve({ rewarded: true }) };
+      }
+    },
+    canAct: () => true
+  });
+  controller.moduleActive = true;
+  assert.equal(controller.startAutonomy({ owner: 'test', taskType: 'EVENT' }).accepted, true);
+
+  const travelling = controller.tick();
+  assert.equal(travelling.state, 'TRAVELLING');
+  assert.equal(travelling.reason, 'ANNIVERSARY_TRAVEL');
+  assert.deepEqual(moves[0].destination, { map: 'main', x: 100, y: 0 });
+  assert.equal(moves[0].options.owner, 'encounter-h23:anniversary');
+  assert.equal(actions.length, 0);
+
+  character.x = 80;
+  nearby = true;
+  const interacting = controller.tick();
+  assert.equal(interacting.state, 'INTERACTING');
+  assert.equal(interacting.reason, 'ANNIVERSARY_KISS_DISPATCHED');
+  assert.equal(actions.length, 1);
+  assert.equal(actions[0].action, 'use_skill');
+  assert.deepEqual(actions[0].args, ['ikissyou', 'FeaturedPlayerId']);
+  await Promise.resolve();
+  assert.equal(controller.status().metrics.anniversaryVisitsConfirmed, 1);
+});
+
 test('disabled set keeps future encounter content enabled by default', () => {
   const { root, storage } = context({
     G: { monsters: { boss1: { boss: true } } },
