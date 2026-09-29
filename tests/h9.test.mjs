@@ -544,3 +544,26 @@ test('H9 game adapter normalizes live farm data for scoring', () => {
     [['goo', 50, 100, 8], ['goo', 400, 400, 4]]
   );
 });
+
+
+test('H9 exposes incomplete group wait as an explicit decision instead of appearing dead', () => {
+  const f = makeFixture();
+  f.controller.configureGroup({
+    groupLeaderName: 'My_Priest',
+    groupMemberNames: ['Farmer', 'My_Priest']
+  });
+  const started = f.controller.startAutonomy({
+    groupLeaderName: 'My_Priest',
+    groupMemberNames: ['Farmer', 'My_Priest']
+  });
+  assert.equal(started.accepted, true);
+  assert.equal(started.tick.state, 'WAITING');
+  assert.equal(started.tick.reason, 'H9_GROUP_LEADER_POSITION_UNAVAILABLE');
+
+  const status = f.controller.status();
+  assert.equal(status.metrics.decisions, 1);
+  assert.equal(status.lastPlan.state, 'WAITING');
+  assert.equal(status.lastPlan.reason, 'H9_GROUP_LEADER_POSITION_UNAVAILABLE');
+  assert.equal(status.lastPlan.group.leaderName, 'My_Priest');
+  assert.equal(status.lastPlan.group.complete, false);
+});
