@@ -380,6 +380,7 @@
         logger: this.logger,
         storage: this.storage,
         game: this.game,
+        actions: this.actions,
         movement: this.movement,
         combat: this.combat,
         party: this.party,
