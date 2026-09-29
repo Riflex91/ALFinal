@@ -386,7 +386,8 @@
         roster: this.roster,
         party: this.party,
         crossWindow: this.lifecycleTransport,
-        gear: this.gear
+        gear: this.gear,
+        storage: this.storage
       });
       this.encounters = new ns.EncounterController({
         root: this.root,
@@ -403,7 +404,8 @@
         root: this.root,
         logger: this.logger,
         runtime: this,
-        strategy: this.accountStrategy
+        strategy: this.accountStrategy,
+        storage: this.storage
       });
       this.safeUpdater = new ns.SafeAutoUpdater({
         root: this.root,
