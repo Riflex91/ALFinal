@@ -13,6 +13,9 @@
       this.logger = options.logger || null;
       this.runtime = options.runtime || null;
       this.strategy = options.strategy || null;
+      this.storage = options.storage || null;
+      this.now = typeof options.now === 'function' ? options.now : () => Date.now();
+      this.rotationStateKey = cleanText(options.rotationStateKey || 'albot:full-autonomy:rotation:v1', 180);
       this.moduleActive = false;
       this.scope = null;
       this.heartbeat = null;
@@ -35,6 +38,7 @@
         logisticsProbeMs: 30000,
         standProbeMs: 60000,
         autoManageMerchantStand: true,
+        rotationMinHoldMs: 300000,
         lifecycleMaxActions: 20,
         economyMaxActions: 100,
         logisticsMaxActions: 10,
@@ -43,9 +47,66 @@
       this.lastLogisticsProbeAtMs = 0;
       this.lastStandProbeAtMs = 0;
       this.desiredCharacterNames = [];
+      this.selectionSinceMs = 0;
+      this.lastHeldCandidateKey = null;
       this.tickResourceId = null;
       this.lifecycleArmed = false;
       this.standManagedByFullAutonomy = false;
+    }
+
+    _loadRotationState() {
+      if (!this.storage || typeof this.storage.get !== 'function') return null;
+      try {
+        const raw = this.storage.get(this.rotationStateKey);
+        const parsed = raw ? JSON.parse(raw) : null;
+        const names = parsed && Array.isArray(parsed.desiredCharacterNames)
+          ? [...new Set(parsed.desiredCharacterNames.map(value => cleanText(value, 120)).filter(Boolean))].sort()
+          : [];
+        if (names.length !== 4) return null;
+        return {
+          desiredCharacterNames: names,
+          selectedAtMs: Math.max(0, Number(parsed.selectedAtMs) || 0),
+          taskType: cleanText(parsed.taskType || 'FARM', 40).toUpperCase() || 'FARM',
+          reason: cleanText(parsed.reason || '', 120) || null
+        };
+      } catch (_) {
+        return null;
+      }
+    }
+
+    _persistRotationState(reason = 'FULL_AUTONOMY_SELECTION') {
+      if (!this.storage || typeof this.storage.set !== 'function' || this.desiredCharacterNames.length !== 4) return false;
+      try {
+        return this.storage.set(this.rotationStateKey, JSON.stringify({
+          schemaVersion: 1,
+          desiredCharacterNames: this.desiredCharacterNames.slice().sort(),
+          selectedAtMs: Math.max(0, Number(this.selectionSinceMs) || this.now()),
+          taskType: this.config.taskType,
+          reason: cleanText(reason, 120) || null
+        })) === true;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    _adoptDesired(names, reason = 'FULL_AUTONOMY_SELECTION') {
+      const next = [...new Set((Array.isArray(names) ? names : []).map(value => cleanText(value, 120)).filter(Boolean))].sort();
+      if (next.length !== 4) return false;
+      const previous = this.desiredCharacterNames.slice().sort();
+      const changed = previous.join('|') !== next.join('|');
+      this.desiredCharacterNames = next;
+      if (changed || !this.selectionSinceMs) this.selectionSinceMs = this.now();
+      this.lastHeldCandidateKey = null;
+      this._persistRotationState(reason);
+      if (changed && this.logger) {
+        this.logger.info('H25 Rotationsziel gesetzt', {
+          reason,
+          previousDesiredCharacterNames: previous,
+          desiredCharacterNames: next,
+          selectedAtMs: this.selectionSinceMs
+        });
+      }
+      return changed;
     }
 
     start(context = {}) {
@@ -76,6 +137,9 @@
         this.config.standProbeMs = Math.max(15000, Math.min(600000, Math.floor(Number(options.standProbeMs) || 60000)));
       }
       if (options.autoManageMerchantStand != null) this.config.autoManageMerchantStand = options.autoManageMerchantStand === true;
+      if (options.rotationMinHoldMs != null) {
+        this.config.rotationMinHoldMs = Math.max(30000, Math.min(3600000, Math.floor(Number(options.rotationMinHoldMs) || 300000)));
+      }
       // Adventure Land Full Live is always a four-character group: 3 farmers + 1 Merchant.
       this.config.expectedOnlineCount = 4;
       return clone(this.config);
@@ -89,9 +153,13 @@
       }
       this.configure(options);
       const initialOnline = this._onlineNames();
-      const requestedDesired = Array.isArray(options.desiredCharacterNames)
+      const explicitDesired = Array.isArray(options.desiredCharacterNames)
         ? [...new Set(options.desiredCharacterNames.map(value => cleanText(value, 120)).filter(Boolean))].sort()
         : [];
+      const persistedRotation = explicitDesired.length ? null : this._loadRotationState();
+      const requestedDesired = explicitDesired.length
+        ? explicitDesired
+        : (persistedRotation ? persistedRotation.desiredCharacterNames.slice() : []);
       if (requestedDesired.length && requestedDesired.length !== 4) {
         return {
           accepted: false,
@@ -110,9 +178,13 @@
           status: this.status()
         };
       }
-      // A supplied desired quartet is only a bootstrap hint (for H19 re-arm).
-      // The strategy recomputes 3 farmers + 1 merchant on every tick.
+      // Persisted desired quartet is a cross-window handoff contract. It prevents
+      // a freshly navigated browser from immediately selecting a different group.
       this.desiredCharacterNames = requestedDesired.slice();
+      this.selectionSinceMs = persistedRotation && requestedDesired.join('|') === persistedRotation.desiredCharacterNames.join('|')
+        ? persistedRotation.selectedAtMs
+        : (requestedDesired.length ? this.now() : 0);
+      if (explicitDesired.length === 4) this._persistRotationState('FULL_AUTONOMY_EXPLICIT_BOOTSTRAP');
       this.lifecycleArmed = false;
       this.enabled = true;
       this.startedAt = new Date().toISOString();
@@ -778,7 +850,47 @@
 
         let nextDesired = quartet.names.slice();
         let selectionChanged = nextDesired.join('|') !== this.desiredCharacterNames.slice().sort().join('|');
-        this.desiredCharacterNames = nextDesired;
+        let selectionHeld = false;
+        if (selectionChanged && this.desiredCharacterNames.length === 4 && this.selectionSinceMs > 0) {
+          const currentDesired = this.desiredCharacterNames.slice().sort();
+          const holdUntilMs = this.selectionSinceMs + this.config.rotationMinHoldMs;
+          const byName = new Map((initialReadiness.profiles || []).map(row => [String(row && row.name || ''), row]));
+          const currentViable = currentDesired.every(name => {
+            const row = byName.get(String(name));
+            return !!row && row.rip !== true && row.emergencyStopLatched !== true;
+          });
+          if (currentViable && this.now() < holdUntilMs) {
+            const heldPlan = this.strategy.optimizeTask({
+              type: effectiveTaskType,
+              allowedCharacterNames: currentDesired
+            });
+            const heldQuartet = this._desiredQuartet(heldPlan);
+            if (heldPlan && heldPlan.status === 'SELECTION_READY'
+                && heldQuartet.ok
+                && heldQuartet.names.slice().sort().join('|') === currentDesired.join('|')) {
+              const candidateKey = nextDesired.slice().sort().join('|');
+              plan = heldPlan;
+              quartet = heldQuartet;
+              nextDesired = currentDesired;
+              selectionChanged = false;
+              selectionHeld = true;
+              this.lastPlan = clone(plan);
+              if (candidateKey !== this.lastHeldCandidateKey && this.logger) {
+                this.lastHeldCandidateKey = candidateKey;
+                this.logger.info('H25 Rotationskandidat bis Mindesthaltezeit zurückgestellt', {
+                  candidateDesiredCharacterNames: candidateKey.split('|'),
+                  activeDesiredCharacterNames: currentDesired,
+                  holdUntilMs
+                });
+              }
+            }
+          }
+        }
+        if (this.desiredCharacterNames.length !== 4 || selectionChanged) {
+          this._adoptDesired(nextDesired, this.desiredCharacterNames.length === 4
+            ? 'FULL_AUTONOMY_STRATEGY_ROTATION'
+            : 'FULL_AUTONOMY_INITIAL_SELECTION');
+        }
         let readiness = this._profileReadiness();
         let desiredSet = new Set(nextDesired);
         let onlineDesiredCount = readiness.online.filter(name => desiredSet.has(String(name))).length;
@@ -899,7 +1011,10 @@
           partyTopologyHealthy: lifecycle.partyTopologyHealthy === true,
           missingDesiredCharacters: this.desiredCharacterNames.filter(name => !readiness.online.includes(name)),
           progressionTarget: plan.progression && plan.progression.selectedCharacterName || null,
-          rotationFallback: clone(rotationFallback)
+          rotationFallback: clone(rotationFallback),
+          selectionHeld,
+          selectionSinceMs: this.selectionSinceMs,
+          rotationHoldRemainingMs: Math.max(0, this.selectionSinceMs + this.config.rotationMinHoldMs - this.now())
         };
       } catch (error) {
         this.lastError = {
@@ -920,6 +1035,8 @@
         config: clone(this.config),
         startedControllers: clone(this.started),
         desiredCharacterNames: clone(this.desiredCharacterNames),
+        selectionSinceMs: this.selectionSinceMs,
+        persistedRotation: clone(this._loadRotationState()),
         tickScheduled: !!this.tickResourceId,
         lifecycleArmed: this.lifecycleArmed,
         standManagedByFullAutonomy: this.standManagedByFullAutonomy,
