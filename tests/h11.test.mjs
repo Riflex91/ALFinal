@@ -174,6 +174,7 @@ function fixture(options = {}) {
     roster,
     movement,
     inventory,
+    economy: options.economy || null,
     transferRange: options.transferRange == null ? 320 : options.transferRange,
     switchCooldownMs: options.switchCooldownMs == null ? 500 : options.switchCooldownMs
   });
@@ -355,14 +356,46 @@ test('H11 runtime, API, UI, build and ActionBoundary are wired', () => {
   assert.match(runtime, /id: 'merchant'/);
   assert.match(runtime, /id: 'h11-merchant'/);
   assert.match(runtime, /H11_LIVE_TEST_REQUIRES_MERCHANT/);
-  assert.match(entry, /0\.26\.3-h26/);
+  assert.match(entry, /0\.26\.4-h26/);
   assert.match(entry, /merchant:/);
   assert.match(entry, /runtime\.merchant\.queueDelivery/);
   assert.match(ui, /data-tab="merchant"/);
   assert.match(ui, /H11 Merchant-Grundbetrieb/);
   assert.match(build, /src\/merchant\.js/);
-  assert.match(build, /const runtimeVersion = '0\.26\.3-h26'/);
+  assert.match(build, /const runtimeVersion = '0\.26\.4-h26'/);
   assert.match(boundary, /send_item: Object\.freeze\(\{ publicName: 'send_item'/);
   assert.match(adapter, /playerCondition\(name, conditionId\)/);
-  assert.equal(pkg.version, '0.26.3');
+  assert.equal(pkg.version, '0.26.4');
+});
+
+
+test('H11 idle autonomous economy does not starve Merchant service ownership', () => {
+  const economy = {
+    status: () => ({
+      autonomyEnabled: true,
+      currentAction: null,
+      queue: [],
+      lastPlan: { state: 'IDLE', reason: 'H17_NO_SAFE_ECONOMY_ACTION' }
+    })
+  };
+  const f = fixture({ economy });
+  const result = f.controller.tick();
+  assert.notEqual(result.reason, 'H11_ECONOMY_OWNERSHIP');
+  assert.equal(f.controller.status().metrics.ownershipBlocks, 0);
+});
+
+test('H11 still yields while Economy owns an active mutation', () => {
+  const economy = {
+    status: () => ({
+      autonomyEnabled: true,
+      currentAction: { id: 'economy-1', kind: 'BANK_MOUNT' },
+      queue: [],
+      lastPlan: { state: 'READY' }
+    })
+  };
+  const f = fixture({ economy });
+  const result = f.controller.tick();
+  assert.equal(result.state, 'WAITING');
+  assert.equal(result.reason, 'H11_ECONOMY_OWNERSHIP');
+  assert.equal(f.controller.status().metrics.ownershipBlocks, 1);
 });

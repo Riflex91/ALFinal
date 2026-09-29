@@ -18,6 +18,12 @@
     return text || fallback;
   }
 
+  function transientStartRejection(value) {
+    const normalized = cleanText(value, 300).trim().toLowerCase().replace(/[\s.-]+/g, '_');
+    return normalized === 'authorization_in_progress'
+      || normalized.includes('authorization_in_progress');
+  }
+
   class CharacterLifecycleController {
     constructor(options = {}) {
       this.root = options.root || root;
@@ -39,6 +45,7 @@
         outcomeTimeoutMs: Math.max(3000, Math.min(120000, Number(options.outcomeTimeoutMs) || 15000)),
         startOutcomeTimeoutMs: Math.max(15000, Math.min(120000, Number(options.startOutcomeTimeoutMs) || 60000)),
         browserSwapTimeoutMs: Math.max(20000, Math.min(180000, Number(options.browserSwapTimeoutMs) || 90000)),
+        startRetryBackoffMs: Math.max(750, Math.min(15000, Number(options.startRetryBackoffMs) || 2000)),
         respawnGraceMs: Math.max(12000, Math.min(30000, Number(options.respawnGraceMs) || 13000)),
         maxActionsPerSession: Math.max(1, Math.min(20, Number(options.maxActionsPerSession) || 4)),
         maxQueue: Math.max(1, Math.min(32, Number(options.maxQueue) || 12))
@@ -59,6 +66,7 @@
       this.restoredPending = false;
       this.deathObservedAtMs = null;
       this.partySignals = [];
+      this.transientStartRetries = new Map();
       this.previousPartyInviteHandler = null;
       this.previousPartyRequestHandler = null;
       this.partyInviteHandler = null;
@@ -77,6 +85,8 @@
         actionsConfirmed: 0,
         actionsRejected: 0,
         actionsUnknown: 0,
+        transientStartRejects: 0,
+        transientStartRetryBlocks: 0,
         startsQueued: 0,
         startsConfirmed: 0,
         stopsQueued: 0,
@@ -1049,6 +1059,17 @@
         if (!this._ownedRow(name, roster)) continue;
         if (crossWindowManaged.has(name)) continue;
         if (!startEvidence.has(name)) {
+          const retry = this.transientStartRetries.get(String(name)) || null;
+          if (retry && Number(retry.retryAtMs || 0) > Date.now()) {
+            this.metrics.transientStartRetryBlocks += 1;
+            return {
+              state: 'WAITING',
+              reason: 'H19_START_AUTHORIZATION_IN_PROGRESS',
+              targetName: name,
+              retryAtMs: Number(retry.retryAtMs)
+            };
+          }
+          if (retry && Number(retry.retryAtMs || 0) <= Date.now()) this.transientStartRetries.delete(String(name));
           return {
             state: 'READY',
             reason: 'H19_DESIRED_CHARACTER_OFFLINE',
@@ -1551,6 +1572,32 @@
 
       if (current.settlement === 'REJECTED') {
         const error = cleanText(current.error || '', 300);
+        if (current.kind === 'START' && current.requireCharacterStateChange === true && transientStartRejection(error)) {
+          const targetName = cleanText(current.targetName || '', 120);
+          const retryAtMs = Date.now() + this.config.startRetryBackoffMs;
+          this.currentAction = null;
+          this._removeStorage('pending');
+          this.metrics.actionsRejected += 1;
+          this.metrics.transientStartRejects += 1;
+          if (targetName) this.transientStartRetries.set(targetName, { retryAtMs, error });
+          this.lastAction = {
+            at: nowIso(),
+            type: 'START_TRANSIENT_REJECTED',
+            reason: 'H19_START_AUTHORIZATION_IN_PROGRESS',
+            serverReason: error,
+            targetName: targetName || null,
+            retryAtMs,
+            autonomyStopped: false
+          };
+          return {
+            state: 'WAITING',
+            reason: 'H19_START_AUTHORIZATION_IN_PROGRESS',
+            serverReason: error,
+            targetName: targetName || null,
+            retryAtMs,
+            autonomyStopped: false
+          };
+        }
         if (current.kind === 'RESPAWN' && error === 'cant_respawn') {
           this.currentAction = null;
           this._removeStorage('pending');

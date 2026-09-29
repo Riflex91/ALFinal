@@ -681,8 +681,13 @@
       }
       let economy = null;
       try { economy = this.economy && typeof this.economy.status === 'function' ? this.economy.status() : null; } catch (_) {}
-      if (economy && (economy.autonomyEnabled === true || economy.currentAction
-          || Array.isArray(economy.queue) && economy.queue.length)) {
+      const economyPlanState = cleanText(economy && economy.lastPlan && economy.lastPlan.state || '', 40).toUpperCase();
+      const economyOwnsMutation = !!(economy && (
+        economy.currentAction
+        || Array.isArray(economy.queue) && economy.queue.length
+        || economy.autonomyEnabled === true && economyPlanState && !['IDLE', 'OBSERVE', 'BLOCKED', 'WAITING'].includes(economyPlanState)
+      ));
+      if (economyOwnsMutation) {
         this.metrics.ownershipBlocks += 1;
         return { state: 'WAITING', reason: 'H11_ECONOMY_OWNERSHIP', plan };
       }

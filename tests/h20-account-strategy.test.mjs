@@ -242,6 +242,9 @@ function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, inactiv
     economyStarts: 0,
     economyStops: 0,
     economyActive: false,
+    standAutoManage: false,
+    standConfigureCalls: 0,
+    standTicks: 0,
     logisticsStarts: 0,
     logisticsStops: 0,
     logisticsActive: false,
@@ -331,6 +334,25 @@ function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, inactiv
     startAutonomy: () => { state.economyStarts += 1; state.economyActive = true; return { accepted: true }; },
     stopAutonomy: () => { state.economyStops += 1; state.economyActive = false; return {}; }
   };
+  const merchantStand = {
+    status: () => ({
+      autoManage: state.standAutoManage,
+      pending: null,
+      suspended: false,
+      suspendedReason: null,
+      lastPlan: null,
+      lastAction: null
+    }),
+    configure: options => {
+      state.standConfigureCalls += 1;
+      if (options && options.autoManage != null) state.standAutoManage = options.autoManage === true;
+      return { autoManage: state.standAutoManage };
+    },
+    tick: () => {
+      state.standTicks += 1;
+      return { state: 'IDLE', reason: 'NO_SAFE_SELL_LISTING_WITH_ACTIONABLE_PRICE_SIGNAL' };
+    }
+  };
   const partyLogistics = {
     status: () => ({ autonomyEnabled: state.logisticsActive, currentAction: null, suspendedReason: null }),
     plan: () => ({ state: 'IDLE', reason: 'NO_WORK' }),
@@ -368,6 +390,7 @@ function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, inactiv
     lifecycle,
     farmIntelligence,
     economy,
+    merchantStand,
     partyLogistics,
     lifecycleTransport: { broadcastHeartbeat: () => { state.broadcasts += 1; } }
   };
@@ -702,4 +725,24 @@ test('entry auto-starts runtime and arms FARM full autonomy only on live Adventu
   assert.match(entry, /await runtime\.start\(\)/);
   assert.match(entry, /startAutonomy\(\{ taskType: 'FARM', waitForRoster: true \}\)/);
   assert.match(entry, /__ALBOT_DISABLE_AUTOSTART__/);
+});
+
+
+test('Full Autonomy enables safe Merchant Stand management and restores default-off on stop', () => {
+  const { controller, state } = loadFullAutonomy({
+    localName: 'My_Merchant',
+    partyLeader: 'My_Priest',
+    selectedMembers: ['My_Priest', 'My_Ranger1', 'My_Warrior']
+  });
+
+  const started = controller.startAutonomy({ taskType: 'FARM' });
+  assert.equal(started.accepted, true);
+  assert.equal(started.tick.state, 'RUNNING');
+  assert.equal(state.standAutoManage, true);
+  assert.equal(controller.status().standManagedByFullAutonomy, true);
+  assert.ok(state.standConfigureCalls >= 1);
+
+  controller.stopAutonomy('TEST_STOP');
+  assert.equal(state.standAutoManage, false);
+  assert.equal(controller.status().standManagedByFullAutonomy, false);
 });
