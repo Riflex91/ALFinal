@@ -60,9 +60,18 @@ function loadStrategy(options = {}) {
   };
   const crossWindow = { freshPeers: () => clone(peers) };
   const gear = { score: () => 0 };
-  const controller = new Controller({ game, roster, crossWindow, gear, now: options.now || (() => 10000) });
+  const storage = options.storage || (() => {
+    const map = new Map();
+    return {
+      map,
+      get: key => map.has(String(key)) ? map.get(String(key)) : null,
+      set: (key, value) => { map.set(String(key), String(value)); return true; },
+      remove: key => map.delete(String(key))
+    };
+  })();
+  const controller = new Controller({ game, roster, crossWindow, gear, storage, now: options.now || (() => 10000) });
   controller.start({});
-  return { controller, ctx };
+  return { controller, ctx, storage };
 }
 
 test('account strategy chooses the capable combat trio for boss work and keeps merchant as support', () => {
@@ -209,7 +218,7 @@ test('activity requirements change the exact three-farmer composition without ha
 });
 
 
-function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, inactiveFullAutonomyName = null, localName = 'My_Warrior', partyHealthy = true, partyLeader = 'My_Warrior', partyMembers = null, profileRows: customProfileRows = null, selectedMembers = ['My_Priest', 'My_Ranger1', 'My_Warrior'], supportMembers = ['My_Merchant'], leaderName = 'My_Warrior', lifecycleSuspended = false, lifecycleSuspendedReason = null, farmSuspended = false, farmSuspendedReason = null, farmOwner = 'full-autonomy', onlineNames = ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior'] } = {}) {
+function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, inactiveFullAutonomyName = null, localName = 'My_Warrior', partyHealthy = true, partyLeader = 'My_Warrior', partyMembers = null, profileRows: customProfileRows = null, selectedMembers = ['My_Priest', 'My_Ranger1', 'My_Warrior'], supportMembers = ['My_Merchant'], leaderName = 'My_Warrior', lifecycleSuspended = false, lifecycleSuspendedReason = null, farmSuspended = false, farmSuspendedReason = null, farmOwner = 'full-autonomy', onlineNames = ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior'], storage: sharedStorage = null, now: nowFn = null } = {}) {
   const source = fs.readFileSync(path.resolve(here, '../src/full-autonomy.js'), 'utf8');
   const clone = value => value == null ? value : JSON.parse(JSON.stringify(value));
   const ctx = {
@@ -250,7 +259,9 @@ function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, inactiv
     logisticsActive: false,
     stoppedPeerName,
     broadcasts: 0,
-    training: []
+    training: [],
+    selectedMembers: selectedMembers.slice(),
+    supportMembers: supportMembers.slice()
   };
   const profileRows = customProfileRows || [
     { name: 'My_Warrior', ctype: 'warrior' },
@@ -283,14 +294,31 @@ function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, inactiv
         fullAutonomyEnabled: row.local || row.name !== inactiveFullAutonomyName
       };
     })),
-    optimizeTask: () => ({
-      status: 'SELECTION_READY',
-      taskType: 'FARM',
-      selected: { memberNames: selectedMembers.slice() },
-      supportMemberNames: supportMembers.slice(),
-      leaderName,
-      progression: { selectedCharacterName: 'My_Ranger1' }
-    }),
+    optimizeTask: input => {
+      const allowed = input && Array.isArray(input.allowedCharacterNames)
+        ? new Set(input.allowedCharacterNames.map(String))
+        : null;
+      let members = state.selectedMembers.slice();
+      let support = state.supportMembers.slice();
+      if (allowed) {
+        members = profileRows
+          .filter(row => allowed.has(String(row.name)) && String(row.ctype).toLowerCase() !== 'merchant')
+          .map(row => String(row.name))
+          .slice(0, 3);
+        support = profileRows
+          .filter(row => allowed.has(String(row.name)) && String(row.ctype).toLowerCase() === 'merchant')
+          .map(row => String(row.name))
+          .slice(0, 1);
+      }
+      return {
+        status: members.length === 3 && support.length === 1 ? 'SELECTION_READY' : 'NO_ALLOWED_COMBINATION',
+        taskType: 'FARM',
+        selected: { memberNames: members },
+        supportMemberNames: support,
+        leaderName: members.includes(leaderName) ? leaderName : (members[0] || null),
+        progression: { selectedCharacterName: members[0] || null }
+      };
+    },
     recordTraining: value => state.training.push(value)
   };
   const lifecycle = {
@@ -394,9 +422,18 @@ function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, inactiv
     partyLogistics,
     lifecycleTransport: { broadcastHeartbeat: () => { state.broadcasts += 1; } }
   };
-  const controller = new Controller({ runtime, strategy });
+  const storage = sharedStorage || (() => {
+    const map = new Map();
+    return {
+      map,
+      get: key => map.has(String(key)) ? map.get(String(key)) : null,
+      set: (key, value) => { map.set(String(key), String(value)); return true; },
+      remove: key => map.delete(String(key))
+    };
+  })();
+  const controller = new Controller({ runtime, strategy, storage, now: nowFn || (() => Date.now()) });
   controller.start({});
-  return { controller, state };
+  return { controller, state, storage };
 }
 
 test('BOSS remains capability-driven and requires a tank healer and DPS rather than named characters', () => {
@@ -745,4 +782,94 @@ test('Full Autonomy enables safe Merchant Stand management and restores default-
   controller.stopAutonomy('TEST_STOP');
   assert.equal(state.standAutoManage, false);
   assert.equal(controller.status().standManagedByFullAutonomy, false);
+});
+
+
+test('account strategy preserves per-character training across browser navigation reloads', () => {
+  let now = 1000;
+  const map = new Map();
+  const storage = {
+    map,
+    get: key => map.has(String(key)) ? map.get(String(key)) : null,
+    set: (key, value) => { map.set(String(key), String(value)); return true; },
+    remove: key => map.delete(String(key))
+  };
+  const first = loadStrategy({
+    storage,
+    now: () => now,
+    local: {
+      name: 'My_Mage', ctype: 'mage', level: 50, hp: 2000, maxHp: 2000,
+      mp: 3000, maxMp: 3000, attack: 400, armor: 120, resistance: 180,
+      frequency: 1, speed: 45, range: 180, rip: false, map: 'main'
+    },
+    peers: [],
+    accountRows: [
+      { name: 'My_Mage', ctype: 'mage', level: 50, online: true },
+      { name: 'My_Priest', ctype: 'priest', level: 50, online: false }
+    ]
+  });
+  first.controller.recordTraining(true);
+  now = 7000;
+  first.controller.recordTraining(true);
+  assert.equal(Number(storage.get('albot:account-strategy:training:v1:My_Mage')), 6000);
+
+  const second = loadStrategy({
+    storage,
+    now: () => 8000,
+    local: {
+      name: 'My_Priest', ctype: 'priest', level: 50, hp: 2000, maxHp: 2000,
+      mp: 3000, maxMp: 3000, attack: 350, armor: 120, resistance: 220,
+      frequency: 1, speed: 45, range: 120, rip: false, map: 'main'
+    },
+    peers: [],
+    accountRows: [
+      { name: 'My_Mage', ctype: 'mage', level: 50, online: false },
+      { name: 'My_Priest', ctype: 'priest', level: 50, online: true }
+    ]
+  });
+  const mage = second.controller.profiles().find(row => row.name === 'My_Mage');
+  assert.equal(mage.trainingMs, 6000, 'offline fallback must retain training earned before the browser swap');
+});
+
+test('Full Autonomy keeps a persisted quartet across browser reload and suppresses immediate ping-pong rotation', () => {
+  let now = 100000;
+  const map = new Map();
+  const storage = {
+    map,
+    get: key => map.has(String(key)) ? map.get(String(key)) : null,
+    set: (key, value) => { map.set(String(key), String(value)); return true; },
+    remove: key => map.delete(String(key))
+  };
+  const profileRows = [
+    { name: 'My_Warrior', ctype: 'warrior' },
+    { name: 'My_Priest', ctype: 'priest' },
+    { name: 'My_Ranger1', ctype: 'ranger' },
+    { name: 'My_Mage', ctype: 'mage' },
+    { name: 'My_Merchant', ctype: 'merchant' }
+  ];
+
+  const first = loadFullAutonomy({ storage, now: () => now, profileRows });
+  const started = first.controller.startAutonomy({ taskType: 'FARM', rotationMinHoldMs: 300000 });
+  assert.equal(started.accepted, true);
+  assert.deepEqual([...first.controller.status().desiredCharacterNames], ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior']);
+
+  const second = loadFullAutonomy({
+    storage,
+    now: () => now + 5000,
+    localName: 'My_Priest',
+    profileRows,
+    selectedMembers: ['My_Mage', 'My_Ranger1', 'My_Warrior']
+  });
+  const reloaded = second.controller.startAutonomy({ taskType: 'FARM', rotationMinHoldMs: 300000 });
+  assert.equal(reloaded.accepted, true);
+  assert.equal(reloaded.tick.state, 'RUNNING');
+  assert.equal(reloaded.tick.selectionHeld, true);
+  assert.deepEqual([...second.controller.status().desiredCharacterNames], ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior']);
+
+  now += 301000;
+  second.state.selectedMembers = ['My_Mage', 'My_Ranger1', 'My_Warrior'];
+  const expired = second.controller.tick();
+  assert.equal(expired.state, 'WARMING');
+  assert.equal(expired.reason, 'FULL_AUTONOMY_ROTATING_ACTIVITY_GROUP');
+  assert.deepEqual([...expired.desiredCharacterNames], ['My_Mage', 'My_Merchant', 'My_Ranger1', 'My_Warrior']);
 });
