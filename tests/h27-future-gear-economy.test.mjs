@@ -99,7 +99,8 @@ function evaluatorFixture(profiles = [localWarrior()]) {
     root,
     game: game(root),
     getProfiles: () => clone(profiles),
-    minImprovementRatio: 0.01
+    minImprovementRatio: 0.01,
+    economicUpgradeMaxLevel: 1
   });
   return { root, evaluator };
 }
