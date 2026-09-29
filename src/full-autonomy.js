@@ -34,6 +34,7 @@
         requireAllOnlineProfiles: true,
         logisticsProbeMs: 30000,
         standProbeMs: 60000,
+        autoManageMerchantStand: true,
         lifecycleMaxActions: 20,
         economyMaxActions: 100,
         logisticsMaxActions: 10,
@@ -44,6 +45,7 @@
       this.desiredCharacterNames = [];
       this.tickResourceId = null;
       this.lifecycleArmed = false;
+      this.standManagedByFullAutonomy = false;
     }
 
     start(context = {}) {
@@ -73,6 +75,7 @@
       if (options.standProbeMs != null) {
         this.config.standProbeMs = Math.max(15000, Math.min(600000, Math.floor(Number(options.standProbeMs) || 60000)));
       }
+      if (options.autoManageMerchantStand != null) this.config.autoManageMerchantStand = options.autoManageMerchantStand === true;
       // Adventure Land Full Live is always a four-character group: 3 farmers + 1 Merchant.
       this.config.expectedOnlineCount = 4;
       return clone(this.config);
@@ -140,6 +143,9 @@
         if (this.started.encounters && runtime.encounters) {
           try { runtime.encounters.stopAutonomy(reason); } catch (_) {}
         }
+        if (this.standManagedByFullAutonomy && runtime.merchantStand && typeof runtime.merchantStand.configure === 'function') {
+          try { runtime.merchantStand.configure({ autoManage: false }); } catch (_) {}
+        }
       }
       if (this.tickResourceId && this.scope && typeof this.scope.cancel === 'function') {
         try { this.scope.cancel(this.tickResourceId, reason); } catch (_) {}
@@ -148,6 +154,7 @@
       this.enabled = false;
       this.desiredCharacterNames = [];
       this.lifecycleArmed = false;
+      this.standManagedByFullAutonomy = false;
       this.started = { lifecycle: false, farming: false, economy: false, partyLogistics: false, encounters: false };
       this.lastDecision = { at: new Date().toISOString(), type: 'STOP', reason: cleanText(reason, 200) };
       return this.status();
@@ -586,6 +593,13 @@
       const economy = this.runtime.economy;
       const logistics = this.runtime.partyLogistics;
       const stand = this.runtime.merchantStand || null;
+      if (stand && this.config.autoManageMerchantStand === true && typeof stand.status === 'function' && typeof stand.configure === 'function') {
+        const before = stand.status();
+        if (before && before.autoManage !== true) {
+          stand.configure({ autoManage: true });
+          this.standManagedByFullAutonomy = true;
+        }
+      }
       const economyStatus = economy.status();
       const logisticsStatus = logistics.status();
       let standStatus = stand && typeof stand.status === 'function' ? stand.status() : null;
@@ -908,6 +922,7 @@
         desiredCharacterNames: clone(this.desiredCharacterNames),
         tickScheduled: !!this.tickResourceId,
         lifecycleArmed: this.lifecycleArmed,
+        standManagedByFullAutonomy: this.standManagedByFullAutonomy,
         lastPlan: clone(this.lastPlan),
         lastDecision: clone(this.lastDecision),
         lastError: clone(this.lastError)
