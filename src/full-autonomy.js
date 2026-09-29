@@ -905,6 +905,7 @@
         }
 
         const merchantName = quartet.support && quartet.support[0] ? String(quartet.support[0]) : null;
+        const previousDesired = this._normalizeDesired(this.desiredCharacterNames);
         let readiness = this._profileReadiness();
         const localName = String(local.name || '');
         const merchantPeerSelection = this._merchantSelectionPeer(merchantName);
@@ -944,8 +945,9 @@
           };
         }
 
-        let selectionChanged = nextDesired.join('|') !== this._normalizeDesired(this.desiredCharacterNames).join('|');
+        const selectionChanged = nextDesired.join('|') !== previousDesired.join('|');
         this.desiredCharacterNames = nextDesired.slice();
+        this.lastPlan = clone(plan);
         readiness = this._profileReadiness();
         let desiredSet = new Set(nextDesired);
         let onlineDesiredCount = readiness.online.filter(name => desiredSet.has(String(name))).length;
