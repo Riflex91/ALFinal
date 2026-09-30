@@ -23,6 +23,16 @@
     evasion: 0.2, speed: 0.15, range: 0.08, frequency: 0.3
   });
 
+  const ROLE_WEIGHT_MULTIPLIERS = Object.freeze({
+    tank: Object.freeze({ armor: 1.30, resistance: 1.30, hp: 1.25, vit: 1.20, evasion: 1.10, attack: 0.90 }),
+    healer: Object.freeze({ mp: 1.25, int: 1.15, resistance: 1.15, hp: 1.10, attack: 0.90 }),
+    support: Object.freeze({ mp: 1.20, int: 1.10, resistance: 1.15, hp: 1.10, speed: 1.05 }),
+    aoe: Object.freeze({ attack: 1.15, frequency: 1.20, range: 1.10, mp: 1.10, crit: 1.05 }),
+    boss: Object.freeze({ attack: 1.15, crit: 1.20, frequency: 1.15, armor: 1.08, resistance: 1.08, hp: 1.08 }),
+    dps: Object.freeze({ attack: 1.15, crit: 1.15, frequency: 1.15, dex: 1.08, int: 1.08, str: 1.08 }),
+    economy: Object.freeze({ speed: 1.20, hp: 1.10, resistance: 1.10 })
+  });
+
   const DEFAULT_UPGRADE_CHANCES = Object.freeze({
     0: Object.freeze({ 1: 0.9999999, 2: 0.98, 3: 0.95, 4: 0.7, 5: 0.6, 6: 0.4, 7: 0.25, 8: 0.15, 9: 0.07, 10: 0.024, 11: 0.14, 12: 0.11 }),
     1: Object.freeze({ 1: 0.99998, 2: 0.97, 3: 0.94, 4: 0.68, 5: 0.58, 6: 0.38, 7: 0.24, 8: 0.14, 9: 0.066, 10: 0.018, 11: 0.13, 12: 0.10 }),
@@ -38,6 +48,39 @@
   function finite(value, fallback = null) {
     const n = Number(value);
     return Number.isFinite(n) ? n : fallback;
+  }
+
+  function roleProfile(profile) {
+    if (!profile || typeof profile !== 'object') return null;
+    const direct = [
+      profile.gearRole, profile.combatRole, profile.farmRole, profile.localRole, profile.role
+    ].map(value => String(value == null ? '' : value).trim().toLowerCase()).find(Boolean);
+    const task = profile.currentTask || profile.task || profile.assignment || null;
+    const taskText = String(task && typeof task === 'object'
+      ? task.type || task.kind || task.role || task.mode || ''
+      : task || '').trim().toLowerCase();
+    for (const value of [direct, taskText].filter(Boolean)) {
+      if (value.includes('tank')) return 'tank';
+      if (value.includes('heal')) return 'healer';
+      if (value.includes('support')) return 'support';
+      if (value.includes('aoe') || value.includes('area')) return 'aoe';
+      if (value.includes('boss') || value.includes('single')) return 'boss';
+      if (value.includes('dps') || value.includes('damage') || value.includes('combat-farm')) return 'dps';
+      if (value.includes('econom') || value.includes('merchant')) return 'economy';
+    }
+    return null;
+  }
+
+  function contextualWeights(baseWeights, profile) {
+    const out = { ...(baseWeights || {}) };
+    const role = roleProfile(profile);
+    const multipliers = role && ROLE_WEIGHT_MULTIPLIERS[role];
+    if (!multipliers) return { weights: out, roleProfile: role };
+    for (const [key, multiplier] of Object.entries(multipliers)) {
+      if (finite(out[key]) == null) continue;
+      out[key] *= multiplier;
+    }
+    return { weights: out, roleProfile: role };
   }
 
   function stableProperty(value) {
@@ -104,8 +147,9 @@
     return out;
   }
 
-  function scoreItem(meta, level, ctype) {
-    const weights = CLASS_WEIGHTS[String(ctype || '').toLowerCase()] || DEFAULT_WEIGHTS;
+  function scoreItem(meta, level, ctype, profile = null) {
+    const baseWeights = CLASS_WEIGHTS[String(ctype || '').toLowerCase()] || DEFAULT_WEIGHTS;
+    const { weights, roleProfile: resolvedRole } = contextualWeights(baseWeights, profile);
     const stats = effectiveStats(meta, level);
     let total = 0;
     let survival = 0;
@@ -116,21 +160,47 @@
         survival += value * Math.max(0, weight);
       }
     }
-    return { total, survival, stats };
+    return { total, survival, stats, roleProfile: resolvedRole };
   }
 
-  function scoreImprovement(current, target, minImprovementRatio) {
+  function scoreImprovement(current, target, minImprovementRatio, profile = null) {
     const currentTotal = finite(current && current.total, 0);
     const targetTotal = finite(target && target.total, 0);
     const improvement = targetTotal - currentTotal;
     const survivalImprovement = finite(target && target.survival, 0) - finite(current && current.survival, 0);
+    const currentSpeed = finite(current && current.stats && current.stats.speed, 0);
+    const targetSpeed = finite(target && target.stats && target.stats.speed, 0);
+    const speedImprovement = targetSpeed - currentSpeed;
     const threshold = currentTotal <= 0
       ? 0.001
       : Math.max(0.001, Math.abs(currentTotal) * Math.max(0, finite(minImprovementRatio, 0)));
+    const merchant = String(profile && profile.ctype || '').toLowerCase() === 'merchant';
+    if (merchant && speedImprovement < 0) {
+      return {
+        meaningful: false,
+        reason: 'MERCHANT_SPEED_LOSS_REJECTED',
+        improvement,
+        survivalImprovement,
+        speedImprovement,
+        threshold
+      };
+    }
+    if (merchant && speedImprovement > 0) {
+      return {
+        meaningful: improvement > threshold,
+        reason: improvement > threshold ? 'MERCHANT_SPEED_WEIGHTED_IMPROVEMENT' : 'MERCHANT_SPEED_NET_REGRESSION_REJECTED',
+        improvement,
+        survivalImprovement,
+        speedImprovement,
+        threshold
+      };
+    }
     return {
       meaningful: improvement > threshold,
+      reason: improvement > threshold ? 'WEIGHTED_GEAR_IMPROVEMENT' : 'INSUFFICIENT_GEAR_IMPROVEMENT',
       improvement,
       survivalImprovement,
+      speedImprovement,
       threshold
     };
   }
@@ -356,7 +426,7 @@
       if (!item || !item.name) return { known: true, score: { total: 0, survival: 0, stats: {} }, item: null };
       const meta = this._rawItem(item.name);
       if (!meta) return { known: false, score: null, item: clone(item) };
-      return { known: true, score: scoreItem(meta, levelOf(item), profile.ctype), item: clone(item) };
+      return { known: true, score: scoreItem(meta, levelOf(item), profile.ctype, profile), item: clone(item) };
     }
 
     _curve(meta, observedLevel, currentScore, profile) {
@@ -377,8 +447,8 @@
           stepChance = progressionProbability(G, meta, level, compound);
           cumulative = cumulative == null || stepChance == null ? null : cumulative * stepChance;
         }
-        const score = scoreItem(meta, level, profile.ctype);
-        const delta = scoreImprovement(currentScore, score, this.config.minImprovementRatio);
+        const score = scoreItem(meta, level, profile.ctype, profile);
+        const delta = scoreImprovement(currentScore, score, this.config.minImprovementRatio, profile);
         const rawUtility = Math.max(0, delta.improvement) + Math.max(0, delta.survivalImprovement) * 0.2;
         const riskAdjustedUtility = level === observedLevel
           ? rawUtility
@@ -427,8 +497,13 @@
           targetCharacter: profile.name,
           targetCtype: profile.ctype,
           targetSlot: slot,
+          roleProfile: roleProfile(profile),
           currentItem: current.item,
+          currentScore: finite(current.score && current.score.total, 0),
           observedLevel: levelOf(item),
+          observedMeaningful: !!(curve.find(row => row.level === levelOf(item)) && curve.find(row => row.level === levelOf(item)).meaningful),
+          observedImprovement: finite(curve.find(row => row.level === levelOf(item)) && curve.find(row => row.level === levelOf(item)).delta && curve.find(row => row.level === levelOf(item)).delta.improvement, 0),
+          observedSurvivalImprovement: finite(curve.find(row => row.level === levelOf(item)) && curve.find(row => row.level === levelOf(item)).delta && curve.find(row => row.level === levelOf(item)).delta.survivalImprovement, 0),
           targetLevel: selected.level,
           nextMutationLevel: selected.level > levelOf(item) ? levelOf(item) + 1 : levelOf(item),
           improvement: selected.delta.improvement,
@@ -727,7 +802,8 @@
           level: row.level == null ? null : row.level,
           equipmentKnown: !!this._profileEquipment(row),
           local: row.local === true,
-          peerFresh: row.peerFresh === true
+          peerFresh: row.peerFresh === true,
+          roleProfile: roleProfile(row)
         })),
         evaluations
       };
@@ -777,6 +853,8 @@
         processedGearSellRequiresExplicitFutureSafety: true,
         fullFutureProgressionCurve: true,
         riskAdjustedTargetSelection: true,
+        roleAwareGearScoring: true,
+        merchantSpeedPriority: 'WEIGHTED_PRIMARY_WITH_NET_REGRESSION_GUARD',
         economicsModel: 'NPC_SELL_EXPECTED_VALUE_V1',
         config: clone(this.config),
         lastPlan: clone(this.lastPlan),
