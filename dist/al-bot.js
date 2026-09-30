@@ -1,4 +1,4 @@
-/* AL Bot 0.26.20-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.24-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -6447,6 +6447,8 @@
         browserChannelReceived: 0,
         browserChannelInstallFailures: 0,
         sendCmFailures: 0,
+        sendCmSkippedForLocalTransport: 0,
+        localTransportPreferred: 0,
         transportFailures: 0,
         rejectedUntrusted: 0,
         rejectedWrongTarget: 0,
@@ -6879,30 +6881,28 @@
         ? this._publishBrowserState(envelope.state)
         : this._publishBrowserEnvelope(envelope);
       const fallbackPublished = sharedPublished || browserPublished;
+      if (fallbackPublished) {
+        this.metrics.localTransportPreferred += 1;
+        this.metrics.sendCmSkippedForLocalTransport += 1;
+        if (metric) this.metrics[metric] += 1;
+        return null;
+      }
+
       let value = null;
       try {
         value = this._sendRaw(target, envelope);
       } catch (error) {
         this.metrics.sendCmFailures += 1;
         this.lastError = { at: nowIso(this.now()), reason: errorReason(error) };
-        if (!fallbackPublished) {
-          this.metrics.transportFailures += 1;
-          this._log('warn', 'H19 Cross-Window CM Versand fehlgeschlagen', {
-            target: cleanText(target || '', 120),
-            type: envelope && envelope.type || null,
-            reason: this.lastError.reason
-          });
-          throw error;
-        }
+        this.metrics.transportFailures += 1;
+        this._log('warn', 'H19 Cross-Window CM Versand fehlgeschlagen', {
+          target: cleanText(target || '', 120),
+          type: envelope && envelope.type || null,
+          reason: this.lastError.reason
+        });
+        throw error;
       }
       if (metric) this.metrics[metric] += 1;
-      if (value && typeof value.then === 'function' && fallbackPublished) {
-        Promise.resolve(value).catch(error => {
-          this.metrics.sendCmFailures += 1;
-          this.lastError = { at: nowIso(this.now()), reason: errorReason(error) };
-        });
-        return null;
-      }
       return value;
     }
 
@@ -7851,6 +7851,10 @@
         sharedStorageFallback: this._sharedStorageAvailable(),
         browserChannelFallback: !!this.browserChannel,
         browserChannelName: this.browserChannelName,
+        transportPolicy: {
+          localCrossWindowPrimary: true,
+          sendCmFallbackOnly: true
+        },
         sessionId: this.sessionId,
         localName: this._localName(),
         server: this._serverIdentity(),
@@ -9820,7 +9824,7 @@
   const ROLE_CAPABILITIES = Object.freeze({
     warrior: ['TANK', 'DPS', 'MELEE'],
     priest: ['HEALER', 'HEAL', 'REVIVE', 'SUPPORT', 'DPS', 'RANGED'],
-    ranger: ['DPS', 'RANGED'],
+    ranger: ['DPS', 'AOE', 'RANGED'],
     mage: ['DPS', 'AOE', 'RANGED', 'SUPPORT'],
     rogue: ['DPS', 'MELEE'],
     paladin: ['TANK', 'HEAL', 'SUPPORT', 'DPS', 'MELEE'],
@@ -15278,7 +15282,11 @@
       const formation = this._formationPoint(group);
       const formationDistance = formation ? distance(group.local, formation) : group.distance;
       const leaderDistance = Number(group.distance);
-      if (activeEncounter && hardDistance <= this.config.groupHardRegroupDistance) {
+      const localRegroupDistance = Math.max(
+        Number.isFinite(leaderDistance) ? leaderDistance : 0,
+        Number.isFinite(formationDistance) ? formationDistance : 0
+      );
+      if (activeEncounter && localRegroupDistance <= this.config.groupHardRegroupDistance) {
         this.metrics.groupFollowerHolds += 1;
         return {
           state: 'FARMING',
@@ -15293,8 +15301,7 @@
       const activeOwnMove = this._ownedMovement(movement);
       const activeOwner = movement && movement.activeOrder && String(movement.activeOrder.owner || '');
       if (activeOwnMove) {
-        if (formationDistance != null && formationDistance <= this.config.groupRegroupStopDistance
-            && hardDistance <= this.config.groupRegroupTriggerDistance) {
+        if (formationDistance != null && formationDistance <= this.config.groupRegroupStopDistance) {
           try { this.movement.cancel('H9_GROUP_REJOINED_FORMATION'); } catch (_) {}
           this.groupMove = null;
         } else if (activeOwner === 'farm-intelligence-h9-group-regroup') {
@@ -15325,8 +15332,7 @@
       // smart-move for every ordinary leader drift.
       if (formation && formationDistance != null
           && formationDistance > this.config.groupRegroupStopDistance
-          && formationDistance < this.config.groupRegroupTriggerDistance
-          && hardDistance < this.config.groupRegroupTriggerDistance) {
+          && formationDistance < this.config.groupRegroupTriggerDistance) {
         const cx = Number(group.local.x);
         const cy = Number(group.local.y);
         const angle = Math.atan2(Number(formation.y) - cy, Number(formation.x) - cx);
@@ -15366,10 +15372,10 @@
         }
       }
 
-      if (hardDistance >= this.config.groupRegroupTriggerDistance
-          || (formationDistance != null && formationDistance >= this.config.groupRegroupTriggerDistance)
-          || activeEncounter && hardDistance > this.config.groupHardRegroupDistance) {
-        if (activeEncounter && hardDistance > this.config.groupHardRegroupDistance) this.metrics.groupHardRegroups += 1;
+      if ((formationDistance != null && formationDistance >= this.config.groupRegroupTriggerDistance)
+          || localRegroupDistance >= this.config.groupRegroupTriggerDistance
+          || activeEncounter && localRegroupDistance > this.config.groupHardRegroupDistance) {
+        if (activeEncounter && localRegroupDistance > this.config.groupHardRegroupDistance) this.metrics.groupHardRegroups += 1;
         this._stopOwnedFarming('H9_GROUP_REGROUP');
         const afterStopMovement = this._movementStatus();
         if (afterStopMovement && afterStopMovement.activeOrder && !this._ownedMovement(afterStopMovement)) {
@@ -22659,6 +22665,7 @@
   const DEFAULT_PRIORITIES = Object.freeze({
     BANK_MOUNT: 110,
     BANK_WITHDRAW: 105,
+    BANK_EXIT: 104,
     BANK_DEPOSIT: 100,
     GEAR_EQUIP: 90,
     MATERIAL_ACQUIRE: 85,
@@ -22673,6 +22680,7 @@
   const DEFAULT_KINDS = Object.freeze({
     BANK_MOUNT: true,
     BANK_WITHDRAW: true,
+    BANK_EXIT: true,
     BANK_DEPOSIT: true,
     GEAR_EQUIP: true,
     MATERIAL_ACQUIRE: true,
@@ -23219,6 +23227,23 @@
         || String(a.id).localeCompare(String(b.id)));
 
       this.metrics.proposals += proposals.length;
+      const bankMap = /^bank(?:$|_)/i.test(String(snap.character.map || ''));
+      const nonBankWork = proposals.some(row => row && !['BANK_MOUNT', 'BANK_WITHDRAW', 'BANK_DEPOSIT', 'BANK_EXIT'].includes(String(row.kind || '')));
+      if (bankMap && nonBankWork) {
+        const exitProposal = this._proposal('BANK_EXIT', 'movement', {
+          key: 'main',
+          destination: { map: 'main' },
+          reason: 'H17_NON_BANK_ACTION_REQUIRES_BANK_EXIT',
+          risk: 0
+        });
+        if (exitProposal) proposals.push(exitProposal);
+        proposals.sort((a, b) =>
+          Number(b.priority || 0) - Number(a.priority || 0)
+          || Number(a.risk || 0) - Number(b.risk || 0)
+          || String(a.kind).localeCompare(String(b.kind))
+          || String(a.id).localeCompare(String(b.id)));
+      }
+
       const selected = proposals[0] || null;
       const plan = {
         state: selected ? 'READY' : 'IDLE',
@@ -23235,6 +23260,7 @@
         pressure,
         mutationReservedNames: Array.from(mutationReservedNames).sort(),
         suppressedBankMaintenanceRows: rawBankRows.length - bankRows.length,
+        bankExitRequired: bankMap && nonBankWork,
         futureGearEvaluation: upgradePlan && upgradePlan.futureGearEvaluation
           ? clone(upgradePlan.futureGearEvaluation)
           : null,
@@ -23253,7 +23279,8 @@
         trade: this.trade,
         gear: this.gear,
         upgrade: this.upgrade,
-        exchangeCraft: this.exchangeCraft
+        exchangeCraft: this.exchangeCraft,
+        movement: this.movement
       }[module] || null;
     }
 
@@ -23261,6 +23288,14 @@
       if (!proposal) return { accepted: false, reason: 'H17_PROPOSAL_REQUIRED' };
       let result = null;
       if (proposal.kind === 'BANK_MOUNT') result = this.bank && this.bank.queueMount ? this.bank.queueMount() : null;
+      else if (proposal.kind === 'BANK_EXIT') result = this.movement && this.movement.smartMove
+        ? this.movement.smartMove(proposal.destination || { map: 'main' }, {
+            owner: 'economy-h17-bank-exit',
+            arrivalRadius: 12,
+            transient: true,
+            safety: true
+          })
+        : null;
       else if (proposal.kind === 'BANK_WITHDRAW') result = this.bank && this.bank.queueWithdraw
         ? this.bank.queueWithdraw(proposal.packName, proposal.bankSlot) : null;
       else if (proposal.kind === 'BANK_DEPOSIT') result = this.bank && this.bank.queueDeposit
@@ -23365,6 +23400,18 @@
         this.suspendedReason = 'H17_CHILD_STATUS_UNAVAILABLE';
         this._finishCurrent('UNKNOWN', { module: current.module });
         return { state: 'SUSPENDED', reason: this.suspendedReason };
+      }
+      if (current.module === 'movement') {
+        if (child.active || child.activeOrder) return { state: 'WAITING', action: clone(current) };
+        const lastOrder = child.lastOrder || null;
+        const state = String(lastOrder && lastOrder.state || '').toUpperCase();
+        const owner = String(lastOrder && lastOrder.owner || '');
+        if (owner === 'economy-h17-bank-exit' && state === 'COMPLETED') {
+          return { state: 'CONFIRMED', result: this._finishCurrent('CONFIRMED', { movementLastOrder: clone(lastOrder) }) };
+        }
+        if (owner === 'economy-h17-bank-exit' && ['UNKNOWN', 'FAILED_SAFE', 'CANCELLED'].includes(state)) {
+          return { state: 'REJECTED', result: this._finishCurrent('REJECTED', { movementLastOrder: clone(lastOrder) }) };
+        }
       }
       if (child.suspended) {
         this.suspendedReason = 'H17_CHILD_SUSPENDED:' + cleanText(child.suspendedReason || current.module, 160);
@@ -27971,7 +28018,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.20-h26';
+      this.version = options.version || '0.26.24-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -36081,7 +36128,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.20-h26',
+    version: '0.26.24-h26',
     bootCount,
     replacedPrevious: !!previous
   });

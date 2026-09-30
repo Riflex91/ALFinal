@@ -19,6 +19,7 @@
   const DEFAULT_PRIORITIES = Object.freeze({
     BANK_MOUNT: 110,
     BANK_WITHDRAW: 105,
+    BANK_EXIT: 104,
     BANK_DEPOSIT: 100,
     GEAR_EQUIP: 90,
     MATERIAL_ACQUIRE: 85,
@@ -33,6 +34,7 @@
   const DEFAULT_KINDS = Object.freeze({
     BANK_MOUNT: true,
     BANK_WITHDRAW: true,
+    BANK_EXIT: true,
     BANK_DEPOSIT: true,
     GEAR_EQUIP: true,
     MATERIAL_ACQUIRE: true,
@@ -579,6 +581,23 @@
         || String(a.id).localeCompare(String(b.id)));
 
       this.metrics.proposals += proposals.length;
+      const bankMap = /^bank(?:$|_)/i.test(String(snap.character.map || ''));
+      const nonBankWork = proposals.some(row => row && !['BANK_MOUNT', 'BANK_WITHDRAW', 'BANK_DEPOSIT', 'BANK_EXIT'].includes(String(row.kind || '')));
+      if (bankMap && nonBankWork) {
+        const exitProposal = this._proposal('BANK_EXIT', 'movement', {
+          key: 'main',
+          destination: { map: 'main' },
+          reason: 'H17_NON_BANK_ACTION_REQUIRES_BANK_EXIT',
+          risk: 0
+        });
+        if (exitProposal) proposals.push(exitProposal);
+        proposals.sort((a, b) =>
+          Number(b.priority || 0) - Number(a.priority || 0)
+          || Number(a.risk || 0) - Number(b.risk || 0)
+          || String(a.kind).localeCompare(String(b.kind))
+          || String(a.id).localeCompare(String(b.id)));
+      }
+
       const selected = proposals[0] || null;
       const plan = {
         state: selected ? 'READY' : 'IDLE',
@@ -595,6 +614,7 @@
         pressure,
         mutationReservedNames: Array.from(mutationReservedNames).sort(),
         suppressedBankMaintenanceRows: rawBankRows.length - bankRows.length,
+        bankExitRequired: bankMap && nonBankWork,
         futureGearEvaluation: upgradePlan && upgradePlan.futureGearEvaluation
           ? clone(upgradePlan.futureGearEvaluation)
           : null,
@@ -613,7 +633,8 @@
         trade: this.trade,
         gear: this.gear,
         upgrade: this.upgrade,
-        exchangeCraft: this.exchangeCraft
+        exchangeCraft: this.exchangeCraft,
+        movement: this.movement
       }[module] || null;
     }
 
@@ -621,6 +642,14 @@
       if (!proposal) return { accepted: false, reason: 'H17_PROPOSAL_REQUIRED' };
       let result = null;
       if (proposal.kind === 'BANK_MOUNT') result = this.bank && this.bank.queueMount ? this.bank.queueMount() : null;
+      else if (proposal.kind === 'BANK_EXIT') result = this.movement && this.movement.smartMove
+        ? this.movement.smartMove(proposal.destination || { map: 'main' }, {
+            owner: 'economy-h17-bank-exit',
+            arrivalRadius: 12,
+            transient: true,
+            safety: true
+          })
+        : null;
       else if (proposal.kind === 'BANK_WITHDRAW') result = this.bank && this.bank.queueWithdraw
         ? this.bank.queueWithdraw(proposal.packName, proposal.bankSlot) : null;
       else if (proposal.kind === 'BANK_DEPOSIT') result = this.bank && this.bank.queueDeposit
@@ -725,6 +754,18 @@
         this.suspendedReason = 'H17_CHILD_STATUS_UNAVAILABLE';
         this._finishCurrent('UNKNOWN', { module: current.module });
         return { state: 'SUSPENDED', reason: this.suspendedReason };
+      }
+      if (current.module === 'movement') {
+        if (child.active || child.activeOrder) return { state: 'WAITING', action: clone(current) };
+        const lastOrder = child.lastOrder || null;
+        const state = String(lastOrder && lastOrder.state || '').toUpperCase();
+        const owner = String(lastOrder && lastOrder.owner || '');
+        if (owner === 'economy-h17-bank-exit' && state === 'COMPLETED') {
+          return { state: 'CONFIRMED', result: this._finishCurrent('CONFIRMED', { movementLastOrder: clone(lastOrder) }) };
+        }
+        if (owner === 'economy-h17-bank-exit' && ['UNKNOWN', 'FAILED_SAFE', 'CANCELLED'].includes(state)) {
+          return { state: 'REJECTED', result: this._finishCurrent('REJECTED', { movementLastOrder: clone(lastOrder) }) };
+        }
       }
       if (child.suspended) {
         this.suspendedReason = 'H17_CHILD_SUSPENDED:' + cleanText(child.suspendedReason || current.module, 160);

@@ -87,6 +87,8 @@ test('account profiles expose default V3 gear roles to future-gear scoring', () 
   assert.equal(roles.My_Priest, 'healer');
   assert.equal(roles.My_Ranger1, 'dps');
   assert.equal(roles.My_Merchant, 'economy');
+  const ranger = controller.profiles().find(row => row.name === 'My_Ranger1');
+  assert.ok(ranger.capabilities.includes('AOE'));
 });
 
 test('account profiles preserve an explicit V3 gear role from live peer evidence', () => {
@@ -103,6 +105,19 @@ test('account profiles preserve an explicit V3 gear role from live peer evidence
   const ranger = controller.profiles().find(row => row.name === 'My_Ranger1');
   assert.ok(ranger);
   assert.equal(ranger.gearRole, 'boss');
+});
+
+test('AOE task capability checks accept Ranger as an AOE-capable farmer', () => {
+  const { controller } = loadStrategy();
+  const plan = controller.optimizeTask({
+    type: 'FARM',
+    requiredCapabilities: ['AOE', 'DPS'],
+    allowedCharacterNames: ['My_Ranger1', 'My_Priest', 'My_Warrior', 'My_Merchant']
+  });
+  assert.equal(plan.status, 'SELECTION_READY');
+  assert.ok(plan.selected.memberNames.includes('My_Ranger1'));
+  const ranger = controller.profiles().find(row => row.name === 'My_Ranger1');
+  assert.ok(ranger.capabilities.includes('AOE'));
 });
 
 test('account progression identifies the weaker combat character for catch-up training', () => {

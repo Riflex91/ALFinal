@@ -469,8 +469,41 @@ test('H29 BroadcastChannel fallback carries Merchant authority and lifecycle com
   assert.equal(bState.running, false);
   assert.ok(a.transport.status().metrics.browserChannelReceived >= 2);
   assert.ok(b.transport.status().metrics.browserChannelReceived >= 1);
-  assert.ok(a.transport.status().metrics.sendCmFailures >= 1);
-  assert.ok(b.transport.status().metrics.sendCmFailures >= 1);
+  assert.equal(a.transport.status().metrics.sendCmFailures, 0);
+  assert.equal(b.transport.status().metrics.sendCmFailures, 0);
+  assert.ok(a.transport.status().metrics.sendCmSkippedForLocalTransport >= 1);
+  assert.ok(b.transport.status().metrics.sendCmSkippedForLocalTransport >= 1);
+
+  a.transport.destroy();
+  b.transport.destroy();
+});
+
+test('H29 local cross-window transport never invokes failing send_cm when BroadcastChannel already published', async () => {
+  const names = ['My_Ranger1', 'My_Merchant'];
+  const network = new Map();
+  const nowRef = { value: 1950 };
+  const browserBus = new Map();
+  const BroadcastChannelCtor = createBroadcastChannelCtor(browserBus);
+  const a = makeContext('My_Ranger1', names, network,
+    { running: true, runEpoch: 2, emergencyStopLatched: false }, nowRef,
+    { storage: createRuntimeMemoryStorage(), BroadcastChannelCtor, failCm: true });
+  const b = makeContext('My_Merchant', names, network,
+    { running: true, runEpoch: 3, emergencyStopLatched: false }, nowRef,
+    { storage: createRuntimeMemoryStorage(), BroadcastChannelCtor, failCm: true });
+
+  a.transport.install();
+  b.transport.install();
+  a.transport.broadcastHeartbeat();
+  b.transport.broadcastHeartbeat();
+  await flush();
+  assert.equal(a.transport.status().metrics.sendCmFailures, 0);
+  assert.equal(b.transport.status().metrics.sendCmFailures, 0);
+  assert.ok(a.transport.status().metrics.localTransportPreferred >= 1);
+  assert.ok(b.transport.status().metrics.localTransportPreferred >= 1);
+  assert.equal(a.transport.status().transportPolicy.localCrossWindowPrimary, true);
+  assert.equal(a.transport.status().transportPolicy.sendCmFallbackOnly, true);
+  assert.equal(b.transport.status().transportPolicy.localCrossWindowPrimary, true);
+  assert.equal(b.transport.status().transportPolicy.sendCmFallbackOnly, true);
 
   a.transport.destroy();
   b.transport.destroy();
