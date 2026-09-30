@@ -1,4 +1,4 @@
-/* AL Bot 0.26.14-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.15-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -14236,7 +14236,8 @@
         groupRetargetDistance: Math.max(20, Math.min(100, Number(options.groupRetargetDistance) || 75)),
         groupRetargetMs: Math.max(700, Math.min(5000, Number(options.groupRetargetMs) || 2500)),
         groupLeaderRecoveryMaxStep: Math.max(25, Math.min(90, Number(options.groupLeaderRecoveryMaxStep) || 60)),
-        groupLeaderRecoveryMinImprovement: Math.max(3, Math.min(40, Number(options.groupLeaderRecoveryMinImprovement) || 6))
+        groupLeaderRecoveryMinImprovement: Math.max(3, Math.min(40, Number(options.groupLeaderRecoveryMinImprovement) || 6)),
+        groupMovementRetryMs: Math.max(500, Math.min(10000, Number(options.groupMovementRetryMs) || 2000))
       };
 
       this.moduleActive = false;
@@ -14246,6 +14247,8 @@
       this.sequence = 0;
       this.groupPolicy = { leaderName: null, memberNames: [] };
       this.groupMove = null;
+      this.groupMoveRetryAfterMs = null;
+      this.lastTransientMovementFailureOrderId = null;
       this.currentSelection = null;
       this.lastPlan = null;
       this.lastAction = null;
@@ -14276,6 +14279,7 @@
         groupLeaderHolds: 0,
         groupLeaderRecoveries: 0,
         groupCrossMapRegroups: 0,
+        transientMovementRecoveries: 0,
         combatUnknownSuspensions: 0
       };
     }
@@ -14340,6 +14344,8 @@
         memberNames: this.session.groupMemberNames.slice()
       };
       this.groupMove = null;
+      this.groupMoveRetryAfterMs = null;
+      this.lastTransientMovementFailureOrderId = null;
       this.currentSelection = null;
       this.lastPlan = null;
       this.lastAction = null;
@@ -14362,6 +14368,8 @@
       this.session = null;
       this.currentSelection = null;
       this.groupMove = null;
+      this.groupMoveRetryAfterMs = null;
+      this.lastTransientMovementFailureOrderId = null;
       this.suspendedReason = null;
       return { stopped: true, session: ended };
     }
@@ -15110,8 +15118,36 @@
       if (movement && movement.lastOrder
         && String(movement.lastOrder.owner || '').startsWith('farm-intelligence-h9')
         && ['UNKNOWN', 'FAILED_SAFE'].includes(String(movement.lastOrder.state || ''))) {
-        this.metrics.movementUnknown += 1;
-        return this._suspend('H9_MOVEMENT_' + String(movement.lastOrder.state));
+        const failedOrder = movement.lastOrder;
+        const failedOrderId = String(failedOrder.id || '');
+        if (failedOrder.transient === true) {
+          if (!failedOrderId || this.lastTransientMovementFailureOrderId !== failedOrderId) {
+            this.metrics.movementUnknown += 1;
+            this.metrics.transientMovementRecoveries += 1;
+            this.lastTransientMovementFailureOrderId = failedOrderId || null;
+            this.groupMove = null;
+            this.groupMoveRetryAfterMs = this.now() + this.config.groupMovementRetryMs;
+            this.lastAction = {
+              at: new Date().toISOString(),
+              type: 'GROUP_REGROUP_TRANSIENT_MOVEMENT_FAILURE',
+              orderId: failedOrderId || null,
+              movementState: String(failedOrder.state || ''),
+              movementReason: cleanText(failedOrder.reason || failedOrder.commandError || '', 240) || null,
+              retryAfterMs: this.groupMoveRetryAfterMs
+            };
+          }
+          if (this.groupMoveRetryAfterMs && this.now() < this.groupMoveRetryAfterMs) {
+            return {
+              state: 'WAITING',
+              reason: 'H9_GROUP_REGROUP_RETRY_BACKOFF',
+              leaderName: group && group.leaderName || null,
+              retryAfterMs: this.groupMoveRetryAfterMs
+            };
+          }
+        } else {
+          this.metrics.movementUnknown += 1;
+          return this._suspend('H9_MOVEMENT_' + String(failedOrder.state));
+        }
       }
       if (!group.local || !group.leader || !group.complete) {
         this._stopOwnedFarming('H9_GROUP_LEADER_POSITION_UNAVAILABLE');
@@ -15138,6 +15174,7 @@
         });
         if (!move || move.accepted !== true) return { state: 'WAITING', reason: move && move.reason || 'H9_GROUP_CROSS_MAP_REGROUP_REJECTED' };
         this.groupMove = { atMs: this.now(), destination: clone(destination) };
+        this.groupMoveRetryAfterMs = null;
         this.metrics.groupRegroups += 1;
         this.metrics.groupCrossMapRegroups += 1;
         return { state: 'TRAVELLING', reason: 'H9_GROUP_CROSS_MAP_REGROUP_STARTED', leaderName: group.leaderName, destination };
@@ -15202,6 +15239,7 @@
           return { state: 'WAITING', reason: move && move.reason || 'H9_GROUP_REGROUP_REJECTED', distance: group.distance };
         }
         this.groupMove = { atMs: this.now(), destination: clone(destination) };
+        this.groupMoveRetryAfterMs = null;
         this.metrics.groupRegroups += 1;
         this.lastAction = {
           at: new Date().toISOString(),
@@ -20437,7 +20475,17 @@
       const excluded = new Set([Number(row.slot)]);
       const scrollName = this._scrollName('UPGRADE', grade);
       const scroll = this._findConsumable(inventory, scrollName, excluded);
-      if (!scroll) return { ok: false, reason: 'H15_UPGRADE_SCROLL_MISSING', scrollName, grade };
+      if (!scroll) return {
+        ok: false,
+        reason: 'H15_UPGRADE_SCROLL_MISSING',
+        itemSlot: Number(row.slot),
+        itemName: row.name,
+        fromLevel: level,
+        targetLevel,
+        scrollName,
+        grade,
+        progression: progression.evaluation ? clone(progression.evaluation) : null
+      };
       excluded.add(Number(scroll.slot));
       const offering = this._offeringFor(inventory, level, excluded, options.useOffering == null ? null : options.useOffering === true);
       if (offering.required && !offering.row) return { ok: false, reason: 'H15_REQUIRED_OFFERING_MISSING', scrollName, grade };
@@ -20481,7 +20529,17 @@
       const excluded = new Set(sourceSlots);
       const scrollName = this._scrollName('COMPOUND', grade);
       const scroll = this._findConsumable(inventory, scrollName, excluded);
-      if (!scroll) return { ok: false, reason: 'H15_COMPOUND_SCROLL_MISSING', scrollName, grade };
+      if (!scroll) return {
+        ok: false,
+        reason: 'H15_COMPOUND_SCROLL_MISSING',
+        itemSlots: sourceSlots,
+        itemName: rows[0].name,
+        fromLevel: level,
+        targetLevel,
+        scrollName,
+        grade,
+        progression: progression.evaluation ? clone(progression.evaluation) : null
+      };
       excluded.add(Number(scroll.slot));
       const offering = this._offeringFor(inventory, level, excluded, options.useOffering == null ? null : options.useOffering === true);
       if (offering.required && !offering.row) return { ok: false, reason: 'H15_REQUIRED_OFFERING_MISSING', scrollName, grade };
@@ -20516,10 +20574,24 @@
       const rows = inventory.items || [];
       const progressionPlan = this._progressionPlan(inventory);
       const upgradeCandidates = [];
+      const materialNeeds = [];
       for (const row of rows) {
         const candidate = this._upgradeCandidate(row, inventory, { progressionPlan });
         if (candidate.ok) upgradeCandidates.push(candidate);
-        else if (this.gearProgression && ['H15_FUTURE_GEAR_EVALUATION_REQUIRED', 'H15_FUTURE_GEAR_EVALUATION_FAILED', 'H15_MUTATION_NOT_RECOMMENDED'].includes(candidate.reason)) {
+        else if (candidate.reason === 'H15_UPGRADE_SCROLL_MISSING' && candidate.scrollName) {
+          materialNeeds.push({
+            kind: 'UPGRADE_SCROLL',
+            mutationKind: 'UPGRADE',
+            itemSlot: candidate.itemSlot,
+            itemName: candidate.itemName,
+            fromLevel: candidate.fromLevel,
+            targetLevel: candidate.targetLevel,
+            consumableName: candidate.scrollName,
+            grade: candidate.grade,
+            quantity: 1,
+            progression: candidate.progression ? clone(candidate.progression) : null
+          });
+        } else if (this.gearProgression && ['H15_FUTURE_GEAR_EVALUATION_REQUIRED', 'H15_FUTURE_GEAR_EVALUATION_FAILED', 'H15_MUTATION_NOT_RECOMMENDED'].includes(candidate.reason)) {
           this.metrics.progressionBlocks += 1;
         }
       }
@@ -20539,7 +20611,20 @@
         for (let offset = 0; offset + 2 < sorted.length; offset += 3) {
           const candidate = this._compoundCandidate(sorted.slice(offset, offset + 3), inventory, { progressionPlan });
           if (candidate.ok) compoundCandidates.push(candidate);
-          else if (this.gearProgression && ['H15_FUTURE_GEAR_EVALUATION_REQUIRED', 'H15_FUTURE_GEAR_EVALUATION_FAILED', 'H15_MUTATION_NOT_RECOMMENDED'].includes(candidate.reason)) {
+          else if (candidate.reason === 'H15_COMPOUND_SCROLL_MISSING' && candidate.scrollName) {
+            materialNeeds.push({
+              kind: 'COMPOUND_SCROLL',
+              mutationKind: 'COMPOUND',
+              itemSlots: clone(candidate.itemSlots || []),
+              itemName: candidate.itemName,
+              fromLevel: candidate.fromLevel,
+              targetLevel: candidate.targetLevel,
+              consumableName: candidate.scrollName,
+              grade: candidate.grade,
+              quantity: 1,
+              progression: candidate.progression ? clone(candidate.progression) : null
+            });
+          } else if (this.gearProgression && ['H15_FUTURE_GEAR_EVALUATION_REQUIRED', 'H15_FUTURE_GEAR_EVALUATION_FAILED', 'H15_MUTATION_NOT_RECOMMENDED'].includes(candidate.reason)) {
             this.metrics.progressionBlocks += 1;
           }
         }
@@ -20547,6 +20632,10 @@
 
       upgradeCandidates.sort((a, b) => a.budget.itemValueAtRisk - b.budget.itemValueAtRisk || a.fromLevel - b.fromLevel || a.itemSlot - b.itemSlot);
       compoundCandidates.sort((a, b) => a.budget.itemValueAtRisk - b.budget.itemValueAtRisk || a.fromLevel - b.fromLevel || a.itemSlots[0] - b.itemSlots[0]);
+      materialNeeds.sort((a, b) =>
+        String(a.consumableName || '').localeCompare(String(b.consumableName || ''))
+        || Number(a.fromLevel || 0) - Number(b.fromLevel || 0)
+        || Number(a.itemSlot == null ? (a.itemSlots && a.itemSlots[0]) : a.itemSlot) - Number(b.itemSlot == null ? (b.itemSlots && b.itemSlots[0]) : b.itemSlot));
 
       this.metrics.upgradeCandidates = upgradeCandidates.length;
       this.metrics.compoundCandidates = compoundCandidates.length;
@@ -20578,7 +20667,8 @@
         policy: clone(this.config),
         futureGearEvaluation: progressionPlan ? clone(progressionPlan) : null,
         upgradeCandidates: clone(upgradeCandidates),
-        compoundCandidates: clone(compoundCandidates)
+        compoundCandidates: clone(compoundCandidates),
+        materialNeeds: clone(materialNeeds)
       };
       return clone(this.lastPlan);
     }
@@ -27183,7 +27273,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.14-h26';
+      this.version = options.version || '0.26.15-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -35292,7 +35382,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.14-h26',
+    version: '0.26.15-h26',
     bootCount,
     replacedPrevious: !!previous
   });

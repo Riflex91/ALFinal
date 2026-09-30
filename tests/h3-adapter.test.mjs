@@ -180,7 +180,7 @@ test('H3 game adapter normalizes live character, position and target', () => {
   vm.runInNewContext(bundle, ctx, { filename: 'al-bot.js' });
 
   const snap = ctx.ALBot.game.snapshot();
-  assert.equal(ctx.ALBot.version, '0.26.14-h26');
+  assert.equal(ctx.ALBot.version, '0.26.15-h26');
   assert.equal(snap.available, true);
   assert.equal(snap.character.name, 'FarmerA');
   assert.equal(snap.character.ctype, 'ranger');
