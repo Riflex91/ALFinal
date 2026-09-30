@@ -285,8 +285,8 @@ test('H8 runtime registers one-click suite and diagnostics surface', () => {
 test('H8 bundle version and build pipeline include farming core', () => {
   const entry = fs.readFileSync(path.resolve(here, '../src/entry.js'), 'utf8');
   const build = fs.readFileSync(path.resolve(here, '../scripts/build.mjs'), 'utf8');
-  assert.match(entry, /0\.26\.26-h26/);
+  assert.match(entry, /0\.26\.27-h26/);
   assert.match(entry, /farming:/);
   assert.match(build, /src\/farming\.js/);
-  assert.match(build, /const runtimeVersion = '0\.26\.26-h26'/);
+  assert.match(build, /const runtimeVersion = '0\.26\.27-h26'/);
 });
