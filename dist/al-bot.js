@@ -1,4 +1,4 @@
-/* AL Bot 0.26.22-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.23-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -15278,7 +15278,11 @@
       const formation = this._formationPoint(group);
       const formationDistance = formation ? distance(group.local, formation) : group.distance;
       const leaderDistance = Number(group.distance);
-      if (activeEncounter && hardDistance <= this.config.groupHardRegroupDistance) {
+      const localRegroupDistance = Math.max(
+        Number.isFinite(leaderDistance) ? leaderDistance : 0,
+        Number.isFinite(formationDistance) ? formationDistance : 0
+      );
+      if (activeEncounter && localRegroupDistance <= this.config.groupHardRegroupDistance) {
         this.metrics.groupFollowerHolds += 1;
         return {
           state: 'FARMING',
@@ -15293,8 +15297,7 @@
       const activeOwnMove = this._ownedMovement(movement);
       const activeOwner = movement && movement.activeOrder && String(movement.activeOrder.owner || '');
       if (activeOwnMove) {
-        if (formationDistance != null && formationDistance <= this.config.groupRegroupStopDistance
-            && hardDistance <= this.config.groupRegroupTriggerDistance) {
+        if (formationDistance != null && formationDistance <= this.config.groupRegroupStopDistance) {
           try { this.movement.cancel('H9_GROUP_REJOINED_FORMATION'); } catch (_) {}
           this.groupMove = null;
         } else if (activeOwner === 'farm-intelligence-h9-group-regroup') {
@@ -15325,8 +15328,7 @@
       // smart-move for every ordinary leader drift.
       if (formation && formationDistance != null
           && formationDistance > this.config.groupRegroupStopDistance
-          && formationDistance < this.config.groupRegroupTriggerDistance
-          && hardDistance < this.config.groupRegroupTriggerDistance) {
+          && formationDistance < this.config.groupRegroupTriggerDistance) {
         const cx = Number(group.local.x);
         const cy = Number(group.local.y);
         const angle = Math.atan2(Number(formation.y) - cy, Number(formation.x) - cx);
@@ -15366,10 +15368,10 @@
         }
       }
 
-      if (hardDistance >= this.config.groupRegroupTriggerDistance
-          || (formationDistance != null && formationDistance >= this.config.groupRegroupTriggerDistance)
-          || activeEncounter && hardDistance > this.config.groupHardRegroupDistance) {
-        if (activeEncounter && hardDistance > this.config.groupHardRegroupDistance) this.metrics.groupHardRegroups += 1;
+      if ((formationDistance != null && formationDistance >= this.config.groupRegroupTriggerDistance)
+          || localRegroupDistance >= this.config.groupRegroupTriggerDistance
+          || activeEncounter && localRegroupDistance > this.config.groupHardRegroupDistance) {
+        if (activeEncounter && localRegroupDistance > this.config.groupHardRegroupDistance) this.metrics.groupHardRegroups += 1;
         this._stopOwnedFarming('H9_GROUP_REGROUP');
         const afterStopMovement = this._movementStatus();
         if (afterStopMovement && afterStopMovement.activeOrder && !this._ownedMovement(afterStopMovement)) {
@@ -28012,7 +28014,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.22-h26';
+      this.version = options.version || '0.26.23-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -36122,7 +36124,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.22-h26',
+    version: '0.26.23-h26',
     bootCount,
     replacedPrevious: !!previous
   });
