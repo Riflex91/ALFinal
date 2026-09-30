@@ -1363,3 +1363,526 @@ Implementiert:
 Der neue Full-Live-Modus dient dem geplanten echten Vier-Character-Beobachtungslauf. Alle Module werden durch die normale Runtime aktiviert; mutierende Autonomie wird rollenbezogen koordiniert statt pauschal gleichzeitig auf jedem Modul freigeschaltet.
 
 Diese Foundation ersetzt H20 nicht. Event Detection, Boss Planning, Quest Targets, Special Encounters und temporaere Prioritaetswechsel bleiben der anschliessende H20-Funktionsblock.
+
+---
+
+# Konsolidierte Folge-Roadmap H30–H40
+
+Stand: 2026-09-30  
+Ausgangspunkt: aktueller produktiver AL-Bot-Stand auf der 0.26.x-Linie.
+
+## Zweck und Nummerierungsregel
+
+Die ursprüngliche Roadmap H20–H29 und die später tatsächlich implementierten H21–H28-Arbeitsstände haben sich historisch auseinanderentwickelt. Bereits gemergte H-Nummern werden deshalb **nicht rückwirkend umgedeutet oder wiederverwendet**.
+
+Für neue Funktionsarbeit gilt ab jetzt:
+
+- historische H1–H29-Evidence bleibt unverändert;
+- neue strategische Entwicklungsblöcke beginnen bei **H30**;
+- bereits vorhandene Fähigkeiten werden nicht noch einmal als neue Module gebaut;
+- neue Controller sollen vorhandene H4–H29-Fähigkeiten orchestrieren oder klar abgegrenzte echte Lücken schließen;
+- Source + Tests + aktueller `main` bleiben maßgeblich, wenn ältere Roadmap-Texte abweichen.
+
+## Bereits vorhanden – nicht erneut bauen
+
+Die folgenden Fähigkeiten sind im aktuellen AL Bot bereits vorhanden und dürfen in H30+ nicht als neue Parallelimplementierungen entstehen:
+
+- Farmzielbewertung nach XP, Gold, Drops, Dichte, Reisezeit, Respawn, Konkurrenz und Safety;
+- Live-/Map-basierte Spawn-Erkennung und Respawn-Beobachtung;
+- Kiting inklusive Gruppen-Tethering und Formation;
+- klassenspezifische deterministische Skill-Entscheidungen auf Live-Daten;
+- Party-Focus, Heal/Support und Rollen-Grundlage;
+- Tank-/Healer-/DPS-Capability-Auswahl im Account Strategy Optimizer;
+- Inventar-Dispositionen `PROTECT / RESERVE / KEEP / BANK / EXCHANGE / SELL`;
+- Economy-Arbitration für Bank, Handel, Gear, Upgrade, Compound, Exchange und Craft;
+- Farmer→Merchant-Handoff und Merchant→Farmer-Delivery;
+- Party-Supply-/Gold-Logistik;
+- dynamische Market-Evidence, `recommendedAsk`, Listing und Repricing;
+- Event-Erkennung aus Game-Event-Signalen und Server-State;
+- Encounter-Katalog und einfache EVENT/BOSS-Priorisierung gegenüber normalem FARM;
+- sichtbare Boss-Erkennung;
+- Full-Live-/Character-Rotation, Cross-Window Lifecycle und Recovery;
+- Observer, Host Watchdog, Known Recovery und Safe Updater/Rollback-Grundlage;
+- Host-Telemetrie-Grundlage.
+
+Neue Arbeit erweitert diese Systeme, ersetzt sie aber nicht ohne expliziten Architekturgrund.
+
+---
+
+## H30 – Strategic Goal Arbiter
+
+**Ziel:** Eine einzige accountweite Entscheidungsinstanz verbindet vorhandene Goals, strategische Prioritäten und temporäre Opportunities, ohne selbst Gameplay-Writes auszuführen.
+
+**🟦 BAU**
+- eigener `GoalArbiterController`;
+- Kandidaten mindestens für:
+  - `MANUAL_GOAL`
+  - `FARM`
+  - `EVENT`
+  - `BOSS`
+  - `QUEST`
+  - `RARE`
+  - `ECONOMY`
+  - `LOGISTICS`
+  - `BANK_MAINTENANCE`
+  - `GEAR_PROGRESSION`
+  - `RECOVERY`;
+- Wiederverwendung des vorhandenen H1-`GoalService` statt eines zweiten Goal-Stores;
+- verbindliche Prioritätshierarchie aus dem Project Charter:
+  1. Safety / STOP
+  2. manueller konkreter Auftrag
+  3. zeitkritische Opportunity
+  4. strategische Prioritäten
+  5. Hintergrundarbeit;
+- normalisiertes Kandidatenmodell mit mindestens:
+  - `priority`
+  - `utility`
+  - `deadline`
+  - `confidence`
+  - `risk`
+  - `travelCost`
+  - `switchingCost`
+  - `requiredRoles`
+  - `interruptible`
+  - `resumeToken`
+  - `expectedGoalProgress`;
+- genau ein primärer Account-Intent zur Zeit;
+- explizites Suspend/Resume temporär verdrängter Ziele;
+- Hysterese, Mindest-Hold und Anti-Pingpong bei Goal-Wechseln;
+- vorhandene Controller bleiben Action-Owner; H30 führt keine direkten Adventure-Land-Writes aus;
+- Diagnose: gewähltes Ziel, Alternativen, Score-Komponenten, Blocker und nächster Recheck;
+- Control-Center-Sicht für Current Account Goal / Why / Owner / Progress / Alternatives.
+
+**🟧 LIVE-TEST**
+- normales FARM läuft;
+- zeitkritische Opportunity erscheint;
+- H30 unterbricht sauber ohne Ownership-Konflikt;
+- Opportunity endet oder wird erledigt;
+- vorheriges Goal wird exakt wieder aufgenommen;
+- kein Movement-/Combat-/Economy-Pingpong;
+- UNKNOWN bleibt fail-closed und wird von H30 nicht automatisch bestätigt.
+
+**Gate für H31–H35:** Neue autonome Domänen liefern Kandidaten an H30 und bauen keine eigene konkurrierende Top-Level-Priorisierung.
+
+---
+
+## H31 – Quest Autonomy
+
+**Ziel:** Die bereits vorbereitete `QUEST`-Strategie wird zu echter Quest-Autonomie, ohne ein paralleles Farming-/Travel-/Prioritätssystem zu bauen.
+
+**🟦 BAU**
+- eigener `QuestController`;
+- Quest-Discovery aus Live-Spielzustand und verifiziertem Knowledge/World-Signal;
+- Queststatus normalisieren: verfügbar, angenommen, aktiv, erfüllbar, turn-in-bereit, abgeschlossen, blockiert;
+- sichere automatische Quest-Annahme nur nach frischer Live-Revalidation;
+- Quest-Fortschritt beobachten;
+- Kill-/Collect-/Travel-Anforderungen auf vorhandene H4/H5–H9-Pfade abbilden;
+- vorhandener H10-Questitem-Schutz bleibt maßgeblich;
+- Quest-Reward, erwartete Zeit, Reiseaufwand, Risiko und Opportunity Cost als H30-Kandidat melden;
+- Quest-Turn-in mit bounded Outcome-Evidence;
+- Resume/Cancel bei Event/Boss-Unterbrechung;
+- keine Quest/Event-Crafts oder -Exchanges automatisch freischalten, wenn bestehende Safety-Policies sie blockieren.
+
+**🟧 LIVE-TEST**
+- echte Quest erkennen;
+- Nutzen/Blocker sichtbar;
+- genau eine sichere Quest annehmen;
+- Fortschritt automatisch verfolgen;
+- vorhandenes Farming/Travel wiederverwenden;
+- Quest abschließen/abgeben;
+- Reward/Abschluss live bestätigen;
+- danach zu H30-Folgegoal zurückkehren.
+
+---
+
+## H32 – World & Rare Discovery
+
+**Ziel:** Aus einzelnen Live-Signalen entsteht eine gemeinsame World-Signal-Schicht für Events, Rares, Bosse, neue Inhalte und Zeitfenster.
+
+**🟦 BAU**
+- `WorldSignalService` / `DiscoveryController`;
+- vereinheitlichte Read-only-Eingänge:
+  - Game Events;
+  - Server-State `S`;
+  - Live-`G`;
+  - sichtbare Monster/NPCs/Maps;
+  - vorhandener Encounter-Katalog;
+  - KnowledgeService;
+  - INFO-/Guide-Wissen, soweit verlässlich verfügbar;
+  - Cross-Window-Beobachtungen;
+  - beobachtete Spawn-/Respawn-Historie;
+- pro Signal Herkunft, Freshness, Realm/Server, Confidence und Ablaufzeit;
+- Rare-State-Modell mindestens:
+  - `UNKNOWN`
+  - `POSSIBLE`
+  - `LIKELY`
+  - `VISIBLE`
+  - `DEPLETED`
+  - `COOLDOWN`;
+- Rare-/Boss-Beobachtungen zwischen eigenen Fenstern teilen;
+- Trigger-/Spawn-Fortschritt nur dann ableiten, wenn Beobachtung oder verifiziertes Wissen dies trägt;
+- Event-Zeitmodell aus `next`, `expires`, bekannten Fenstern und beobachteter Historie;
+- Content-Drift erkennen: neue Monster, NPCs, Maps, Events, Items und geänderte Definitionen;
+- unbekannter Content erzeugt Diagnose/Discovery-Arbeit statt Deadlock;
+- Discovery liefert Opportunities an H30, führt aber keine Gameplay-Mutation aus.
+
+**🟧 LIVE-TEST**
+- bekannten Event-/Boss-Signalpfad erkennen;
+- mindestens ein Cross-Window-Discovery-Signal teilen;
+- Ablauf/Freshness korrekt verwerfen;
+- unbekannten/neuen Content beobachten, ohne dass Full Live festhängt;
+- H30 darf auf ein ausreichend starkes Rare/Event-Signal reagieren und danach sauber zurückkehren.
+
+---
+
+## H33 – Encounter Tactical Coordinator
+
+**Ziel:** Strategische Rollenwahl existiert bereits; H33 koordiniert die Rollen während eines konkreten Boss-/Special-Encounters.
+
+**🟦 BAU**
+- eigener `EncounterTacticalCoordinator`;
+- vorhandene H20/H23 Account-/Encounter-Auswahl wiederverwenden;
+- gemeinsamer Party-Taktikzustand:
+  - Tank/Aggro-Verantwortung;
+  - Heal-/Defensive-Budget;
+  - DPS-/Burst-Fenster;
+  - Debuff-/Support-Fenster;
+  - Adds-Priorität;
+  - Reposition/Retreat;
+  - Phase/Mechanik;
+- generisches unbekannter-Boss-Fallback;
+- boss-/event-spezifische Mechanikprofile als Daten/Plugins statt Hardcoding im Core;
+- H33 gibt taktische Constraints/Fenster vor;
+- H6/Class Skills entscheidet weiterhin über konkret live verfügbare Skills;
+- H7/H5 bleiben Targeting-/Combat-/Support-Owner;
+- Synchronisation darf keine unbounded Waits erzeugen;
+- fehlende/unklare Mechanik-Evidence fällt auf konservatives generisches Verhalten zurück;
+- UNKNOWN eines mutierenden Child-Pfads stoppt die betroffene Taktik ohne Blind-Retry.
+
+**🟧 LIVE-TEST**
+- echte Dreier-Combat-Gruppe gegen geeigneten Boss/Special Encounter;
+- Tank/Heal/DPS-Rollen sichtbar und stabil;
+- mindestens ein koordiniertes taktisches Fenster;
+- keine konkurrierenden Skill-/Movement-Owner;
+- Phase/Encounter-Ende erkannt;
+- sauberer Rückfall auf H30-Folgegoal.
+
+---
+
+## H34 – Bank Maintenance & Inventory Lifecycle
+
+**Ziel:** H10–H17 entscheiden bereits, was mit Items geschehen soll. H34 ergänzt ausschließlich die fehlende autonome Pflege der Bankstruktur.
+
+**🟦 BAU**
+- eigener bounded `BankMaintenancePlanner` oder klar abgegrenzte Erweiterung von H12;
+- Maintenance-Bedarf aus messbaren Kriterien:
+  - Fragmentierung;
+  - fehlender Workspace;
+  - zu wenig freie Slots;
+  - Craft-/Exchange-Materialverteilung;
+  - Inventory Pressure;
+- Zielzustand vor Mutation berechnen;
+- Workspace reservieren;
+- sichere Stack-Konsolidierung;
+- Gruppierung/Pack-Optimierung nur bei verifizierter Pack-/Map-Semantik;
+- jede Mutation über vorhandene H12-Action-/Evidence-Pfade;
+- atomare Maintenance-Phase mit Budget und Timeout;
+- nach UNKNOWN keine automatische Fortsetzung;
+- abschließende vollständige Reconciliation;
+- H30 entscheidet, ob/ wann Maintenance die normale Arbeit unterbrechen darf;
+- kein zweites Item-Klassifikationssystem.
+
+**🟧 LIVE-TEST**
+- absichtlich fragmentierte, aber risikoarme Bankkonstellation;
+- Maintenance-Plan read-only prüfen;
+- kleine bounded Reorganisation;
+- alle Itemmengen nach Reconciliation identisch;
+- Zielzustand verbessert;
+- kein verloren gegangener Stack, kein Blind-Retry.
+
+---
+
+## H35 – Merchant Spatial Intelligence
+
+**Ziel:** Pricing/Repricing existiert bereits. H35 entscheidet ausschließlich über sinnvolle Merchant-Standorte und Servicepositionen.
+
+**🟦 BAU**
+- eigener Merchant-Location-Planner;
+- Standortsignale:
+  - sichtbare Player-Dichte;
+  - relevante Käufer/Verkäufer;
+  - konkurrierende Merchant-Stände;
+  - Distanz zu eigenen Farmern;
+  - Bank-/NPC-/Travel-Kosten;
+  - aktuelle Logistics-Anforderungen;
+  - Stand-Hold-Time;
+  - beobachtete Verkaufsergebnisse aus H36, sobald verfügbar;
+- Neighborhood-/Spacing-Regeln;
+- Mindest-Hold, Switch-Cooldown und A→B→A-Anti-Pingpong;
+- H4 bleibt alleiniger Movement-Owner;
+- H11/H18/H17-Ownership berücksichtigen;
+- Standortwechsel nicht während unsicherer Listing-/Transfer-/Economy-Mutation;
+- Standortentscheidung als H30-Unterplan statt eigenes Top-Level-Goal.
+
+**🟧 LIVE-TEST**
+- mindestens zwei plausible Merchant-Positionen;
+- erklärbare Standortwahl;
+- kontrollierter Standortwechsel;
+- Stand wird sicher geschlossen/geöffnet;
+- kein Standort-/Farmer-Service-Pingpong;
+- Economy/Logistics bleiben konfliktfrei.
+
+---
+
+## H36 – Outcome Intelligence & Learning
+
+**Ziel:** Entscheidungen zunehmend mit real beobachteten Ergebnissen kalibrieren, ohne Black-Box-ML als Voraussetzung.
+
+**🟦 BAU**
+- persistente, bounded Outcome-Summaries;
+- Farming-Messwerte:
+  - XP/min;
+  - Gold/min;
+  - Kills/min;
+  - Drops/min;
+  - Potionkosten;
+  - Travel-Zeit;
+  - Contest-Zeit;
+  - beobachtete Respawn-Verteilung;
+- Merchant-Messwerte:
+  - Listing-Dauer;
+  - Sell-Through;
+  - Repricing-Anzahl;
+  - Preis/Spread;
+  - Standort;
+- Encounter-Messwerte:
+  - Reisezeit;
+  - Fight-Dauer;
+  - Deaths/Recovery;
+  - Verbrauch;
+  - Rewards;
+- robuste Statistik zuerst: Median, EWMA, Sample Count, Confidence, Decay;
+- keine einzelne alte Beobachtung darf Live-Truth überschreiben;
+- H9/H30/H35 können Outcome-Schätzungen lesen;
+- H36 selbst besitzt keine Gameplay-Autorität;
+- begrenzte Exploration nur innerhalb bestehender Safety-Grenzen.
+
+**🟧 LIVE-TEST**
+- mehrere Farm-/Merchant-/Encounter-Ergebnisse sammeln;
+- Kennzahlen nachvollziehbar aktualisieren;
+- veraltete Daten verlieren Gewicht;
+- Entscheidung ändert sich nur bei ausreichender Evidence;
+- GUI zeigt Ursache und Confidence.
+
+---
+
+## H37 – Supervisor / Self-Healing Completion
+
+**Ziel:** Den bereits vorhandenen Observer/Watchdog/Known-Recovery-Stack systematisch vervollständigen, nicht neu bauen.
+
+**🟦 BAU**
+- verbindliche Recovery-Matrix:
+  - Symptom;
+  - Detektor;
+  - Owner;
+  - erlaubte Recovery;
+  - Confirm Window;
+  - Max Attempts;
+  - Cooldown;
+  - Eskalation;
+- vorhandene Owner zuerst verwenden:
+  - Movement-Stuck → H4;
+  - Character/Party/Runtime → H19/Cross-Window;
+  - Window/Process dead → Host Watchdog;
+  - bekannte Runtime-/Modulefehler → Known Recovery;
+- nur echte Lücken erhalten neue Recovery-Aktionen;
+- Circuit Breaker für wiederkehrende identische Fehler;
+- Recovery-Budget accountweit;
+- keine automatische Recovery für unaufgelöste irreversible `UNKNOWN`-Mutationen;
+- Incident-Historie und Ursache/Recovery-Verknüpfung;
+- H30 erhält Recovery als höchste operative Opportunity unterhalb STOP.
+
+**🟧 LIVE-TEST**
+- kontrollierte bekannte Fehlerklassen injizieren;
+- genau der zuständige Owner reagiert;
+- begrenzte Recovery;
+- wiederholter Fehler öffnet Circuit Breaker statt Endlosschleife;
+- irreversible UNKNOWN bleibt manuell/fail-closed.
+
+---
+
+## H38 – Production Hardening
+
+H38 bündelt die noch offenen Ziele der ursprünglichen Dauerbetrieb-/Headless-/Control-Center-/Updater-Roadmap. Umsetzung bevorzugt als getrennte kleine PRs.
+
+### H38.1 – 24/7 Soak & Performance
+
+**🟦 BAU / TEST**
+- Memory Growth;
+- Scheduler-/Timer-/Listener-Leaks;
+- Log-Bounds;
+- Cross-Window-State-Wachstum;
+- Telemetrie-Datenmenge;
+- CPU-/Tick-Latenz;
+- 8h- und danach 24h-Soak-Gate.
+
+### H38.2 – Headless Parity
+
+**🟦 BAU / TEST**
+- Browser- und Headless-Core müssen auf gleichen Snapshots gleiche planerische Entscheidungen liefern;
+- keine fachliche DOM-Abhängigkeit;
+- gleiche STOP-/Status-/Diagnostics-Semantik;
+- vorhandene Headless-APIs vollständig abdecken statt zweiten Core zu bauen.
+
+### H38.3 – Control Center Consolidation
+
+**🟦 BAU / TEST**
+- gewachsene Panels konsolidieren;
+- zentrale Account-Ansicht:
+  - Current Goal;
+  - Why;
+  - Owner;
+  - Party;
+  - Progress;
+  - Next Alternative;
+  - Blocker;
+- bestehende Detailtabs bleiben erreichbar;
+- keine Fachlogik in UI verschieben.
+
+### H38.4 – Updater / Rollback Production Gate
+
+**🟦 BAU / TEST**
+- vorhandenen Safe Updater härten;
+- Vier-Character-Synchronupdate;
+- failed member;
+- stale Manifest;
+- Browser Reload;
+- Partial Rollout;
+- Version Skew;
+- Rollback;
+- Update-Schutz während kritischer Gameplay-Mutationen.
+
+---
+
+## H39 – V2–V5 Final Feature Audit
+
+**Ziel:** Letzter systematischer Legacy-Abgleich, damit keine sinnvolle alte Fähigkeit unentdeckt fehlt und keine veraltete Funktion blind dupliziert wird.
+
+**🟦 BAU**
+- Audit-Matrix je Feature:
+  - V2;
+  - V3;
+  - V4;
+  - V5;
+  - AL Bot aktuell;
+  - Status;
+  - Nutzen;
+  - Entscheidung;
+  - Zielmodul;
+- exakt drei Resultate:
+  - `ALREADY_PRESENT`
+  - `PORT`
+  - `REJECT`;
+- bei `PORT`: kleinster passende bestehende Controller als Ziel;
+- kein historischer Runtimecode wird ungeprüft importiert;
+- Source/Tests aktueller `main` schlagen alte Dokumentation;
+- Audit-Dokument wird nach Abschluss als dauerhafte Capability-Matrix gepflegt.
+
+**🟧 LIVE-TEST**
+- nur tatsächlich portierte Features gezielt testen;
+- keine pauschale Wiederholung bereits bestandener H1–H38-Gates.
+
+---
+
+## H40 – Gesamtintegration / Release Candidate
+
+**Ziel:** Normaler Adventure-Land-Betrieb als vollständiges autonomes Account-System; kein neuer großer Featureblock.
+
+**🟦 BAU / INTEGRATION**
+- letzte Konflikte zwischen:
+  - H30 Goal Arbitration;
+  - Farming;
+  - Quests;
+  - World/Rare Discovery;
+  - Encounters;
+  - Merchant;
+  - Bank;
+  - Economy;
+  - Character Rotation;
+  - Recovery;
+  - Updater;
+  - Supervisor;
+- zentrale Explainability muss jederzeit beantworten:
+  - Was macht der Account?
+  - Warum?
+  - Wer besitzt die Aktion?
+  - Welche Alternative wurde verworfen?
+  - Wann wird neu entschieden?;
+- Release-Candidate-Configuration festschreiben;
+- keine offenen temporären Test-Sonderpfade im normalen Betrieb.
+
+**🟧 LIVE-TEST**
+- vollständiger normaler Mehrstundenbetrieb ohne künstliche Testsituation;
+- Farming, Event/Quest/Rare/Boss, Merchant/Economy und Recovery dürfen real wechseln;
+- anschließend 24/7-Soak;
+- keine Ownership-Pingpongs;
+- keine blinden Retries;
+- keine ungeklärten Ressourcenleaks;
+- STOP bleibt jederzeit vorrangig.
+
+---
+
+## Abhängigkeiten und bevorzugte Reihenfolge
+
+```text
+H30 Strategic Goal Arbiter
+ │
+ ├── H31 Quest Autonomy
+ │
+ ├── H32 World & Rare Discovery
+ │      │
+ │      └── H33 Encounter Tactical Coordinator
+ │
+ ├── H34 Bank Maintenance
+ │
+ └── H35 Merchant Spatial Intelligence
+          │
+          ▼
+ H36 Outcome Intelligence
+          │
+          ▼
+ H37 Supervisor / Self-Healing Completion
+          │
+          ▼
+ H38 Production Hardening
+          │
+          ▼
+ H39 V2–V5 Final Feature Audit
+          │
+          ▼
+ H40 Gesamtintegration / Release Candidate
+```
+
+Nach H30 dürfen H31, H32, H34 und H35 technisch unabhängig in getrennten Branches vorbereitet werden. H33 benötigt H32. H36 soll erst auf ausreichend stabilen realen H31–H35-Outcomes aufbauen.
+
+## Zuordnung der ursprünglichen offenen Roadmap
+
+- ursprüngliches **H20 Boss / Event / Quest** → bereits vorhandene Encounter-Grundlage + H31 + H33;
+- ursprüngliches **H21 World Discovery** → H32;
+- ursprüngliches **H22 Strategic Brain** → H30 + H36;
+- ursprüngliches **H23 Supervisor / Self-Healing** → vorhandener H22-Stack + H37;
+- ursprüngliches **H24 Dauerbetrieb / Performance** → H38.1;
+- ursprüngliches **H25 Finales Control Center** → H38.3;
+- ursprüngliches **H26 Headless** → H38.2;
+- ursprüngliches **H27 Updater & Rollback** → vorhandener H22-Updater + H38.4;
+- ursprüngliches **H28 V2–V5 Feature Audit** → H39;
+- ursprüngliches **H29 Gesamtintegration / Release Candidate** → H40.
+
+Damit bleiben die ursprünglichen Ziele erhalten, ohne bereits implementierte Funktionen erneut zu planen.
+
+## Nächster Entwicklungsblock
+
+**H30 – Strategic Goal Arbiter**
+
+Vor H30-Implementierung erneut aktuellen `main`, offene relevante PRs, `GoalService`, `AccountStrategyController`, `FullAutonomyController`, `EncounterController`, H9 Farm Intelligence, H17 Economy und die neuesten Tests/Live-Evidence prüfen. H30 darf keine bestehenden Action-Owner umgehen und keine Gameplay-Writes direkt ausführen.
+
