@@ -1,4 +1,4 @@
-/* AL Bot 0.26.20-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.21-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -9820,7 +9820,7 @@
   const ROLE_CAPABILITIES = Object.freeze({
     warrior: ['TANK', 'DPS', 'MELEE'],
     priest: ['HEALER', 'HEAL', 'REVIVE', 'SUPPORT', 'DPS', 'RANGED'],
-    ranger: ['DPS', 'RANGED'],
+    ranger: ['DPS', 'AOE', 'RANGED'],
     mage: ['DPS', 'AOE', 'RANGED', 'SUPPORT'],
     rogue: ['DPS', 'MELEE'],
     paladin: ['TANK', 'HEAL', 'SUPPORT', 'DPS', 'MELEE'],
@@ -27971,7 +27971,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.20-h26';
+      this.version = options.version || '0.26.21-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -36081,7 +36081,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.20-h26',
+    version: '0.26.21-h26',
     bootCount,
     replacedPrevious: !!previous
   });
