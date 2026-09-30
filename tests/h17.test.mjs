@@ -385,6 +385,50 @@ test('H17 mounts the bank to resolve a safe upgrade material dependency before d
   assert.equal(plan.selected.itemName, 'scroll0');
 });
 
+test('H17 remembers a mounted-bank material miss and buys after one exit instead of remounting forever', () => {
+  const f = fixture({
+    map: 'main',
+    bankState: 'NEEDS_BANK',
+    bankPacks: [],
+    npcPrice: 250,
+    maxConsumableCost: 1000,
+    materialNeeds: [{
+      kind: 'UPGRADE_SCROLL', mutationKind: 'UPGRADE', itemSlot: 3, itemName: 'partyhat',
+      fromLevel: 0, targetLevel: 1, consumableName: 'scroll0', quantity: 1
+    }]
+  });
+  assert.equal(f.economy.startAutonomy({ maxActions: 6 }).accepted, true);
+
+  const mount = f.economy.tick();
+  assert.equal(mount.state, 'QUEUED');
+  assert.equal(f.calls.filter(row => row.module === 'bank' && row.kind === 'MOUNT').length, 1);
+
+  f.character.map = 'bank';
+  f.plans.bank.state = 'READY';
+  f.plans.bank.reason = 'H12_BANK_READY';
+  f.settle('bank', 'BANK_MOUNTED');
+  assert.equal(f.economy.tick().state, 'CONFIRMED');
+
+  const exit = f.economy.tick();
+  assert.equal(exit.state, 'QUEUED');
+  assert.equal(exit.plan.selected.kind, 'BANK_EXIT');
+  assert.equal(f.economy.status().materialBankMisses.length, 1);
+  assert.equal(f.economy.status().metrics.materialBankMisses, 1);
+
+  f.settleMovement('COMPLETED');
+  f.plans.bank.state = 'NEEDS_BANK';
+  f.plans.bank.reason = 'H12_BANK_NOT_MOUNTED';
+  assert.equal(f.economy.tick().state, 'CONFIRMED');
+
+  const acquire = f.economy.tick();
+  assert.equal(acquire.state, 'QUEUED');
+  assert.equal(acquire.plan.selected.kind, 'MATERIAL_ACQUIRE');
+  assert.equal(acquire.plan.selected.bankCheckedMissing, true);
+  assert.equal(f.calls.filter(row => row.module === 'bank' && row.kind === 'MOUNT').length, 1);
+  assert.equal(f.calls.filter(row => row.module === 'trade' && row.kind === 'ACQUIRE').length, 1);
+  assert.ok(f.economy.status().metrics.materialBankMountSkips >= 1);
+});
+
 test('H17 withdraws required mutation material from the mounted bank before buying it', () => {
   const f = fixture({
     bankState: 'READY',
