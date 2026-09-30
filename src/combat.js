@@ -93,7 +93,8 @@
         kiteTerrainBlocks: 0,
         kiteGroupTetherBlocks: 0,
         kiteGroupSoftTetherBlocks: 0,
-        attackTargetRaceRecoveries: 0
+        attackTargetRaceRecoveries: 0,
+        attackRangeRecoveries: 0
       };
     }
 
@@ -553,6 +554,29 @@
       return true;
     }
 
+    _isExpectedGroupRangeRaceRejection(pending) {
+      if (!pending || !this.session || !this.session.policy || this.session.policy.leaderOwnedPulls !== true) return false;
+      const reason = cleanText(pending.commandError || '', 240).toLowerCase();
+      return reason === 'too_far'
+        || reason.endsWith(':too_far')
+        || reason.includes('too_far')
+        || reason === 'range'
+        || reason.endsWith(':range');
+    }
+
+    _recoverExpectedGroupRangeRace(pending) {
+      this.metrics.attackRangeRecoveries += 1;
+      this.pendingAttack = null;
+      this.session.state = 'APPROACHING';
+      this.session.lastDecision = {
+        at: new Date().toISOString(),
+        type: 'GROUP_ATTACK_RANGE_RACE_RECOVERED',
+        targetId: pending.targetId,
+        reason: pending.commandError || 'too_far'
+      };
+      return true;
+    }
+
     _observePendingAttack() {
       const pending = this.pendingAttack;
       if (!pending || !this.session) return false;
@@ -560,6 +584,9 @@
       if (pending.commandSettlement === 'REJECTED') {
         if (this._isExpectedGroupTargetRaceRejection(pending)) {
           return this._recoverExpectedGroupTargetRace(pending);
+        }
+        if (this._isExpectedGroupRangeRaceRejection(pending)) {
+          return this._recoverExpectedGroupRangeRace(pending);
         }
         this.metrics.attackUnknown += 1;
         this._fail('UNKNOWN', pending.commandError || 'ATTACK_COMMAND_REJECTED', clone(pending));
