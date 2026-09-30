@@ -19,10 +19,11 @@ function fixture(options = {}) {
     name: options.name || 'My_Merchant',
     ctype: options.ctype || 'merchant',
     rip: !!options.rip,
-    map: 'main',
+    map: options.map || 'main',
     gold: options.gold == null ? 1000000 : options.gold
   };
   const movement = {
+    active: !!options.movementOwner,
     activeOrder: options.movementOwner ? { id: 'move-1', owner: options.movementOwner } : null,
     lastOrder: null
   };
@@ -185,7 +186,22 @@ function fixture(options = {}) {
   const combat = {
     status: () => ({ active: !!options.combatActive, state: options.combatActive ? 'FIGHTING' : 'IDLE' })
   };
-  const movementController = { status: () => clone(movement) };
+  const movementController = {
+    status: () => clone(movement),
+    smartMove: (destination, args = {}) => {
+      calls.push({ module: 'movement', kind: 'SMART_MOVE', destination: clone(destination), args: clone(args) });
+      const order = {
+        id: 'move-economy-' + (++clock),
+        owner: args.owner || null,
+        state: 'ACTIVE',
+        destination: clone(destination)
+      };
+      movement.active = true;
+      movement.activeOrder = order;
+      movement.lastOrder = null;
+      return { accepted: true, order: clone(order) };
+    }
+  };
 
   const ctx = {
     console, Date, Math, JSON, Map, Set, Promise, Object, Array, String, Number, Boolean, Error,
@@ -208,6 +224,14 @@ function fixture(options = {}) {
     statuses[module].lastAction = { at: 't' + (++clock), type };
   }
 
+  function settleMovement(state = 'COMPLETED') {
+    const active = movement.activeOrder || { id: 'move-economy-test', owner: 'economy-h17-bank-exit', destination: { map: 'main' } };
+    movement.active = false;
+    movement.activeOrder = null;
+    movement.lastOrder = { ...clone(active), state };
+    if (state === 'COMPLETED') character.map = 'main';
+  }
+
   function suspend(module, reason = 'TEST_UNKNOWN') {
     statuses[module].request = null;
     statuses[module].pending = null;
@@ -216,7 +240,7 @@ function fixture(options = {}) {
     statuses[module].lastAction = { at: 't' + (++clock), type: 'TEST_UNKNOWN', reason };
   }
 
-  return { economy, calls, statuses, plans, movement, settle, suspend };
+  return { economy, calls, statuses, plans, movement, settle, settleMovement, suspend, character };
 }
 
 test('H17 is observe-only until autonomy is explicitly enabled', () => {
@@ -228,6 +252,49 @@ test('H17 is observe-only until autonomy is explicitly enabled', () => {
   assert.equal(tick.plan.selected.kind, 'EXCHANGE');
   assert.equal(f.calls.length, 0);
   assert.equal(f.economy.status().autonomyEnabled, false);
+});
+
+test('H17 exits the bank before dispatching upgrade or other non-bank work', () => {
+  const f = fixture({
+    map: 'bank',
+    upgrades: [{ itemSlot: 5, itemName: 'sword', fromLevel: 0, budget: { itemValueAtRisk: 500 } }]
+  });
+  const plan = f.economy.plan();
+  assert.equal(plan.state, 'READY');
+  assert.equal(plan.bankExitRequired, true);
+  assert.equal(plan.selected.kind, 'BANK_EXIT');
+  assert.ok(plan.proposals.some(row => row.kind === 'UPGRADE'));
+
+  assert.equal(f.economy.startAutonomy({ maxActions: 3 }).accepted, true);
+  const queued = f.economy.tick();
+  assert.equal(queued.state, 'QUEUED');
+  assert.equal(f.calls[0].module, 'movement');
+  assert.equal(f.calls[0].kind, 'SMART_MOVE');
+  assert.deepEqual(f.calls[0].destination, { map: 'main' });
+  assert.equal(f.calls.some(row => row.module === 'upgrade'), false);
+
+  f.settleMovement('COMPLETED');
+  const confirmed = f.economy.tick();
+  assert.equal(confirmed.state, 'CONFIRMED');
+  const next = f.economy.tick();
+  assert.equal(next.state, 'QUEUED');
+  assert.equal(f.calls.some(row => row.module === 'upgrade' && row.kind === 'UPGRADE'), true);
+});
+
+test('H17 bank withdrawal outranks bank exit while required mutation material is still in the bank', () => {
+  const f = fixture({
+    map: 'bank',
+    bankState: 'READY',
+    bankPacks: [{ name: 'items0', items: [{ slot: 7, name: 'scroll0', quantity: 2 }] }],
+    materialNeeds: [{
+      kind: 'UPGRADE_SCROLL', mutationKind: 'UPGRADE', itemSlot: 5, itemName: 'sword',
+      consumableName: 'scroll0', quantity: 1
+    }],
+    upgrades: [{ itemSlot: 5, itemName: 'sword', fromLevel: 0, scrollName: 'scroll0', budget: { itemValueAtRisk: 500 } }]
+  });
+  const plan = f.economy.plan();
+  assert.equal(plan.selected.kind, 'BANK_WITHDRAW');
+  assert.ok(plan.proposals.some(row => row.kind === 'BANK_EXIT'));
 });
 
 test('H17 deterministically prioritizes pressure bank work over lower economy actions', () => {
