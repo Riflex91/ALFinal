@@ -17,6 +17,7 @@
   }
 
   const DEFAULT_PRIORITIES = Object.freeze({
+    GEAR_DELIVER: 120,
     BANK_MOUNT: 110,
     BANK_WITHDRAW: 108,
     BANK_DEPOSIT: 106,
@@ -32,6 +33,7 @@
   });
 
   const DEFAULT_KINDS = Object.freeze({
+    GEAR_DELIVER: true,
     BANK_MOUNT: true,
     BANK_WITHDRAW: true,
     BANK_EXIT: true,
@@ -61,6 +63,7 @@
       this.gearProgression = options.gearProgression || null;
       this.upgrade = options.upgrade || null;
       this.exchangeCraft = options.exchangeCraft || null;
+      this.party = options.party || null;
       this.partyLogistics = options.partyLogistics || null;
       this.canAct = typeof options.canAct === 'function' ? options.canAct : null;
 
@@ -220,6 +223,11 @@
       catch (_) { return null; }
     }
 
+    _partySnapshot() {
+      try { return this.party && typeof this.party.snapshot === 'function' ? this.party.snapshot() : null; }
+      catch (_) { return null; }
+    }
+
     _combatActive() {
       try {
         const status = this.combat && typeof this.combat.status === 'function' ? this.combat.status() : null;
@@ -264,14 +272,14 @@
       return output;
     }
 
-    _childBusy(child) {
+    _childBusy(child, module = null) {
       return !!(child && (
         child.pending
         || child.request
         || child.delivery
         || child.pendingLoot
         || child.currentAction
-        || child.autonomyEnabled
+        || (String(module || '') !== 'partyLogistics' && child.autonomyEnabled)
         || Array.isArray(child.queue) && child.queue.length
       ));
     }
@@ -398,7 +406,7 @@
       }
 
       const busyChildren = Object.entries(children)
-        .filter(([, status]) => this._childBusy(status))
+        .filter(([module, status]) => this._childBusy(status, module))
         .map(([module, status]) => ({ module, reason: 'BUSY', lastAction: status && status.lastAction || null }));
       if (!this.currentAction && busyChildren.length) {
         this.metrics.conflictBlocks += 1;
@@ -415,6 +423,77 @@
       const exchangePlan = this._callPlan(this.exchangeCraft);
 
       const pressure = merchantPlan && merchantPlan.pressure && merchantPlan.pressure.state || 'NORMAL';
+
+      const partyPlan = this._partySnapshot();
+      const partyTargets = new Set(
+        partyPlan && partyPlan.coordinationEnabled && Array.isArray(partyPlan.ownedMembers)
+          ? partyPlan.ownedMembers.filter(row => row && !row.local).map(row => String(row.name || '')).filter(Boolean)
+          : []
+      );
+      const pendingGearDeliveries = this.gearProgression && typeof this.gearProgression.pendingGearReservations === 'function'
+        ? this.gearProgression.pendingGearReservations()
+        : [];
+      const activeGearDelivery = pendingGearDeliveries.find(row =>
+        row && row.targetOnline === true && partyTargets.has(String(row.targetCharacter || ''))) || null;
+
+      if (activeGearDelivery && this.gearProgression) {
+        let inventory = null;
+        try { inventory = this.game && typeof this.game.inventorySnapshot === 'function' ? this.game.inventorySnapshot() : null; } catch (_) {}
+        let inventoryItem = null;
+        for (const row of inventory && inventory.items || []) {
+          try {
+            const reservation = this.gearProgression.reservationForItem(row, activeGearDelivery.targetCharacter);
+            if (reservation) { inventoryItem = row; break; }
+          } catch (_) {}
+        }
+
+        if (inventoryItem) {
+          const proposal = this._proposal('GEAR_DELIVER', 'partyLogistics', {
+            key: activeGearDelivery.fingerprint + ':' + activeGearDelivery.targetCharacter,
+            targetCharacter: activeGearDelivery.targetCharacter,
+            inventorySlot: Number(inventoryItem.slot),
+            itemName: inventoryItem.name,
+            fingerprint: activeGearDelivery.fingerprint,
+            risk: 0
+          });
+          if (proposal) proposals.push(proposal);
+        } else if (bankPlan && bankPlan.state === 'READY') {
+          let bankItem = null;
+          for (const pack of bankPlan.packs || []) {
+            for (const row of pack.items || []) {
+              try {
+                const reservation = this.gearProgression.reservationForItem(row, activeGearDelivery.targetCharacter);
+                if (reservation) {
+                  bankItem = { ...clone(row), packName: pack.name };
+                  break;
+                }
+              } catch (_) {}
+            }
+            if (bankItem) break;
+          }
+          if (bankItem) {
+            const proposal = this._proposal('BANK_WITHDRAW', 'bank', {
+              key: 'gear:' + activeGearDelivery.fingerprint + ':' + bankItem.packName + ':' + bankItem.slot,
+              itemName: bankItem.name,
+              packName: bankItem.packName,
+              bankSlot: Number(bankItem.slot),
+              quantity: 1,
+              purpose: 'GEAR_DELIVERY',
+              targetCharacter: activeGearDelivery.targetCharacter,
+              risk: 0
+            });
+            if (proposal) proposals.push(proposal);
+          }
+        } else if (bankPlan && bankPlan.state === 'NEEDS_BANK') {
+          const proposal = this._proposal('BANK_MOUNT', 'bank', {
+            key: 'gear-delivery:' + activeGearDelivery.fingerprint,
+            purpose: 'GEAR_DELIVERY',
+            targetCharacter: activeGearDelivery.targetCharacter,
+            risk: 0
+          });
+          if (proposal) proposals.push(proposal);
+        }
+      }
 
       // Mutation consumables are short-lived execution resources, not maintenance
       // cargo. H15 may need the exact scroll/offering now (or be about to retrieve
@@ -666,6 +745,8 @@
         futureGearEvaluation: upgradePlan && upgradePlan.futureGearEvaluation
           ? clone(upgradePlan.futureGearEvaluation)
           : null,
+        pendingGearDeliveries: clone(pendingGearDeliveries),
+        activeGearDelivery: activeGearDelivery ? clone(activeGearDelivery) : null,
         selected: selected ? clone(selected) : null,
         proposals: clone(proposals),
         blockers: clone(blockers),
@@ -682,6 +763,7 @@
         gear: this.gear,
         upgrade: this.upgrade,
         exchangeCraft: this.exchangeCraft,
+        partyLogistics: this.partyLogistics,
         movement: this.movement
       }[module] || null;
     }
@@ -699,13 +781,15 @@
           })
         : null;
       else if (proposal.kind === 'BANK_WITHDRAW') result = this.bank && this.bank.queueWithdraw
-        ? this.bank.queueWithdraw(proposal.packName, proposal.bankSlot) : null;
+        ? this.bank.queueWithdraw(proposal.packName, proposal.bankSlot, { purpose: proposal.purpose || null }) : null;
       else if (proposal.kind === 'BANK_DEPOSIT') result = this.bank && this.bank.queueDeposit
         ? this.bank.queueDeposit(proposal.itemName, { inventorySlot: proposal.inventorySlot }) : null;
       else if (proposal.kind === 'MATERIAL_ACQUIRE') result = this.trade && this.trade.queueAcquire
         ? this.trade.queueAcquire(proposal.itemName, proposal.quantity, { maxUnitPrice: proposal.maxUnitPrice }) : null;
       else if (proposal.kind === 'GEAR_EQUIP') result = this.gear && this.gear.queueEquip
         ? this.gear.queueEquip(proposal.inventorySlot, proposal.slot) : null;
+      else if (proposal.kind === 'GEAR_DELIVER') result = this.partyLogistics && this.partyLogistics.queueGearDelivery
+        ? this.partyLogistics.queueGearDelivery(proposal.targetCharacter, proposal.inventorySlot) : null;
       else if (proposal.kind === 'MARKET_SELL') result = this.trade && this.trade.queueMarketSell
         ? this.trade.queueMarketSell(proposal.playerName, proposal.tradeSlot, proposal.quantity, { minUnitPrice: proposal.minUnitPrice }) : null;
       else if (proposal.kind === 'NPC_SELL') result = this.trade && this.trade.queueNpcSell
@@ -824,7 +908,7 @@
         this._finishCurrent('UNKNOWN', { module: current.module, reason: child.suspendedReason || null });
         return { state: 'SUSPENDED', reason: this.suspendedReason };
       }
-      if (this._childBusy(child)) return { state: 'WAITING', action: clone(current) };
+      if (this._childBusy(child, current.module)) return { state: 'WAITING', action: clone(current) };
 
       const after = this._lastActionSignature(child);
       if (after && after !== current.beforeLastAction) {
