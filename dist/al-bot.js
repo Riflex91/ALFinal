@@ -1,4 +1,4 @@
-/* AL Bot 0.26.35-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.36-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -6348,7 +6348,17 @@
       }
 
       const plan = this.plan();
-      if (!this.autonomyEnabled) return { state: 'OBSERVE', plan };
+      let delegatedGear = false;
+      if (!this.autonomyEnabled && this.queue[0] && String(this.queue[0].kind || '') === 'GEAR') {
+        try {
+          const economy = this.economy && typeof this.economy.status === 'function' ? this.economy.status() : null;
+          delegatedGear = !!(economy
+            && economy.currentAction
+            && String(economy.currentAction.module || '') === 'partyLogistics'
+            && String(economy.currentAction.kind || '') === 'GEAR_DELIVER');
+        } catch (_) {}
+      }
+      if (!this.autonomyEnabled && !delegatedGear) return { state: 'OBSERVE', plan };
       if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason, plan };
       if (this.actionsThisSession >= this.config.maxActionsPerSession) {
         this.metrics.sessionBudgetBlocks += 1;
@@ -28971,7 +28981,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.35-h26';
+      this.version = options.version || '0.26.36-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -37089,7 +37099,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.35-h26',
+    version: '0.26.36-h26',
     bootCount,
     replacedPrevious: !!previous
   });
