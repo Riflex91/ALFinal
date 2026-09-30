@@ -1,4 +1,4 @@
-/* AL Bot 0.26.29-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.30-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -15406,7 +15406,7 @@
       const activeOwnMove = this._ownedMovement(movement);
       const activeOwner = movement && movement.activeOrder && String(movement.activeOrder.owner || '');
       if (activeOwnMove) {
-        if (formationDistance != null && formationDistance <= this.config.groupRegroupStopDistance) {
+        if (localRegroupDistance <= this.config.groupRegroupStopDistance) {
           try { this.movement.cancel('H9_GROUP_REJOINED_FORMATION'); } catch (_) {}
           this.groupMove = null;
         } else if (activeOwner === 'farm-intelligence-h9-group-regroup') {
@@ -15440,12 +15440,24 @@
       // Hard separation deliberately bypasses local stepping and enters the
       // stable live-leader smart route below.
       const useSmartRegroup = localRegroupDistance >= this.config.groupHardRegroupDistance;
-      if (!useSmartRegroup && formation && formationDistance != null
-          && formationDistance > this.config.groupRegroupStopDistance) {
+      if (!useSmartRegroup && formation && localRegroupDistance > this.config.groupRegroupStopDistance) {
         const cx = Number(group.local.x);
         const cy = Number(group.local.y);
-        const angle = Math.atan2(Number(formation.y) - cy, Number(formation.x) - cx);
-        const travel = Math.max(0, formationDistance - this.config.groupRegroupStopDistance * 0.75);
+        // Formation distance alone is not enough to declare a follower rejoined:
+        // the live logs can satisfy the offset while the follower is still outside
+        // the leader stop radius, leaving the leader waiting forever for cohesion.
+        // Prefer the formation point while it still needs closing; otherwise take
+        // one bounded local step toward the live leader.
+        const localFollowTarget = formationDistance != null
+          && formationDistance > this.config.groupRegroupStopDistance
+          ? formation
+          : group.leader;
+        const angle = Math.atan2(Number(localFollowTarget.y) - cy, Number(localFollowTarget.x) - cx);
+        // Size the step against the target we actually chose. When the
+        // formation offset is already satisfied, using formationDistance here
+        // would produce a zero-length step even though the live leader gap remains.
+        const localFollowDistance = distance(group.local, localFollowTarget);
+        const travel = Math.max(0, Number(localFollowDistance || 0) - this.config.groupRegroupStopDistance * 0.75);
         const step = Math.min(this.config.groupFollowStep, travel);
         let waypoint = null;
         for (const offsetDeg of [0, 20, -20, 35, -35, 50, -50, 70, -70, 90, -90]) {
@@ -20630,6 +20642,9 @@
       this.lastAction = null;
       this.sequence = 0;
       this.attemptsThisSession = 0;
+      this.attemptSessionGeneration = 0;
+      this.attemptSessionStartedAt = null;
+      this.attemptSessionReason = null;
       this.riskHolds = new Map();
       this.lastMutationRiskDecision = null;
       this.config = {
@@ -20693,6 +20708,24 @@
         this.scope.interval('upgrade-compound-tick', () => this.tick(), this.config.tickMs, { immediate: true });
       }
       return { started: true };
+    }
+
+    beginAutonomySession(reason = 'H15_AUTONOMY_SESSION_START') {
+      if (!this.moduleActive) return { accepted: false, reason: 'H15_MODULE_NOT_ACTIVE' };
+      if (this.suspendedReason) return { accepted: false, reason: this.suspendedReason };
+      if (this.pending || this.request || this.riskPreview) {
+        return { accepted: false, reason: 'H15_SESSION_ACTIVE_MUTATION' };
+      }
+      this.attemptsThisSession = 0;
+      this.attemptSessionGeneration += 1;
+      this.attemptSessionStartedAt = nowIso();
+      this.attemptSessionReason = cleanText(reason, 240) || 'H15_AUTONOMY_SESSION_START';
+      return {
+        accepted: true,
+        generation: this.attemptSessionGeneration,
+        startedAt: this.attemptSessionStartedAt,
+        maxAttempts: this.config.maxAttemptsPerSession
+      };
     }
 
     stop(reason = 'H15_MODULE_STOP') {
@@ -21760,6 +21793,11 @@
         suspended: !!this.suspendedReason,
         suspendedReason: this.suspendedReason,
         attemptsThisSession: this.attemptsThisSession,
+        attemptSession: {
+          generation: this.attemptSessionGeneration,
+          startedAt: this.attemptSessionStartedAt,
+          reason: this.attemptSessionReason
+        },
         pending: clone(this.pending),
         request: clone(this.request),
         riskPreview: clone(this.riskPreview),
@@ -22963,6 +23001,19 @@
       if (this.suspendedReason) return { accepted: false, reason: this.suspendedReason };
       if (this.currentAction) return { accepted: false, reason: 'H17_ACTION_ACTIVE' };
       if (this.canAct && this.canAct('economy') !== true) return { accepted: false, reason: 'H17_RUNTIME_ACTION_BLOCKED' };
+      // H15's mutation cap is a session budget, not a lifetime budget. Full
+      // Autonomy intentionally releases idle H17 sessions for logistics/stand
+      // probes, so a fresh H17 session must also start a fresh bounded H15
+      // attempt window without clearing risk holds or any safety suspension.
+      if (this.upgrade && typeof this.upgrade.beginAutonomySession === 'function') {
+        const mutationSession = this.upgrade.beginAutonomySession('H17_ECONOMY_AUTONOMY_START');
+        if (!mutationSession || mutationSession.accepted !== true) {
+          return {
+            accepted: false,
+            reason: mutationSession && mutationSession.reason || 'H17_MUTATION_SESSION_START_REJECTED'
+          };
+        }
+      }
       if (options.maxActions != null) {
         this.config.maxActionsPerSession = Math.max(1, Math.min(100, Math.floor(Number(options.maxActions) || 1)));
       }
@@ -28233,7 +28284,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.29-h26';
+      this.version = options.version || '0.26.30-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -36343,7 +36394,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.29-h26',
+    version: '0.26.30-h26',
     bootCount,
     replacedPrevious: !!previous
   });
