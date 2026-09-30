@@ -105,6 +105,35 @@ test('account strategy start persists local equipment before any merchant reads 
   assert.equal(cached.equipment.mainhand.level, 3);
 });
 
+test('stopping account strategy does not remove an already persisted local profile', () => {
+  const root = context();
+  vm.runInNewContext(src('account-strategy.js'), root, { filename: 'account-strategy.js' });
+  const Controller = root.__ALBOT_INTERNALS__.AccountStrategyController;
+  const shared = storage();
+  const controller = new Controller({
+    root,
+    storage: shared,
+    roster: {
+      refresh: () => ({
+        accountCharacters: [{ name: 'My_Ranger1', ctype: 'ranger', level: 60, online: true }],
+        onlineCharacterNames: ['My_Ranger1']
+      })
+    },
+    game: {
+      snapshot: () => ({ available: true, character: { name: 'My_Ranger1', ctype: 'ranger', level: 60, gold: 999 } }),
+      equipmentSnapshot: () => ({ available: true, slots: { mainhand: { name: 'bow', level: 6 } } }),
+      bankSnapshot: () => ({ available: false })
+    },
+    gear: { score: () => 1 }
+  });
+
+  controller.start({});
+  controller.stop();
+  const cached = JSON.parse(shared.rows.get('albot:h28:account-profile-cache:v1:My_Ranger1'));
+  assert.equal(cached.equipment.mainhand.name, 'bow');
+  assert.equal(cached.equipment.mainhand.level, 6);
+});
+
 test('local profile is persisted without requiring account-wide profiles()', () => {
   const root = context();
   vm.runInNewContext(src('account-strategy.js'), root, { filename: 'account-strategy.js' });
