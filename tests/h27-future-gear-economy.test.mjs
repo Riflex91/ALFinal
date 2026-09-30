@@ -54,7 +54,8 @@ function baseGameData() {
       weak_ring: { type: 'ring', str: 1, compound: { str: 0 }, grades: [8, 9], igrade: 0, g: 1000 },
       scroll0: { type: 'uscroll', g: 1_000_000_000 },
       cscroll0: { type: 'cscroll', g: 1 },
-      event_sword: { type: 'weapon', wtype: 'sword', class: ['warrior'], attack: 100, upgrade: { attack: 1 }, event: true, g: 1000 }
+      event_sword: { type: 'weapon', wtype: 'sword', class: ['warrior'], attack: 100, upgrade: { attack: 1 }, event: true, g: 1000 },
+      role_sword: { type: 'weapon', wtype: 'sword', class: ['warrior'], attack: 24, g: 1000 }
     }
   };
 }
@@ -173,6 +174,53 @@ test('V3 compound policy accumulates until three identical items exist, then aut
   assert.ok(plan.evaluations[0].economic.expectedGain > 0);
 });
 
+test('V3 role profile changes gear utility while preserving class weights', () => {
+  const tank = evaluatorFixture([localWarrior({ gearRole: 'tank' })]);
+  const dps = evaluatorFixture([localWarrior({ gearRole: 'dps' })]);
+  const tankResult = tank.evaluator.evaluateInventory(inventory([item(9, 'role_sword')])).evaluations[0];
+  const dpsResult = dps.evaluator.evaluateInventory(inventory([item(9, 'role_sword')])).evaluations[0];
+
+  assert.equal(tankResult.checked, true);
+  assert.equal(dpsResult.checked, true);
+  assert.equal(tankResult.futureGear.roleProfile, 'tank');
+  assert.equal(dpsResult.futureGear.roleProfile, 'dps');
+  assert.ok(dpsResult.futureGear.improvement > tankResult.futureGear.improvement);
+});
+
+test('V3 merchant speed regression guard rejects a nominal stat upgrade that loses speed', () => {
+  const root = context({ G: {
+    ...baseGameData(),
+    classes: {
+      ...baseGameData().classes,
+      merchant: { mainhand: { sword: true }, doublehand: {}, offhand: {} }
+    },
+    items: {
+      ...baseGameData().items,
+      merchant_fast: { type: 'weapon', wtype: 'sword', class: ['merchant'], attack: 1, speed: 10, g: 1000 },
+      merchant_slow: { type: 'weapon', wtype: 'sword', class: ['merchant'], attack: 100, speed: 0, g: 1000 }
+    }
+  } });
+  vm.runInNewContext(progressionSource, root, { filename: 'gear-progression.js' });
+  const Evaluator = root.__ALBOT_INTERNALS__.FutureGearEconomyEvaluator;
+  const evaluator = new Evaluator({
+    root,
+    game: game(root),
+    getProfiles: () => [{
+      name: 'Merchant', ctype: 'merchant', level: 80, online: true, local: true,
+      peerFresh: true, rip: false, gearRole: 'economy',
+      equipment: { mainhand: { name: 'merchant_fast', level: 0 } }
+    }],
+    minImprovementRatio: 0.01
+  });
+  const result = evaluator.evaluateInventory(inventory([item(10, 'merchant_slow')])).evaluations[0];
+  assert.equal(result.checked, true);
+  assert.equal(result.futureGear, null);
+  // Speed regression means it is not Merchant gear. Once every other future
+  // gear use is disproved, normal sell economics may dispose of the item.
+  assert.notEqual(result.action, 'UPGRADE');
+  assert.notEqual(result.reason, 'FUTURE_GEAR_UPGRADE_POTENTIAL');
+});
+
 test('future gear disposal remains fail-closed when a live party profile lacks equipment evidence', () => {
   const profiles = [
     localWarrior(),
@@ -259,7 +307,13 @@ test('upgrade executor accepts only the mutation action authorized by future gea
       state: 'READY',
       evaluations: [{
         slot: 0, item: 'future_sword', observedLevel: 0, checked: true,
-        protected: action !== 'SELL', sellSafe: action === 'SELL', action
+        protected: action !== 'SELL', sellSafe: action === 'SELL', action,
+        futureGear: action === 'UPGRADE' ? {
+          currentScore: 20,
+          observedMeaningful: false,
+          improvement: 8,
+          curve: [{ level: 1, stepChance: 0.99 }]
+        } : null
       }]
     })
   };
@@ -298,7 +352,13 @@ test('upgrade planner exposes a consumable need when future-gear authority wants
       state: 'READY',
       evaluations: [{
         slot: 0, item: 'future_sword', observedLevel: 0, checked: true,
-        protected: true, sellSafe: false, action: 'UPGRADE'
+        protected: true, sellSafe: false, action: 'UPGRADE',
+        futureGear: {
+          currentScore: 20,
+          observedMeaningful: false,
+          improvement: 8,
+          curve: [{ level: 1, stepChance: 0.99 }]
+        }
       }]
     })
   };

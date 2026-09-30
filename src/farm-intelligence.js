@@ -72,6 +72,7 @@
         groupHardRegroupDistance: Math.max(150, Math.min(350, Number(options.groupHardRegroupDistance) || 195)),
         groupRetargetDistance: Math.max(20, Math.min(100, Number(options.groupRetargetDistance) || 75)),
         groupRetargetMs: Math.max(700, Math.min(5000, Number(options.groupRetargetMs) || 2500)),
+        groupFollowStep: Math.max(20, Math.min(100, Number(options.groupFollowStep) || 70)),
         groupLeaderRecoveryMaxStep: Math.max(25, Math.min(90, Number(options.groupLeaderRecoveryMaxStep) || 60)),
         groupLeaderRecoveryMinImprovement: Math.max(3, Math.min(40, Number(options.groupLeaderRecoveryMinImprovement) || 6)),
         groupMovementRetryMs: Math.max(500, Math.min(10000, Number(options.groupMovementRetryMs) || 2000))
@@ -111,6 +112,7 @@
         groupLeaderPlans: 0,
         groupFollowerHolds: 0,
         groupRegroups: 0,
+        groupLocalFollows: 0,
         groupRetargets: 0,
         groupHardRegroups: 0,
         groupLeaderHolds: 0,
@@ -1019,25 +1021,27 @@
 
       const formation = this._formationPoint(group);
       const formationDistance = formation ? distance(group.local, formation) : group.distance;
+      const leaderDistance = Number(group.distance);
       if (activeEncounter && hardDistance <= this.config.groupHardRegroupDistance) {
         this.metrics.groupFollowerHolds += 1;
         return {
           state: 'FARMING',
           reason: 'H9_GROUP_FORMATION_HOLD',
           leaderName: group.leaderName,
-          distance: group.distance,
+          distance: leaderDistance,
           maxPairDistance: hardDistance,
           hardRegroupDistance: this.config.groupHardRegroupDistance
         };
       }
 
       const activeOwnMove = this._ownedMovement(movement);
+      const activeOwner = movement && movement.activeOrder && String(movement.activeOrder.owner || '');
       if (activeOwnMove) {
         if (formationDistance != null && formationDistance <= this.config.groupRegroupStopDistance
             && hardDistance <= this.config.groupRegroupTriggerDistance) {
           try { this.movement.cancel('H9_GROUP_REJOINED_FORMATION'); } catch (_) {}
           this.groupMove = null;
-        } else {
+        } else if (activeOwner === 'farm-intelligence-h9-group-regroup') {
           const destination = movement.activeOrder && movement.activeOrder.destination || null;
           const shifted = destination && formation ? distance(destination, formation) : null;
           const moveAge = this.groupMove ? this.now() - Number(this.groupMove.atMs || 0) : 0;
@@ -1052,7 +1056,57 @@
               this.metrics.groupRetargets += 1;
             }
           }
-          return { state: 'TRAVELLING', reason: 'H9_GROUP_REGROUP_IN_PROGRESS', leaderName: group.leaderName, distance: group.distance, maxPairDistance: hardDistance };
+          return { state: 'TRAVELLING', reason: 'H9_GROUP_REGROUP_IN_PROGRESS', leaderName: group.leaderName, distance: leaderDistance, maxPairDistance: hardDistance };
+        } else if (activeOwner === 'farm-intelligence-h9-group-follow') {
+          return { state: 'TRAVELLING', reason: 'H9_GROUP_LOCAL_FOLLOW_IN_PROGRESS', leaderName: group.leaderName, distance: leaderDistance, maxPairDistance: hardDistance };
+        } else {
+          return { state: 'TRAVELLING', reason: 'H9_GROUP_FOLLOW_MOVEMENT_IN_PROGRESS', leaderName: group.leaderName, distance: leaderDistance, maxPairDistance: hardDistance };
+        }
+      }
+
+      // V3 used cheap local follow movement while the follower was only moderately
+      // separated. Keep the stable formation offset, but avoid spinning up a full
+      // smart-move for every ordinary leader drift.
+      if (formation && formationDistance != null
+          && formationDistance > this.config.groupRegroupStopDistance
+          && formationDistance < this.config.groupRegroupTriggerDistance
+          && hardDistance < this.config.groupRegroupTriggerDistance) {
+        const cx = Number(group.local.x);
+        const cy = Number(group.local.y);
+        const angle = Math.atan2(Number(formation.y) - cy, Number(formation.x) - cx);
+        const travel = Math.max(0, formationDistance - this.config.groupRegroupStopDistance * 0.75);
+        const step = Math.min(this.config.groupFollowStep, travel);
+        let waypoint = null;
+        for (const offsetDeg of [0, 20, -20, 35, -35, 50, -50, 70, -70, 90, -90]) {
+          const a = angle + offsetDeg * Math.PI / 180;
+          const point = { x: cx + Math.cos(a) * step, y: cy + Math.sin(a) * step };
+          let canMove = true;
+          try {
+            if (this.movement && typeof this.movement._canMoveTo === 'function') canMove = this.movement._canMoveTo(point.x, point.y) !== false;
+          } catch (_) { canMove = false; }
+          if (canMove) {
+            waypoint = point;
+            break;
+          }
+        }
+        if (waypoint && step >= 2 && this.movement && typeof this.movement.moveLocal === 'function') {
+          const move = this.movement.moveLocal(waypoint.x, waypoint.y, {
+            owner: 'farm-intelligence-h9-group-follow',
+            arrivalRadius: 8,
+            transient: true
+          });
+          if (move && move.accepted === true) {
+            this.metrics.groupLocalFollows += 1;
+            this.lastAction = {
+              at: new Date().toISOString(),
+              type: 'GROUP_LOCAL_FOLLOW',
+              leaderName: group.leaderName,
+              destination: { map: group.leader.map, x: waypoint.x, y: waypoint.y },
+              distance: leaderDistance,
+              formationDistance
+            };
+            return { state: 'TRAVELLING', reason: 'H9_GROUP_LOCAL_FOLLOW_STARTED', leaderName: group.leaderName, distance: leaderDistance, formationDistance, destination: clone(this.lastAction.destination) };
+          }
         }
       }
 
@@ -1064,7 +1118,7 @@
         const afterStopMovement = this._movementStatus();
         if (afterStopMovement && afterStopMovement.activeOrder && !this._ownedMovement(afterStopMovement)) {
           this.metrics.ownershipBlocks += 1;
-          return { state: 'WAITING', reason: 'H9_GROUP_REGROUP_MOVEMENT_BUSY', distance: group.distance };
+          return { state: 'WAITING', reason: 'H9_GROUP_REGROUP_MOVEMENT_BUSY', distance: leaderDistance };
         }
         const destination = formation || { map: group.leader.map, x: group.leader.x, y: group.leader.y };
         const move = this.movement.smartMove(destination, {
@@ -1073,7 +1127,7 @@
           transient: true
         });
         if (!move || move.accepted !== true) {
-          return { state: 'WAITING', reason: move && move.reason || 'H9_GROUP_REGROUP_REJECTED', distance: group.distance };
+          return { state: 'WAITING', reason: move && move.reason || 'H9_GROUP_REGROUP_REJECTED', distance: leaderDistance };
         }
         this.groupMove = { atMs: this.now(), destination: clone(destination) };
         this.groupMoveRetryAfterMs = null;
@@ -1083,10 +1137,11 @@
           type: activeEncounter ? 'GROUP_HARD_REGROUP' : 'GROUP_REGROUP',
           leaderName: group.leaderName,
           destination,
-          distance: group.distance,
+          distance: leaderDistance,
+          formationDistance,
           maxPairDistance: hardDistance
         };
-        return { state: 'TRAVELLING', reason: 'H9_GROUP_REGROUP_STARTED', leaderName: group.leaderName, distance: group.distance, maxPairDistance: hardDistance, destination };
+        return { state: 'TRAVELLING', reason: 'H9_GROUP_REGROUP_STARTED', leaderName: group.leaderName, distance: leaderDistance, formationDistance, maxPairDistance: hardDistance, destination };
       }
 
       return this._ensureFollowerFarm(group);
@@ -1148,8 +1203,20 @@
         };
       }
 
-      this._stopOwnedFarming('H9_WAITING_FOR_TEAM_COHESION');
       const activeOrder = movement && movement.activeOrder;
+      // Do not reverse a valid leader-owned farm trip. Followers close the gap
+      // while the leader keeps the selected farm destination.
+      if (activeOrder && String(activeOrder.owner || '') === 'farm-intelligence-h9') {
+        return {
+          state: 'TRAVELLING',
+          reason: 'H9_GROUP_LEADER_TRAVEL_CONTINUES',
+          leaderName: group.leaderName,
+          maxPairDistance: group.maxPairDistance,
+          destination: clone(activeOrder.destination || null)
+        };
+      }
+
+      this._stopOwnedFarming('H9_WAITING_FOR_TEAM_COHESION');
       if (activeOrder && String(activeOrder.owner || '') === 'farm-intelligence-h9-leader-regroup') {
         this.metrics.groupLeaderHolds += 1;
         return { state: 'TRAVELLING', reason: 'H9_GROUP_LEADER_RECOVERY_IN_PROGRESS', maxPairDistance: group.maxPairDistance };

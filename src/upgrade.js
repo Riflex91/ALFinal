@@ -36,24 +36,35 @@
       this.actions = options.actions || null;
       this.combat = options.combat || null;
       this.gearProgression = options.gearProgression || null;
+      this.bank = options.bank || null;
       this.moduleActive = false;
       this.scope = null;
       this.pending = null;
       this.request = null;
+      this.riskPreview = null;
       this.suspendedReason = null;
       this.lastPlan = null;
       this.lastAction = null;
       this.sequence = 0;
       this.attemptsThisSession = 0;
+      this.riskHolds = new Map();
+      this.lastMutationRiskDecision = null;
       this.config = {
         tickMs: Math.max(250, Math.min(5000, Number(options.tickMs) || 750)),
         outcomeTimeoutMs: Math.max(1000, Math.min(60000, Number(options.outcomeTimeoutMs) || 8000)),
         settleGraceMs: Math.max(100, Math.min(3000, Number(options.settleGraceMs) || 500)),
         maxAttemptsPerSession: Math.max(1, Math.min(100, finite(options.maxAttemptsPerSession) == null ? 12 : finite(options.maxAttemptsPerSession))),
-        maxUpgradeLevel: Math.max(0, Math.min(20, finite(options.maxUpgradeLevel) == null ? 8 : finite(options.maxUpgradeLevel))),
-        maxCompoundLevel: Math.max(0, Math.min(20, finite(options.maxCompoundLevel) == null ? 4 : finite(options.maxCompoundLevel))),
+        maxUpgradeLevel: Math.max(0, Math.min(20, finite(options.maxUpgradeLevel) == null ? 7 : finite(options.maxUpgradeLevel))),
+        maxCompoundLevel: Math.max(0, Math.min(20, finite(options.maxCompoundLevel) == null ? 10 : finite(options.maxCompoundLevel))),
         maxItemValueAtRisk: Math.max(0, finite(options.maxItemValueAtRisk) == null ? 250000 : finite(options.maxItemValueAtRisk)),
         maxConsumableCost: Math.max(0, finite(options.maxConsumableCost) == null ? 250000 : finite(options.maxConsumableCost)),
+        mutationRiskHoldMs: Math.max(10000, Math.min(10 * 60 * 1000, finite(options.mutationRiskHoldMs) == null ? 60000 : finite(options.mutationRiskHoldMs))),
+        mutationRiskLevelStep: Math.max(0, Math.min(0.15, finite(options.mutationRiskLevelStep) == null ? 0.05 : finite(options.mutationRiskLevelStep))),
+        speculativeMinChanceNoSpare: Math.max(0, Math.min(1, finite(options.speculativeMinChanceNoSpare) == null ? 0.60 : finite(options.speculativeMinChanceNoSpare))),
+        speculativeMinChanceOneSpare: Math.max(0, Math.min(1, finite(options.speculativeMinChanceOneSpare) == null ? 0.35 : finite(options.speculativeMinChanceOneSpare))),
+        speculativeMinChanceManySpares: Math.max(0, Math.min(1, finite(options.speculativeMinChanceManySpares) == null ? 0.20 : finite(options.speculativeMinChanceManySpares))),
+        upgradeValueCap: Math.max(1, finite(options.upgradeValueCap) == null ? 2000000 : finite(options.upgradeValueCap)),
+        compoundValueCap: Math.max(1, finite(options.compoundValueCap) == null ? 500000 : finite(options.compoundValueCap)),
         offeringMode: ['DISABLED', 'OPTIONAL', 'REQUIRED'].includes(String(options.offeringMode || '').toUpperCase())
           ? String(options.offeringMode).toUpperCase() : 'DISABLED',
         offeringFromLevel: Math.max(0, Math.min(20, finite(options.offeringFromLevel) == null ? 7 : finite(options.offeringFromLevel))),
@@ -78,7 +89,14 @@
         compoundsUnknown: 0,
         budgetBlocks: 0,
         safetyBlocks: 0,
-        progressionBlocks: 0
+        progressionBlocks: 0,
+        mutationRiskChecks: 0,
+        mutationRiskAccepted: 0,
+        mutationRiskHolds: 0,
+        mutationRiskHoldSkips: 0,
+        mutationAuthoritativePreviews: 0,
+        mutationAuthoritativeAccepted: 0,
+        mutationAuthoritativeHolds: 0
       };
     }
 
@@ -99,6 +117,7 @@
       this.scope = null;
       this.pending = null;
       this.request = null;
+      this.riskPreview = null;
       this.lastAction = { at: nowIso(), type: 'STOP', reason: cleanText(reason, 240) };
       return { stopped: true };
     }
@@ -106,8 +125,11 @@
     resetSafety(reason = 'H15_EXPLICIT_RESET') {
       this.pending = null;
       this.request = null;
+      this.riskPreview = null;
       this.suspendedReason = null;
       this.attemptsThisSession = 0;
+      this.riskHolds.clear();
+      this.lastMutationRiskDecision = null;
       this.lastAction = { at: nowIso(), type: 'RESET', reason: cleanText(reason, 240) };
       return this.status();
     }
@@ -115,6 +137,7 @@
     cancelRequest(reason = 'H15_REQUEST_CANCELLED') {
       this.pending = null;
       this.request = null;
+      this.riskPreview = null;
       this.lastAction = { at: nowIso(), type: 'REQUEST_CANCELLED', reason: cleanText(reason, 240) };
       return this.status();
     }
@@ -127,6 +150,13 @@
       if (value.maxCompoundLevel != null) this.config.maxCompoundLevel = Math.max(0, Math.min(20, Math.floor(Number(value.maxCompoundLevel) || 0)));
       if (value.maxItemValueAtRisk != null) this.config.maxItemValueAtRisk = Math.max(0, Number(value.maxItemValueAtRisk) || 0);
       if (value.maxConsumableCost != null) this.config.maxConsumableCost = Math.max(0, Number(value.maxConsumableCost) || 0);
+      if (value.mutationRiskHoldMs != null) this.config.mutationRiskHoldMs = Math.max(10000, Math.min(10 * 60 * 1000, Number(value.mutationRiskHoldMs) || 10000));
+      if (value.mutationRiskLevelStep != null) this.config.mutationRiskLevelStep = Math.max(0, Math.min(0.15, Number(value.mutationRiskLevelStep) || 0));
+      if (value.speculativeMinChanceNoSpare != null) this.config.speculativeMinChanceNoSpare = Math.max(0, Math.min(1, Number(value.speculativeMinChanceNoSpare) || 0));
+      if (value.speculativeMinChanceOneSpare != null) this.config.speculativeMinChanceOneSpare = Math.max(0, Math.min(1, Number(value.speculativeMinChanceOneSpare) || 0));
+      if (value.speculativeMinChanceManySpares != null) this.config.speculativeMinChanceManySpares = Math.max(0, Math.min(1, Number(value.speculativeMinChanceManySpares) || 0));
+      if (value.upgradeValueCap != null) this.config.upgradeValueCap = Math.max(1, Number(value.upgradeValueCap) || 1);
+      if (value.compoundValueCap != null) this.config.compoundValueCap = Math.max(1, Number(value.compoundValueCap) || 1);
       if (value.offeringFromLevel != null) this.config.offeringFromLevel = Math.max(0, Math.min(20, Math.floor(Number(value.offeringFromLevel) || 0)));
       if (value.offeringMode != null) {
         const mode = String(value.offeringMode).toUpperCase();
@@ -210,6 +240,184 @@
 
     _rowAt(inventory, slot) {
       return inventory && (inventory.items || []).find(row => Number(row.slot) === Number(slot)) || null;
+    }
+
+    _riskKey(kind, row) {
+      return [
+        String(kind || '').toUpperCase(),
+        this._propertyKey(row),
+        Math.max(0, Number(row && row.level) || 0)
+      ].join('|');
+    }
+
+    _activeRiskHold(kind, row) {
+      const key = this._riskKey(kind, row);
+      const hold = this.riskHolds.get(key) || null;
+      if (!hold) return null;
+      if (Number(hold.untilMs || 0) <= Date.now()) {
+        this.riskHolds.delete(key);
+        return null;
+      }
+      this.metrics.mutationRiskHoldSkips += 1;
+      return clone(hold);
+    }
+
+    _bankRows() {
+      if (!this.bank || typeof this.bank.plan !== 'function') return [];
+      try {
+        const plan = this.bank.plan();
+        const rows = [];
+        for (const pack of plan && Array.isArray(plan.packs) ? plan.packs : []) {
+          for (const row of pack && Array.isArray(pack.items) ? pack.items : []) {
+            if (row) rows.push(row);
+          }
+        }
+        return rows;
+      } catch (_) {
+        return [];
+      }
+    }
+
+    _replacementStock(kind, row, inventory, inputSlots = []) {
+      const excluded = new Set((inputSlots || []).map(Number));
+      const identityKey = this._propertyKey(row);
+      const level = Math.max(0, Number(row && row.level) || 0);
+      let localUnits = 0;
+      for (const candidate of inventory && inventory.items || []) {
+        if (!candidate || excluded.has(Number(candidate.slot))) continue;
+        if (!this._safeItem(candidate) || this._propertyKey(candidate) !== identityKey) continue;
+        if (Math.max(0, Number(candidate.level) || 0) < level) continue;
+        localUnits += Math.max(1, Math.floor(Number(candidate.quantity) || 1));
+      }
+      let bankUnits = 0;
+      for (const candidate of this._bankRows()) {
+        if (!candidate || String(candidate.name || '') !== String(row && row.name || '')) continue;
+        if (candidate.locked === true || candidate.giveaway === true) continue;
+        if (Math.max(0, Number(candidate.level) || 0) < level) continue;
+        bankUnits += Math.max(1, Math.floor(Number(candidate.quantity) || 1));
+      }
+      const spareUnits = localUnits + bankUnits;
+      return {
+        localUnits,
+        bankUnits,
+        spareUnits,
+        spareEquivalents: String(kind || '').toUpperCase() === 'COMPOUND'
+          ? Math.floor(spareUnits / 3)
+          : spareUnits
+      };
+    }
+
+    _normalizeMutationChance(response) {
+      const raw = typeof response === 'number'
+        ? response
+        : response && response.chance != null
+          ? Number(response.chance)
+          : response && response.success_chance != null
+            ? Number(response.success_chance)
+            : response && response.data && response.data.chance != null
+              ? Number(response.data.chance)
+              : null;
+      if (!Number.isFinite(raw) || raw < 0) return null;
+      if (raw <= 1) return raw;
+      if (raw <= 100) return raw / 100;
+      return null;
+    }
+
+    _mutationChance(kind, evaluation, targetLevel) {
+      const wanted = Math.max(0, Number(targetLevel) || 0);
+      const future = evaluation && evaluation.futureGear || null;
+      const curve = future && Array.isArray(future.curve) ? future.curve : [];
+      const step = curve.find(row => Math.max(0, Number(row && row.level) || 0) === wanted);
+      const futureChance = finite(step && step.stepChance);
+      if (futureChance != null && futureChance >= 0 && futureChance <= 1) return futureChance;
+      const economicChance = finite(evaluation && evaluation.economic && evaluation.economic.nextChance);
+      if (economicChance != null && economicChance >= 0 && economicChance <= 1) return economicChance;
+      return null;
+    }
+
+    _mutationRiskDecision(kind, row, definition, inventory, inputSlots, evaluation, targetLevel, options = {}) {
+      // H15 can still be used as a low-level/manual controller in isolation.
+      // Production autonomy always wires FutureGearEconomyEvaluator; apply the
+      // V3 risk policy whenever that authority exists.
+      if (!this.gearProgression) {
+        return {
+          at: nowIso(),
+          allowed: true,
+          reason: 'MUTATION_RISK_NOT_REQUIRED_WITHOUT_AUTONOMOUS_PROGRESSION',
+          kind: String(kind || '').toUpperCase(),
+          item: row && row.name || null,
+          level: Math.max(0, Number(row && row.level) || 0),
+          targetLevel: Math.max(0, Number(targetLevel) || 0),
+          chance: null,
+          minChance: null,
+          replacement: null,
+          usefulNow: false,
+          threshold: null
+        };
+      }
+      const activeHold = this._activeRiskHold(kind, row);
+      if (activeHold) {
+        const decision = { ...clone(activeHold.decision), allowed: false, reason: 'MUTATION_RISK_EXCEEDS_POLICY', held: true, holdUntilMs: activeHold.untilMs };
+        this.lastMutationRiskDecision = clone(decision);
+        return decision;
+      }
+      const replacement = this._replacementStock(kind, row, inventory, inputSlots);
+      const spare = Math.max(0, finite(replacement.spareEquivalents) || 0);
+      const base = spare >= 2
+        ? this.config.speculativeMinChanceManySpares
+        : spare >= 1
+          ? this.config.speculativeMinChanceOneSpare
+          : this.config.speculativeMinChanceNoSpare;
+      const level = Math.max(0, Number(row && row.level) || 0);
+      const levelPenalty = Math.min(0.30, level * this.config.mutationRiskLevelStep);
+      const compoundPenalty = String(kind || '').toUpperCase() === 'COMPOUND' ? 0.05 : 0;
+      const future = evaluation && evaluation.futureGear || null;
+      const usefulNow = !!(future && future.observedMeaningful === true);
+      const partyPenalty = usefulNow ? 0.12 : 0;
+      const value = Math.max(0, finite(definition && (definition.g != null ? definition.g : definition.gold)) || 0);
+      const valueCap = String(kind || '').toUpperCase() === 'COMPOUND'
+        ? this.config.compoundValueCap
+        : this.config.upgradeValueCap;
+      const valuePenalty = Math.min(0.08, (value / Math.max(1, valueCap)) * 0.08);
+      const currentScore = Math.max(1, Math.abs(finite(future && future.currentScore) || 0));
+      const improvement = Math.max(0, finite(future && future.improvement) || 0);
+      const futureImprovementRatio = Math.max(0, Math.min(1, improvement / currentScore));
+      const benefitCredit = Math.min(0.10, Math.max(0, futureImprovementRatio - 0.05) * 0.50);
+      const minChance = Math.max(0.05, Math.min(0.995,
+        base + levelPenalty + compoundPenalty + partyPenalty + valuePenalty - benefitCredit));
+      const chance = options.chanceProvided === true
+        ? this._normalizeMutationChance(options.chance)
+        : this._mutationChance(kind, evaluation, targetLevel);
+      const allowed = chance != null && chance >= minChance;
+      const decision = {
+        at: nowIso(),
+        allowed,
+        reason: allowed ? 'MUTATION_RISK_ACCEPTED' : chance == null ? 'MUTATION_CHANCE_UNAVAILABLE' : 'MUTATION_RISK_EXCEEDS_POLICY',
+        kind: String(kind || '').toUpperCase(),
+        item: row && row.name || null,
+        level,
+        targetLevel: Math.max(0, Number(targetLevel) || 0),
+        chance,
+        minChance,
+        replacement,
+        usefulNow,
+        serverAuthoritative: options.serverAuthoritative === true,
+        threshold: { base, levelPenalty, compoundPenalty, partyPenalty, valuePenalty, benefitCredit, futureImprovementRatio, spareEquivalents: spare }
+      };
+      this.metrics.mutationRiskChecks += 1;
+      if (allowed) {
+        this.metrics.mutationRiskAccepted += 1;
+      } else {
+        this.metrics.mutationRiskHolds += 1;
+        const key = this._riskKey(kind, row);
+        this.riskHolds.set(key, {
+          key,
+          untilMs: Date.now() + this.config.mutationRiskHoldMs,
+          decision: clone(decision)
+        });
+      }
+      this.lastMutationRiskDecision = clone(decision);
+      return decision;
     }
 
     _grade(definition, level) {
@@ -308,6 +516,17 @@
       const level = Math.max(0, Number(row.level) || 0);
       const targetLevel = level + 1;
       const grade = this._grade(definition, level);
+      const risk = this._mutationRiskDecision('UPGRADE', row, definition, inventory, [Number(row.slot)], progression.evaluation, targetLevel);
+      if (!risk.allowed) return {
+        ok: false,
+        reason: risk.reason,
+        itemSlot: Number(row.slot),
+        itemName: row.name,
+        fromLevel: level,
+        targetLevel,
+        risk,
+        progression: progression.evaluation ? clone(progression.evaluation) : null
+      };
       const excluded = new Set([Number(row.slot)]);
       const scrollName = this._scrollName('UPGRADE', grade);
       const scroll = this._findConsumable(inventory, scrollName, excluded);
@@ -342,6 +561,7 @@
         scrollName,
         offering: offering.row ? clone(offering.row) : null,
         budget,
+        risk: clone(risk),
         progression: progression.evaluation ? clone(progression.evaluation) : null
       };
     }
@@ -362,6 +582,17 @@
       const targetLevel = level + 1;
       const grade = this._grade(definition, level);
       const sourceSlots = rows.map(row => Number(row.slot)).sort((a, b) => a - b);
+      const risk = this._mutationRiskDecision('COMPOUND', rows[0], definition, inventory, sourceSlots, progression.evaluation, targetLevel);
+      if (!risk.allowed) return {
+        ok: false,
+        reason: risk.reason,
+        itemSlots: sourceSlots,
+        itemName: rows[0].name,
+        fromLevel: level,
+        targetLevel,
+        risk,
+        progression: progression.evaluation ? clone(progression.evaluation) : null
+      };
       const excluded = new Set(sourceSlots);
       const scrollName = this._scrollName('COMPOUND', grade);
       const scroll = this._findConsumable(inventory, scrollName, excluded);
@@ -396,6 +627,7 @@
         scrollName,
         offering: offering.row ? clone(offering.row) : null,
         budget,
+        risk: clone(risk),
         progression: progression.evaluation ? clone(progression.evaluation) : null
       };
     }
@@ -531,6 +763,7 @@
         offeringSlot: candidate.offering ? Number(candidate.offering.slot) : null,
         offeringName: candidate.offering ? candidate.offering.name : null,
         budget: clone(candidate.budget),
+        risk: candidate.risk ? clone(candidate.risk) : null,
         progression: candidate.progression ? clone(candidate.progression) : null,
         queuedAt: nowIso(),
         useOffering: options.useOffering === true
@@ -626,6 +859,124 @@
         this.pending.settlement = 'REJECTED';
         this.pending.error = cleanText(error && (error.reason || error.message) || error || 'H15_ACTION_REJECTED', 500);
       }).catch(() => {});
+    }
+
+    _riskPreviewArgs(request) {
+      return request.kind === 'COMPOUND'
+        ? request.itemSlots.concat([request.scrollSlot, request.offeringSlot])
+        : [request.itemSlot, request.scrollSlot, request.offeringSlot];
+    }
+
+    _watchRiskPreview(value, preview) {
+      if (!value || typeof value.then !== 'function') {
+        preview.settlement = 'RETURNED';
+        preview.response = value == null ? null : clone(value);
+        return;
+      }
+      Promise.resolve(value).then(response => {
+        if (!this.riskPreview || this.riskPreview.id !== preview.id) return;
+        this.riskPreview.settlement = 'RESOLVED';
+        this.riskPreview.response = response == null ? null : clone(response);
+      }, error => {
+        if (!this.riskPreview || this.riskPreview.id !== preview.id) return;
+        this.riskPreview.settlement = 'REJECTED';
+        this.riskPreview.error = cleanText(error && (error.reason || error.message) || error || 'MUTATION_CHANCE_UNAVAILABLE', 500);
+      }).catch(() => {});
+    }
+
+    _beginAuthoritativeRiskPreview(request) {
+      if (!this.gearProgression || !this.actions || typeof this.actions.previewMutation !== 'function') return null;
+      let result;
+      try {
+        result = this.actions.previewMutation(
+          request.kind === 'COMPOUND' ? 'compound' : 'upgrade',
+          this._riskPreviewArgs(request)
+        );
+      } catch (error) {
+        result = { state: 'UNKNOWN', value: null, error: { message: cleanText(error && error.message || error, 300) } };
+      }
+      this.metrics.mutationAuthoritativePreviews += 1;
+      if (!result || result.state !== 'PREVIEWED') {
+        const reason = result && result.state === 'BLOCKED'
+          ? 'H15_MUTATION_CHANCE_PREVIEW_BLOCKED'
+          : result && result.state === 'UNAVAILABLE'
+            ? 'H15_MUTATION_CHANCE_PREVIEW_UNAVAILABLE'
+            : 'H15_MUTATION_CHANCE_PREVIEW_UNKNOWN';
+        const inventory = this._inventory();
+        const row = inventory && this._rowAt(inventory, request.kind === 'COMPOUND' ? request.itemSlots[0] : request.itemSlot);
+        const definition = row ? this._definition(row.name) : null;
+        const risk = row && definition
+          ? this._mutationRiskDecision(
+              request.kind, row, definition, inventory,
+              request.kind === 'COMPOUND' ? request.itemSlots : [request.itemSlot],
+              request.progression, request.targetLevel,
+              { chanceProvided: true, chance: null, serverAuthoritative: true }
+            )
+          : null;
+        this.metrics.mutationAuthoritativeHolds += 1;
+        this.request = null;
+        this.riskPreview = null;
+        this.lastAction = { at: nowIso(), type: request.kind + '_BLOCKED', reason, risk: risk ? clone(risk) : null };
+        return { state: 'BLOCKED', reason, risk: risk ? clone(risk) : null };
+      }
+      const preview = {
+        id: 'h15-risk-preview-' + (++this.sequence),
+        requestId: request.id,
+        kind: request.kind,
+        startedAt: nowIso(),
+        settlement: 'PENDING',
+        response: null,
+        error: null
+      };
+      this.riskPreview = preview;
+      this.lastAction = { at: preview.startedAt, type: request.kind + '_RISK_PREVIEW_STARTED', requestId: request.id };
+      this._watchRiskPreview(result.value, preview);
+      if (preview.settlement !== 'PENDING') return this._observeRiskPreview();
+      return { state: 'RISK_PENDING', preview: clone(preview) };
+    }
+
+    _observeRiskPreview() {
+      const preview = this.riskPreview;
+      const request = this.request;
+      if (!preview || !request || preview.requestId !== request.id) {
+        this.riskPreview = null;
+        return { state: 'BLOCKED', reason: 'H15_MUTATION_CHANCE_PREVIEW_ORPHANED' };
+      }
+      if (preview.settlement === 'PENDING') return { state: 'RISK_PENDING', preview: clone(preview) };
+
+      const inventory = this._inventory();
+      const itemSlot = request.kind === 'COMPOUND' ? request.itemSlots[0] : request.itemSlot;
+      const row = inventory && this._rowAt(inventory, itemSlot);
+      const definition = row ? this._definition(row.name) : null;
+      if (!inventory || inventory.available === false || !row || !definition || this._fingerprint(row) !== request.fingerprint) {
+        this.riskPreview = null;
+        this.request = null;
+        this.lastAction = { at: nowIso(), type: request.kind + '_BLOCKED', reason: 'H15_SOURCE_CHANGED_DURING_RISK_PREVIEW' };
+        return { state: 'BLOCKED', reason: 'H15_SOURCE_CHANGED_DURING_RISK_PREVIEW' };
+      }
+
+      const chance = preview.settlement === 'REJECTED' ? null : this._normalizeMutationChance(preview.response);
+      const risk = this._mutationRiskDecision(
+        request.kind, row, definition, inventory,
+        request.kind === 'COMPOUND' ? request.itemSlots : [request.itemSlot],
+        request.progression, request.targetLevel,
+        { chanceProvided: true, chance, serverAuthoritative: true }
+      );
+      this.riskPreview = null;
+      if (!risk.allowed) {
+        this.metrics.mutationAuthoritativeHolds += 1;
+        this.request = null;
+        const reason = risk.reason === 'MUTATION_CHANCE_UNAVAILABLE'
+          ? 'H15_MUTATION_CHANCE_UNAVAILABLE'
+          : risk.reason;
+        this.lastAction = { at: nowIso(), type: request.kind + '_BLOCKED', reason, risk: clone(risk) };
+        return { state: 'BLOCKED', reason, risk: clone(risk) };
+      }
+
+      this.metrics.mutationAuthoritativeAccepted += 1;
+      this.request.authoritativeRisk = clone(risk);
+      this.lastAction = { at: nowIso(), type: request.kind + '_RISK_ACCEPTED', requestId: request.id, risk: clone(risk) };
+      return { state: 'RISK_ACCEPTED', risk: clone(risk) };
     }
 
     _dispatch(request, inventory) {
@@ -778,7 +1129,9 @@
         request.offeringSlot == null ? null : this._rowAt(inventory, request.offeringSlot),
         request.targetLevel, request.kind, request.kind === 'COMPOUND' ? 3 : 1);
       if (!budget.ok) return { ok: false, reason: budget.reason };
-      return { ok: true };
+      const risk = this._mutationRiskDecision(request.kind, rows[0], definition, inventory, itemSlots, progression.evaluation, request.targetLevel);
+      if (!risk.allowed) return { ok: false, reason: risk.reason, risk };
+      return { ok: true, risk };
     }
 
     tick() {
@@ -790,6 +1143,10 @@
         this._observePending();
         if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason };
         return this.pending ? { state: 'PENDING', pending: clone(this.pending) } : { state: 'READY' };
+      }
+
+      if (this.riskPreview) {
+        return this._observeRiskPreview();
       }
 
       const request = this.request;
@@ -804,6 +1161,12 @@
         this.lastAction = { at: nowIso(), type: request.kind + '_BLOCKED', reason: valid.reason };
         return { state: 'BLOCKED', reason: valid.reason };
       }
+      if (this.gearProgression
+          && this.actions
+          && typeof this.actions.previewMutation === 'function'
+          && !request.authoritativeRisk) {
+        return this._beginAuthoritativeRiskPreview(request);
+      }
       return this._dispatch(request, inventory);
     }
 
@@ -816,8 +1179,13 @@
         attemptsThisSession: this.attemptsThisSession,
         pending: clone(this.pending),
         request: clone(this.request),
+        riskPreview: clone(this.riskPreview),
         lastPlan: clone(this.lastPlan),
         lastAction: clone(this.lastAction),
+        lastMutationRiskDecision: clone(this.lastMutationRiskDecision),
+        riskHolds: Array.from(this.riskHolds.values())
+          .filter(row => Number(row && row.untilMs || 0) > Date.now())
+          .map(clone),
         config: clone(this.config),
         metrics: clone(this.metrics)
       };

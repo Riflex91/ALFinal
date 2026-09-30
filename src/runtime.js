@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.16-h26';
+      this.version = options.version || '0.26.20-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -156,7 +156,8 @@
         game: this.game,
         actions: this.actions,
         combat: this.combat,
-        gearProgression: this.gearProgression
+        gearProgression: this.gearProgression,
+        bank: this.bank
       });
       this.exchangeCraft = new ns.ExchangeCraftController({
         root: this.root,

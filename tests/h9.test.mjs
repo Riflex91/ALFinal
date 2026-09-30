@@ -79,6 +79,31 @@ function makeFixture(options = {}) {
       movementState = { active: true, activeOrder: order, lastOrder: null };
       return { accepted: true, order: { ...order } };
     },
+    moveLocal: (x, y, args) => {
+      const destination = { map: character.map, x: Number(x), y: Number(y) };
+      movementCalls.push({ type: 'local', destination: { ...destination }, args: { ...args } });
+      const order = {
+        id: 'move-' + (++movementSequence),
+        owner: args.owner,
+        state: 'ACTIVE',
+        destination,
+        transient: args.transient === true
+      };
+      movementState = { active: true, activeOrder: order, lastOrder: null };
+      return { accepted: true, order: { ...order } };
+    },
+    retarget: (destination, args) => {
+      movementCalls.push({ type: 'retarget', destination: { ...destination }, args: { ...args } });
+      const order = {
+        id: movementState.activeOrder && movementState.activeOrder.id || 'move-' + (++movementSequence),
+        owner: args.owner,
+        state: 'ACTIVE',
+        destination: { ...destination },
+        transient: args.transient === true
+      };
+      movementState = { active: true, activeOrder: order, lastOrder: null };
+      return { accepted: true, order: { ...order } };
+    },
     cancel: reason => {
       movementCalls.push({ type: 'cancel', reason });
       movementState = { active: false, activeOrder: null, lastOrder: movementState.activeOrder };
@@ -417,6 +442,64 @@ test('H9 suspends after owned movement becomes UNKNOWN and does not blindly rest
   assert.equal(f.controller.status().suspended, true);
 });
 
+test('H9 V3-style follower uses a local step for moderate same-map separation instead of smart-move churn', () => {
+  const f = makeFixture({
+    characterName: 'My_Rogue',
+    ctype: 'rogue',
+    partyOwnedMembers: [
+      { name: 'My_Rogue', ctype: 'rogue', damageType: 'physical', map: 'main', x: 0, y: 0 },
+      { name: 'My_Ranger1', ctype: 'ranger', damageType: 'physical', map: 'main', x: 120, y: 0 }
+    ]
+  });
+  const started = f.controller.startAutonomy({
+    owner: 'full-autonomy',
+    groupLeaderName: 'My_Ranger1',
+    groupMemberNames: ['My_Ranger1', 'My_Rogue']
+  });
+  assert.equal(started.tick.state, 'TRAVELLING');
+  assert.equal(started.tick.reason, 'H9_GROUP_LOCAL_FOLLOW_STARTED');
+  assert.equal(f.movementCalls.filter(row => row.type === 'local').length, 1);
+  assert.equal(f.movementCalls.filter(row => row.type === 'smart').length, 0);
+});
+
+test('H9 follower inside the stop radius does not restart regroup movement', () => {
+  const f = makeFixture({
+    characterName: 'My_Rogue',
+    ctype: 'rogue',
+    partyOwnedMembers: [
+      { name: 'My_Rogue', ctype: 'rogue', damageType: 'physical', map: 'main', x: 0, y: 0 },
+      { name: 'My_Ranger1', ctype: 'ranger', damageType: 'physical', map: 'main', x: 50, y: 0 }
+    ]
+  });
+  const started = f.controller.startAutonomy({
+    owner: 'full-autonomy',
+    groupLeaderName: 'My_Ranger1',
+    groupMemberNames: ['My_Ranger1', 'My_Rogue']
+  });
+  assert.equal(started.tick.state, 'FARMING');
+  assert.equal(f.movementCalls.length, 0);
+});
+
+test('H9 leader keeps its farm travel while followers catch up instead of backtracking', () => {
+  const f = makeFixture({
+    characterName: 'My_Ranger1',
+    ctype: 'ranger',
+    partyOwnedMembers: [
+      { name: 'My_Ranger1', ctype: 'ranger', damageType: 'physical', map: 'main', x: 0, y: 0 },
+      { name: 'My_Rogue', ctype: 'rogue', damageType: 'physical', map: 'main', x: 300, y: 0 }
+    ]
+  });
+  f.setActiveMovementOwner('farm-intelligence-h9');
+  const started = f.controller.startAutonomy({
+    owner: 'full-autonomy',
+    groupLeaderName: 'My_Ranger1',
+    groupMemberNames: ['My_Ranger1', 'My_Rogue']
+  });
+  assert.equal(started.tick.state, 'TRAVELLING');
+  assert.equal(started.tick.reason, 'H9_GROUP_LEADER_TRAVEL_CONTINUES');
+  assert.equal(f.movementCalls.some(row => row.type === 'cancel'), false);
+});
+
 test('H9 retries a transient group-regroup movement rejection instead of permanently suspending the farmer', () => {
   const f = makeFixture({
     characterName: 'My_Rogue',
@@ -434,6 +517,7 @@ test('H9 retries a transient group-regroup movement rejection instead of permane
   assert.equal(started.accepted, true);
   assert.equal(started.tick.state, 'TRAVELLING');
   assert.equal(f.movementCalls.filter(row => row.type === 'smart').length, 1);
+  assert.equal(f.movementCalls.find(row => row.type === 'smart').args.owner, 'farm-intelligence-h9-group-regroup');
 
   f.movementUnknown(true);
   const backoff = f.controller.tick();
@@ -552,9 +636,9 @@ test('H9 control center and one-click live suite are wired', () => {
   assert.match(runtime, /visibleSafe\.length > 0/);
   assert.match(runtime, /h9-adaptive-decisions/);
   assert.match(runtime, /timeoutMs: 85000/);
-  assert.match(entry, /0\.26\.16-h26/);
+  assert.match(entry, /0\.26\.20-h26/);
   assert.match(entry, /farmIntelligence:/);
-  assert.match(build, /const runtimeVersion = '0\.26\.16-h26'/);
+  assert.match(build, /const runtimeVersion = '0\.26\.20-h26'/);
 });
 
 test('H9 game adapter normalizes live farm data for scoring', () => {

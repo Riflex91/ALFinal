@@ -80,6 +80,31 @@ test('account strategy chooses the capable combat trio for boss work and keeps m
   assert.ok(plan.selected.capabilities.includes('DPS'));
 });
 
+test('account profiles expose default V3 gear roles to future-gear scoring', () => {
+  const { controller } = loadStrategy();
+  const roles = Object.fromEntries(controller.profiles().map(row => [row.name, row.gearRole]));
+  assert.equal(roles.My_Warrior, 'tank');
+  assert.equal(roles.My_Priest, 'healer');
+  assert.equal(roles.My_Ranger1, 'dps');
+  assert.equal(roles.My_Merchant, 'economy');
+});
+
+test('account profiles preserve an explicit V3 gear role from live peer evidence', () => {
+  const { controller } = loadStrategy({
+    peers: [{
+      name: 'My_Ranger1', running: true, emergencyStopLatched: false, peerFresh: true,
+      profile: {
+        name: 'My_Ranger1', ctype: 'ranger', gearRole: 'boss', level: 80,
+        hp: 2800, maxHp: 2800, attack: 700, armor: 200, resistance: 200,
+        frequency: 1.4, speed: 55, range: 220, gearScore: 500, trainingMs: 1000
+      }
+    }]
+  });
+  const ranger = controller.profiles().find(row => row.name === 'My_Ranger1');
+  assert.ok(ranger);
+  assert.equal(ranger.gearRole, 'boss');
+});
+
 test('account progression identifies the weaker combat character for catch-up training', () => {
   const { controller } = loadStrategy({
     peers: [

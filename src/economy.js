@@ -392,10 +392,29 @@
       const exchangePlan = this._callPlan(this.exchangeCraft);
 
       const pressure = merchantPlan && merchantPlan.pressure && merchantPlan.pressure.state || 'NORMAL';
-      const bankRows = bankPlan && bankPlan.safeDepositRows || [];
+
+      // Mutation consumables are short-lived execution resources, not maintenance
+      // cargo. H15 may need the exact scroll/offering now (or be about to retrieve
+      // it from the bank). Never let normal-pressure H12 maintenance deposit that
+      // resource back into the bank and create a deposit/withdraw ping-pong.
+      const mutationReservedNames = new Set();
+      for (const need of upgradePlan && Array.isArray(upgradePlan.materialNeeds) ? upgradePlan.materialNeeds : []) {
+        if (need && need.consumableName) mutationReservedNames.add(String(need.consumableName));
+      }
+      for (const candidate of [
+        ...(upgradePlan && Array.isArray(upgradePlan.upgradeCandidates) ? upgradePlan.upgradeCandidates : []),
+        ...(upgradePlan && Array.isArray(upgradePlan.compoundCandidates) ? upgradePlan.compoundCandidates : [])
+      ]) {
+        if (candidate && candidate.scrollName) mutationReservedNames.add(String(candidate.scrollName));
+        if (candidate && candidate.offering && candidate.offering.name) mutationReservedNames.add(String(candidate.offering.name));
+      }
+
+      const rawBankRows = bankPlan && bankPlan.safeDepositRows || [];
+      const bankRows = rawBankRows.filter(row => !row || !mutationReservedNames.has(String(row.name || '')));
       // Safe BANK dispositions are already filtered by H10/H12. Keep the Merchant
       // productive even at normal inventory pressure instead of waiting until the
-      // bag is nearly full before mounting the bank.
+      // bag is nearly full before mounting the bank. Active mutation resources are
+      // reserved above so maintenance cannot fight the mutation-material resolver.
       if (bankRows.length) {
         if (bankPlan && bankPlan.state === 'NEEDS_BANK') {
           const proposal = this._proposal('BANK_MOUNT', 'bank', {
@@ -574,6 +593,8 @@
         actionsThisSession: this.actionsThisSession,
         maxActionsPerSession: this.config.maxActionsPerSession,
         pressure,
+        mutationReservedNames: Array.from(mutationReservedNames).sort(),
+        suppressedBankMaintenanceRows: rawBankRows.length - bankRows.length,
         futureGearEvaluation: upgradePlan && upgradePlan.futureGearEvaluation
           ? clone(upgradePlan.futureGearEvaluation)
           : null,
