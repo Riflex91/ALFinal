@@ -448,7 +448,7 @@ test('H9 V3-style follower uses a local step for moderate same-map separation in
     ctype: 'rogue',
     partyOwnedMembers: [
       { name: 'My_Rogue', ctype: 'rogue', damageType: 'physical', map: 'main', x: 0, y: 0 },
-      { name: 'My_Ranger1', ctype: 'ranger', damageType: 'physical', map: 'main', x: 140, y: 0 }
+      { name: 'My_Ranger1', ctype: 'ranger', damageType: 'physical', map: 'main', x: 120, y: 0 }
     ]
   });
   const started = f.controller.startAutonomy({
