@@ -75,6 +75,102 @@ test('gift items use normal gear/economy authority instead of hard protection', 
   assert.equal(bank._safeDepositRows().length, 1);
 });
 
+test('account strategy start persists local equipment before any merchant reads profiles', () => {
+  const root = context();
+  vm.runInNewContext(src('account-strategy.js'), root, { filename: 'account-strategy.js' });
+  const Controller = root.__ALBOT_INTERNALS__.AccountStrategyController;
+  const shared = storage();
+  const controller = new Controller({
+    root,
+    storage: shared,
+    roster: {
+      refresh: () => ({
+        accountCharacters: [{ name: 'My_Priest', ctype: 'priest', level: 35, online: true }],
+        onlineCharacterNames: ['My_Priest']
+      })
+    },
+    game: {
+      snapshot: () => ({ available: true, character: { name: 'My_Priest', ctype: 'priest', level: 35, gold: 777 } }),
+      equipmentSnapshot: () => ({ available: true, slots: { mainhand: { name: 'staff', level: 3 } } }),
+      bankSnapshot: () => ({ available: false })
+    },
+    gear: { score: () => 1 }
+  });
+
+  controller.start({});
+  const raw = shared.rows.get('albot:h28:account-profile-cache:v1:My_Priest');
+  assert.ok(raw);
+  const cached = JSON.parse(raw);
+  assert.equal(cached.equipment.mainhand.name, 'staff');
+  assert.equal(cached.equipment.mainhand.level, 3);
+});
+
+test('stopping account strategy does not remove an already persisted local profile', () => {
+  const root = context();
+  vm.runInNewContext(src('account-strategy.js'), root, { filename: 'account-strategy.js' });
+  const Controller = root.__ALBOT_INTERNALS__.AccountStrategyController;
+  const shared = storage();
+  const controller = new Controller({
+    root,
+    storage: shared,
+    roster: {
+      refresh: () => ({
+        accountCharacters: [{ name: 'My_Ranger1', ctype: 'ranger', level: 60, online: true }],
+        onlineCharacterNames: ['My_Ranger1']
+      })
+    },
+    game: {
+      snapshot: () => ({ available: true, character: { name: 'My_Ranger1', ctype: 'ranger', level: 60, gold: 999 } }),
+      equipmentSnapshot: () => ({ available: true, slots: { mainhand: { name: 'bow', level: 6 } } }),
+      bankSnapshot: () => ({ available: false })
+    },
+    gear: { score: () => 1 }
+  });
+
+  controller.start({});
+  controller.stop();
+  const cached = JSON.parse(shared.rows.get('albot:h28:account-profile-cache:v1:My_Ranger1'));
+  assert.equal(cached.equipment.mainhand.name, 'bow');
+  assert.equal(cached.equipment.mainhand.level, 6);
+});
+
+test('local profile is persisted without requiring account-wide profiles()', () => {
+  const root = context();
+  vm.runInNewContext(src('account-strategy.js'), root, { filename: 'account-strategy.js' });
+  const Controller = root.__ALBOT_INTERNALS__.AccountStrategyController;
+  const shared = storage();
+  const controller = new Controller({
+    root,
+    storage: shared,
+    roster: {
+      refresh: () => ({
+        accountCharacters: [{ name: 'My_Mage', ctype: 'mage', level: 35, online: true }],
+        onlineCharacterNames: ['My_Mage']
+      })
+    },
+    game: {
+      snapshot: () => ({ available: true, character: { name: 'My_Mage', ctype: 'mage', level: 35, gold: 4321 } }),
+      equipmentSnapshot: () => ({ available: true, slots: { mainhand: { name: 'firestaff', level: 4 } } }),
+      bankSnapshot: () => ({ available: false })
+    },
+    gear: { score: () => 1 }
+  });
+
+  const profile = controller.persistLocalProfile();
+  assert.equal(profile.name, 'My_Mage');
+  assert.equal(profile.equipment.mainhand.name, 'firestaff');
+  assert.ok(shared.rows.has('albot:h28:account-profile-cache:v1:My_Mage'));
+
+  const cached = JSON.parse(shared.rows.get('albot:h28:account-profile-cache:v1:My_Mage'));
+  assert.equal(cached.gold, 4321);
+  assert.equal(cached.equipment.mainhand.level, 4);
+});
+
+test('runtime cross-window heartbeat persists the local profile', () => {
+  const runtime = fs.readFileSync(path.resolve(here, '../src/runtime.js'), 'utf8');
+  assert.match(runtime, /persistLocalProfile/);
+});
+
 test('account profile cache still reads the legacy aggregate map', () => {
   const root = context();
   vm.runInNewContext(src('account-strategy.js'), root, { filename: 'account-strategy.js' });

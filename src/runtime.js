@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.39-h26';
+      this.version = options.version || '0.26.41-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -358,7 +358,9 @@
             characterDisconnectCapable: this.actions.available('disconnect') === true,
             characterNavigateCapable: h25BrowserNavigationCapability(),
             version: this.version,
-            profile: this.accountStrategy ? this.accountStrategy.localProfile() : null,
+            profile: this.accountStrategy && typeof this.accountStrategy.persistLocalProfile === 'function'
+              ? this.accountStrategy.persistLocalProfile()
+              : this.accountStrategy ? this.accountStrategy.localProfile() : null,
             observation: this.observer ? this.observer.summary() : null,
             updateProtection: this.safeUpdater && typeof this.safeUpdater.localProtection === 'function'
               ? this.safeUpdater.localProtection()
