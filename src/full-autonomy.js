@@ -814,7 +814,22 @@
         }
       }
 
-      const economyNow = economy.status();
+      let economyNow = economy.status();
+      let releasedIdleEconomy = false;
+      if (economyNow.autonomyEnabled === true && !economyNow.currentAction) {
+        let activeEconomyPlan = null;
+        try { activeEconomyPlan = typeof economy.plan === 'function' ? economy.plan() : null; } catch (_) {}
+        const activeEconomyIdle = !!(activeEconomyPlan
+          && activeEconomyPlan.state === 'IDLE'
+          && activeEconomyPlan.reason === 'H17_NO_SAFE_ECONOMY_ACTION'
+          && !activeEconomyPlan.selected);
+        if (activeEconomyIdle) {
+          try { economy.stopAutonomy('FULL_AUTONOMY_ECONOMY_IDLE_HANDOFF'); } catch (_) {}
+          this.started.economy = false;
+          releasedIdleEconomy = true;
+          economyNow = economy.status();
+        }
+      }
       if (now - this.lastLogisticsProbeAtMs >= this.config.logisticsProbeMs && !economyNow.currentAction) {
         this.lastLogisticsProbeAtMs = now;
         const wasEconomyOwned = this.started.economy && economyNow.autonomyEnabled === true;
@@ -838,7 +853,7 @@
       const economyBeforeStand = economy.status();
       const logisticsBeforeStand = logistics.status();
       if (standStatus && standStatus.autoManage
-          && now - this.lastStandProbeAtMs >= this.config.standProbeMs
+          && (releasedIdleEconomy || now - this.lastStandProbeAtMs >= this.config.standProbeMs)
           && !economyBeforeStand.currentAction
           && !logisticsBeforeStand.currentAction
           && !logisticsBeforeStand.autonomyEnabled) {
