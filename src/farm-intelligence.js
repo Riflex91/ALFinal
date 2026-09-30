@@ -385,6 +385,9 @@
       }
 
       if (this.currentSelection && !seen.has(this.currentSelection.key)) {
+        // G.maps catalog rows and live-safe clusters can describe the same physical
+        // spawn with different keys. Treat that representation change as continued
+        // presence rather than a depletion event.
         const physicalEquivalent = rows.find(row => this._samePhysicalSpot(this.currentSelection, row)) || null;
         if (!physicalEquivalent) {
           const prior = this.observations.get(this.currentSelection.key);
