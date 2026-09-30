@@ -1226,7 +1226,13 @@
         };
       }
 
-      if (group.maxPairDistance <= this.config.groupRegroupStopDistance) {
+      // V3-style leadership: the leader owns the farm direction and may resume
+      // selecting/travelling to the farm goal as soon as the group is back inside
+      // the regroup trigger envelope. The tighter stop radius is reserved for
+      // finishing an already-active follower regroup/formation move; requiring it
+      // here creates a 70..150 dead zone where the leader waits although no new
+      // recovery waypoint is allowed to start.
+      if (group.maxPairDistance <= this.config.groupRegroupTriggerDistance) {
         if (movement && movement.activeOrder
             && String(movement.activeOrder.owner || '') === 'farm-intelligence-h9-leader-regroup') {
           try { this.movement.cancel('H9_GROUP_COHESION_RECOVERED'); } catch (_) {}
