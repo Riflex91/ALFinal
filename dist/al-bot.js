@@ -1,4 +1,4 @@
-/* AL Bot 0.26.15-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.16-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -22052,8 +22052,10 @@
 
   const DEFAULT_PRIORITIES = Object.freeze({
     BANK_MOUNT: 110,
+    BANK_WITHDRAW: 105,
     BANK_DEPOSIT: 100,
     GEAR_EQUIP: 90,
+    MATERIAL_ACQUIRE: 85,
     MARKET_SELL: 75,
     EXCHANGE: 70,
     CRAFT: 65,
@@ -22064,8 +22066,10 @@
 
   const DEFAULT_KINDS = Object.freeze({
     BANK_MOUNT: true,
+    BANK_WITHDRAW: true,
     BANK_DEPOSIT: true,
     GEAR_EQUIP: true,
+    MATERIAL_ACQUIRE: true,
     MARKET_SELL: true,
     EXCHANGE: true,
     CRAFT: true,
@@ -22450,6 +22454,69 @@
         }
       }
 
+      // H15 may have a safe, progression-authorized mutation that is blocked only
+      // because its consumable is absent. Resolve that dependency before declaring
+      // the Merchant idle: inspect the bank first, then acquire at the live NPC
+      // price ceiling if the bank does not already hold it.
+      const materialNeed = upgradePlan && (upgradePlan.materialNeeds || [])[0] || null;
+      if (materialNeed && materialNeed.consumableName) {
+        const consumableName = cleanText(materialNeed.consumableName, 160);
+        if (bankPlan && bankPlan.state === 'NEEDS_BANK') {
+          if (!proposals.some(row => row.kind === 'BANK_MOUNT')) {
+            const proposal = this._proposal('BANK_MOUNT', 'bank', {
+              key: 'material:' + consumableName,
+              purpose: 'MATERIAL_LOOKUP',
+              itemName: consumableName,
+              pressure,
+              maintenance: true,
+              risk: 0
+            });
+            if (proposal) proposals.push(proposal);
+          }
+        } else if (bankPlan && bankPlan.state === 'READY') {
+          let bankMaterial = null;
+          for (const pack of bankPlan.packs || []) {
+            const row = (pack.items || []).find(item =>
+              item && String(item.name || '') === consumableName
+              && item.locked !== true
+              && item.giveaway !== true);
+            if (row) {
+              bankMaterial = { ...clone(row), pack: pack.name };
+              break;
+            }
+          }
+          if (bankMaterial) {
+            const proposal = this._proposal('BANK_WITHDRAW', 'bank', {
+              key: consumableName + ':' + bankMaterial.pack + ':' + bankMaterial.slot,
+              itemName: consumableName,
+              packName: bankMaterial.pack,
+              bankSlot: Number(bankMaterial.slot),
+              quantity: Math.max(1, Math.floor(Number(materialNeed.quantity) || 1)),
+              purpose: materialNeed.mutationKind || null,
+              risk: 0
+            });
+            if (proposal) proposals.push(proposal);
+          } else {
+            const definition = this.game && typeof this.game.itemDefinition === 'function'
+              ? this.game.itemDefinition(consumableName)
+              : null;
+            const npcPrice = finite(definition && definition.g);
+            const materialBudget = Math.max(0, finite(upgradePlan && upgradePlan.policy && upgradePlan.policy.maxConsumableCost) || 0);
+            if (npcPrice != null && npcPrice > 0 && materialBudget >= npcPrice) {
+              const proposal = this._proposal('MATERIAL_ACQUIRE', 'trade', {
+                key: consumableName,
+                itemName: consumableName,
+                quantity: Math.max(1, Math.floor(Number(materialNeed.quantity) || 1)),
+                maxUnitPrice: npcPrice,
+                purpose: materialNeed.mutationKind || null,
+                risk: npcPrice * Math.max(1, Math.floor(Number(materialNeed.quantity) || 1))
+              });
+              if (proposal) proposals.push(proposal);
+            }
+          }
+        }
+      }
+
       const improvement = gearPlan && gearPlan.local && (gearPlan.local.improvements || [])[0] || null;
       if (improvement && improvement.bestInventory) {
         const proposal = this._proposal('GEAR_EQUIP', 'gear', {
@@ -22567,8 +22634,12 @@
       if (!proposal) return { accepted: false, reason: 'H17_PROPOSAL_REQUIRED' };
       let result = null;
       if (proposal.kind === 'BANK_MOUNT') result = this.bank && this.bank.queueMount ? this.bank.queueMount() : null;
+      else if (proposal.kind === 'BANK_WITHDRAW') result = this.bank && this.bank.queueWithdraw
+        ? this.bank.queueWithdraw(proposal.packName, proposal.bankSlot) : null;
       else if (proposal.kind === 'BANK_DEPOSIT') result = this.bank && this.bank.queueDeposit
         ? this.bank.queueDeposit(proposal.itemName, { inventorySlot: proposal.inventorySlot }) : null;
+      else if (proposal.kind === 'MATERIAL_ACQUIRE') result = this.trade && this.trade.queueAcquire
+        ? this.trade.queueAcquire(proposal.itemName, proposal.quantity, { maxUnitPrice: proposal.maxUnitPrice }) : null;
       else if (proposal.kind === 'GEAR_EQUIP') result = this.gear && this.gear.queueEquip
         ? this.gear.queueEquip(proposal.inventorySlot, proposal.slot) : null;
       else if (proposal.kind === 'MARKET_SELL') result = this.trade && this.trade.queueMarketSell
@@ -27273,7 +27344,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.15-h26';
+      this.version = options.version || '0.26.16-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -35382,7 +35453,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.15-h26',
+    version: '0.26.16-h26',
     bootCount,
     replacedPrevious: !!previous
   });
