@@ -1,4 +1,4 @@
-/* AL Bot 0.26.24-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.25-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -7908,6 +7908,15 @@
       || normalized.includes('authorization_in_progress');
   }
 
+  function transientPartyRejection(value) {
+    const normalized = cleanText(value, 300).trim().toLowerCase().replace(/[\s.-]+/g, '_');
+    return normalized === 'invalid'
+      || normalized.includes('not_online')
+      || normalized.includes('not_found')
+      || normalized.includes('different_server')
+      || normalized.includes('server_mismatch');
+  }
+
   class CharacterLifecycleController {
     constructor(options = {}) {
       this.root = options.root || root;
@@ -7941,6 +7950,7 @@
             : 1
         )),
         startRetryBackoffMs: Math.max(750, Math.min(15000, Number(options.startRetryBackoffMs) || 2000)),
+        partyRetryBackoffMs: Math.max(1500, Math.min(30000, Number(options.partyRetryBackoffMs) || 5000)),
         respawnGraceMs: Math.max(12000, Math.min(30000, Number(options.respawnGraceMs) || 13000)),
         maxActionsPerSession: Math.max(1, Math.min(20, Number(options.maxActionsPerSession) || 4)),
         maxQueue: Math.max(1, Math.min(32, Number(options.maxQueue) || 12))
@@ -7962,6 +7972,7 @@
       this.deathObservedAtMs = null;
       this.partySignals = [];
       this.transientStartRetries = new Map();
+      this.partyRetryBackoffs = new Map();
       this.browserSwapRecoveryAttempts = new Map();
       this.pendingBrowserSwapRecoveryKey = null;
       this.previousPartyInviteHandler = null;
@@ -7994,6 +8005,9 @@
         respawnCooldownRejects: 0,
         partyInvitesDispatched: 0,
         partyInvitesConfirmed: 0,
+        partyPeerBlocks: 0,
+        partyTransientRejects: 0,
+        partyRetryBlocks: 0,
         partyRequestsDispatched: 0,
         partyRequestsConfirmed: 0,
         partyAcceptsDispatched: 0,
@@ -9092,8 +9106,28 @@
       }
 
       if (String(localName) === String(leader)) {
+        const peerUnavailableNames = [];
+        const retryBlockedNames = [];
         for (const name of desiredPartyMembers) {
           if (name === localName || !active.has(name) || members.has(name)) continue;
+
+          const retry = this.partyRetryBackoffs.get(String(name)) || null;
+          if (retry && Number(retry.retryAtMs || 0) > Date.now()) {
+            retryBlockedNames.push(String(name));
+            this.metrics.partyRetryBlocks += 1;
+            continue;
+          }
+          if (retry) this.partyRetryBackoffs.delete(String(name));
+
+          if (this.crossWindow && typeof this.crossWindow.freshPeer === 'function') {
+            const peer = this.crossWindow.freshPeer(name);
+            if (!peer || peer.running !== true) {
+              peerUnavailableNames.push(String(name));
+              this.metrics.partyPeerBlocks += 1;
+              continue;
+            }
+          }
+
           return {
             state: 'READY',
             reason: 'H19_DESIRED_PARTY_MEMBER_MISSING',
@@ -9104,6 +9138,16 @@
               queuedAt: nowIso(),
               automatic: true
             }
+          };
+        }
+        if (peerUnavailableNames.length || retryBlockedNames.length) {
+          return {
+            state: 'WAITING',
+            reason: peerUnavailableNames.length
+              ? 'H33_PARTY_MEMBER_PEER_UNAVAILABLE'
+              : 'H33_PARTY_MEMBER_RETRY_BACKOFF',
+            peerUnavailableNames,
+            retryBlockedNames
           };
         }
       } else if (desiredPartyMembers.includes(localName) && active.has(String(leader)) && !members.has(String(leader))) {
@@ -9709,7 +9753,34 @@
             autonomyStopped: false
           };
         }
-        if (current.kind === 'RESPAWN' && error === 'cant_respawn') {
+        if (['PARTY_INVITE', 'PARTY_REQUEST'].includes(current.kind) && transientPartyRejection(error)) {
+          const targetName = cleanText(current.targetName || '', 120);
+          const retryAtMs = Date.now() + this.config.partyRetryBackoffMs;
+          this.currentAction = null;
+          this._removeStorage('pending');
+          this.metrics.actionsRejected += 1;
+          this.metrics.partyTransientRejects += 1;
+          if (targetName) this.partyRetryBackoffs.set(targetName, { retryAtMs, error });
+          if (current.automatic === true) this.autonomyEnabled = true;
+          this.lastAction = {
+            at: nowIso(),
+            type: current.kind + '_TRANSIENT_REJECTED',
+            reason: 'H33_PARTY_TARGET_TRANSIENTLY_UNAVAILABLE',
+            serverReason: error,
+            targetName: targetName || null,
+            retryAtMs,
+            autonomyStopped: false
+          };
+          return {
+            state: 'WAITING',
+            reason: 'H33_PARTY_TARGET_TRANSIENTLY_UNAVAILABLE',
+            serverReason: error,
+            targetName: targetName || null,
+            retryAtMs,
+            autonomyStopped: false
+          };
+        }
+                if (current.kind === 'RESPAWN' && error === 'cant_respawn') {
           this.currentAction = null;
           this._removeStorage('pending');
           this.metrics.actionsRejected += 1;
@@ -28018,7 +28089,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.24-h26';
+      this.version = options.version || '0.26.25-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -36128,7 +36199,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.24-h26',
+    version: '0.26.25-h26',
     bootCount,
     replacedPrevious: !!previous
   });
