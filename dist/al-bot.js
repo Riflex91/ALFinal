@@ -1,4 +1,4 @@
-/* AL Bot 0.26.26-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.27-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -15411,16 +15411,17 @@
           this.groupMove = null;
         } else if (activeOwner === 'farm-intelligence-h9-group-regroup') {
           const destination = movement.activeOrder && movement.activeOrder.destination || null;
-          const shifted = destination && formation ? distance(destination, formation) : null;
+          const leaderDestination = { map: group.leader.map, x: group.leader.x, y: group.leader.y };
+          const shifted = destination ? distance(destination, leaderDestination) : null;
           const moveAge = this.groupMove ? this.now() - Number(this.groupMove.atMs || 0) : 0;
           if (shifted != null && shifted >= this.config.groupRetargetDistance && moveAge >= this.config.groupRetargetMs) {
-            const retarget = this.movement.retarget(formation, {
+            const retarget = this.movement.retarget(leaderDestination, {
               owner: 'farm-intelligence-h9-group-regroup',
               arrivalRadius: this.config.groupRegroupStopDistance,
               transient: true
             });
             if (retarget && retarget.accepted) {
-              this.groupMove = { atMs: this.now(), destination: clone(formation) };
+              this.groupMove = { atMs: this.now(), destination: clone(leaderDestination) };
               this.metrics.groupRetargets += 1;
             }
           }
@@ -15432,12 +15433,11 @@
         }
       }
 
-      // V3 used cheap local follow movement while the follower was only moderately
-      // separated. Keep the stable formation offset, but avoid spinning up a full
-      // smart-move for every ordinary leader drift.
+      // V3-style same-map regroup: progress in short, path-checked local steps.
+      // A full smart_move to a computed formation coordinate can be rejected when
+      // that exact coordinate is not pathable even though the leader is reachable.
       if (formation && formationDistance != null
-          && formationDistance > this.config.groupRegroupStopDistance
-          && formationDistance < this.config.groupRegroupTriggerDistance) {
+          && formationDistance > this.config.groupRegroupStopDistance) {
         const cx = Number(group.local.x);
         const cy = Number(group.local.y);
         const angle = Math.atan2(Number(formation.y) - cy, Number(formation.x) - cx);
@@ -15457,22 +15457,40 @@
           }
         }
         if (waypoint && step >= 2 && this.movement && typeof this.movement.moveLocal === 'function') {
+          if (formationDistance >= this.config.groupRegroupTriggerDistance
+              || localRegroupDistance >= this.config.groupRegroupTriggerDistance
+              || activeEncounter && localRegroupDistance > this.config.groupHardRegroupDistance) {
+            if (activeEncounter && localRegroupDistance > this.config.groupHardRegroupDistance) this.metrics.groupHardRegroups += 1;
+            this._stopOwnedFarming('H9_GROUP_REGROUP');
+            this.metrics.groupRegroups += 1;
+          }
           const move = this.movement.moveLocal(waypoint.x, waypoint.y, {
             owner: 'farm-intelligence-h9-group-follow',
             arrivalRadius: 8,
             transient: true
           });
           if (move && move.accepted === true) {
+            this.groupMove = { atMs: this.now(), destination: { map: group.leader.map, x: waypoint.x, y: waypoint.y } };
+            this.groupMoveRetryAfterMs = null;
             this.metrics.groupLocalFollows += 1;
             this.lastAction = {
               at: new Date().toISOString(),
-              type: 'GROUP_LOCAL_FOLLOW',
+              type: formationDistance >= this.config.groupRegroupTriggerDistance ? 'GROUP_LOCAL_REGROUP_STEP' : 'GROUP_LOCAL_FOLLOW',
               leaderName: group.leaderName,
               destination: { map: group.leader.map, x: waypoint.x, y: waypoint.y },
               distance: leaderDistance,
               formationDistance
             };
-            return { state: 'TRAVELLING', reason: 'H9_GROUP_LOCAL_FOLLOW_STARTED', leaderName: group.leaderName, distance: leaderDistance, formationDistance, destination: clone(this.lastAction.destination) };
+            return {
+              state: 'TRAVELLING',
+              reason: formationDistance >= this.config.groupRegroupTriggerDistance
+                ? 'H9_GROUP_LOCAL_REGROUP_STARTED'
+                : 'H9_GROUP_LOCAL_FOLLOW_STARTED',
+              leaderName: group.leaderName,
+              distance: leaderDistance,
+              formationDistance,
+              destination: clone(this.lastAction.destination)
+            };
           }
         }
       }
@@ -15487,7 +15505,9 @@
           this.metrics.ownershipBlocks += 1;
           return { state: 'WAITING', reason: 'H9_GROUP_REGROUP_MOVEMENT_BUSY', distance: leaderDistance };
         }
-        const destination = formation || { map: group.leader.map, x: group.leader.x, y: group.leader.y };
+        // If no safe local step exists, navigate to the live leader rather than an
+        // offset formation point that may sit inside blocked geometry.
+        const destination = { map: group.leader.map, x: group.leader.x, y: group.leader.y };
         const move = this.movement.smartMove(destination, {
           owner: 'farm-intelligence-h9-group-regroup',
           arrivalRadius: this.config.groupRegroupStopDistance,
@@ -22866,6 +22886,7 @@
       this.actionsThisSession = 0;
       this.cooldownUntilMs = null;
       this.rejectionBackoff = new Map();
+      this.materialBankMisses = new Map();
 
       this.config = {
         tickMs: Math.max(250, Math.min(5000, Number(options.tickMs) || 1000)),
@@ -22891,6 +22912,8 @@
         actionsUnknown: 0,
         rejectionBackoffs: 0,
         sessionBudgetBlocks: 0,
+        materialBankMisses: 0,
+        materialBankMountSkips: 0,
         byKind: {}
       };
     }
@@ -22905,6 +22928,7 @@
       this.actionsThisSession = 0;
       this.cooldownUntilMs = null;
       this.rejectionBackoff.clear();
+      this.materialBankMisses.clear();
       if (this.scope && typeof this.scope.interval === 'function') {
         this.scope.interval('economy-tick', () => this.tick(), this.config.tickMs, { immediate: true });
       }
@@ -22918,6 +22942,7 @@
       this.currentAction = null;
       this.cooldownUntilMs = null;
       this.rejectionBackoff.clear();
+      this.materialBankMisses.clear();
       this.lastAction = { at: nowIso(), type: 'STOP', reason: cleanText(reason, 240) };
       return { stopped: true };
     }
@@ -22953,6 +22978,7 @@
       this.actionsThisSession = 0;
       this.cooldownUntilMs = null;
       this.rejectionBackoff.clear();
+      this.materialBankMisses.clear();
       this.lastAction = { at: nowIso(), type: 'RESET', reason: cleanText(reason, 240) };
       return this.status();
     }
@@ -23239,20 +23265,21 @@
       const materialNeed = upgradePlan && (upgradePlan.materialNeeds || [])[0] || null;
       if (materialNeed && materialNeed.consumableName) {
         const consumableName = cleanText(materialNeed.consumableName, 160);
-        if (bankPlan && bankPlan.state === 'NEEDS_BANK') {
-          if (!proposals.some(row => row.kind === 'BANK_MOUNT')) {
-            const proposal = this._proposal('BANK_MOUNT', 'bank', {
-              key: 'material:' + consumableName,
-              purpose: 'MATERIAL_LOOKUP',
-              itemName: consumableName,
-              pressure,
-              maintenance: true,
-              risk: 0
-            });
-            if (proposal) proposals.push(proposal);
-          }
-        } else if (bankPlan && bankPlan.state === 'READY') {
-          let bankMaterial = null;
+        const materialNeedKey = [
+          cleanText(materialNeed.mutationKind || '', 40),
+          cleanText(materialNeed.itemName || '', 160),
+          Math.max(0, Math.floor(Number(materialNeed.fromLevel) || 0)),
+          Math.max(0, Math.floor(Number(materialNeed.targetLevel) || 0)),
+          consumableName,
+          Math.max(1, Math.floor(Number(materialNeed.quantity) || 1))
+        ].join('|');
+        for (const key of Array.from(this.materialBankMisses.keys())) {
+          if (key !== materialNeedKey) this.materialBankMisses.delete(key);
+        }
+
+        let bankMissKnown = this.materialBankMisses.has(materialNeedKey);
+        let bankMaterial = null;
+        if (bankPlan && bankPlan.state === 'READY') {
           for (const pack of bankPlan.packs || []) {
             const row = (pack.items || []).find(item =>
               item && String(item.name || '') === consumableName
@@ -23264,35 +23291,64 @@
             }
           }
           if (bankMaterial) {
-            const proposal = this._proposal('BANK_WITHDRAW', 'bank', {
-              key: consumableName + ':' + bankMaterial.pack + ':' + bankMaterial.slot,
+            this.materialBankMisses.delete(materialNeedKey);
+            bankMissKnown = false;
+          } else if (!bankMissKnown) {
+            this.materialBankMisses.set(materialNeedKey, {
+              checkedAt: nowIso(),
               itemName: consumableName,
-              packName: bankMaterial.pack,
-              bankSlot: Number(bankMaterial.slot),
-              quantity: Math.max(1, Math.floor(Number(materialNeed.quantity) || 1)),
-              purpose: materialNeed.mutationKind || null,
+              mutationKind: cleanText(materialNeed.mutationKind || '', 40) || null
+            });
+            this.metrics.materialBankMisses += 1;
+            bankMissKnown = true;
+          }
+        }
+
+        if (bankMaterial) {
+          const proposal = this._proposal('BANK_WITHDRAW', 'bank', {
+            key: consumableName + ':' + bankMaterial.pack + ':' + bankMaterial.slot,
+            itemName: consumableName,
+            packName: bankMaterial.pack,
+            bankSlot: Number(bankMaterial.slot),
+            quantity: Math.max(1, Math.floor(Number(materialNeed.quantity) || 1)),
+            purpose: materialNeed.mutationKind || null,
+            risk: 0
+          });
+          if (proposal) proposals.push(proposal);
+        } else if (bankPlan && bankPlan.state === 'NEEDS_BANK' && !bankMissKnown) {
+          if (!proposals.some(row => row.kind === 'BANK_MOUNT')) {
+            const proposal = this._proposal('BANK_MOUNT', 'bank', {
+              key: 'material:' + consumableName,
+              purpose: 'MATERIAL_LOOKUP',
+              itemName: consumableName,
+              pressure,
+              maintenance: true,
               risk: 0
             });
             if (proposal) proposals.push(proposal);
-          } else {
-            const definition = this.game && typeof this.game.itemDefinition === 'function'
-              ? this.game.itemDefinition(consumableName)
-              : null;
-            const npcPrice = finite(definition && definition.g);
-            const materialBudget = Math.max(0, finite(upgradePlan && upgradePlan.policy && upgradePlan.policy.maxConsumableCost) || 0);
-            if (npcPrice != null && npcPrice > 0 && materialBudget >= npcPrice) {
-              const proposal = this._proposal('MATERIAL_ACQUIRE', 'trade', {
-                key: consumableName,
-                itemName: consumableName,
-                quantity: Math.max(1, Math.floor(Number(materialNeed.quantity) || 1)),
-                maxUnitPrice: npcPrice,
-                purpose: materialNeed.mutationKind || null,
-                risk: npcPrice * Math.max(1, Math.floor(Number(materialNeed.quantity) || 1))
-              });
-              if (proposal) proposals.push(proposal);
-            }
+          }
+        } else {
+          if (bankPlan && bankPlan.state === 'NEEDS_BANK' && bankMissKnown) this.metrics.materialBankMountSkips += 1;
+          const definition = this.game && typeof this.game.itemDefinition === 'function'
+            ? this.game.itemDefinition(consumableName)
+            : null;
+          const npcPrice = finite(definition && definition.g);
+          const materialBudget = Math.max(0, finite(upgradePlan && upgradePlan.policy && upgradePlan.policy.maxConsumableCost) || 0);
+          if (npcPrice != null && npcPrice > 0 && materialBudget >= npcPrice) {
+            const proposal = this._proposal('MATERIAL_ACQUIRE', 'trade', {
+              key: consumableName,
+              itemName: consumableName,
+              quantity: Math.max(1, Math.floor(Number(materialNeed.quantity) || 1)),
+              maxUnitPrice: npcPrice,
+              purpose: materialNeed.mutationKind || null,
+              bankCheckedMissing: bankMissKnown,
+              risk: npcPrice * Math.max(1, Math.floor(Number(materialNeed.quantity) || 1))
+            });
+            if (proposal) proposals.push(proposal);
           }
         }
+      } else {
+        this.materialBankMisses.clear();
       }
 
       const improvement = gearPlan && gearPlan.local && (gearPlan.local.improvements || [])[0] || null;
@@ -23648,6 +23704,7 @@
         actionsThisSession: this.actionsThisSession,
         cooldownUntilMs: this.cooldownUntilMs,
         rejectionBackoff: Array.from(this.rejectionBackoff.entries()).map(([proposalId, untilMs]) => ({ proposalId, untilMs })),
+        materialBankMisses: Array.from(this.materialBankMisses.entries()).map(([needKey, details]) => ({ needKey, ...clone(details) })),
         lastPlan: clone(this.lastPlan),
         lastAction: clone(this.lastAction),
         futureGearPolicy: this.gearProgression && typeof this.gearProgression.status === 'function'
@@ -28163,7 +28220,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.26-h26';
+      this.version = options.version || '0.26.27-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -36273,7 +36330,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.26-h26',
+    version: '0.26.27-h26',
     bootCount,
     replacedPrevious: !!previous
   });

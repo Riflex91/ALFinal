@@ -304,7 +304,7 @@ test('group leader releases regroup only after pairwise cohesion is restored', (
   assert.equal(f.controller._tickGroupLeader(f.character, group), null);
 });
 
-test('group follower never chooses its own farm direction and smart-regroups to the Warrior leader', () => {
+test('group follower smart fallback targets the live Warrior rather than an offset formation coordinate', () => {
   const f = h9FollowerFixture({ leaderX: 300 });
   const started = f.controller.startAutonomy({
     owner: 'full-autonomy',
@@ -316,8 +316,8 @@ test('group follower never chooses its own farm direction and smart-regroups to 
   assert.equal(started.tick.reason, 'H9_GROUP_REGROUP_STARTED');
   assert.equal(f.state.moves.length, 1);
   assert.equal(f.state.moves[0].owner, 'farm-intelligence-h9-group-regroup');
-  assert.equal(Math.round(f.state.moves[0].destination.x), 262);
-  assert.equal(Math.round(f.state.moves[0].destination.y), -32);
+  assert.equal(Math.round(f.state.moves[0].destination.x), 300);
+  assert.equal(Math.round(f.state.moves[0].destination.y), 0);
   assert.equal(f.state.farmStarts.length, 0);
 });
 
