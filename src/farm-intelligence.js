@@ -1053,16 +1053,17 @@
           this.groupMove = null;
         } else if (activeOwner === 'farm-intelligence-h9-group-regroup') {
           const destination = movement.activeOrder && movement.activeOrder.destination || null;
-          const shifted = destination && formation ? distance(destination, formation) : null;
+          const leaderDestination = { map: group.leader.map, x: group.leader.x, y: group.leader.y };
+          const shifted = destination ? distance(destination, leaderDestination) : null;
           const moveAge = this.groupMove ? this.now() - Number(this.groupMove.atMs || 0) : 0;
           if (shifted != null && shifted >= this.config.groupRetargetDistance && moveAge >= this.config.groupRetargetMs) {
-            const retarget = this.movement.retarget(formation, {
+            const retarget = this.movement.retarget(leaderDestination, {
               owner: 'farm-intelligence-h9-group-regroup',
               arrivalRadius: this.config.groupRegroupStopDistance,
               transient: true
             });
             if (retarget && retarget.accepted) {
-              this.groupMove = { atMs: this.now(), destination: clone(formation) };
+              this.groupMove = { atMs: this.now(), destination: clone(leaderDestination) };
               this.metrics.groupRetargets += 1;
             }
           }
