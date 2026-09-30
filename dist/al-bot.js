@@ -1,4 +1,4 @@
-/* AL Bot 0.26.25-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.26-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -4257,7 +4257,7 @@
       if (!value) return false;
       if (value.includes('disconnect') || value.includes('timeout') || value.includes('network')) return false;
       return [
-        'cooldown', 'no_mp', 'mp', 'too_far', 'range', 'not_found', 'cant_use',
+        'cooldown', 'no_mp', 'mp', 'too_far', 'range', 'not_found', 'not_there', 'cant_use',
         'cannot_use', 'level', 'weapon', 'requirements', 'disabled', 'stunned'
       ].some(token => value.includes(token));
     }
@@ -13283,7 +13283,8 @@
         kiteTerrainBlocks: 0,
         kiteGroupTetherBlocks: 0,
         kiteGroupSoftTetherBlocks: 0,
-        attackTargetRaceRecoveries: 0
+        attackTargetRaceRecoveries: 0,
+        attackRangeRecoveries: 0
       };
     }
 
@@ -13743,6 +13744,29 @@
       return true;
     }
 
+    _isExpectedGroupRangeRaceRejection(pending) {
+      if (!pending || !this.session || !this.session.policy || this.session.policy.leaderOwnedPulls !== true) return false;
+      const reason = cleanText(pending.commandError || '', 240).toLowerCase();
+      return reason === 'too_far'
+        || reason.endsWith(':too_far')
+        || reason.includes('too_far')
+        || reason === 'range'
+        || reason.endsWith(':range');
+    }
+
+    _recoverExpectedGroupRangeRace(pending) {
+      this.metrics.attackRangeRecoveries += 1;
+      this.pendingAttack = null;
+      this.session.state = 'APPROACHING';
+      this.session.lastDecision = {
+        at: new Date().toISOString(),
+        type: 'GROUP_ATTACK_RANGE_RACE_RECOVERED',
+        targetId: pending.targetId,
+        reason: pending.commandError || 'too_far'
+      };
+      return true;
+    }
+
     _observePendingAttack() {
       const pending = this.pendingAttack;
       if (!pending || !this.session) return false;
@@ -13750,6 +13774,9 @@
       if (pending.commandSettlement === 'REJECTED') {
         if (this._isExpectedGroupTargetRaceRejection(pending)) {
           return this._recoverExpectedGroupTargetRace(pending);
+        }
+        if (this._isExpectedGroupRangeRaceRejection(pending)) {
+          return this._recoverExpectedGroupRangeRace(pending);
         }
         this.metrics.attackUnknown += 1;
         this._fail('UNKNOWN', pending.commandError || 'ATTACK_COMMAND_REJECTED', clone(pending));
@@ -14716,14 +14743,20 @@
       }
 
       if (this.currentSelection && !seen.has(this.currentSelection.key)) {
-        const prior = this.observations.get(this.currentSelection.key);
-        if (prior && prior.lastCount > 0) {
-          prior.lastCount = 0;
-          if (prior.depletedAtMs == null) {
-            prior.depletedAtMs = now;
-            this.metrics.depletionEvents += 1;
+        // G.maps catalog rows and live-safe clusters can describe the same physical
+        // spawn with different keys. Treat that representation change as continued
+        // presence rather than a depletion event.
+        const physicalEquivalent = rows.find(row => this._samePhysicalSpot(this.currentSelection, row)) || null;
+        if (!physicalEquivalent) {
+          const prior = this.observations.get(this.currentSelection.key);
+          if (prior && prior.lastCount > 0) {
+            prior.lastCount = 0;
+            if (prior.depletedAtMs == null) {
+              prior.depletedAtMs = now;
+              this.metrics.depletionEvents += 1;
+            }
+            this.observations.set(prior.key, prior);
           }
-          this.observations.set(prior.key, prior);
         }
       }
     }
@@ -14948,6 +14981,7 @@
       let switchAllowed = true;
       const current = this.currentSelection
         ? candidates.find(row => row.key === this.currentSelection.key)
+          || candidates.find(row => this._samePhysicalSpot(this.currentSelection, row))
         : null;
 
       if (!current && this.currentSelection) {
@@ -15788,6 +15822,29 @@
     return Number.isFinite(number) ? number : null;
   }
 
+  function errorReason(value, fallback = 'H10_LOOT_UNKNOWN') {
+    if (value && typeof value === 'object') {
+      const raw = value.reason || value.code || value.message;
+      if (raw) return cleanText(raw, 500);
+    }
+    const text = cleanText(value, 500);
+    if (text && text !== '[object Object]') return text;
+    return fallback;
+  }
+
+  function knownLootRejection(value) {
+    const reason = errorReason(value, '').trim().toLowerCase().replace(/[\s.-]+/g, '_');
+    if (!reason) return false;
+    return [
+      'nothing_to_loot',
+      'not_there',
+      'too_far',
+      'safety',
+      'no_space',
+      'inventory_full'
+    ].some(token => reason === token || reason.includes(token));
+  }
+
   class LootInventoryController {
     constructor(options = {}) {
       this.root = options.root || root;
@@ -16034,7 +16091,7 @@
       }, error => {
         if (!this.pendingLoot || this.pendingLoot.id !== pending.id) return;
         this.pendingLoot.settlement = 'REJECTED';
-        this.pendingLoot.error = cleanText(error && error.message || error || 'H10_LOOT_REJECTED', 500);
+        this.pendingLoot.error = errorReason(error, 'H10_LOOT_REJECTED');
       }).catch(() => {});
     }
 
@@ -16058,8 +16115,19 @@
       this.pendingLoot = null;
 
       if (pending.settlement === 'REJECTED') {
+        const reason = errorReason(pending.error, 'H10_LOOT_UNKNOWN');
+        if (knownLootRejection(reason)) {
+          this.metrics.lootKnownRejected += 1;
+          this.lastAction = {
+            at: new Date().toISOString(),
+            type: 'LOOT_SKIPPED',
+            reason,
+            chestId: pending.chestId
+          };
+          return true;
+        }
         this.metrics.lootUnknown += 1;
-        this.suspendedReason = pending.error || 'H10_LOOT_UNKNOWN';
+        this.suspendedReason = reason;
         this.lastAction = { at: new Date().toISOString(), type: 'LOOT_UNKNOWN', reason: this.suspendedReason };
         return true;
       }
@@ -16120,8 +16188,14 @@
       const result = this.actions.dispatch('loot', [chestId]);
       if (!result || result.state !== 'DISPATCHED') {
         if (result && result.state === 'UNKNOWN') {
+          const reason = errorReason(result.error, 'H10_LOOT_UNKNOWN');
+          if (knownLootRejection(reason)) {
+            this.metrics.lootKnownRejected += 1;
+            this.lastAction = { at: new Date().toISOString(), type: 'LOOT_SKIPPED', reason, chestId };
+            return { state: 'WAITING', reason, plan };
+          }
           this.metrics.lootUnknown += 1;
-          this.suspendedReason = result.error && result.error.message || 'H10_LOOT_UNKNOWN';
+          this.suspendedReason = reason;
           return { state: 'SUSPENDED', reason: this.suspendedReason, plan };
         }
         this.metrics.lootKnownRejected += 1;
@@ -22735,9 +22809,9 @@
 
   const DEFAULT_PRIORITIES = Object.freeze({
     BANK_MOUNT: 110,
-    BANK_WITHDRAW: 105,
+    BANK_WITHDRAW: 108,
+    BANK_DEPOSIT: 106,
     BANK_EXIT: 104,
-    BANK_DEPOSIT: 100,
     GEAR_EQUIP: 90,
     MATERIAL_ACQUIRE: 85,
     MARKET_SELL: 75,
@@ -28089,7 +28163,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.25-h26';
+      this.version = options.version || '0.26.26-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -36199,7 +36273,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.25-h26',
+    version: '0.26.26-h26',
     bootCount,
     replacedPrevious: !!previous
   });

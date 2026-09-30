@@ -131,7 +131,9 @@ function makeContext(options = {}) {
       calls.skills.push({ skill, target: target && target.id ? target.id : target });
       const def = G.skills[skill] || {};
       cooldowns.set(skill, Date.now() + Math.min(250, Number(def.cooldown) || 100));
-      if (options.rejectSkill === skill) return Promise.reject(new Error('NETWORK_UNCERTAIN'));
+      if (options.rejectSkill === skill) {
+        return Promise.reject(new Error(options.rejectSkillReason || 'NETWORK_UNCERTAIN'));
+      }
 
       if (skill === 'taunt') monster.target = character.name;
       if (skill === 'hardshell') character.s.hardshell = { ms: 5000 };
@@ -197,7 +199,7 @@ test('H6 exposes class skill API, module and recommended live suite', async t =>
   const { ctx } = await startController({ ctype: 'warrior', level: 28, mp: 300, maxMp: 300, range: 23 });
   t.after(async () => { try { await ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {} });
 
-  assert.equal(ctx.ALBot.version, '0.26.25-h26');
+  assert.equal(ctx.ALBot.version, '0.26.26-h26');
   assert.equal(typeof ctx.ALBot.classSkills.status, 'function');
   assert.equal(typeof ctx.ALBot.classSkills.preview, 'function');
   assert.equal(ctx.ALBot.liveTests.status().recommendedId, 'h19-remote-recovery');
@@ -273,6 +275,32 @@ test('Ranger, Mage, Priest, Rogue and Paladin choose class-specific safe skills'
     assert.ok(preview, 'missing preview for ' + scenario.ctype);
     assert.equal(preview.skillId, scenario.expected, scenario.ctype);
   }
+});
+
+test('Rogue not_there skill race is a known rejection and does not suspend class skills', async t => {
+  const { ctx, calls } = await startController({
+    ctype: 'rogue',
+    level: 60,
+    mp: 1000,
+    maxMp: 1000,
+    range: 20,
+    targetX: 15,
+    targetHp: 500,
+    attack: 100,
+    rejectSkill: 'mentalburst',
+    rejectSkillReason: 'not_there'
+  });
+  t.after(async () => { try { ctx.ALBot.combat.stop('TEST_CLEANUP'); } catch (_) {} try { await ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {} });
+
+  assert.equal(ctx.ALBot.combat.start({ owner: 'h6-rogue-race', maxAttack: 200, minMpRatio: 0 }).accepted, true);
+  await sleep(700);
+
+  const status = ctx.ALBot.classSkills.status();
+  assert.equal(status.suspended, false);
+  assert.equal(status.metrics.unknown, 0);
+  assert.ok(status.metrics.rejected >= 1);
+  assert.equal(calls.skills.filter(row => row.skill === 'mentalburst').length, 1);
+  assert.ok(calls.attacks >= 1);
 });
 
 test('unknown skill outcome suspends class skills for that combat session and is not blindly retried', async t => {

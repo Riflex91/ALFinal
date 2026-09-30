@@ -332,7 +332,7 @@ test('H9 gives a depleted current cluster a bounded respawn grace before switchi
   assert.equal(f.farmState().session.monsterType, 'bee');
 });
 
-test('H9 does not count live-to-catalog aliasing as a farmspot switch', () => {
+test('H9 does not count live-to-catalog aliasing as depletion or a farmspot switch', () => {
   const f = makeFixture({ safe: cluster('goo', 3) });
   assert.equal(f.controller.startAutonomy().accepted, true);
   assert.equal(f.controller.status().currentSelection.source, 'LIVE_SAFE_CLUSTER');
@@ -340,16 +340,39 @@ test('H9 does not count live-to-catalog aliasing as a farmspot switch', () => {
   f.advance(1000);
   f.setSafe([]);
   f.setCatalog([{ key: 'main:goo:0', map: 'main', mtype: 'goo', x: 30, y: 30, count: 6, respawn: 2 }]);
-  const grace = f.controller.tick();
-  assert.equal(grace.state, 'WAITING_RESPAWN');
-
-  f.advance(5001);
   const held = f.controller.tick();
+
   assert.equal(held.state, 'FARMING');
   assert.equal(f.controller.status().currentSelection.mtype, 'goo');
+  assert.equal(f.controller.status().currentSelection.source, 'LIVE_G_MAP_SPAWN');
   assert.equal(f.controller.status().metrics.switches, 0);
   assert.equal(f.controller.status().history.length, 1);
   assert.equal(f.controller.status().metrics.farmingStarts, 1);
+  assert.equal(f.controller.status().metrics.depletionEvents, 0);
+});
+
+test('H9 keeps one physical spot stable when its representation changes from catalog to live cluster', () => {
+  const f = makeFixture({
+    safe: [],
+    catalog: [{ key: 'main:goo:catalog', map: 'main', mtype: 'goo', x: 500, y: 0, count: 6, respawn: 1000 }],
+    minHoldMs: 5000,
+    switchCooldownMs: 5000
+  });
+  assert.equal(f.controller.startAutonomy().accepted, true);
+  assert.equal(f.controller.status().currentSelection.mtype, 'goo');
+  assert.equal(f.controller.status().currentSelection.source, 'LIVE_G_MAP_SPAWN');
+
+  f.advance(1000);
+  f.setSafe([
+    ...cluster('goo', 1, 500, 0),
+    ...cluster('bee', 6, 30, 25)
+  ]);
+  const plan = f.controller.plan();
+
+  assert.equal(plan.selected.mtype, 'goo');
+  assert.equal(plan.reason, 'H9_HOLD_MIN_DURATION');
+  const prior = f.controller.status().observations.find(row => row.key === 'catalog:main:goo:catalog');
+  assert.equal(prior && prior.depletedAtMs, null);
 });
 
 test('H9 switches after hold and cooldown when improvement is material', () => {
@@ -656,9 +679,9 @@ test('H9 control center and one-click live suite are wired', () => {
   assert.match(runtime, /visibleSafe\.length > 0/);
   assert.match(runtime, /h9-adaptive-decisions/);
   assert.match(runtime, /timeoutMs: 85000/);
-  assert.match(entry, /0\.26\.25-h26/);
+  assert.match(entry, /0\.26\.26-h26/);
   assert.match(entry, /farmIntelligence:/);
-  assert.match(build, /const runtimeVersion = '0\.26\.25-h26'/);
+  assert.match(build, /const runtimeVersion = '0\.26\.26-h26'/);
 });
 
 test('H9 game adapter normalizes live farm data for scoring', () => {

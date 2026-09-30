@@ -281,6 +281,21 @@ test('H17 exits the bank before dispatching upgrade or other non-bank work', () 
   assert.equal(f.calls.some(row => row.module === 'upgrade' && row.kind === 'UPGRADE'), true);
 });
 
+test('H17 finishes mounted bank deposits before exiting for non-bank work', () => {
+  const f = fixture({
+    map: 'bank',
+    bankState: 'READY',
+    bankRows: [{ slot: 3, name: 'junk', quantity: 5 }],
+    upgrades: [{ itemSlot: 5, itemName: 'sword', fromLevel: 0, budget: { itemValueAtRisk: 500 } }]
+  });
+  const plan = f.economy.plan();
+  assert.equal(plan.state, 'READY');
+  assert.equal(plan.bankExitRequired, true);
+  assert.equal(plan.selected.kind, 'BANK_DEPOSIT');
+  assert.ok(plan.proposals.some(row => row.kind === 'BANK_EXIT'));
+  assert.ok(plan.proposals.some(row => row.kind === 'UPGRADE'));
+});
+
 test('H17 bank withdrawal outranks bank exit while required mutation material is still in the bank', () => {
   const f = fixture({
     map: 'bank',
@@ -579,7 +594,7 @@ test('H17 runtime, API, UI, build and generated bundle are wired without direct 
   assert.match(runtime, /new ns\.EconomyController/);
   assert.match(runtime, /id: 'economy'/);
   assert.match(runtime, /id: 'h17-economy-autonomy'/);
-  assert.match(runtime, /options\.version \|\| '0\.26\.25-h26'/);
+  assert.match(runtime, /options\.version \|\| '0\.26\.26-h26'/);
   assert.match(runtime, /trade\.movementUnknown/);
   assert.match(runtime, /inventory\.lootUnknown/);
   assert.match(runtime, /status\.pendingLoot/);
@@ -587,17 +602,17 @@ test('H17 runtime, API, UI, build and generated bundle are wired without direct 
   assert.match(source, /child\.pendingLoot/);
   assert.match(source, /type\.includes\('BLOCKED'\)/);
   assert.match(source, /if \(observed\.state !== 'IDLE'\) return observed/);
-  assert.match(entry, /0\.26\.25-h26/);
+  assert.match(entry, /0\.26\.26-h26/);
   assert.match(entry, /runtime\.economy\.startAutonomy/);
   assert.match(entry, /Object\.freeze\(api\.economy\)/);
   assert.match(ui, /data-tab="economy"/);
   assert.match(ui, /H17 Economy Autonomy/);
   assert.match(build, /src\/economy\.js/);
-  assert.match(build, /const runtimeVersion = '0\.26\.25-h26'/);
-  assert.match(dist, /AL Bot 0\.26\.25-h26/);
+  assert.match(build, /const runtimeVersion = '0\.26\.26-h26'/);
+  assert.match(dist, /AL Bot 0\.26\.26-h26/);
   assert.match(dist, /class EconomyController/);
   assert.doesNotMatch(source, /actions\.dispatch/);
-  assert.equal(pkg.version, '0.26.25');
+  assert.equal(pkg.version, '0.26.26');
 });
 
 

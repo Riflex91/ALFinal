@@ -385,14 +385,20 @@
       }
 
       if (this.currentSelection && !seen.has(this.currentSelection.key)) {
-        const prior = this.observations.get(this.currentSelection.key);
-        if (prior && prior.lastCount > 0) {
-          prior.lastCount = 0;
-          if (prior.depletedAtMs == null) {
-            prior.depletedAtMs = now;
-            this.metrics.depletionEvents += 1;
+        // G.maps catalog rows and live-safe clusters can describe the same physical
+        // spawn with different keys. Treat that representation change as continued
+        // presence rather than a depletion event.
+        const physicalEquivalent = rows.find(row => this._samePhysicalSpot(this.currentSelection, row)) || null;
+        if (!physicalEquivalent) {
+          const prior = this.observations.get(this.currentSelection.key);
+          if (prior && prior.lastCount > 0) {
+            prior.lastCount = 0;
+            if (prior.depletedAtMs == null) {
+              prior.depletedAtMs = now;
+              this.metrics.depletionEvents += 1;
+            }
+            this.observations.set(prior.key, prior);
           }
-          this.observations.set(prior.key, prior);
         }
       }
     }
@@ -617,6 +623,7 @@
       let switchAllowed = true;
       const current = this.currentSelection
         ? candidates.find(row => row.key === this.currentSelection.key)
+          || candidates.find(row => this._samePhysicalSpot(this.currentSelection, row))
         : null;
 
       if (!current && this.currentSelection) {

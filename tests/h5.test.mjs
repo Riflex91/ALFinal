@@ -112,7 +112,9 @@ function combatContext(options = {}) {
     attack: target => {
       calls.attack += 1;
       nextAttackAt = Date.now() + (options.cooldownMs == null ? 80 : options.cooldownMs);
-      if (options.rejectAttack) return Promise.reject(new Error('ATTACK_NETWORK_UNCERTAIN'));
+      if (options.rejectAttack && (options.rejectAttackOnce !== true || calls.attack === 1)) {
+        return Promise.reject(new Error(options.rejectAttackReason || 'ATTACK_NETWORK_UNCERTAIN'));
+      }
       const damage = options.damage == null ? 25 : options.damage;
       setTimeout(() => {
         if (!target || target.dead) return;
@@ -151,7 +153,7 @@ test('H5 combat API, module and explicit H5 live suite remain available under H6
   });
   vm.runInNewContext(bundle, ctx);
 
-  assert.equal(ctx.ALBot.version, '0.26.25-h26');
+  assert.equal(ctx.ALBot.version, '0.26.26-h26');
   assert.equal(typeof ctx.ALBot.combat.start, 'function');
   assert.equal(typeof ctx.ALBot.combat.stop, 'function');
   assert.equal(typeof ctx.ALBot.combat.candidates, 'function');
@@ -293,6 +295,38 @@ test('H5 attack rejection becomes UNKNOWN and is never blindly retried', async t
   assert.equal(status.metrics.attackUnknown, 1);
 
   await ctx.ALBot.stop('DONE');
+});
+
+test('H5 recovers a leader-owned group attack too_far race instead of suspending farming', async t => {
+  const { ctx, calls } = combatContext({
+    rejectAttack: true,
+    rejectAttackOnce: true,
+    rejectAttackReason: 'too_far',
+    damage: 10
+  });
+  t.after(async () => {
+    try { ctx.ALBot && ctx.ALBot.combat && ctx.ALBot.combat.stop('TEST_CLEANUP'); } catch (_) {}
+    try { ctx.ALBot && await ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {}
+  });
+  vm.runInNewContext(bundle, ctx);
+  await ctx.ALBot.start();
+
+  const started = ctx.ALBot.combat.start({
+    owner: 'h9-group-test',
+    maxAttackToHpRatio: 0.5,
+    minMpRatio: 0,
+    leaderOwnedPulls: true,
+    groupLeaderName: 'CombatTester',
+    groupMemberNames: ['CombatTester']
+  });
+  assert.equal(started.accepted, true);
+  await sleep(650);
+
+  const status = ctx.ALBot.combat.status();
+  assert.ok(status.metrics.attackRangeRecoveries >= 1);
+  assert.equal(status.metrics.attackUnknown, 0);
+  assert.ok(calls.attack >= 2);
+  assert.equal(status.lastSession && status.lastSession.state, null);
 });
 
 test('H5 V3-style kiting moves a ranged character only when it holds monster aggro', async t => {

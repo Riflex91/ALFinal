@@ -84,8 +84,11 @@ function controllerFixture(options = {}) {
   const actions = {
     dispatch: (name, args) => {
       dispatches.push({ name, args: [...args] });
-      if (options.syncUnknown) return { state: 'UNKNOWN', error: { message: 'NETWORK_UNCERTAIN' } };
-      if (options.rejectPromise) return { state: 'DISPATCHED', value: Promise.reject(new Error('NETWORK_UNCERTAIN')) };
+      if (options.syncUnknown) return { state: 'UNKNOWN', error: options.syncUnknownError || { message: 'NETWORK_UNCERTAIN' } };
+      if (options.rejectPromise) {
+        const rejection = options.rejectValue === undefined ? new Error('NETWORK_UNCERTAIN') : options.rejectValue;
+        return { state: 'DISPATCHED', value: Promise.reject(rejection) };
+      }
       if (options.neverResolvePromise) return { state: 'DISPATCHED', value: new Promise(() => {}) };
       return { state: 'DISPATCHED', value: Promise.resolve(options.lootResponse || { success: true }) };
     }
@@ -246,6 +249,26 @@ test('H10 treats Adventure Land nothing_to_loot and safety responses as known sk
   }
 });
 
+test('H10 treats rejected Adventure Land not_there loot objects as a recoverable chest race', async () => {
+  const f = controllerFixture({
+    rejectPromise: true,
+    rejectValue: { place: 'loot', reason: 'not_there', failed: true }
+  });
+  const first = f.controller.tick();
+  assert.equal(first.state, 'LOOT_PENDING');
+  assert.equal(f.dispatches.length, 1);
+
+  await new Promise(resolve => setTimeout(resolve, 0));
+  f.setChests([]);
+  const second = f.controller.tick();
+  assert.notEqual(second.state, 'SUSPENDED');
+  assert.equal(f.controller.status().suspended, false);
+  assert.equal(f.controller.status().metrics.lootKnownRejected, 1);
+  assert.equal(f.controller.status().metrics.lootUnknown, 0);
+  assert.equal(f.controller.status().lastAction.type, 'LOOT_SKIPPED');
+  assert.equal(f.controller.status().lastAction.reason, 'not_there');
+});
+
 test('H10 rejected loot promise becomes UNKNOWN and is never blindly retried', async () => {
   const f = controllerFixture({ rejectPromise: true });
   const first = f.controller.tick();
@@ -333,16 +356,16 @@ test('H10 runtime, public API, UI and one-click live suite are wired', () => {
   assert.match(runtime, /preferredTypes: \[probe\.mtype\]/);
   assert.match(runtime, /safeAhp - safeBhp/);
   assert.match(runtime, /H10_NO_LOOT_PROBE_CANDIDATE/);
-  assert.match(entry, /0\.26\.25-h26/);
+  assert.match(entry, /0\.26\.26-h26/);
   assert.match(entry, /inventory:/);
   assert.match(entry, /reset: reason => runtime\.inventory\.resetSafety/);
   assert.match(build, /src\/inventory\.js/);
-  assert.match(build, /const runtimeVersion = '0\.26\.25-h26'/);
+  assert.match(build, /const runtimeVersion = '0\.26\.26-h26'/);
   assert.match(build, /const banner = `\/\* AL Bot \$\{runtimeVersion\}/);
   assert.match(ui, /data-tab="inventory"/);
   assert.match(ui, /H10 Loot & Inventar/);
   assert.match(boundary, /loot: Object\.freeze\(\{ publicName: 'loot'/);
-  assert.equal(pkg.version, '0.26.25');
+  assert.equal(pkg.version, '0.26.26');
 });
 
 test('H10 source keeps destructive economy actions outside the controller', () => {
