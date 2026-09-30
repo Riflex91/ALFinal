@@ -1,4 +1,4 @@
-/* AL Bot 0.26.10-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.11-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -7919,6 +7919,7 @@
         crossWindowCharacterDisconnects: 0,
         browserSwapsDispatched: 0,
         browserSwapsConfirmed: 0,
+        browserSwapSessionRecoveries: 0,
         lateOutcomeRecoveries: 0,
         rotationCapabilityBlocks: 0,
         stalePendingDiscarded: 0,
@@ -9335,6 +9336,68 @@
               desiredFullAutonomyEnabled: true,
               desiredSessionId: desiredPeer.sessionId || null
             });
+          }
+
+          // A browser rotation can destroy/reload the outgoing target runtime
+          // before its command settlement comes back. If the same character is
+          // now live under a new session while the desired replacement is still
+          // absent, the old action boundary can never settle. Reconcile it as
+          // stale and immediately re-plan against the fresh target session.
+          const targetName = String(current.targetName || '');
+          const targetPeer = targetName && this.crossWindow && typeof this.crossWindow.freshPeer === 'function'
+            ? this.crossWindow.freshPeer(targetName)
+            : null;
+          const previousTargetSessionId = current.before && current.before.targetSessionId
+            ? String(current.before.targetSessionId)
+            : '';
+          const targetSessionId = targetPeer && targetPeer.sessionId
+            ? String(targetPeer.sessionId)
+            : '';
+          const targetSessionReplaced = !!previousTargetSessionId
+            && !!targetSessionId
+            && targetSessionId !== previousTargetSessionId;
+          const targetStillOnline = !!targetName && this._onlineSet(roster).has(targetName);
+          const targetRetryCapable = !!(targetPeer
+            && targetPeer.running === true
+            && targetPeer.characterNavigateCapable === true
+            && targetPeer.characterDisconnectCapable === true);
+
+          if (targetSessionReplaced && targetStillOnline && !desiredPresent && targetRetryCapable) {
+            this.currentAction = null;
+            this._removeStorage('pending');
+            this.metrics.reconciliations += 1;
+            this.metrics.stalePendingDiscarded += 1;
+            this.metrics.browserSwapSessionRecoveries += 1;
+
+            const resumedAutonomy = current.automatic === true;
+            if (resumedAutonomy) {
+              this.suspended = false;
+              this.suspendedReason = null;
+              this.autonomyEnabled = true;
+            }
+
+            this.lastAction = {
+              at: nowIso(),
+              type: 'BROWSER_SWAP_TARGET_SESSION_REPLACED_RETRY',
+              actionId: current.id || null,
+              requestId: current.requestId || null,
+              targetName,
+              desiredName: desiredName || null,
+              previousTargetSessionId,
+              targetSessionId,
+              previousSettlement: current.settlement || null,
+              previousError: current.error || null,
+              autonomyResumed: resumedAutonomy
+            };
+            return {
+              state: 'IDLE',
+              reason: 'H30_BROWSER_SWAP_TARGET_SESSION_REPLACED_RETRY',
+              targetName,
+              desiredName: desiredName || null,
+              previousTargetSessionId,
+              targetSessionId,
+              autonomyResumed: resumedAutonomy
+            };
           }
         }
       } else if (current.kind === 'START' || current.kind === 'STOP') {
@@ -26929,7 +26992,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.10-h26';
+      this.version = options.version || '0.26.11-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -35017,7 +35080,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.10-h26',
+    version: '0.26.11-h26',
     bootCount,
     replacedPrevious: !!previous
   });
