@@ -64,11 +64,18 @@ function makeFixture(options = {}) {
     ? { active: true, activeOrder: { id: 'foreign-move', owner: 'other-module', state: 'ACTIVE', destination: { map: 'main', x: 400, y: 0 } }, lastOrder: null }
     : { active: false, activeOrder: null, lastOrder: null };
   const movementCalls = [];
+  let movementSequence = 0;
   const movement = {
     status: () => JSON.parse(JSON.stringify(movementState)),
     smartMove: (destination, args) => {
       movementCalls.push({ type: 'smart', destination: { ...destination }, args: { ...args } });
-      const order = { id: 'move-1', owner: args.owner, state: 'ACTIVE', destination: { ...destination } };
+      const order = {
+        id: 'move-' + (++movementSequence),
+        owner: args.owner,
+        state: 'ACTIVE',
+        destination: { ...destination },
+        transient: args.transient === true
+      };
       movementState = { active: true, activeOrder: order, lastOrder: null };
       return { accepted: true, order: { ...order } };
     },
@@ -138,9 +145,13 @@ function makeFixture(options = {}) {
     setForeignParty: names => { foreignParty = names.slice(); },
     setNow: value => { now = value; },
     advance: ms => { now += ms; },
-    movementUnknown: () => {
-      const last = movementState.activeOrder || { id: 'move-1', owner: 'farm-intelligence-h9' };
-      movementState = { active: false, activeOrder: null, lastOrder: { ...last, state: 'UNKNOWN' } };
+    movementUnknown: (transient = false) => {
+      const last = movementState.activeOrder || { id: 'move-failed', owner: 'farm-intelligence-h9' };
+      movementState = {
+        active: false,
+        activeOrder: null,
+        lastOrder: { ...last, state: 'UNKNOWN', reason: 'failed', commandError: 'failed', transient: transient === true }
+      };
     },
     movementComplete: () => {
       const last = movementState.activeOrder;
@@ -404,6 +415,39 @@ test('H9 suspends after owned movement becomes UNKNOWN and does not blindly rest
   assert.match(tick.reason, /H9_MOVEMENT_UNKNOWN/);
   assert.equal(f.movementCalls.filter(row => row.type === 'smart').length, 1);
   assert.equal(f.controller.status().suspended, true);
+});
+
+test('H9 retries a transient group-regroup movement rejection instead of permanently suspending the farmer', () => {
+  const f = makeFixture({
+    characterName: 'My_Rogue',
+    ctype: 'rogue',
+    partyOwnedMembers: [
+      { name: 'My_Rogue', ctype: 'rogue', damageType: 'physical', map: 'main', x: 0, y: 0 },
+      { name: 'My_Ranger1', ctype: 'ranger', damageType: 'physical', map: 'main', x: 300, y: 0 }
+    ]
+  });
+  const started = f.controller.startAutonomy({
+    owner: 'full-autonomy',
+    groupLeaderName: 'My_Ranger1',
+    groupMemberNames: ['My_Ranger1', 'My_Rogue']
+  });
+  assert.equal(started.accepted, true);
+  assert.equal(started.tick.state, 'TRAVELLING');
+  assert.equal(f.movementCalls.filter(row => row.type === 'smart').length, 1);
+
+  f.movementUnknown(true);
+  const backoff = f.controller.tick();
+  assert.equal(backoff.state, 'WAITING');
+  assert.equal(backoff.reason, 'H9_GROUP_REGROUP_RETRY_BACKOFF');
+  assert.equal(f.controller.status().suspended, false);
+  assert.equal(f.controller.status().metrics.transientMovementRecoveries, 1);
+
+  f.advance(2500);
+  const retry = f.controller.tick();
+  assert.equal(retry.state, 'TRAVELLING');
+  assert.equal(retry.reason, 'H9_GROUP_REGROUP_STARTED');
+  assert.equal(f.movementCalls.filter(row => row.type === 'smart').length, 2);
+  assert.equal(f.controller.status().suspended, false);
 });
 
 test('H9 foreign party blocks planning before any H4 travel or H8 farming action', () => {
