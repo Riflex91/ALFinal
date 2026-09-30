@@ -352,6 +352,30 @@ test('H9 does not count live-to-catalog aliasing as a farmspot switch', () => {
   assert.equal(f.controller.status().metrics.farmingStarts, 1);
 });
 
+test('H9 keeps one physical spot stable when its representation changes from catalog to live cluster', () => {
+  const f = makeFixture({
+    safe: [],
+    catalog: [{ key: 'main:goo:catalog', map: 'main', mtype: 'goo', x: 500, y: 0, count: 6, respawn: 1000 }],
+    minHoldMs: 5000,
+    switchCooldownMs: 5000
+  });
+  assert.equal(f.controller.startAutonomy().accepted, true);
+  assert.equal(f.controller.status().currentSelection.mtype, 'goo');
+  assert.equal(f.controller.status().currentSelection.source, 'LIVE_G_MAP_SPAWN');
+
+  f.advance(1000);
+  f.setSafe([
+    ...cluster('goo', 1, 500, 0),
+    ...cluster('bee', 6, 30, 25)
+  ]);
+  const plan = f.controller.plan();
+
+  assert.equal(plan.selected.mtype, 'goo');
+  assert.equal(plan.reason, 'H9_HOLD_MIN_DURATION');
+  const prior = f.controller.status().observations.find(row => row.key === 'catalog:main:goo:catalog');
+  assert.equal(prior && prior.depletedAtMs, null);
+});
+
 test('H9 switches after hold and cooldown when improvement is material', () => {
   const f = makeFixture({ safe: cluster('goo', 3) });
   assert.equal(f.controller.startAutonomy().accepted, true);
