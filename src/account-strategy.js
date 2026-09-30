@@ -117,6 +117,7 @@
       this.moduleActive = true;
       this.scope = context.scope || null;
       this.heartbeat = typeof context.heartbeat === 'function' ? context.heartbeat : null;
+      try { this.persistLocalProfile(); } catch (_) {}
       return this.status();
     }
 
@@ -125,7 +126,6 @@
       this.scope = null;
       this.heartbeat = null;
       this.lastTrainingTickMs = null;
-      try { this.persistLocalProfile(); } catch (_) {}
       return this.status();
     }
 
