@@ -421,7 +421,8 @@
       const reserved = Math.max(0, Math.floor(Number(this.reservations[row.name]) || 0));
       const totalInBank = this._quantityInBank(bank, this._fingerprint(row));
       const stackQuantity = Math.max(1, Math.floor(Number(row.quantity) || 1));
-      if (totalInBank != null && totalInBank - stackQuantity < reserved) {
+      const gearDelivery = String(options.purpose || '').toUpperCase() === 'GEAR_DELIVERY';
+      if (!gearDelivery && totalInBank != null && totalInBank - stackQuantity < reserved) {
         return { accepted: false, reason: 'H12_BANK_RESERVATION_BLOCKED' };
       }
       const inventory = this._inventorySnapshot();
@@ -448,6 +449,7 @@
         bankSlot: slot,
         inventorySlot,
         beforeQuantity: stackQuantity,
+        purpose: cleanText(options.purpose || '', 80) || null,
         createdAt: nowIso()
       };
       this.lastAction = { at: nowIso(), type: 'WITHDRAW_QUEUED', itemName: row.name, pack, bankSlot: slot };
@@ -603,6 +605,7 @@
           pack: pending.pack || null,
           bankSlot: pending.bankSlot == null ? null : pending.bankSlot,
           inventorySlot: pending.inventorySlot == null ? null : pending.inventorySlot,
+          purpose: pending.purpose || null,
           amount: pending.amount || null
         };
         return true;
@@ -782,6 +785,7 @@
           inventorySlot: request.inventorySlot,
           pack: request.pack,
           bankSlot: request.bankSlot,
+          purpose: request.purpose || null,
           beforeInventoryQuantity,
           beforeBankQuantity
         });
