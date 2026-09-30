@@ -87,6 +87,8 @@ test('account profiles expose default V3 gear roles to future-gear scoring', () 
   assert.equal(roles.My_Priest, 'healer');
   assert.equal(roles.My_Ranger1, 'dps');
   assert.equal(roles.My_Merchant, 'economy');
+  const ranger = controller.profiles().find(row => row.name === 'My_Ranger1');
+  assert.ok(ranger.capabilities.includes('AOE'));
 });
 
 test('account profiles preserve an explicit V3 gear role from live peer evidence', () => {
