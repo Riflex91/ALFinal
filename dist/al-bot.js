@@ -1,4 +1,4 @@
-/* AL Bot 0.26.11-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.12-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -7421,41 +7421,42 @@
           if (!desiredCharacterName || desiredCharacterName === sourceCharacterName) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_INVALID');
           if (!this._ownedNames().has(desiredCharacterName)) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_NOT_OWNED');
           if (this._onlineOwnedNames().has(desiredCharacterName)) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_ALREADY_ONLINE');
-          if (!this.setTimeoutFn) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TIMER_UNAVAILABLE');
 
-          // Adventure Land enforces 3 characters + 1 merchant. Navigating directly
-          // can attempt the replacement before the old server session is gone and
-          // transiently becomes a fifth login. Disconnect first and require account-
-          // roster offline evidence before any navigation to the replacement.
-          const disconnect = this.disconnectLocal('H27_SAFE_BROWSER_ROTATION:' + sender);
-          if (disconnect && disconnect.settlement && typeof disconnect.settlement.then === 'function') {
-            await disconnect.settlement;
-          }
-          const offline = await this._waitForOwnedCharacterOffline(sourceCharacterName, 6000);
-
-          // The settlement must still be emitted before page navigation destroys
-          // the current runtime. The navigation is scheduled only after offline proof.
-          this.setTimeoutFn(() => {
-            try {
-              const value = this.navigateCharacterLocal(desiredCharacterName, 'H27_SAFE_BROWSER_ROTATION:' + sender);
-              if (value && typeof value.then === 'function') {
-                Promise.resolve(value).catch(error => {
-                  this.lastError = { at: nowIso(this.now()), reason: errorReason(error, 'H25_CROSS_WINDOW_CHARACTER_NAVIGATION_FAILED') };
-                  this._log('error', 'H25 Cross-Window Character Navigation fehlgeschlagen', this.lastError);
-                });
-              }
-            } catch (error) {
-              this.lastError = { at: nowIso(this.now()), reason: errorReason(error, 'H25_CROSS_WINDOW_CHARACTER_NAVIGATION_FAILED') };
-              this._log('error', 'H25 Cross-Window Character Navigation fehlgeschlagen', this.lastError);
+          // Do not wait for disconnect settlement/offline evidence here. Adventure
+          // Land can reload the outgoing character page as soon as disconnect is
+          // dispatched; any delayed timer owned by that page is then destroyed
+          // before it can navigate to the replacement. Dispatch disconnect and
+          // browser navigation atomically in the same JS turn. Runtime navigation
+          // still enforces the four-slot limit by reserving only this validated
+          // outgoing source slot.
+          const disconnect = this.disconnectLocal('H31_ATOMIC_BROWSER_ROTATION:' + sender);
+          const navigation = this.navigateCharacterLocal(
+            desiredCharacterName,
+            'H31_ATOMIC_BROWSER_ROTATION:' + sender,
+            {
+              disconnectDispatched: true,
+              sourceCharacterName
             }
-          }, 100);
+          );
+          if (navigation && navigation.accepted === false) {
+            throw new Error(navigation.reason || 'H31_ATOMIC_BROWSER_NAVIGATION_REJECTED');
+          }
+          if (navigation && typeof navigation.then === 'function') {
+            Promise.resolve(navigation).catch(error => {
+              this.lastError = { at: nowIso(this.now()), reason: errorReason(error, 'H31_ATOMIC_BROWSER_NAVIGATION_FAILED') };
+              this._log('error', 'H31 atomare Browser-Navigation fehlgeschlagen', this.lastError);
+            });
+          }
           outcome = {
-            reason: 'H27_CROSS_WINDOW_SAFE_CHARACTER_ROTATION_ACCEPTED',
+            reason: 'H31_CROSS_WINDOW_ATOMIC_BROWSER_ROTATION_ACCEPTED',
             details: {
               fromCharacterName: sourceCharacterName,
               desiredCharacterName,
-              sourceOfflineConfirmed: offline.offline === true,
-              completionEvidence: 'OLD_ACCOUNT_OFFLINE_AND_NEW_CHARACTER_PRESENT'
+              disconnectDispatched: true,
+              disconnectActionBoundaryId: disconnect && disconnect.actionBoundaryId || null,
+              navigationDispatched: true,
+              sourceOfflineConfirmed: false,
+              completionEvidence: 'NEW_CHARACTER_RUNTIME_READY'
             }
           };
         } else if (commandType === 'LEAVE_PARTY') {
@@ -7851,6 +7852,11 @@
         outcomeTimeoutMs: Math.max(3000, Math.min(120000, Number(options.outcomeTimeoutMs) || 15000)),
         startOutcomeTimeoutMs: Math.max(15000, Math.min(120000, Number(options.startOutcomeTimeoutMs) || 60000)),
         browserSwapTimeoutMs: Math.max(20000, Math.min(180000, Number(options.browserSwapTimeoutMs) || 90000)),
+        browserSwapSessionRecoveryLimit: Math.max(1, Math.min(3,
+          Number.isFinite(Number(options.browserSwapSessionRecoveryLimit))
+            ? Math.floor(Number(options.browserSwapSessionRecoveryLimit))
+            : 1
+        )),
         startRetryBackoffMs: Math.max(750, Math.min(15000, Number(options.startRetryBackoffMs) || 2000)),
         respawnGraceMs: Math.max(12000, Math.min(30000, Number(options.respawnGraceMs) || 13000)),
         maxActionsPerSession: Math.max(1, Math.min(20, Number(options.maxActionsPerSession) || 4)),
@@ -7873,6 +7879,8 @@
       this.deathObservedAtMs = null;
       this.partySignals = [];
       this.transientStartRetries = new Map();
+      this.browserSwapRecoveryAttempts = new Map();
+      this.pendingBrowserSwapRecoveryKey = null;
       this.previousPartyInviteHandler = null;
       this.previousPartyRequestHandler = null;
       this.partyInviteHandler = null;
@@ -7920,6 +7928,7 @@
         browserSwapsDispatched: 0,
         browserSwapsConfirmed: 0,
         browserSwapSessionRecoveries: 0,
+        browserSwapRecoveryBlocks: 0,
         lateOutcomeRecoveries: 0,
         rotationCapabilityBlocks: 0,
         stalePendingDiscarded: 0,
@@ -7939,6 +7948,17 @@
     _localName() {
       const local = this._local();
       return cleanText(local && local.name || '', 120);
+    }
+
+    _browserSwapRecoveryKey(targetName, desiredName) {
+      const from = cleanText(targetName || '', 120);
+      const to = cleanText(desiredName || '', 120);
+      return from && to ? from + '->' + to : '';
+    }
+
+    _browserSwapRecoveryCount(targetName, desiredName) {
+      const key = this._browserSwapRecoveryKey(targetName, desiredName);
+      return key ? Number(this.browserSwapRecoveryAttempts.get(key) || 0) : 0;
     }
 
     _respawnReadiness() {
@@ -8397,6 +8417,14 @@
           ? this.crossWindow.freshPeer(name)
           : null;
         if (remainingMissing.length) {
+          const desiredCandidate = String(remainingMissing[0] || '');
+          const recoveryAttempts = this._browserSwapRecoveryCount(name, desiredCandidate);
+          const recoveryKey = this._browserSwapRecoveryKey(name, desiredCandidate);
+          const retryPermit = !!recoveryKey && this.pendingBrowserSwapRecoveryKey === recoveryKey;
+          if (recoveryAttempts >= this.config.browserSwapSessionRecoveryLimit && !retryPermit) {
+            blockers.push('H31_BROWSER_SWAP_RETRY_LIMIT_REACHED:' + name + '->' + desiredCandidate);
+            continue;
+          }
           if (peer && peer.running === true
               && peer.characterNavigateCapable === true
               && peer.characterDisconnectCapable === true
@@ -8629,6 +8657,7 @@
 
     setPolicy(next = {}) {
       const roster = this._roster();
+      const previousDesiredKey = this.policyState.desiredActiveNames.join('\u0000');
       if (Array.isArray(next.desiredActiveNames)) {
         if (!roster || roster.accountStateAvailable !== true) return { accepted: false, reason: 'H19_ACCOUNT_ROSTER_UNAVAILABLE' };
         const owned = new Set((roster.accountCharacters || []).map(row => String(row.name || '')));
@@ -8672,6 +8701,11 @@
         const value = Math.floor(Number(next.maxActionsPerSession));
         if (!Number.isFinite(value) || value < 1 || value > 20) return { accepted: false, reason: 'H19_INVALID_SESSION_BUDGET' };
         this.config.maxActionsPerSession = value;
+      }
+      const nextDesiredKey = this.policyState.desiredActiveNames.join('\u0000');
+      if (nextDesiredKey !== previousDesiredKey) {
+        this.browserSwapRecoveryAttempts.clear();
+        this.pendingBrowserSwapRecoveryKey = null;
       }
       this._persistPolicy();
       return { accepted: true, policy: clone({ ...this.policyState, maxActionsPerSession: this.config.maxActionsPerSession }) };
@@ -8837,7 +8871,21 @@
             && peer.characterNavigateCapable === true
             && peer.characterDisconnectCapable === true
             && this.crossWindow && typeof this.crossWindow.requestCharacterNavigation === 'function') {
-          const desiredName = remainingMissing.shift();
+          const desiredName = String(remainingMissing[0] || '');
+          const recoveryAttempts = this._browserSwapRecoveryCount(name, desiredName);
+          const recoveryKey = this._browserSwapRecoveryKey(name, desiredName);
+          const retryPermit = !!recoveryKey && this.pendingBrowserSwapRecoveryKey === recoveryKey;
+          if (recoveryAttempts >= this.config.browserSwapSessionRecoveryLimit && !retryPermit) {
+            return {
+              state: 'BLOCKED',
+              reason: 'H31_BROWSER_SWAP_RETRY_LIMIT_REACHED:' + name + '->' + desiredName,
+              targetName: name,
+              desiredName,
+              recoveryAttempts,
+              recoveryLimit: this.config.browserSwapSessionRecoveryLimit
+            };
+          }
+          remainingMissing.shift();
           return {
             state: 'READY',
             reason: 'H25_BROWSER_CHARACTER_ROTATION',
@@ -9235,6 +9283,14 @@
       action.settlement = 'PENDING';
       action.actionBoundaryId = dispatched.id || null;
       this.currentAction = action;
+      if (request.kind === 'BROWSER_SWAP') {
+        const recoveryKey = this._browserSwapRecoveryKey(request.targetName, request.desiredName);
+        if (recoveryKey && this.pendingBrowserSwapRecoveryKey === recoveryKey) {
+          const attempts = Number(this.browserSwapRecoveryAttempts.get(recoveryKey) || 0);
+          this.browserSwapRecoveryAttempts.set(recoveryKey, attempts + 1);
+          this.pendingBrowserSwapRecoveryKey = null;
+        }
+      }
       this.metrics.actionsDispatched += 1;
       if (request.kind === 'PARTY_INVITE') this.metrics.partyInvitesDispatched += 1;
       if (request.kind === 'PARTY_REQUEST') this.metrics.partyRequestsDispatched += 1;
@@ -9254,7 +9310,14 @@
       this.actionsThisSession += 1;
       if (current.kind === 'START') this.metrics.startsConfirmed += 1;
       if (current.kind === 'STOP') this.metrics.stopsConfirmed += 1;
-      if (current.kind === 'BROWSER_SWAP') this.metrics.browserSwapsConfirmed += 1;
+      if (current.kind === 'BROWSER_SWAP') {
+        this.metrics.browserSwapsConfirmed += 1;
+        const recoveryKey = this._browserSwapRecoveryKey(current.targetName, current.desiredName);
+        if (recoveryKey) {
+          this.browserSwapRecoveryAttempts.delete(recoveryKey);
+          if (this.pendingBrowserSwapRecoveryKey === recoveryKey) this.pendingBrowserSwapRecoveryKey = null;
+        }
+      }
       if (current.kind === 'RESPAWN') this.metrics.respawnsConfirmed += 1;
       if (current.kind === 'PARTY_INVITE') this.metrics.partyInvitesConfirmed += 1;
       if (current.kind === 'PARTY_REQUEST') this.metrics.partyRequestsConfirmed += 1;
@@ -9363,11 +9426,16 @@
             && targetPeer.characterDisconnectCapable === true);
 
           if (targetSessionReplaced && targetStillOnline && !desiredPresent && targetRetryCapable) {
+            const recoveryKey = this._browserSwapRecoveryKey(targetName, desiredName);
+            const previousRecoveries = recoveryKey
+              ? Number(this.browserSwapRecoveryAttempts.get(recoveryKey) || 0)
+              : 0;
+            const recoveryLimit = this.config.browserSwapSessionRecoveryLimit;
+
             this.currentAction = null;
             this._removeStorage('pending');
             this.metrics.reconciliations += 1;
             this.metrics.stalePendingDiscarded += 1;
-            this.metrics.browserSwapSessionRecoveries += 1;
 
             const resumedAutonomy = current.automatic === true;
             if (resumedAutonomy) {
@@ -9376,6 +9444,35 @@
               this.autonomyEnabled = true;
             }
 
+            if (previousRecoveries >= recoveryLimit) {
+              if (this.pendingBrowserSwapRecoveryKey === recoveryKey) this.pendingBrowserSwapRecoveryKey = null;
+              this.metrics.browserSwapRecoveryBlocks += 1;
+              this.lastAction = {
+                at: nowIso(),
+                type: 'BROWSER_SWAP_RECOVERY_LIMIT_REACHED',
+                actionId: current.id || null,
+                requestId: current.requestId || null,
+                targetName,
+                desiredName: desiredName || null,
+                previousTargetSessionId,
+                targetSessionId,
+                recoveryAttempts: previousRecoveries,
+                recoveryLimit,
+                autonomyResumed: resumedAutonomy
+              };
+              return {
+                state: 'BLOCKED',
+                reason: 'H31_BROWSER_SWAP_RETRY_LIMIT_REACHED:' + targetName + '->' + desiredName,
+                targetName,
+                desiredName: desiredName || null,
+                recoveryAttempts: previousRecoveries,
+                recoveryLimit,
+                autonomyResumed: resumedAutonomy
+              };
+            }
+
+            if (recoveryKey) this.pendingBrowserSwapRecoveryKey = recoveryKey;
+            this.metrics.browserSwapSessionRecoveries += 1;
             this.lastAction = {
               at: nowIso(),
               type: 'BROWSER_SWAP_TARGET_SESSION_REPLACED_RETRY',
@@ -9385,6 +9482,9 @@
               desiredName: desiredName || null,
               previousTargetSessionId,
               targetSessionId,
+              recoveryAttempts: previousRecoveries,
+              retryPermitGranted: !!recoveryKey,
+              recoveryLimit,
               previousSettlement: current.settlement || null,
               previousError: current.error || null,
               autonomyResumed: resumedAutonomy
@@ -9396,6 +9496,9 @@
               desiredName: desiredName || null,
               previousTargetSessionId,
               targetSessionId,
+              recoveryAttempts: previousRecoveries,
+              retryPermitGranted: !!recoveryKey,
+              recoveryLimit,
               autonomyResumed: resumedAutonomy
             };
           }
@@ -9604,6 +9707,10 @@
         respawn: clone(this._respawnReadiness()),
         lastPlan: clone(this.lastPlan),
         lastAction: clone(this.lastAction),
+        browserSwapRecoveryAttempts: [...this.browserSwapRecoveryAttempts.entries()]
+          .map(([key, attempts]) => ({ key, attempts }))
+          .sort((a, b) => a.key.localeCompare(b.key)),
+        pendingBrowserSwapRecoveryKey: this.pendingBrowserSwapRecoveryKey,
         metrics: clone(this.metrics)
       };
     }
@@ -26992,7 +27099,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.11-h26';
+      this.version = options.version || '0.26.12-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -27245,8 +27352,10 @@
           && !!server.region
           && !!server.identifier;
       };
-      const navigateH25BrowserCharacter = desiredName => {
+      const navigateH25BrowserCharacter = (desiredName, options = {}) => {
         const name = String(desiredName == null ? '' : desiredName).trim();
+        const handoff = options && typeof options === 'object' ? options : {};
+        const disconnectDispatched = handoff.disconnectDispatched === true;
         if (!name) throw new Error('H25_BROWSER_CHARACTER_TARGET_REQUIRED');
         const roster = this.roster.refresh();
         const owned = roster && Array.isArray(roster.accountCharacters)
@@ -27262,10 +27371,22 @@
         const onlineNames = new Set(roster && Array.isArray(roster.onlineCharacterNames)
           ? roster.onlineCharacterNames.map(String)
           : []);
-        if (sourceName && onlineNames.has(sourceName)) {
+        const sourceOnline = !!sourceName && onlineNames.has(sourceName);
+        const assertedSource = handoff.sourceCharacterName
+          ? String(handoff.sourceCharacterName)
+          : null;
+        if (disconnectDispatched && assertedSource && sourceName && assertedSource !== sourceName) {
+          throw new Error('H31_BROWSER_ROTATION_SOURCE_IDENTITY_MISMATCH');
+        }
+        if (sourceOnline && !disconnectDispatched) {
           throw new Error('H27_BROWSER_ROTATION_SOURCE_STILL_ONLINE');
         }
-        if (!onlineNames.has(name) && onlineNames.size >= 4) {
+        // A validated atomic handoff has already dispatched disconnect for this
+        // exact source in the same JS turn. Treat that source slot as reserved
+        // for removal while navigating, instead of waiting for a timer that dies
+        // with the old character page.
+        const effectiveOccupied = Math.max(0, onlineNames.size - (disconnectDispatched && sourceOnline ? 1 : 0));
+        if (!onlineNames.has(name) && effectiveOccupied >= 4) {
           throw new Error('H27_ACCOUNT_CHARACTER_SLOT_LIMIT_REACHED');
         }
         const view = resolveH25BrowserWindow();
@@ -27282,7 +27403,14 @@
           + '/in/' + encodeURIComponent(String(server.region))
           + '/' + encodeURIComponent(String(server.identifier)) + '/';
         view.location.assign(url);
-        return { accepted: true, url, desiredCharacterName: name, server: { region: server.region, identifier: server.identifier } };
+        return {
+          accepted: true,
+          url,
+          desiredCharacterName: name,
+          disconnectDispatched,
+          sourceCharacterName: sourceName,
+          server: { region: server.region, identifier: server.identifier }
+        };
       };
 
       this.lifecycleTransport = new ns.H19CrossWindowLifecycleTransport({
@@ -27325,7 +27453,7 @@
         },
         getPartyState: () => this.party.snapshot(),
         disconnectLocal: () => dispatchH24CharacterDisconnect(),
-        navigateCharacterLocal: desiredName => navigateH25BrowserCharacter(desiredName),
+        navigateCharacterLocal: (desiredName, reason, options) => navigateH25BrowserCharacter(desiredName, options),
         leavePartyLocal: () => dispatchH19CrossWindowPartyAction('leave_party', []),
         requestPartyJoinLocal: leaderName => dispatchH19CrossWindowPartyAction('send_party_request', [leaderName]),
         prepareUpdateLocal: (payload, sender) => {
@@ -35080,7 +35208,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.11-h26',
+    version: '0.26.12-h26',
     bootCount,
     replacedPrevious: !!previous
   });
