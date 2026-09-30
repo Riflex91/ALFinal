@@ -1,4 +1,4 @@
-/* AL Bot 0.26.23-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.24-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -6447,6 +6447,8 @@
         browserChannelReceived: 0,
         browserChannelInstallFailures: 0,
         sendCmFailures: 0,
+        sendCmSkippedForLocalTransport: 0,
+        localTransportPreferred: 0,
         transportFailures: 0,
         rejectedUntrusted: 0,
         rejectedWrongTarget: 0,
@@ -6879,30 +6881,28 @@
         ? this._publishBrowserState(envelope.state)
         : this._publishBrowserEnvelope(envelope);
       const fallbackPublished = sharedPublished || browserPublished;
+      if (fallbackPublished) {
+        this.metrics.localTransportPreferred += 1;
+        this.metrics.sendCmSkippedForLocalTransport += 1;
+        if (metric) this.metrics[metric] += 1;
+        return null;
+      }
+
       let value = null;
       try {
         value = this._sendRaw(target, envelope);
       } catch (error) {
         this.metrics.sendCmFailures += 1;
         this.lastError = { at: nowIso(this.now()), reason: errorReason(error) };
-        if (!fallbackPublished) {
-          this.metrics.transportFailures += 1;
-          this._log('warn', 'H19 Cross-Window CM Versand fehlgeschlagen', {
-            target: cleanText(target || '', 120),
-            type: envelope && envelope.type || null,
-            reason: this.lastError.reason
-          });
-          throw error;
-        }
+        this.metrics.transportFailures += 1;
+        this._log('warn', 'H19 Cross-Window CM Versand fehlgeschlagen', {
+          target: cleanText(target || '', 120),
+          type: envelope && envelope.type || null,
+          reason: this.lastError.reason
+        });
+        throw error;
       }
       if (metric) this.metrics[metric] += 1;
-      if (value && typeof value.then === 'function' && fallbackPublished) {
-        Promise.resolve(value).catch(error => {
-          this.metrics.sendCmFailures += 1;
-          this.lastError = { at: nowIso(this.now()), reason: errorReason(error) };
-        });
-        return null;
-      }
       return value;
     }
 
@@ -7851,6 +7851,10 @@
         sharedStorageFallback: this._sharedStorageAvailable(),
         browserChannelFallback: !!this.browserChannel,
         browserChannelName: this.browserChannelName,
+        transportPolicy: {
+          localCrossWindowPrimary: true,
+          sendCmFallbackOnly: true
+        },
         sessionId: this.sessionId,
         localName: this._localName(),
         server: this._serverIdentity(),
@@ -28014,7 +28018,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.23-h26';
+      this.version = options.version || '0.26.24-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -36124,7 +36128,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.23-h26',
+    version: '0.26.24-h26',
     bootCount,
     replacedPrevious: !!previous
   });
