@@ -859,6 +859,84 @@ test('H26 browser swap waits for the replacement bot runtime to load and start',
   assert.equal(state.dispatches.filter(row => row.name === 'start_character').length, 0);
 });
 
+test('H30 browser swap rebinds to a replacement target session instead of suspending forever', async () => {
+  const { controller, state, runtimePeers } = fixture({
+    onlineNames: ['My_Merchant', 'My_Ranger', 'My_Priest', 'My_Warrior'],
+    runnerActiveNames: ['My_Merchant'],
+    freezeRunnerActive: true,
+    crossWindowNeverSettle: true,
+    crossWindowNoMutation: true,
+    crossWindowPeers: [
+      {
+        name: 'My_Warrior',
+        sessionId: 'warrior-session-a',
+        running: true,
+        runEpoch: 1,
+        fullAutonomyEnabled: true,
+        characterDisconnectCapable: true,
+        characterNavigateCapable: true
+      }
+    ],
+    maxActionsPerSession: 4
+  });
+  state.account.push({ name: 'My_Mage', ctype: 'mage', online: false });
+
+  const desired = ['My_Mage', 'My_Merchant', 'My_Priest', 'My_Ranger'];
+  assert.equal(controller.setPolicy({
+    desiredActiveNames: desired,
+    desiredPartyMemberNames: desired,
+    desiredPartyLeader: 'My_Merchant'
+  }).accepted, true);
+  assert.equal(controller.startAutonomy({ maxActions: 4 }).accepted, true);
+
+  const first = controller.tick();
+  assert.equal(first.state, 'DISPATCHED');
+  assert.equal(first.currentAction.kind, 'BROWSER_SWAP');
+  assert.equal(first.currentAction.targetName, 'My_Warrior');
+  assert.equal(first.currentAction.before.targetSessionId, 'warrior-session-a');
+  assert.equal(state.crossWindowDispatches.length, 1);
+
+  // Reproduce the live incident: the outgoing browser reloads the same
+  // character under a new runtime session while the old action boundary has
+  // already become UNKNOWN/REJECTED.
+  runtimePeers.set('My_Warrior', {
+    name: 'My_Warrior',
+    sessionId: 'warrior-session-b',
+    running: true,
+    runEpoch: 1,
+    fullAutonomyEnabled: true,
+    characterDisconnectCapable: true,
+    characterNavigateCapable: true
+  });
+  controller.currentAction.settlement = 'REJECTED';
+  controller.currentAction.error = 'H19_CROSS_WINDOW_SETTLEMENT_TIMEOUT';
+  controller.currentAction.unknownRecorded = true;
+  controller.suspended = true;
+  controller.suspendedReason = 'H19_DISPATCH_REJECTED_WITHOUT_LIVE_OUTCOME';
+  controller.autonomyEnabled = false;
+
+  const rebound = controller.tick();
+  assert.equal(rebound.state, 'DISPATCHED');
+  assert.equal(state.crossWindowDispatches.length, 2);
+  assert.deepEqual(clone(state.crossWindowDispatches.map(row => row.sessionId)), [
+    'warrior-session-a',
+    'warrior-session-b'
+  ]);
+
+  const status = controller.status();
+  assert.equal(status.suspended, false);
+  assert.equal(status.autonomyEnabled, true);
+  assert.equal(status.currentAction.kind, 'BROWSER_SWAP');
+  assert.equal(status.currentAction.before.targetSessionId, 'warrior-session-b');
+  assert.equal(status.metrics.browserSwapSessionRecoveries, 1);
+  assert.equal(status.metrics.stalePendingDiscarded, 1);
+  assert.equal(status.metrics.reconciliations, 1);
+  assert.equal(status.metrics.actionsDispatched, 2);
+  assert.equal(state.dispatches.filter(row => row.name === 'start_character').length, 0);
+
+  await flush();
+});
+
 test('H25 rotation blocks rather than falling back to reconnect-prone disconnect when browser navigation is unavailable', () => {
   const { controller, state } = fixture({
     onlineNames: ['My_Merchant', 'My_Ranger', 'My_Priest', 'My_Warrior'],
