@@ -1,4 +1,4 @@
-/* AL Bot 0.26.37-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.38-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -15798,7 +15798,13 @@
         };
       }
 
-      if (group.maxPairDistance <= this.config.groupRegroupStopDistance) {
+      // V3-style leadership: the leader owns the farm direction and may resume
+      // selecting/travelling to the farm goal as soon as the group is back inside
+      // the regroup trigger envelope. The tighter stop radius is reserved for
+      // finishing an already-active follower regroup/formation move; requiring it
+      // here creates a 70..150 dead zone where the leader waits although no new
+      // recovery waypoint is allowed to start.
+      if (group.maxPairDistance <= this.config.groupRegroupTriggerDistance) {
         if (movement && movement.activeOrder
             && String(movement.activeOrder.owner || '') === 'farm-intelligence-h9-leader-regroup') {
           try { this.movement.cancel('H9_GROUP_COHESION_RECOVERED'); } catch (_) {}
@@ -24188,15 +24194,22 @@
 
       this.metrics.proposals += proposals.length;
       const bankMap = /^bank(?:$|_)/i.test(String(snap.character.map || ''));
-      const nonBankWork = proposals.some(row => row && !['BANK_MOUNT', 'BANK_WITHDRAW', 'BANK_DEPOSIT', 'BANK_EXIT'].includes(String(row.kind || '')));
-      if (bankMap && nonBankWork) {
+      const bankLocalKinds = new Set(['BANK_MOUNT', 'BANK_WITHDRAW', 'BANK_DEPOSIT']);
+      const bankLocalWork = proposals.some(row => row && bankLocalKinds.has(String(row.kind || '')));
+      const nonBankWork = proposals.some(row => row && !bankLocalKinds.has(String(row.kind || '')) && String(row.kind || '') !== 'BANK_EXIT');
+      // Leaving the bank is a lifecycle cleanup, not merely a prerequisite for a
+      // currently visible non-bank proposal. Otherwise Full Autonomy can observe
+      // an empty H17 plan immediately after bank work, hand Economy off as idle,
+      // and strand the Merchant on the bank map indefinitely.
+      const bankExitRequired = bankMap && (nonBankWork || !bankLocalWork);
+      if (bankExitRequired) {
         const exitProposal = this._proposal('BANK_EXIT', 'movement', {
           key: 'main',
           destination: { map: 'main' },
-          reason: 'H17_NON_BANK_ACTION_REQUIRES_BANK_EXIT',
+          reason: nonBankWork ? 'H17_NON_BANK_ACTION_REQUIRES_BANK_EXIT' : 'H17_BANK_IDLE_EXIT',
           risk: 0
         });
-        if (exitProposal) proposals.push(exitProposal);
+        if (exitProposal && !proposals.some(row => row && row.kind === 'BANK_EXIT')) proposals.push(exitProposal);
         proposals.sort((a, b) =>
           Number(b.priority || 0) - Number(a.priority || 0)
           || Number(a.risk || 0) - Number(b.risk || 0)
@@ -24204,7 +24217,15 @@
           || String(a.id).localeCompare(String(b.id)));
       }
 
-      const selected = proposals[0] || null;
+      let selected = proposals[0] || null;
+      if (bankMap && bankExitRequired) {
+        // Finish bank-local mutations first. Once they are gone, BANK_EXIT owns
+        // the boundary even when a newer non-bank action has a higher global
+        // priority (for example account-wide gear delivery).
+        selected = proposals.find(row => row && bankLocalKinds.has(String(row.kind || '')))
+          || proposals.find(row => row && String(row.kind || '') === 'BANK_EXIT')
+          || selected;
+      }
       const plan = {
         state: selected ? 'READY' : 'IDLE',
         reason: selected ? 'H17_PLAN_READY' : 'H17_NO_SAFE_ECONOMY_ACTION',
@@ -24220,7 +24241,7 @@
         pressure,
         mutationReservedNames: Array.from(mutationReservedNames).sort(),
         suppressedBankMaintenanceRows: rawBankRows.length - bankRows.length,
-        bankExitRequired: bankMap && nonBankWork,
+        bankExitRequired,
         futureGearEvaluation: upgradePlan && upgradePlan.futureGearEvaluation
           ? clone(upgradePlan.futureGearEvaluation)
           : null,
@@ -28988,7 +29009,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.37-h26';
+      this.version = options.version || '0.26.38-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -37106,7 +37127,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.37-h26',
+    version: '0.26.38-h26',
     bootCount,
     replacedPrevious: !!previous
   });
