@@ -1283,9 +1283,7 @@ test('H27 hard slot guard rejects a fifth START before dispatch', () => {
     runnerActiveNames: ['My_Ranger', 'My_Priest', 'My_Merchant', 'My_Warrior']
   });
   f.state.account.push({ name: 'My_Mage', ctype: 'mage', online: false });
-  assert.equal(f.controller.queueStart('My_Mage').accepted, true);
-
-  const result = f.controller.tick();
+  const result = f.controller.queueStart('My_Mage');
   assert.equal(result.accepted, false);
   assert.equal(result.reason, 'H27_ACCOUNT_CHARACTER_SLOT_LIMIT_REACHED');
   assert.equal(f.state.dispatches.filter(row => row.name === 'start_character').length, 0);

@@ -414,6 +414,8 @@ function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, inactiv
           running: true,
           fullAutonomyEnabled: true,
           fullAutonomyDesiredCharacterNames: state.merchantDesiredNames.slice(),
+          fullAutonomyDesiredSource: 'merchant-authority',
+          fullAutonomyDesiredChangedAtMs: 123456,
           fullAutonomyLeaderName: state.merchantLeaderName
         };
       },
@@ -511,16 +513,17 @@ test('healthy non-coordinator does not run competing lifecycle autonomy', () => 
   assert.equal(state.lifecycleStarts, 0);
 });
 
-test('full autonomy accepts a partial live roster and immediately enters lifecycle recovery toward the selected quartet', () => {
+test('H27 partial live roster waits fail-closed when the Merchant authority is offline', () => {
   const { controller, state } = loadFullAutonomy({
     onlineNames: ['My_Priest', 'My_Ranger1', 'My_Warrior']
   });
   const started = controller.startAutonomy({ taskType: 'FARM' });
   assert.equal(started.accepted, true);
   assert.equal(started.tick.state, 'WARMING');
-  assert.equal(started.tick.reason, 'FULL_AUTONOMY_RECOVERING_EXPECTED_ROSTER');
-  assert.equal(state.lifecycleStarts, 1);
-  assert.deepEqual([...started.tick.desiredCharacterNames], ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior']);
+  assert.equal(started.tick.reason, 'FULL_AUTONOMY_WAITING_MERCHANT_AUTHORITY');
+  assert.equal(started.tick.lifecycleArmed, false);
+  assert.equal(state.lifecycleStarts, 0);
+  assert.deepEqual([...controller.status().desiredCharacterNames], []);
 });
 
 
@@ -560,15 +563,15 @@ test('merchant economy continues in a healthy party while lifecycle recovery is 
   assert.equal(state.economyStarts, 1);
 });
 
-test('autostart can arm safely before all four characters are online and waits without acting', () => {
+test('H27 autostart waits without lifecycle actions until Merchant authority becomes available', () => {
   const { controller, state } = loadFullAutonomy({
     onlineNames: ['My_Priest', 'My_Ranger1', 'My_Warrior']
   });
   const started = controller.startAutonomy({ taskType: 'FARM', waitForRoster: true });
   assert.equal(started.accepted, true);
   assert.equal(started.tick.state, 'WARMING');
-  assert.equal(started.tick.reason, 'FULL_AUTONOMY_RECOVERING_EXPECTED_ROSTER');
-  assert.equal(state.lifecycleStarts, 1);
+  assert.equal(started.tick.reason, 'FULL_AUTONOMY_WAITING_MERCHANT_AUTHORITY');
+  assert.equal(state.lifecycleStarts, 0);
   assert.equal(state.farmStarts, 0);
 
   state.onlineNames = ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior'];
