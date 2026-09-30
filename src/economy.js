@@ -84,6 +84,7 @@
         actionTimeoutMs: Math.max(5000, Math.min(300000, Number(options.actionTimeoutMs) || 120000)),
         maxActionsPerSession: Math.max(1, Math.min(100, Math.floor(Number(options.maxActionsPerSession) || 12))),
         minMarketPremiumRatio: Math.max(1, Math.min(10, finite(options.minMarketPremiumRatio) == null ? 1 : finite(options.minMarketPremiumRatio))),
+        materialBankKnowledgeTtlMs: Math.max(30000, Math.min(900000, Number(options.materialBankKnowledgeTtlMs) || 120000)),
         priorities: { ...DEFAULT_PRIORITIES, ...(options.priorities || {}) },
         allowKinds: { ...DEFAULT_KINDS, ...(options.allowKinds || {}) }
       };
@@ -180,6 +181,7 @@
       if (value.rejectionBackoffMs != null) this.config.rejectionBackoffMs = Math.max(1000, Math.min(300000, Math.floor(Number(value.rejectionBackoffMs) || 1000)));
       if (value.actionTimeoutMs != null) this.config.actionTimeoutMs = Math.max(5000, Math.min(300000, Math.floor(Number(value.actionTimeoutMs) || 5000)));
       if (value.minMarketPremiumRatio != null) this.config.minMarketPremiumRatio = Math.max(1, Math.min(10, Number(value.minMarketPremiumRatio) || 1));
+      if (value.materialBankKnowledgeTtlMs != null) this.config.materialBankKnowledgeTtlMs = Math.max(30000, Math.min(900000, Math.floor(Number(value.materialBankKnowledgeTtlMs) || 120000)));
       if (value.priorities && typeof value.priorities === 'object') {
         for (const [kind, priority] of Object.entries(value.priorities)) {
           if (!Object.prototype.hasOwnProperty.call(DEFAULT_PRIORITIES, kind)) continue;
@@ -454,19 +456,13 @@
       const materialNeed = upgradePlan && (upgradePlan.materialNeeds || [])[0] || null;
       if (materialNeed && materialNeed.consumableName) {
         const consumableName = cleanText(materialNeed.consumableName, 160);
-        const materialNeedKey = [
-          cleanText(materialNeed.mutationKind || '', 40),
-          cleanText(materialNeed.itemName || '', 160),
-          Math.max(0, Math.floor(Number(materialNeed.fromLevel) || 0)),
-          Math.max(0, Math.floor(Number(materialNeed.targetLevel) || 0)),
-          consumableName,
-          Math.max(1, Math.floor(Number(materialNeed.quantity) || 1))
-        ].join('|');
-        for (const key of Array.from(this.materialBankMisses.keys())) {
-          if (key !== materialNeedKey) this.materialBankMisses.delete(key);
+        const nowMs = Date.now();
+        const cachedMiss = this.materialBankMisses.get(consumableName) || null;
+        if (cachedMiss && nowMs - Number(cachedMiss.checkedAtMs || 0) > this.config.materialBankKnowledgeTtlMs) {
+          this.materialBankMisses.delete(consumableName);
         }
 
-        let bankMissKnown = this.materialBankMisses.has(materialNeedKey);
+        let bankMissKnown = this.materialBankMisses.has(consumableName);
         let bankMaterial = null;
         if (bankPlan && bankPlan.state === 'READY') {
           for (const pack of bankPlan.packs || []) {
@@ -480,15 +476,18 @@
             }
           }
           if (bankMaterial) {
-            this.materialBankMisses.delete(materialNeedKey);
+            this.materialBankMisses.delete(consumableName);
             bankMissKnown = false;
-          } else if (!bankMissKnown) {
-            this.materialBankMisses.set(materialNeedKey, {
+          } else {
+            const prior = this.materialBankMisses.get(consumableName) || null;
+            this.materialBankMisses.set(consumableName, {
               checkedAt: nowIso(),
+              checkedAtMs: nowMs,
               itemName: consumableName,
-              mutationKind: cleanText(materialNeed.mutationKind || '', 40) || null
+              mutationKind: cleanText(materialNeed.mutationKind || '', 40) || null,
+              source: 'MOUNTED_BANK_SNAPSHOT'
             });
-            this.metrics.materialBankMisses += 1;
+            if (!prior) this.metrics.materialBankMisses += 1;
             bankMissKnown = true;
           }
         }
@@ -536,8 +535,6 @@
             if (proposal) proposals.push(proposal);
           }
         }
-      } else {
-        this.materialBankMisses.clear();
       }
 
       const improvement = gearPlan && gearPlan.local && (gearPlan.local.improvements || [])[0] || null;
@@ -770,6 +767,10 @@
       const current = this.currentAction;
       this.currentAction = null;
       this.cooldownUntilMs = Date.now() + this.config.actionCooldownMs;
+      if (outcome === 'CONFIRMED' && current && ['BANK_DEPOSIT', 'BANK_WITHDRAW'].includes(String(current.kind || ''))) {
+        const changedName = cleanText(current.proposal && current.proposal.itemName || '', 160);
+        if (changedName) this.materialBankMisses.delete(changedName);
+      }
       if (outcome === 'CONFIRMED') this.metrics.actionsConfirmed += 1;
       else if (outcome === 'REJECTED') this.metrics.actionsRejected += 1;
       else this.metrics.actionsUnknown += 1;
