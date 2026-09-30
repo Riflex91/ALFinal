@@ -369,6 +369,14 @@ test('reserved gear can only be queued for the exact owned party target', () => 
   assert.equal(accepted.accepted, true);
   assert.equal(accepted.request.kind, 'GEAR');
   assert.equal(accepted.request.targetName, 'My_Warrior');
+
+  controller.economy = {
+    status: () => ({ currentAction: { module: 'partyLogistics', kind: 'GEAR_DELIVER' } })
+  };
+  controller.actions.dispatch = () => ({ state: 'DISPATCHED', value: Promise.resolve({ success: true }) });
+  const delegated = controller.tick();
+  assert.equal(delegated.state, 'QUEUED');
+  assert.equal(delegated.result.action.kind, 'GEAR');
 });
 
 test('upgrade execution boundary honors account-level no-risk policy before producing a candidate', () => {
