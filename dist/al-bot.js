@@ -1,4 +1,4 @@
-/* AL Bot 0.26.18-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.19-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -2874,13 +2874,18 @@
         : () => true;
       this.sequence = 0;
       this.lastAction = null;
+      this.lastPreview = null;
       this.metrics = {
         attempted: 0,
         dispatched: 0,
         unavailable: 0,
         blocked: 0,
         synchronousErrors: 0,
-        cleanupDispatches: 0
+        cleanupDispatches: 0,
+        mutationPreviewsAttempted: 0,
+        mutationPreviewsResolved: 0,
+        mutationPreviewsUnavailable: 0,
+        mutationPreviewErrors: 0
       };
     }
 
@@ -2987,6 +2992,79 @@
       return [target, tradeSlot, quantity];
     }
 
+    previewMutation(action, args = []) {
+      if (!['upgrade', 'compound'].includes(String(action || ''))) {
+        throw new Error('ALBOT_MUTATION_PREVIEW_ACTION_INVALID:' + cleanText(action, 80));
+      }
+      if (!Array.isArray(args)) throw new Error('ALBOT_MUTATION_PREVIEW_ARGS_INVALID:' + action);
+      const def = ACTIONS[action];
+      this.metrics.mutationPreviewsAttempted += 1;
+      const id = 'preview-' + (++this.sequence);
+      const at = new Date().toISOString();
+
+      try {
+        this.assertAllowed(action);
+      } catch (error) {
+        this.metrics.blocked += 1;
+        const result = {
+          id, at, action, family: def.family, state: 'BLOCKED',
+          preview: true, value: null, error: errorDetails(error)
+        };
+        this.lastPreview = clone(result);
+        return result;
+      }
+
+      const resolved = this._resolve(def.publicName);
+      if (!resolved) {
+        this.metrics.mutationPreviewsUnavailable += 1;
+        const result = {
+          id, at, action, family: def.family, state: 'UNAVAILABLE',
+          preview: true, value: null,
+          error: { name: 'Error', message: 'ALBOT_MUTATION_PREVIEW_API_UNAVAILABLE:' + def.publicName, stack: null }
+        };
+        this.lastPreview = clone(result);
+        return result;
+      }
+
+      try {
+        let callArgs;
+        if (action === 'upgrade') {
+          const itemSlot = args[0];
+          const scrollSlot = args[1];
+          const offeringSlot = args[2] == null ? undefined : args[2];
+          callArgs = Number(resolved.fn.length) >= 5
+            ? [itemSlot, scrollSlot, offeringSlot, 'code', true]
+            : [itemSlot, scrollSlot, offeringSlot, true];
+        } else {
+          const itemSlots = args.slice(0, 3);
+          const scrollSlot = args[3];
+          const offeringSlot = args[4] == null ? undefined : args[4];
+          callArgs = Number(resolved.fn.length) >= 7
+            ? itemSlots.concat([scrollSlot, offeringSlot, 'code', true])
+            : itemSlots.concat([scrollSlot, offeringSlot, true]);
+        }
+        const value = resolved.fn.apply(resolved.owner, callArgs);
+        this.metrics.mutationPreviewsResolved += 1;
+        const result = {
+          id, at, action, family: def.family, state: 'PREVIEWED',
+          preview: true, value, error: null
+        };
+        this.lastPreview = {
+          id, at, action, family: def.family, state: 'PREVIEWED',
+          preview: true, error: null
+        };
+        return result;
+      } catch (error) {
+        this.metrics.mutationPreviewErrors += 1;
+        const result = {
+          id, at, action, family: def.family, state: 'UNKNOWN',
+          preview: true, value: null, error: errorDetails(error)
+        };
+        this.lastPreview = clone(result);
+        return result;
+      }
+    }
+
     dispatch(action, args = [], options = {}) {
       const def = ACTIONS[action];
       if (!def) throw new Error('ALBOT_ACTION_UNKNOWN:' + cleanText(action, 80));
@@ -3067,7 +3145,8 @@
         supportedActions: Object.keys(ACTIONS),
         availability: Object.fromEntries(Object.keys(ACTIONS).map(action => [action, this.available(action)])),
         metrics: clone(this.metrics),
-        lastAction: clone(this.lastAction)
+        lastAction: clone(this.lastAction),
+        lastPreview: clone(this.lastPreview)
       };
     }
   }
@@ -27737,7 +27816,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.18-h26';
+      this.version = options.version || '0.26.19-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -35847,7 +35926,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.18-h26',
+    version: '0.26.19-h26',
     bootCount,
     replacedPrevious: !!previous
   });

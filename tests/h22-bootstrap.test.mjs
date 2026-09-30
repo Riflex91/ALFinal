@@ -74,8 +74,8 @@ test('H22 committed release manifest is valid before promotion and matches the c
   const manifest = JSON.parse(fs.readFileSync(new URL('../release/al-bot-release.json', import.meta.url), 'utf8'));
   const dist = fs.readFileSync(new URL('../dist/al-bot.js', import.meta.url), 'utf8');
   const checked = api.validateManifest(manifest);
-  const candidateVersion = '0.26.18-h26';
-  const candidatePackageVersion = '0.26.18';
+  const candidateVersion = '0.26.19-h26';
+  const candidatePackageVersion = '0.26.19';
 
   assert.equal(checked.ok, true);
   assert.equal(manifest.minBootstrapVersion, '1.0.0');
@@ -84,7 +84,7 @@ test('H22 committed release manifest is valid before promotion and matches the c
     manifest.bundleUrl,
     'https://raw.githubusercontent.com/Riflex91/ALFinal/' + manifest.commitSha + '/dist/al-bot.js'
   );
-  assert.match(dist, /^\/\* AL Bot 0\.26\.18-h26 \| generated file \| do not edit dist directly \*\//);
+  assert.match(dist, /^\/\* AL Bot 0\.26\.19-h26 \| generated file \| do not edit dist directly \*\//);
 
   if (manifest.version === candidateVersion) {
     assert.equal(manifest.packageVersion, candidatePackageVersion);
