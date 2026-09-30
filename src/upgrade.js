@@ -378,7 +378,14 @@
       }
       const activeHold = this._activeRiskHold(kind, row);
       if (activeHold) {
-        const decision = { ...clone(activeHold.decision), allowed: false, reason: 'MUTATION_RISK_EXCEEDS_POLICY', held: true, holdUntilMs: activeHold.untilMs };
+        const held = clone(activeHold.decision) || {};
+        const decision = {
+          ...held,
+          allowed: false,
+          reason: held.reason || 'MUTATION_RISK_EXCEEDS_POLICY',
+          held: true,
+          holdUntilMs: activeHold.untilMs
+        };
         this.lastMutationRiskDecision = clone(decision);
         return decision;
       }
