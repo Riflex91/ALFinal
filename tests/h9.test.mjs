@@ -67,6 +67,7 @@ function makeFixture(options = {}) {
   let movementSequence = 0;
   const movement = {
     status: () => JSON.parse(JSON.stringify(movementState)),
+    _canMoveTo: () => options.canMoveTo !== false,
     smartMove: (destination, args) => {
       movementCalls.push({ type: 'smart', destination: { ...destination }, args: { ...args } });
       const order = {
@@ -543,7 +544,7 @@ test('H9 leader keeps its farm travel while followers catch up instead of backtr
   assert.equal(f.movementCalls.some(row => row.type === 'cancel'), false);
 });
 
-test('H9 retries a transient group-regroup movement rejection instead of permanently suspending the farmer', () => {
+test('H9 retries a transient far same-map regroup with path-checked local steps instead of smart_move looping', () => {
   const f = makeFixture({
     characterName: 'My_Rogue',
     ctype: 'rogue',
@@ -559,8 +560,10 @@ test('H9 retries a transient group-regroup movement rejection instead of permane
   });
   assert.equal(started.accepted, true);
   assert.equal(started.tick.state, 'TRAVELLING');
-  assert.equal(f.movementCalls.filter(row => row.type === 'smart').length, 1);
-  assert.equal(f.movementCalls.find(row => row.type === 'smart').args.owner, 'farm-intelligence-h9-group-regroup');
+  assert.equal(started.tick.reason, 'H9_GROUP_LOCAL_REGROUP_STARTED');
+  assert.equal(f.movementCalls.filter(row => row.type === 'local').length, 1);
+  assert.equal(f.movementCalls.filter(row => row.type === 'smart').length, 0);
+  assert.equal(f.movementCalls.find(row => row.type === 'local').args.owner, 'farm-intelligence-h9-group-follow');
 
   f.movementUnknown(true);
   const backoff = f.controller.tick();
@@ -572,9 +575,33 @@ test('H9 retries a transient group-regroup movement rejection instead of permane
   f.advance(2500);
   const retry = f.controller.tick();
   assert.equal(retry.state, 'TRAVELLING');
-  assert.equal(retry.reason, 'H9_GROUP_REGROUP_STARTED');
-  assert.equal(f.movementCalls.filter(row => row.type === 'smart').length, 2);
+  assert.equal(retry.reason, 'H9_GROUP_LOCAL_REGROUP_STARTED');
+  assert.equal(f.movementCalls.filter(row => row.type === 'local').length, 2);
+  assert.equal(f.movementCalls.filter(row => row.type === 'smart').length, 0);
   assert.equal(f.controller.status().suspended, false);
+});
+
+test('H9 far same-map follower falls back to the live leader position when no safe local step exists', () => {
+  const f = makeFixture({
+    characterName: 'My_Ranger2',
+    ctype: 'ranger',
+    canMoveTo: false,
+    partyOwnedMembers: [
+      { name: 'My_Ranger2', ctype: 'ranger', damageType: 'physical', map: 'main', x: 0, y: 0 },
+      { name: 'My_Warrior', ctype: 'warrior', damageType: 'physical', map: 'main', x: 300, y: 40 }
+    ]
+  });
+  const started = f.controller.startAutonomy({
+    owner: 'full-autonomy',
+    groupLeaderName: 'My_Warrior',
+    groupMemberNames: ['My_Ranger2', 'My_Warrior']
+  });
+  assert.equal(started.tick.state, 'TRAVELLING');
+  assert.equal(started.tick.reason, 'H9_GROUP_REGROUP_STARTED');
+  assert.equal(f.movementCalls.filter(row => row.type === 'local').length, 0);
+  const smart = f.movementCalls.find(row => row.type === 'smart');
+  assert.ok(smart);
+  assert.deepEqual(smart.destination, { map: 'main', x: 300, y: 40 });
 });
 
 test('H9 foreign party blocks planning before any H4 travel or H8 farming action', () => {
