@@ -1,4 +1,4 @@
-/* AL Bot 0.26.12-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.14-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -11914,7 +11914,22 @@
         }
       }
 
-      const economyNow = economy.status();
+      let economyNow = economy.status();
+      let releasedIdleEconomy = false;
+      if (economyNow.autonomyEnabled === true && !economyNow.currentAction) {
+        let activeEconomyPlan = null;
+        try { activeEconomyPlan = typeof economy.plan === 'function' ? economy.plan() : null; } catch (_) {}
+        const activeEconomyIdle = !!(activeEconomyPlan
+          && activeEconomyPlan.state === 'IDLE'
+          && activeEconomyPlan.reason === 'H17_NO_SAFE_ECONOMY_ACTION'
+          && !activeEconomyPlan.selected);
+        if (activeEconomyIdle) {
+          try { economy.stopAutonomy('FULL_AUTONOMY_ECONOMY_IDLE_HANDOFF'); } catch (_) {}
+          this.started.economy = false;
+          releasedIdleEconomy = true;
+          economyNow = economy.status();
+        }
+      }
       if (now - this.lastLogisticsProbeAtMs >= this.config.logisticsProbeMs && !economyNow.currentAction) {
         this.lastLogisticsProbeAtMs = now;
         const wasEconomyOwned = this.started.economy && economyNow.autonomyEnabled === true;
@@ -11938,7 +11953,7 @@
       const economyBeforeStand = economy.status();
       const logisticsBeforeStand = logistics.status();
       if (standStatus && standStatus.autoManage
-          && now - this.lastStandProbeAtMs >= this.config.standProbeMs
+          && (releasedIdleEconomy || now - this.lastStandProbeAtMs >= this.config.standProbeMs)
           && !economyBeforeStand.currentAction
           && !logisticsBeforeStand.currentAction
           && !logisticsBeforeStand.autonomyEnabled) {
@@ -14630,15 +14645,84 @@
       return rows;
     }
 
+    _groupPlanningProfiles(character) {
+      const localName = cleanText(character && character.name || '', 120);
+      const memberNames = this.session && Array.isArray(this.session.groupMemberNames)
+        ? [...new Set(this.session.groupMemberNames.map(value => cleanText(value, 120)).filter(Boolean))].sort()
+        : [];
+      if (!localName || memberNames.length < 2 || !memberNames.includes(localName)) {
+        return {
+          enabled: false,
+          complete: true,
+          memberNames: localName ? [localName] : [],
+          missingMemberNames: [],
+          profiles: character ? [character] : []
+        };
+      }
+
+      let status = null;
+      try { status = this.party && typeof this.party.status === 'function' ? this.party.status() : null; } catch (_) {}
+      const party = status && status.party || null;
+      const owned = party && Array.isArray(party.ownedMembers) ? party.ownedMembers : [];
+      const profiles = [];
+      const missingMemberNames = [];
+
+      for (const name of memberNames) {
+        const profile = String(name) === String(localName)
+          ? character
+          : owned.find(row => row && String(row.name) === String(name)) || null;
+        if (!profile) {
+          missingMemberNames.push(name);
+          continue;
+        }
+        profiles.push(profile);
+      }
+
+      return {
+        enabled: true,
+        complete: missingMemberNames.length === 0 && profiles.length === memberNames.length,
+        memberNames,
+        missingMemberNames,
+        profiles
+      };
+    }
+
     _filteredCandidates(rows, character) {
       const preferred = new Set(this.session && this.session.preferredTypes || []);
       const excluded = new Set(this.session && this.session.excludedTypes || []);
+      const groupProfiles = this._groupPlanningProfiles(character);
       return rows.filter(row => {
         if (excluded.has(row.mtype)) return false;
         if (preferred.size && !preferred.has(row.mtype)) return false;
         const expectedHitChance = this._expectedHitChance(character, row);
         row.expectedHitChance = expectedHitChance;
         if (expectedHitChance < this.config.minExpectedHitChance) return false;
+
+        if (groupProfiles.enabled) {
+          row.groupHitChance = {
+            complete: groupProfiles.complete,
+            minimum: null,
+            members: groupProfiles.profiles.map(profile => ({
+              name: cleanText(profile && profile.name || '', 120) || null,
+              ctype: cleanText(profile && profile.ctype || '', 60) || null,
+              damageType: this._damageType(profile),
+              expectedHitChance: this._expectedHitChance(profile, row)
+            })),
+            missingMemberNames: groupProfiles.missingMemberNames.slice()
+          };
+          row.groupHitChance.minimum = row.groupHitChance.members.length
+            ? Math.min(...row.groupHitChance.members.map(member => member.expectedHitChance))
+            : null;
+
+          // H9 is the group-level planner while H5 enforces the same threshold
+          // per character. Never elect a farm target that known followers would
+          // immediately reject, and fail closed until all farmer profiles are
+          // available so the leader cannot strand part of the party watching.
+          if (!groupProfiles.complete) return false;
+          if (row.groupHitChance.members.some(member => member.expectedHitChance < this.config.minExpectedHitChance)) {
+            return false;
+          }
+        }
         return true;
       });
     }
@@ -27099,7 +27183,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.12-h26';
+      this.version = options.version || '0.26.14-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -35208,7 +35292,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.12-h26',
+    version: '0.26.14-h26',
     bootCount,
     replacedPrevious: !!previous
   });

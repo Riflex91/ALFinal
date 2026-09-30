@@ -11,8 +11,8 @@ const source = fs.readFileSync(path.resolve(here, '../src/farm-intelligence.js')
 function makeFixture(options = {}) {
   let now = options.now == null ? 100000 : options.now;
   const character = {
-    name: 'Farmer',
-    ctype: 'ranger',
+    name: options.characterName || 'Farmer',
+    ctype: options.ctype || 'ranger',
     map: 'main',
     x: 0,
     y: 0,
@@ -90,8 +90,17 @@ function makeFixture(options = {}) {
   };
   const combat = { safeCandidates: () => safe.map(row => ({ ...row })) };
   let foreignParty = options.foreignParty ? ['Stranger'] : [];
+  const partyOwnedMembers = (options.partyOwnedMembers || [{
+    name: character.name,
+    ctype: character.ctype,
+    damageType: character.damageType,
+    map: character.map,
+    x: character.x,
+    y: character.y
+  }]).map(row => ({ ...row }));
   const party = { status: () => ({ party: {
-    ownedMemberNames: ['Farmer'],
+    ownedMemberNames: partyOwnedMembers.map(row => String(row.name)),
+    ownedMembers: partyOwnedMembers.map(row => ({ ...row })),
     foreignMemberNames: foreignParty.slice()
   } }) };
 
@@ -209,6 +218,35 @@ test('H9 keeps high physical-evasion targets eligible for magical classes', () =
   assert.ok(frog);
   assert.equal(frog.expectedHitChance, 1);
   assert.equal(plan.selected.mtype, 'frog');
+});
+
+
+test('H9 group leader excludes targets that known physical followers cannot safely hit', () => {
+  const f = makeFixture({
+    characterName: 'My_Priest',
+    ctype: 'priest',
+    damageType: 'magical',
+    safe: [...cluster('frog', 2, 15, 15), ...cluster('goo', 2, 50, 50)],
+    definitions: {
+      frog: { id: 'frog', hp: 600, attack: 24, xp: 7200, gold: 313, dropSignal: 0.16, evasion: 99 },
+      goo: { id: 'goo', hp: 500, attack: 10, xp: 100, gold: 20, dropSignal: 0.2, evasion: 0 }
+    },
+    partyOwnedMembers: [
+      { name: 'My_Priest', ctype: 'priest', damageType: 'magical', map: 'main', x: 0, y: 0 },
+      { name: 'My_Ranger1', ctype: 'ranger', damageType: 'physical', map: 'main', x: 20, y: 0 },
+      { name: 'My_Ranger2', ctype: 'ranger', damageType: 'physical', map: 'main', x: -20, y: 0 }
+    ]
+  });
+
+  const started = f.controller.startAutonomy({
+    owner: 'full-autonomy',
+    groupLeaderName: 'My_Priest',
+    groupMemberNames: ['My_Priest', 'My_Ranger1', 'My_Ranger2']
+  });
+  assert.equal(started.accepted, true);
+  const plan = f.controller.plan();
+  assert.equal(plan.candidates.some(row => row.mtype === 'frog'), false);
+  assert.equal(plan.selected.mtype, 'goo');
 });
 
 test('H9 treats H5 approach movement as delegated ownership while its H8 farm is active', () => {
@@ -470,9 +508,9 @@ test('H9 control center and one-click live suite are wired', () => {
   assert.match(runtime, /visibleSafe\.length > 0/);
   assert.match(runtime, /h9-adaptive-decisions/);
   assert.match(runtime, /timeoutMs: 85000/);
-  assert.match(entry, /0\.26\.12-h26/);
+  assert.match(entry, /0\.26\.14-h26/);
   assert.match(entry, /farmIntelligence:/);
-  assert.match(build, /const runtimeVersion = '0\.26\.12-h26'/);
+  assert.match(build, /const runtimeVersion = '0\.26\.14-h26'/);
 });
 
 test('H9 game adapter normalizes live farm data for scoring', () => {

@@ -209,7 +209,7 @@ test('activity requirements change the exact three-farmer composition without ha
 });
 
 
-function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, inactiveFullAutonomyName = null, localName = 'My_Warrior', partyHealthy = true, partyLeader = 'My_Warrior', partyMembers = null, profileRows: customProfileRows = null, selectedMembers = ['My_Priest', 'My_Ranger1', 'My_Warrior'], supportMembers = ['My_Merchant'], leaderName = 'My_Warrior', merchantDesiredNames = null, merchantLeaderName = null, lifecycleSuspended = false, lifecycleSuspendedReason = null, farmSuspended = false, farmSuspendedReason = null, farmOwner = 'full-autonomy', onlineNames = ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior'], economyPlan = { state: 'READY', reason: 'TEST_READY', selected: { kind: 'TEST' } } } = {}) {
+function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, inactiveFullAutonomyName = null, localName = 'My_Warrior', partyHealthy = true, partyLeader = 'My_Warrior', partyMembers = null, profileRows: customProfileRows = null, selectedMembers = ['My_Priest', 'My_Ranger1', 'My_Warrior'], supportMembers = ['My_Merchant'], leaderName = 'My_Warrior', merchantDesiredNames = null, merchantLeaderName = null, lifecycleSuspended = false, lifecycleSuspendedReason = null, farmSuspended = false, farmSuspendedReason = null, farmOwner = 'full-autonomy', onlineNames = ['My_Merchant', 'My_Priest', 'My_Ranger1', 'My_Warrior'], economyPlan = { state: 'READY', reason: 'TEST_READY', selected: { kind: 'TEST' } }, initialEconomyActive = false } = {}) {
   const source = fs.readFileSync(path.resolve(here, '../src/full-autonomy.js'), 'utf8');
   const clone = value => value == null ? value : JSON.parse(JSON.stringify(value));
   const ctx = {
@@ -241,7 +241,7 @@ function loadFullAutonomy({ missingPeer = false, stoppedPeerName = null, inactiv
     farmOwner,
     economyStarts: 0,
     economyStops: 0,
-    economyActive: false,
+    economyActive: initialEconomyActive,
     standAutoManage: false,
     standConfigureCalls: 0,
     standTicks: 0,
@@ -891,4 +891,29 @@ test('Full Autonomy leaves no-op Economy released so Merchant Stand is not perma
   assert.ok(state.standTicks >= 1);
   assert.equal(state.economyStarts, 0);
   assert.equal(state.economyActive, false);
+});
+
+
+test('Full Autonomy releases an already-active Economy immediately after its last real action drains', () => {
+  const { controller, state } = loadFullAutonomy({
+    localName: 'My_Merchant',
+    partyLeader: 'My_Priest',
+    selectedMembers: ['My_Priest', 'My_Ranger1', 'My_Warrior'],
+    initialEconomyActive: true,
+    economyPlan: {
+      state: 'IDLE',
+      reason: 'H17_NO_SAFE_ECONOMY_ACTION',
+      selected: null,
+      proposals: []
+    }
+  });
+
+  const started = controller.startAutonomy({ taskType: 'FARM' });
+  assert.equal(started.accepted, true);
+  assert.equal(started.tick.state, 'RUNNING');
+  assert.equal(state.economyStops, 1);
+  assert.equal(state.economyActive, false);
+  assert.equal(state.standAutoManage, true);
+  assert.ok(state.standTicks >= 1);
+  assert.equal(started.tick.localRole, 'idle');
 });
