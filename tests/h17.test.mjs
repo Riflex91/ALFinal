@@ -281,6 +281,21 @@ test('H17 exits the bank before dispatching upgrade or other non-bank work', () 
   assert.equal(f.calls.some(row => row.module === 'upgrade' && row.kind === 'UPGRADE'), true);
 });
 
+test('H17 finishes mounted bank deposits before exiting for non-bank work', () => {
+  const f = fixture({
+    map: 'bank',
+    bankState: 'READY',
+    bankRows: [{ slot: 3, name: 'junk', quantity: 5 }],
+    upgrades: [{ itemSlot: 5, itemName: 'sword', fromLevel: 0, budget: { itemValueAtRisk: 500 } }]
+  });
+  const plan = f.economy.plan();
+  assert.equal(plan.state, 'READY');
+  assert.equal(plan.bankExitRequired, true);
+  assert.equal(plan.selected.kind, 'BANK_DEPOSIT');
+  assert.ok(plan.proposals.some(row => row.kind === 'BANK_EXIT'));
+  assert.ok(plan.proposals.some(row => row.kind === 'UPGRADE'));
+});
+
 test('H17 bank withdrawal outranks bank exit while required mutation material is still in the bank', () => {
   const f = fixture({
     map: 'bank',
