@@ -480,6 +480,26 @@ test('H9 follower inside the stop radius does not restart regroup movement', () 
   assert.equal(f.movementCalls.length, 0);
 });
 
+test('H9 near follower ignores another farmer\'s large gap instead of restarting regroup', () => {
+  const f = makeFixture({
+    characterName: 'My_Ranger2',
+    ctype: 'ranger',
+    partyOwnedMembers: [
+      { name: 'My_Ranger1', ctype: 'ranger', damageType: 'physical', map: 'main', x: 0, y: 0 },
+      { name: 'My_Ranger2', ctype: 'ranger', damageType: 'physical', map: 'main', x: -40, y: -30 },
+      { name: 'My_Rogue', ctype: 'rogue', damageType: 'physical', map: 'main', x: 220, y: 0 }
+    ]
+  });
+  const started = f.controller.startAutonomy({
+    owner: 'full-autonomy',
+    groupLeaderName: 'My_Ranger1',
+    groupMemberNames: ['My_Ranger1', 'My_Ranger2', 'My_Rogue']
+  });
+  assert.equal(started.tick.state, 'FARMING');
+  assert.equal(f.movementCalls.filter(row => row.type === 'smart').length, 0);
+  assert.equal(f.movementCalls.filter(row => row.type === 'local').length, 0);
+});
+
 test('H9 leader keeps its farm travel while followers catch up instead of backtracking', () => {
   const f = makeFixture({
     characterName: 'My_Ranger1',
