@@ -156,7 +156,8 @@
         game: this.game,
         actions: this.actions,
         combat: this.combat,
-        gearProgression: this.gearProgression
+        gearProgression: this.gearProgression,
+        bank: this.bank
       });
       this.exchangeCraft = new ns.ExchangeCraftController({
         root: this.root,
