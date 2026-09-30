@@ -287,8 +287,8 @@ test('group leader stops new pulls and takes a bounded cohesion-recovery step to
   assert.ok(started.tick.projectedMaxPairDistance < started.tick.maxPairDistance);
 });
 
-test('group leader releases regroup only after pairwise cohesion reaches the stop radius', () => {
-  const f = h9LeaderFixture({ rangerX: 60, priestX: 45 });
+test('group leader releases recovery inside the trigger envelope while followers keep stop-radius hysteresis', () => {
+  const f = h9LeaderFixture({ rangerX: 120, priestX: 95 });
   f.controller.session = {
     id: 'leader-test',
     enabled: true,
@@ -300,7 +300,8 @@ test('group leader releases regroup only after pairwise cohesion reaches the sto
     groupMemberNames: ['My_Priest', 'My_Ranger1', 'My_Warrior']
   };
   const group = f.controller._groupContext(f.character);
-  assert.ok(group.maxPairDistance <= f.controller.config.groupRegroupStopDistance);
+  assert.ok(group.maxPairDistance > f.controller.config.groupRegroupStopDistance);
+  assert.ok(group.maxPairDistance <= f.controller.config.groupRegroupTriggerDistance);
   assert.equal(f.controller._tickGroupLeader(f.character, group), null);
 });
 
