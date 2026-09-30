@@ -224,7 +224,7 @@
     }
 
     _safeItem(row) {
-      return !!(row && row.name && row.locked !== true && row.giveaway !== true && row.gift !== true && !row.expiresAt);
+      return !!(row && row.name && row.locked !== true && row.giveaway !== true && !row.expiresAt);
     }
 
     _safeDefinition(definition) {

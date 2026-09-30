@@ -164,17 +164,33 @@
       return row && typeof row === 'object' && !Array.isArray(row) ? row : {};
     }
 
+    _profileCacheEntryKey(name) {
+      const normalized = cleanText(name || '', 120);
+      return normalized ? this.profileCacheKey + ':' + encodeURIComponent(normalized) : null;
+    }
+
+    _cachedProfile(name) {
+      const normalized = cleanText(name || '', 120);
+      if (!normalized) return null;
+      const key = this._profileCacheEntryKey(normalized);
+      const direct = key ? this._storageRead(key, null) : null;
+      if (direct && typeof direct === 'object' && !Array.isArray(direct)) return direct;
+      const legacy = this._cachedProfiles();
+      const row = legacy[normalized];
+      return row && typeof row === 'object' && !Array.isArray(row) ? row : null;
+    }
+
     _rememberProfile(profile) {
       if (!profile || !profile.name) return false;
       const normalized = this._normalizeProfile(profile);
       if (!normalized) return false;
       if (!normalized.equipment && finite(normalized.gold) == null) return false;
-      const cache = this._cachedProfiles();
-      cache[normalized.name] = {
+      const key = this._profileCacheEntryKey(normalized.name);
+      if (!key) return false;
+      return this._storageWrite(key, {
         ...clone(normalized),
         cachedAtMs: this.now()
-      };
-      return this._storageWrite(this.profileCacheKey, cache);
+      });
     }
 
     _cachedBankGold() {
@@ -310,12 +326,12 @@
       const account = roster && Array.isArray(roster.accountCharacters) ? roster.accountCharacters : [];
       const online = new Set(roster && Array.isArray(roster.onlineCharacterNames) ? roster.onlineCharacterNames.map(String) : []);
       const byName = new Map();
-      const cachedProfiles = this._cachedProfiles();
 
       for (const row of account) {
         const fallback = this._fallbackProfile(row);
         if (!fallback) continue;
-        const cached = cachedProfiles[fallback.name] && this._normalizeProfile(cachedProfiles[fallback.name]);
+        const cachedRaw = this._cachedProfile(fallback.name);
+        const cached = cachedRaw && this._normalizeProfile(cachedRaw);
         byName.set(fallback.name, cached ? {
           ...fallback,
           ...cached,

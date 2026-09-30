@@ -184,7 +184,7 @@
       ]);
       return (plan.items || []).filter(row => {
         if (!row || !row.name || String(row.disposition || '').toUpperCase() !== 'SELL') return false;
-        if (row.locked === true || row.giveaway === true || row.gift === true || row.expiresAt) return false;
+        if (row.locked === true || row.giveaway === true || row.expiresAt) return false;
         const definition = row.definition || {};
         if (definition.quest === true || String(definition.type || '').toLowerCase() === 'quest') return false;
 

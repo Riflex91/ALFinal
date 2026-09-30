@@ -156,7 +156,6 @@
       // live protection and V3 future-gear safety still have to pass.
       if (item.locked) return { disposition: 'PROTECT', reason: 'ITEM_LOCKED', protected: true };
       if (item.giveaway) return { disposition: 'PROTECT', reason: 'ITEM_GIVEAWAY', protected: true };
-      if (item.gift) return { disposition: 'PROTECT', reason: 'ITEM_GIFT', protected: true };
       if (item.expiresAt) return { disposition: 'PROTECT', reason: 'ITEM_EXPIRING', protected: true };
       if (goalTargets.has(name)) return { disposition: 'RESERVE', reason: 'ACTIVE_COLLECTION_GOAL', protected: true };
       if (type === 'quest' || definition.quest === true) {
