@@ -358,7 +358,9 @@
             characterDisconnectCapable: this.actions.available('disconnect') === true,
             characterNavigateCapable: h25BrowserNavigationCapability(),
             version: this.version,
-            profile: this.accountStrategy ? this.accountStrategy.localProfile() : null,
+            profile: this.accountStrategy && typeof this.accountStrategy.persistLocalProfile === 'function'
+              ? this.accountStrategy.persistLocalProfile()
+              : this.accountStrategy ? this.accountStrategy.localProfile() : null,
             observation: this.observer ? this.observer.summary() : null,
             updateProtection: this.safeUpdater && typeof this.safeUpdater.localProtection === 'function'
               ? this.safeUpdater.localProtection()
