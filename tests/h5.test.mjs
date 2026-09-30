@@ -151,7 +151,7 @@ test('H5 combat API, module and explicit H5 live suite remain available under H6
   });
   vm.runInNewContext(bundle, ctx);
 
-  assert.equal(ctx.ALBot.version, '0.26.13-h26');
+  assert.equal(ctx.ALBot.version, '0.26.14-h26');
   assert.equal(typeof ctx.ALBot.combat.start, 'function');
   assert.equal(typeof ctx.ALBot.combat.stop, 'function');
   assert.equal(typeof ctx.ALBot.combat.candidates, 'function');
