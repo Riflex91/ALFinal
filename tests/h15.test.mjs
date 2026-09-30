@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const source = fs.readFileSync(path.resolve(here, '../src/upgrade.js'), 'utf8');
+const actionBoundarySource = fs.readFileSync(path.resolve(here, '../src/action-boundary.js'), 'utf8');
 
 function clone(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value));
@@ -129,6 +130,17 @@ function fixture(options = {}) {
   };
 
   const actions = {
+    previewMutation: options.serverRiskChance == null ? undefined : (name, args) => {
+      state.previews = state.previews || [];
+      state.previews.push({ name, args: clone(args) });
+      if (options.serverRiskPreviewUnavailable) return { state: 'UNAVAILABLE', value: null };
+      return {
+        state: 'PREVIEWED',
+        value: options.serverRiskPreviewReject
+          ? Promise.reject(new Error('PREVIEW_FAILED'))
+          : { chance: options.serverRiskChance }
+      };
+    },
     dispatch: (name, args) => {
       state.dispatches.push({ name, args: clone(args) });
       if (options.syncUnknown) return { state: 'UNKNOWN', error: { message: 'NETWORK_UNCERTAIN' } };
@@ -296,6 +308,74 @@ test('H15 V3 mutation risk counts usable bank replacements', () => {
   assert.equal(plan.upgradeCandidates.length, 1);
   assert.equal(plan.upgradeCandidates[0].risk.replacement.bankUnits, 2);
   assert.equal(plan.upgradeCandidates[0].risk.replacement.spareEquivalents, 2);
+});
+
+test('H15 server-authoritative preview blocks a mutation that model probability alone would allow', () => {
+  const { controller, state } = fixture({
+    rows: [
+      row({ slot: 0, name: 'sword', level: 0 }),
+      row({ slot: 1, name: 'scroll0', quantity: 5 })
+    ],
+    riskChance: 0.99,
+    serverRiskChance: 0.40,
+    currentScore: 100,
+    futureImprovement: 0
+  });
+  assert.equal(controller.queueUpgrade(0).accepted, true);
+  const tick = controller.tick();
+  assert.equal(tick.state, 'BLOCKED');
+  assert.equal(tick.reason, 'MUTATION_RISK_EXCEEDS_POLICY');
+  assert.equal(tick.risk.serverAuthoritative, true);
+  assert.equal(tick.risk.chance, 0.40);
+  assert.equal(state.dispatches.length, 0);
+  assert.equal(state.previews.length, 1);
+  assert.equal(controller.status().metrics.mutationAuthoritativeHolds, 1);
+});
+
+test('H15 dispatches only after server-authoritative mutation chance passes the V3 risk threshold', () => {
+  const { controller, state } = fixture({
+    rows: [
+      row({ slot: 0, name: 'sword', level: 0 }),
+      row({ slot: 1, name: 'scroll0', quantity: 5 })
+    ],
+    riskChance: 0.99,
+    serverRiskChance: 0.90,
+    currentScore: 100,
+    futureImprovement: 0
+  });
+  assert.equal(controller.queueUpgrade(0).accepted, true);
+  const preview = controller.tick();
+  assert.equal(preview.state, 'RISK_ACCEPTED');
+  assert.equal(preview.risk.serverAuthoritative, true);
+  assert.equal(state.dispatches.length, 0);
+  const mutation = controller.tick();
+  assert.equal(mutation.accepted, true);
+  assert.equal(mutation.state, 'DISPATCHED');
+  assert.equal(state.previews.length, 1);
+  assert.equal(state.dispatches.length, 1);
+  assert.equal(controller.status().metrics.mutationAuthoritativeAccepted, 1);
+});
+
+test('action boundary uses Adventure Land CODE preview mode without dispatching a real mutation', () => {
+  const calls = [];
+  const root = {
+    console, Date, Math, JSON, Map, Set, Promise, Object, Array, String, Number, Boolean, Error,
+    upgrade: function (itemSlot, scrollSlot, offeringSlot, mode, preview) {
+      calls.push([itemSlot, scrollSlot, offeringSlot, mode, preview]);
+      return { chance: 0.42 };
+    },
+    __ALBOT_INTERNALS__: internals()
+  };
+  root.globalThis = root;
+  vm.runInNewContext(actionBoundarySource, root, { filename: 'action-boundary.js' });
+  const Boundary = root.__ALBOT_INTERNALS__.GameActionBoundary;
+  const boundary = new Boundary({ root, assertAllowed: () => true });
+  const result = boundary.previewMutation('upgrade', [4, 7, null]);
+  assert.equal(result.state, 'PREVIEWED');
+  assert.equal(result.value.chance, 0.42);
+  assert.deepEqual(calls[0], [4, 7, undefined, 'code', true]);
+  assert.equal(boundary.status().metrics.mutationPreviewsResolved, 1);
+  assert.equal(boundary.status().metrics.dispatched, 0);
 });
 
 test('H15 excludes protected items from automated candidates', () => {
