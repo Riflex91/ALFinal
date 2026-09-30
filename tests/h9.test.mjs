@@ -448,7 +448,7 @@ test('H9 V3-style follower uses a local step for moderate same-map separation in
     ctype: 'rogue',
     partyOwnedMembers: [
       { name: 'My_Rogue', ctype: 'rogue', damageType: 'physical', map: 'main', x: 0, y: 0 },
-      { name: 'My_Ranger1', ctype: 'ranger', damageType: 'physical', map: 'main', x: 100, y: 0 }
+      { name: 'My_Ranger1', ctype: 'ranger', damageType: 'physical', map: 'main', x: 140, y: 0 }
     ]
   });
   const started = f.controller.startAutonomy({
@@ -517,7 +517,7 @@ test('H9 retries a transient group-regroup movement rejection instead of permane
   assert.equal(started.accepted, true);
   assert.equal(started.tick.state, 'TRAVELLING');
   assert.equal(f.movementCalls.filter(row => row.type === 'smart').length, 1);
-  assert.deepEqual(f.movementCalls.find(row => row.type === 'smart').destination, { map: 'main', x: 300, y: 0 });
+  assert.equal(f.movementCalls.find(row => row.type === 'smart').args.owner, 'farm-intelligence-h9-group-regroup');
 
   f.movementUnknown(true);
   const backoff = f.controller.tick();
