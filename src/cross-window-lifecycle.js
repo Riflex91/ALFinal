@@ -1171,41 +1171,42 @@
           if (!desiredCharacterName || desiredCharacterName === sourceCharacterName) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_INVALID');
           if (!this._ownedNames().has(desiredCharacterName)) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_NOT_OWNED');
           if (this._onlineOwnedNames().has(desiredCharacterName)) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_ALREADY_ONLINE');
-          if (!this.setTimeoutFn) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TIMER_UNAVAILABLE');
 
-          // Adventure Land enforces 3 characters + 1 merchant. Navigating directly
-          // can attempt the replacement before the old server session is gone and
-          // transiently becomes a fifth login. Disconnect first and require account-
-          // roster offline evidence before any navigation to the replacement.
-          const disconnect = this.disconnectLocal('H27_SAFE_BROWSER_ROTATION:' + sender);
-          if (disconnect && disconnect.settlement && typeof disconnect.settlement.then === 'function') {
-            await disconnect.settlement;
-          }
-          const offline = await this._waitForOwnedCharacterOffline(sourceCharacterName, 6000);
-
-          // The settlement must still be emitted before page navigation destroys
-          // the current runtime. The navigation is scheduled only after offline proof.
-          this.setTimeoutFn(() => {
-            try {
-              const value = this.navigateCharacterLocal(desiredCharacterName, 'H27_SAFE_BROWSER_ROTATION:' + sender);
-              if (value && typeof value.then === 'function') {
-                Promise.resolve(value).catch(error => {
-                  this.lastError = { at: nowIso(this.now()), reason: errorReason(error, 'H25_CROSS_WINDOW_CHARACTER_NAVIGATION_FAILED') };
-                  this._log('error', 'H25 Cross-Window Character Navigation fehlgeschlagen', this.lastError);
-                });
-              }
-            } catch (error) {
-              this.lastError = { at: nowIso(this.now()), reason: errorReason(error, 'H25_CROSS_WINDOW_CHARACTER_NAVIGATION_FAILED') };
-              this._log('error', 'H25 Cross-Window Character Navigation fehlgeschlagen', this.lastError);
+          // Do not wait for disconnect settlement/offline evidence here. Adventure
+          // Land can reload the outgoing character page as soon as disconnect is
+          // dispatched; any delayed timer owned by that page is then destroyed
+          // before it can navigate to the replacement. Dispatch disconnect and
+          // browser navigation atomically in the same JS turn. Runtime navigation
+          // still enforces the four-slot limit by reserving only this validated
+          // outgoing source slot.
+          const disconnect = this.disconnectLocal('H31_ATOMIC_BROWSER_ROTATION:' + sender);
+          const navigation = this.navigateCharacterLocal(
+            desiredCharacterName,
+            'H31_ATOMIC_BROWSER_ROTATION:' + sender,
+            {
+              disconnectDispatched: true,
+              sourceCharacterName
             }
-          }, 100);
+          );
+          if (navigation && navigation.accepted === false) {
+            throw new Error(navigation.reason || 'H31_ATOMIC_BROWSER_NAVIGATION_REJECTED');
+          }
+          if (navigation && typeof navigation.then === 'function') {
+            Promise.resolve(navigation).catch(error => {
+              this.lastError = { at: nowIso(this.now()), reason: errorReason(error, 'H31_ATOMIC_BROWSER_NAVIGATION_FAILED') };
+              this._log('error', 'H31 atomare Browser-Navigation fehlgeschlagen', this.lastError);
+            });
+          }
           outcome = {
-            reason: 'H27_CROSS_WINDOW_SAFE_CHARACTER_ROTATION_ACCEPTED',
+            reason: 'H31_CROSS_WINDOW_ATOMIC_BROWSER_ROTATION_ACCEPTED',
             details: {
               fromCharacterName: sourceCharacterName,
               desiredCharacterName,
-              sourceOfflineConfirmed: offline.offline === true,
-              completionEvidence: 'OLD_ACCOUNT_OFFLINE_AND_NEW_CHARACTER_PRESENT'
+              disconnectDispatched: true,
+              disconnectActionBoundaryId: disconnect && disconnect.actionBoundaryId || null,
+              navigationDispatched: true,
+              sourceOfflineConfirmed: false,
+              completionEvidence: 'NEW_CHARACTER_RUNTIME_READY'
             }
           };
         } else if (commandType === 'LEAVE_PARTY') {

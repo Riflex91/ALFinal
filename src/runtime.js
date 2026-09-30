@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.11-h26';
+      this.version = options.version || '0.26.12-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -258,8 +258,10 @@
           && !!server.region
           && !!server.identifier;
       };
-      const navigateH25BrowserCharacter = desiredName => {
+      const navigateH25BrowserCharacter = (desiredName, options = {}) => {
         const name = String(desiredName == null ? '' : desiredName).trim();
+        const handoff = options && typeof options === 'object' ? options : {};
+        const disconnectDispatched = handoff.disconnectDispatched === true;
         if (!name) throw new Error('H25_BROWSER_CHARACTER_TARGET_REQUIRED');
         const roster = this.roster.refresh();
         const owned = roster && Array.isArray(roster.accountCharacters)
@@ -275,10 +277,22 @@
         const onlineNames = new Set(roster && Array.isArray(roster.onlineCharacterNames)
           ? roster.onlineCharacterNames.map(String)
           : []);
-        if (sourceName && onlineNames.has(sourceName)) {
+        const sourceOnline = !!sourceName && onlineNames.has(sourceName);
+        const assertedSource = handoff.sourceCharacterName
+          ? String(handoff.sourceCharacterName)
+          : null;
+        if (disconnectDispatched && assertedSource && sourceName && assertedSource !== sourceName) {
+          throw new Error('H31_BROWSER_ROTATION_SOURCE_IDENTITY_MISMATCH');
+        }
+        if (sourceOnline && !disconnectDispatched) {
           throw new Error('H27_BROWSER_ROTATION_SOURCE_STILL_ONLINE');
         }
-        if (!onlineNames.has(name) && onlineNames.size >= 4) {
+        // A validated atomic handoff has already dispatched disconnect for this
+        // exact source in the same JS turn. Treat that source slot as reserved
+        // for removal while navigating, instead of waiting for a timer that dies
+        // with the old character page.
+        const effectiveOccupied = Math.max(0, onlineNames.size - (disconnectDispatched && sourceOnline ? 1 : 0));
+        if (!onlineNames.has(name) && effectiveOccupied >= 4) {
           throw new Error('H27_ACCOUNT_CHARACTER_SLOT_LIMIT_REACHED');
         }
         const view = resolveH25BrowserWindow();
@@ -295,7 +309,14 @@
           + '/in/' + encodeURIComponent(String(server.region))
           + '/' + encodeURIComponent(String(server.identifier)) + '/';
         view.location.assign(url);
-        return { accepted: true, url, desiredCharacterName: name, server: { region: server.region, identifier: server.identifier } };
+        return {
+          accepted: true,
+          url,
+          desiredCharacterName: name,
+          disconnectDispatched,
+          sourceCharacterName: sourceName,
+          server: { region: server.region, identifier: server.identifier }
+        };
       };
 
       this.lifecycleTransport = new ns.H19CrossWindowLifecycleTransport({
@@ -338,7 +359,7 @@
         },
         getPartyState: () => this.party.snapshot(),
         disconnectLocal: () => dispatchH24CharacterDisconnect(),
-        navigateCharacterLocal: desiredName => navigateH25BrowserCharacter(desiredName),
+        navigateCharacterLocal: (desiredName, reason, options) => navigateH25BrowserCharacter(desiredName, options),
         leavePartyLocal: () => dispatchH19CrossWindowPartyAction('leave_party', []),
         requestPartyJoinLocal: leaderName => dispatchH19CrossWindowPartyAction('send_party_request', [leaderName]),
         prepareUpdateLocal: (payload, sender) => {

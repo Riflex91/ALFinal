@@ -197,10 +197,17 @@ function makeContext(name, names, network, state, nowRef, options = {}) {
       state.disconnects = (state.disconnects || 0) + 1;
       state.disconnected = true;
     },
-    navigateCharacterLocal: desiredName => {
+    navigateCharacterLocal: (desiredName, reason, navigationOptions = {}) => {
       state.navigations = state.navigations || [];
+      state.navigationRequests = state.navigationRequests || [];
       state.navigations.push(String(desiredName));
       state.navigatedTo = String(desiredName);
+      state.navigationRequests.push({
+        desiredName: String(desiredName),
+        reason: reason == null ? null : String(reason),
+        options: clone(navigationOptions || {})
+      });
+      return { accepted: true };
     },
     getPartyState: () => clone(state.party || { available: false, partyId: null, leader: null, memberNames: [], foreignMemberNames: [], size: 0 }),
     leavePartyLocal: async () => {
@@ -557,7 +564,7 @@ test('H24 cross-window character disconnect is unavailable without explicit targ
   b.transport.destroy();
 });
 
-test('H25 cross-window browser navigation settles before the page navigation destroys the old runtime', async () => {
+test('H31 cross-window browser rotation dispatches disconnect and navigation atomically before page teardown', async () => {
   const names = ['My_Ranger1', 'My_Priest'];
   const network = new Map();
   const nowRef = { value: 2850 };
@@ -593,17 +600,21 @@ test('H25 cross-window browser navigation settles before the page navigation des
   assert.equal(dispatched.state, 'DISPATCHED');
   const settlement = await dispatched.value;
   assert.equal(settlement.success, true);
-  assert.equal(settlement.reason, 'H27_CROSS_WINDOW_SAFE_CHARACTER_ROTATION_ACCEPTED');
-  assert.equal(settlement.details.sourceOfflineConfirmed, true);
+  assert.equal(settlement.reason, 'H31_CROSS_WINDOW_ATOMIC_BROWSER_ROTATION_ACCEPTED');
+  assert.equal(settlement.details.disconnectDispatched, true);
+  assert.equal(settlement.details.navigationDispatched, true);
+  assert.equal(settlement.details.sourceOfflineConfirmed, false);
   assert.equal(settlement.details.desiredCharacterName, 'My_Mage');
-  assert.equal(settlement.details.completionEvidence, 'OLD_ACCOUNT_OFFLINE_AND_NEW_CHARACTER_PRESENT');
-  assert.deepEqual(bState.navigations, [], 'navigation must occur only after the settlement is emitted');
-
-  await new Promise(resolve => setTimeout(resolve, 130));
+  assert.equal(settlement.details.completionEvidence, 'NEW_CHARACTER_RUNTIME_READY');
   assert.equal(bState.disconnects, 1);
   assert.equal(bState.disconnected, true);
   assert.deepEqual(bState.navigations, ['My_Mage']);
   assert.equal(bState.navigatedTo, 'My_Mage');
+  assert.deepEqual(clone(bState.navigationRequests[0].options), {
+    disconnectDispatched: true,
+    sourceCharacterName: 'My_Priest'
+  });
+  assert.match(bState.navigationRequests[0].reason, /^H31_ATOMIC_BROWSER_ROTATION:/);
   a2.transport.destroy();
   b2.transport.destroy();
 });
