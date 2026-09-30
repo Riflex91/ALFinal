@@ -1,4 +1,4 @@
-/* AL Bot 0.26.30-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.31-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -9970,6 +9970,7 @@
       this.party = options.party || null;
       this.crossWindow = options.crossWindow || null;
       this.gear = options.gear || null;
+      this.storage = options.storage || null;
       this.now = typeof options.now === 'function' ? options.now : () => Date.now();
       this.moduleActive = false;
       this.scope = null;
@@ -9979,6 +9980,8 @@
       this.lastProfiles = [];
       this.lastProgression = null;
       this.lastTaskPlan = null;
+      this.profileCacheKey = cleanText(options.profileCacheKey || 'albot:h28:account-profile-cache:v1', 200);
+      this.wealthCacheKey = cleanText(options.wealthCacheKey || 'albot:h28:account-wealth-cache:v1', 200);
       this.config = {
         targetCorridor: clamp(options.targetCorridor == null ? 0.08 : options.targetCorridor, 0, 0.5),
         maxProfileAgeMs: Math.max(1500, Math.min(30000, Number(options.maxProfileAgeMs) || 9000)),
@@ -10004,6 +10007,66 @@
     setCrossWindow(value) {
       this.crossWindow = value || null;
       return this.status();
+    }
+
+    _storageRead(key, fallback = null) {
+      if (!this.storage || !key) return fallback;
+      try {
+        const shared = typeof this.storage.getShared === 'function' ? this.storage.getShared(key) : null;
+        const raw = shared == null && typeof this.storage.get === 'function' ? this.storage.get(key) : shared;
+        if (!raw) return fallback;
+        const parsed = JSON.parse(raw);
+        return parsed == null ? fallback : parsed;
+      } catch (_) {
+        return fallback;
+      }
+    }
+
+    _storageWrite(key, value) {
+      if (!this.storage || !key) return false;
+      const raw = JSON.stringify(value);
+      try {
+        if (typeof this.storage.setShared === 'function' && this.storage.setShared(key, raw) !== false) return true;
+      } catch (_) {}
+      try {
+        return typeof this.storage.set === 'function' ? this.storage.set(key, raw) !== false : false;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    _cachedProfiles() {
+      const row = this._storageRead(this.profileCacheKey, {});
+      return row && typeof row === 'object' && !Array.isArray(row) ? row : {};
+    }
+
+    _rememberProfile(profile) {
+      if (!profile || !profile.name) return false;
+      const normalized = this._normalizeProfile(profile);
+      if (!normalized) return false;
+      if (!normalized.equipment && finite(normalized.gold) == null) return false;
+      const cache = this._cachedProfiles();
+      cache[normalized.name] = {
+        ...clone(normalized),
+        cachedAtMs: this.now()
+      };
+      return this._storageWrite(this.profileCacheKey, cache);
+    }
+
+    _cachedBankGold() {
+      const row = this._storageRead(this.wealthCacheKey, null);
+      const value = finite(row && row.bankGold);
+      return value == null ? null : Math.max(0, value);
+    }
+
+    _rememberBankGold(bankGold) {
+      const value = finite(bankGold);
+      if (value == null || value < 0) return false;
+      return this._storageWrite(this.wealthCacheKey, {
+        schemaVersion: 1,
+        bankGold: value,
+        observedAtMs: this.now()
+      });
     }
 
     recordTraining(active) {
@@ -10076,6 +10139,7 @@
         range: finite(character.range),
         rip: character.rip === true,
         map: cleanText(character.map || '', 120) || null,
+        gold: finite(character.gold),
         gearScore: this._localGearScore(character),
         equipment: this._localEquipment(character),
         trainingMs: Math.max(0, Math.floor(this.trainingMs)),
@@ -10105,6 +10169,7 @@
         range: null,
         rip: false,
         map: null,
+        gold: finite(row.gold),
         gearScore: 0,
         equipment: null,
         trainingMs: 0,
@@ -10121,10 +10186,21 @@
       const account = roster && Array.isArray(roster.accountCharacters) ? roster.accountCharacters : [];
       const online = new Set(roster && Array.isArray(roster.onlineCharacterNames) ? roster.onlineCharacterNames.map(String) : []);
       const byName = new Map();
+      const cachedProfiles = this._cachedProfiles();
 
       for (const row of account) {
         const fallback = this._fallbackProfile(row);
-        if (fallback) byName.set(fallback.name, fallback);
+        if (!fallback) continue;
+        const cached = cachedProfiles[fallback.name] && this._normalizeProfile(cachedProfiles[fallback.name]);
+        byName.set(fallback.name, cached ? {
+          ...fallback,
+          ...cached,
+          online: false,
+          running: false,
+          peerFresh: false,
+          local: false,
+          cached: true
+        } : fallback);
       }
 
       let peers = [];
@@ -10141,6 +10217,7 @@
         profile.peerFresh = true;
         profile.observedAtMs = finite(peer.observedAtMs) || profile.observedAtMs;
         byName.set(profile.name, profile);
+        this._rememberProfile(profile);
       }
 
       const local = this.localProfile();
@@ -10151,11 +10228,12 @@
         local.local = true;
         byName.set(local.name, local);
         online.add(local.name);
+        this._rememberProfile(local);
       }
 
       const rows = [...byName.values()].map(row => ({
         ...row,
-        online: online.has(String(row.name)) || row.online === true
+        online: online.has(String(row.name))
       })).sort((a, b) => a.name.localeCompare(b.name));
       this.lastProfiles = clone(rows);
       return clone(rows);
@@ -10183,11 +10261,52 @@
         range: finite(raw.range),
         rip: raw.rip === true,
         map: cleanText(raw.map || '', 120) || null,
+        gold: finite(raw.gold),
         gearScore: Math.max(0, finite(raw.gearScore) || 0),
         equipment: raw.equipment && typeof raw.equipment === 'object' ? clone(raw.equipment) : null,
         trainingMs: Math.max(0, finite(raw.trainingMs) || 0),
         capabilities: clone(ROLE_CAPABILITIES[ctype] || []),
         observedAtMs: finite(raw.observedAtMs)
+      };
+    }
+
+    accountWealth() {
+      const profiles = this.profiles();
+      let characterGold = 0;
+      const missingCharacterGold = [];
+      for (const profile of profiles) {
+        const gold = finite(profile && profile.gold);
+        if (gold == null) missingCharacterGold.push(profile && profile.name || 'UNKNOWN');
+        else characterGold += Math.max(0, gold);
+      }
+
+      let bankGold = null;
+      let bankSource = 'UNKNOWN';
+      try {
+        const bank = this.game && typeof this.game.bankSnapshot === 'function' ? this.game.bankSnapshot() : null;
+        if (bank && bank.available !== false && finite(bank.gold) != null) {
+          bankGold = Math.max(0, finite(bank.gold));
+          bankSource = 'LIVE_BANK';
+          this._rememberBankGold(bankGold);
+        }
+      } catch (_) {}
+      if (bankGold == null) {
+        bankGold = this._cachedBankGold();
+        if (bankGold != null) bankSource = 'PERSISTED_BANK';
+      }
+
+      const known = missingCharacterGold.length === 0 && bankGold != null && profiles.length > 0;
+      const partialGold = characterGold + Math.max(0, bankGold || 0);
+      return {
+        schemaVersion: 1,
+        known,
+        totalGold: known ? partialGold : null,
+        partialGold,
+        characterGold,
+        bankGold,
+        bankSource,
+        characterCount: profiles.length,
+        missingCharacterGold
       };
     }
 
@@ -28284,7 +28403,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.30-h26';
+      this.version = options.version || '0.26.31-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -36394,7 +36513,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.30-h26',
+    version: '0.26.31-h26',
     bootCount,
     replacedPrevious: !!previous
   });
