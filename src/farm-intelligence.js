@@ -385,14 +385,17 @@
       }
 
       if (this.currentSelection && !seen.has(this.currentSelection.key)) {
-        const prior = this.observations.get(this.currentSelection.key);
-        if (prior && prior.lastCount > 0) {
-          prior.lastCount = 0;
-          if (prior.depletedAtMs == null) {
-            prior.depletedAtMs = now;
-            this.metrics.depletionEvents += 1;
+        const physicalEquivalent = rows.find(row => this._samePhysicalSpot(this.currentSelection, row)) || null;
+        if (!physicalEquivalent) {
+          const prior = this.observations.get(this.currentSelection.key);
+          if (prior && prior.lastCount > 0) {
+            prior.lastCount = 0;
+            if (prior.depletedAtMs == null) {
+              prior.depletedAtMs = now;
+              this.metrics.depletionEvents += 1;
+            }
+            this.observations.set(prior.key, prior);
           }
-          this.observations.set(prior.key, prior);
         }
       }
     }
@@ -617,6 +620,7 @@
       let switchAllowed = true;
       const current = this.currentSelection
         ? candidates.find(row => row.key === this.currentSelection.key)
+          || candidates.find(row => this._samePhysicalSpot(this.currentSelection, row))
         : null;
 
       if (!current && this.currentSelection) {
