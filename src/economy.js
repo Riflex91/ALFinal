@@ -75,6 +75,7 @@
       this.actionsThisSession = 0;
       this.cooldownUntilMs = null;
       this.rejectionBackoff = new Map();
+      this.materialBankMisses = new Map();
 
       this.config = {
         tickMs: Math.max(250, Math.min(5000, Number(options.tickMs) || 1000)),
@@ -100,6 +101,8 @@
         actionsUnknown: 0,
         rejectionBackoffs: 0,
         sessionBudgetBlocks: 0,
+        materialBankMisses: 0,
+        materialBankMountSkips: 0,
         byKind: {}
       };
     }
@@ -114,6 +117,7 @@
       this.actionsThisSession = 0;
       this.cooldownUntilMs = null;
       this.rejectionBackoff.clear();
+      this.materialBankMisses.clear();
       if (this.scope && typeof this.scope.interval === 'function') {
         this.scope.interval('economy-tick', () => this.tick(), this.config.tickMs, { immediate: true });
       }
@@ -127,6 +131,7 @@
       this.currentAction = null;
       this.cooldownUntilMs = null;
       this.rejectionBackoff.clear();
+      this.materialBankMisses.clear();
       this.lastAction = { at: nowIso(), type: 'STOP', reason: cleanText(reason, 240) };
       return { stopped: true };
     }
@@ -162,6 +167,7 @@
       this.actionsThisSession = 0;
       this.cooldownUntilMs = null;
       this.rejectionBackoff.clear();
+      this.materialBankMisses.clear();
       this.lastAction = { at: nowIso(), type: 'RESET', reason: cleanText(reason, 240) };
       return this.status();
     }
@@ -448,20 +454,21 @@
       const materialNeed = upgradePlan && (upgradePlan.materialNeeds || [])[0] || null;
       if (materialNeed && materialNeed.consumableName) {
         const consumableName = cleanText(materialNeed.consumableName, 160);
-        if (bankPlan && bankPlan.state === 'NEEDS_BANK') {
-          if (!proposals.some(row => row.kind === 'BANK_MOUNT')) {
-            const proposal = this._proposal('BANK_MOUNT', 'bank', {
-              key: 'material:' + consumableName,
-              purpose: 'MATERIAL_LOOKUP',
-              itemName: consumableName,
-              pressure,
-              maintenance: true,
-              risk: 0
-            });
-            if (proposal) proposals.push(proposal);
-          }
-        } else if (bankPlan && bankPlan.state === 'READY') {
-          let bankMaterial = null;
+        const materialNeedKey = [
+          cleanText(materialNeed.mutationKind || '', 40),
+          cleanText(materialNeed.itemName || '', 160),
+          Math.max(0, Math.floor(Number(materialNeed.fromLevel) || 0)),
+          Math.max(0, Math.floor(Number(materialNeed.targetLevel) || 0)),
+          consumableName,
+          Math.max(1, Math.floor(Number(materialNeed.quantity) || 1))
+        ].join('|');
+        for (const key of Array.from(this.materialBankMisses.keys())) {
+          if (key !== materialNeedKey) this.materialBankMisses.delete(key);
+        }
+
+        let bankMissKnown = this.materialBankMisses.has(materialNeedKey);
+        let bankMaterial = null;
+        if (bankPlan && bankPlan.state === 'READY') {
           for (const pack of bankPlan.packs || []) {
             const row = (pack.items || []).find(item =>
               item && String(item.name || '') === consumableName
@@ -473,35 +480,64 @@
             }
           }
           if (bankMaterial) {
-            const proposal = this._proposal('BANK_WITHDRAW', 'bank', {
-              key: consumableName + ':' + bankMaterial.pack + ':' + bankMaterial.slot,
+            this.materialBankMisses.delete(materialNeedKey);
+            bankMissKnown = false;
+          } else if (!bankMissKnown) {
+            this.materialBankMisses.set(materialNeedKey, {
+              checkedAt: nowIso(),
               itemName: consumableName,
-              packName: bankMaterial.pack,
-              bankSlot: Number(bankMaterial.slot),
-              quantity: Math.max(1, Math.floor(Number(materialNeed.quantity) || 1)),
-              purpose: materialNeed.mutationKind || null,
+              mutationKind: cleanText(materialNeed.mutationKind || '', 40) || null
+            });
+            this.metrics.materialBankMisses += 1;
+            bankMissKnown = true;
+          }
+        }
+
+        if (bankMaterial) {
+          const proposal = this._proposal('BANK_WITHDRAW', 'bank', {
+            key: consumableName + ':' + bankMaterial.pack + ':' + bankMaterial.slot,
+            itemName: consumableName,
+            packName: bankMaterial.pack,
+            bankSlot: Number(bankMaterial.slot),
+            quantity: Math.max(1, Math.floor(Number(materialNeed.quantity) || 1)),
+            purpose: materialNeed.mutationKind || null,
+            risk: 0
+          });
+          if (proposal) proposals.push(proposal);
+        } else if (bankPlan && bankPlan.state === 'NEEDS_BANK' && !bankMissKnown) {
+          if (!proposals.some(row => row.kind === 'BANK_MOUNT')) {
+            const proposal = this._proposal('BANK_MOUNT', 'bank', {
+              key: 'material:' + consumableName,
+              purpose: 'MATERIAL_LOOKUP',
+              itemName: consumableName,
+              pressure,
+              maintenance: true,
               risk: 0
             });
             if (proposal) proposals.push(proposal);
-          } else {
-            const definition = this.game && typeof this.game.itemDefinition === 'function'
-              ? this.game.itemDefinition(consumableName)
-              : null;
-            const npcPrice = finite(definition && definition.g);
-            const materialBudget = Math.max(0, finite(upgradePlan && upgradePlan.policy && upgradePlan.policy.maxConsumableCost) || 0);
-            if (npcPrice != null && npcPrice > 0 && materialBudget >= npcPrice) {
-              const proposal = this._proposal('MATERIAL_ACQUIRE', 'trade', {
-                key: consumableName,
-                itemName: consumableName,
-                quantity: Math.max(1, Math.floor(Number(materialNeed.quantity) || 1)),
-                maxUnitPrice: npcPrice,
-                purpose: materialNeed.mutationKind || null,
-                risk: npcPrice * Math.max(1, Math.floor(Number(materialNeed.quantity) || 1))
-              });
-              if (proposal) proposals.push(proposal);
-            }
+          }
+        } else {
+          if (bankPlan && bankPlan.state === 'NEEDS_BANK' && bankMissKnown) this.metrics.materialBankMountSkips += 1;
+          const definition = this.game && typeof this.game.itemDefinition === 'function'
+            ? this.game.itemDefinition(consumableName)
+            : null;
+          const npcPrice = finite(definition && definition.g);
+          const materialBudget = Math.max(0, finite(upgradePlan && upgradePlan.policy && upgradePlan.policy.maxConsumableCost) || 0);
+          if (npcPrice != null && npcPrice > 0 && materialBudget >= npcPrice) {
+            const proposal = this._proposal('MATERIAL_ACQUIRE', 'trade', {
+              key: consumableName,
+              itemName: consumableName,
+              quantity: Math.max(1, Math.floor(Number(materialNeed.quantity) || 1)),
+              maxUnitPrice: npcPrice,
+              purpose: materialNeed.mutationKind || null,
+              bankCheckedMissing: bankMissKnown,
+              risk: npcPrice * Math.max(1, Math.floor(Number(materialNeed.quantity) || 1))
+            });
+            if (proposal) proposals.push(proposal);
           }
         }
+      } else {
+        this.materialBankMisses.clear();
       }
 
       const improvement = gearPlan && gearPlan.local && (gearPlan.local.improvements || [])[0] || null;
@@ -857,6 +893,7 @@
         actionsThisSession: this.actionsThisSession,
         cooldownUntilMs: this.cooldownUntilMs,
         rejectionBackoff: Array.from(this.rejectionBackoff.entries()).map(([proposalId, untilMs]) => ({ proposalId, untilMs })),
+        materialBankMisses: Array.from(this.materialBankMisses.entries()).map(([needKey, details]) => ({ needKey, ...clone(details) })),
         lastPlan: clone(this.lastPlan),
         lastAction: clone(this.lastAction),
         futureGearPolicy: this.gearProgression && typeof this.gearProgression.status === 'function'
