@@ -80,6 +80,15 @@ test('account strategy chooses the capable combat trio for boss work and keeps m
   assert.ok(plan.selected.capabilities.includes('DPS'));
 });
 
+test('account profiles expose default V3 gear roles to future-gear scoring', () => {
+  const { controller } = loadStrategy();
+  const roles = Object.fromEntries(controller.profiles().map(row => [row.name, row.gearRole]));
+  assert.equal(roles.My_Warrior, 'tank');
+  assert.equal(roles.My_Priest, 'healer');
+  assert.equal(roles.My_Ranger1, 'dps');
+  assert.equal(roles.My_Merchant, 'economy');
+});
+
 test('account progression identifies the weaker combat character for catch-up training', () => {
   const { controller } = loadStrategy({
     peers: [
