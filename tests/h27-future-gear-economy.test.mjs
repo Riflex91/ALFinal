@@ -280,6 +280,42 @@ test('upgrade executor accepts only the mutation action authorized by future gea
   assert.equal(controller.queueUpgrade(0).accepted, true);
 });
 
+test('upgrade planner exposes a consumable need when future-gear authority wants an upgrade but the scroll is missing', () => {
+  const root = context();
+  vm.runInNewContext(upgradeSource, root, { filename: 'upgrade.js' });
+  const Upgrade = root.__ALBOT_INTERNALS__.UpgradeCompoundController;
+  const rows = [item(0, 'future_sword')];
+  const gameStub = {
+    snapshot: () => ({ available: true, character: { name: 'Merchant', ctype: 'merchant', rip: false } }),
+    inventorySnapshot: () => inventory(rows),
+    equipmentDefinition: name => name === 'future_sword'
+      ? { id: name, type: 'weapon', wtype: 'sword', stats: { attack: 10 }, upgradeGrowth: { attack: 6 }, upgradeable: true, compoundable: false, grades: [8, 9], g: 1000, cash: false, quest: false }
+      : null,
+    itemDefinition: name => name === 'scroll0' ? { id: name, type: 'uscroll', g: 100 } : null
+  };
+  const progression = {
+    evaluateInventory: () => ({
+      state: 'READY',
+      evaluations: [{
+        slot: 0, item: 'future_sword', observedLevel: 0, checked: true,
+        protected: true, sellSafe: false, action: 'UPGRADE'
+      }]
+    })
+  };
+  const controller = new Upgrade({
+    root, game: gameStub, combat: { status: () => ({ active: false, state: 'IDLE' }) },
+    actions: { dispatch: () => ({ state: 'DISPATCHED', value: Promise.resolve({ success: true }) }) },
+    gearProgression: progression
+  });
+
+  const plan = controller.plan();
+  assert.equal(plan.upgradeCandidates.length, 0);
+  assert.equal(plan.materialNeeds.length, 1);
+  assert.equal(plan.materialNeeds[0].mutationKind, 'UPGRADE');
+  assert.equal(plan.materialNeeds[0].consumableName, 'scroll0');
+  assert.equal(plan.materialNeeds[0].itemSlot, 0);
+});
+
 test('runtime bundle wiring includes V3 future gear service and the Anniversary actionability fix', () => {
   const runtime = fs.readFileSync(path.resolve(here, '../src/runtime.js'), 'utf8');
   const entry = fs.readFileSync(path.resolve(here, '../src/entry.js'), 'utf8');

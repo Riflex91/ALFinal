@@ -311,7 +311,17 @@
       const excluded = new Set([Number(row.slot)]);
       const scrollName = this._scrollName('UPGRADE', grade);
       const scroll = this._findConsumable(inventory, scrollName, excluded);
-      if (!scroll) return { ok: false, reason: 'H15_UPGRADE_SCROLL_MISSING', scrollName, grade };
+      if (!scroll) return {
+        ok: false,
+        reason: 'H15_UPGRADE_SCROLL_MISSING',
+        itemSlot: Number(row.slot),
+        itemName: row.name,
+        fromLevel: level,
+        targetLevel,
+        scrollName,
+        grade,
+        progression: progression.evaluation ? clone(progression.evaluation) : null
+      };
       excluded.add(Number(scroll.slot));
       const offering = this._offeringFor(inventory, level, excluded, options.useOffering == null ? null : options.useOffering === true);
       if (offering.required && !offering.row) return { ok: false, reason: 'H15_REQUIRED_OFFERING_MISSING', scrollName, grade };
@@ -355,7 +365,17 @@
       const excluded = new Set(sourceSlots);
       const scrollName = this._scrollName('COMPOUND', grade);
       const scroll = this._findConsumable(inventory, scrollName, excluded);
-      if (!scroll) return { ok: false, reason: 'H15_COMPOUND_SCROLL_MISSING', scrollName, grade };
+      if (!scroll) return {
+        ok: false,
+        reason: 'H15_COMPOUND_SCROLL_MISSING',
+        itemSlots: sourceSlots,
+        itemName: rows[0].name,
+        fromLevel: level,
+        targetLevel,
+        scrollName,
+        grade,
+        progression: progression.evaluation ? clone(progression.evaluation) : null
+      };
       excluded.add(Number(scroll.slot));
       const offering = this._offeringFor(inventory, level, excluded, options.useOffering == null ? null : options.useOffering === true);
       if (offering.required && !offering.row) return { ok: false, reason: 'H15_REQUIRED_OFFERING_MISSING', scrollName, grade };
@@ -390,10 +410,24 @@
       const rows = inventory.items || [];
       const progressionPlan = this._progressionPlan(inventory);
       const upgradeCandidates = [];
+      const materialNeeds = [];
       for (const row of rows) {
         const candidate = this._upgradeCandidate(row, inventory, { progressionPlan });
         if (candidate.ok) upgradeCandidates.push(candidate);
-        else if (this.gearProgression && ['H15_FUTURE_GEAR_EVALUATION_REQUIRED', 'H15_FUTURE_GEAR_EVALUATION_FAILED', 'H15_MUTATION_NOT_RECOMMENDED'].includes(candidate.reason)) {
+        else if (candidate.reason === 'H15_UPGRADE_SCROLL_MISSING' && candidate.scrollName) {
+          materialNeeds.push({
+            kind: 'UPGRADE_SCROLL',
+            mutationKind: 'UPGRADE',
+            itemSlot: candidate.itemSlot,
+            itemName: candidate.itemName,
+            fromLevel: candidate.fromLevel,
+            targetLevel: candidate.targetLevel,
+            consumableName: candidate.scrollName,
+            grade: candidate.grade,
+            quantity: 1,
+            progression: candidate.progression ? clone(candidate.progression) : null
+          });
+        } else if (this.gearProgression && ['H15_FUTURE_GEAR_EVALUATION_REQUIRED', 'H15_FUTURE_GEAR_EVALUATION_FAILED', 'H15_MUTATION_NOT_RECOMMENDED'].includes(candidate.reason)) {
           this.metrics.progressionBlocks += 1;
         }
       }
@@ -413,7 +447,20 @@
         for (let offset = 0; offset + 2 < sorted.length; offset += 3) {
           const candidate = this._compoundCandidate(sorted.slice(offset, offset + 3), inventory, { progressionPlan });
           if (candidate.ok) compoundCandidates.push(candidate);
-          else if (this.gearProgression && ['H15_FUTURE_GEAR_EVALUATION_REQUIRED', 'H15_FUTURE_GEAR_EVALUATION_FAILED', 'H15_MUTATION_NOT_RECOMMENDED'].includes(candidate.reason)) {
+          else if (candidate.reason === 'H15_COMPOUND_SCROLL_MISSING' && candidate.scrollName) {
+            materialNeeds.push({
+              kind: 'COMPOUND_SCROLL',
+              mutationKind: 'COMPOUND',
+              itemSlots: clone(candidate.itemSlots || []),
+              itemName: candidate.itemName,
+              fromLevel: candidate.fromLevel,
+              targetLevel: candidate.targetLevel,
+              consumableName: candidate.scrollName,
+              grade: candidate.grade,
+              quantity: 1,
+              progression: candidate.progression ? clone(candidate.progression) : null
+            });
+          } else if (this.gearProgression && ['H15_FUTURE_GEAR_EVALUATION_REQUIRED', 'H15_FUTURE_GEAR_EVALUATION_FAILED', 'H15_MUTATION_NOT_RECOMMENDED'].includes(candidate.reason)) {
             this.metrics.progressionBlocks += 1;
           }
         }
@@ -421,6 +468,10 @@
 
       upgradeCandidates.sort((a, b) => a.budget.itemValueAtRisk - b.budget.itemValueAtRisk || a.fromLevel - b.fromLevel || a.itemSlot - b.itemSlot);
       compoundCandidates.sort((a, b) => a.budget.itemValueAtRisk - b.budget.itemValueAtRisk || a.fromLevel - b.fromLevel || a.itemSlots[0] - b.itemSlots[0]);
+      materialNeeds.sort((a, b) =>
+        String(a.consumableName || '').localeCompare(String(b.consumableName || ''))
+        || Number(a.fromLevel || 0) - Number(b.fromLevel || 0)
+        || Number(a.itemSlot == null ? (a.itemSlots && a.itemSlots[0]) : a.itemSlot) - Number(b.itemSlot == null ? (b.itemSlots && b.itemSlots[0]) : b.itemSlot));
 
       this.metrics.upgradeCandidates = upgradeCandidates.length;
       this.metrics.compoundCandidates = compoundCandidates.length;
@@ -452,7 +503,8 @@
         policy: clone(this.config),
         futureGearEvaluation: progressionPlan ? clone(progressionPlan) : null,
         upgradeCandidates: clone(upgradeCandidates),
-        compoundCandidates: clone(compoundCandidates)
+        compoundCandidates: clone(compoundCandidates),
+        materialNeeds: clone(materialNeeds)
       };
       return clone(this.lastPlan);
     }
