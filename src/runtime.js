@@ -144,9 +144,14 @@
         logger: this.logger,
         game: this.game,
         gear: this.gear,
+        market: this.trade,
+        storage: this.storage,
         getProfiles: () => this.accountStrategy && typeof this.accountStrategy.profiles === 'function'
           ? this.accountStrategy.profiles()
-          : []
+          : [],
+        getAccountWealth: () => this.accountStrategy && typeof this.accountStrategy.accountWealth === 'function'
+          ? this.accountStrategy.accountWealth()
+          : { known: false, totalGold: null }
       });
       this.inventory.gearProgression = this.gearProgression;
       this.trade.gearProgression = this.gearProgression;
@@ -184,6 +189,7 @@
         gearProgression: this.gearProgression,
         upgrade: this.upgrade,
         exchangeCraft: this.exchangeCraft,
+        party: this.party,
         canAct: action => this.actionAllowed(action)
       });
       this.partyLogistics = new ns.PartyLogisticsController({
@@ -202,6 +208,7 @@
         upgrade: this.upgrade,
         exchangeCraft: this.exchangeCraft,
         economy: this.economy,
+        gearProgression: this.gearProgression,
         canAct: action => this.actionAllowed(action)
       });
       const dispatchH19CrossWindowPartyAction = (actionName, args = []) => {
@@ -436,7 +443,8 @@
         roster: this.roster,
         party: this.party,
         crossWindow: this.lifecycleTransport,
-        gear: this.gear
+        gear: this.gear,
+        storage: this.storage
       });
       this.encounters = new ns.EncounterController({
         root: this.root,
