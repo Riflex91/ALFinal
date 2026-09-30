@@ -268,6 +268,7 @@ function fixture(options = {}) {
     startOutcomeTimeoutMs: options.startOutcomeTimeoutMs == null ? 15000 : options.startOutcomeTimeoutMs,
     browserSwapTimeoutMs: options.browserSwapTimeoutMs == null ? 20000 : options.browserSwapTimeoutMs,
     startRetryBackoffMs: options.startRetryBackoffMs == null ? 750 : options.startRetryBackoffMs,
+    partyRetryBackoffMs: options.partyRetryBackoffMs == null ? 1500 : options.partyRetryBackoffMs,
     maxActionsPerSession: options.maxActionsPerSession == null ? 4 : options.maxActionsPerSession
   });
   controller.start({ scope: { interval: () => 'h19-resource' } });
@@ -587,6 +588,90 @@ test('H19 captures the owned live party leader with the desired active set', () 
   assert.equal(captured.desiredPartyLeader, 'My_Ranger');
   assert.deepEqual(captured.desiredActiveNames, ['My_Merchant', 'My_Priest', 'My_Ranger']);
   assert.deepEqual(captured.desiredPartyMemberNames, ['My_Priest', 'My_Ranger']);
+});
+
+test('H33 party leader skips an online member without a fresh same-server peer and invites the next reachable farmer', async () => {
+  const f = fixture({
+    onlineNames: ['My_Merchant', 'My_Priest', 'My_Ranger', 'My_Warrior'],
+    runnerActiveNames: ['My_Merchant', 'My_Priest', 'My_Ranger', 'My_Warrior'],
+    partyMembers: ['My_Merchant', 'My_Ranger'],
+    partyLeader: 'My_Merchant',
+    crossWindowPeers: [
+      { name: 'My_Ranger', running: true },
+      { name: 'My_Warrior', running: true }
+    ]
+  });
+  f.state.character.name = 'My_Merchant';
+  f.state.character.ctype = 'merchant';
+
+  assert.equal(f.controller.setPolicy({
+    desiredActiveNames: ['My_Merchant', 'My_Priest', 'My_Ranger', 'My_Warrior'],
+    desiredRuntimeRunningNames: [],
+    desiredPartyMemberNames: ['My_Merchant', 'My_Priest', 'My_Ranger', 'My_Warrior'],
+    desiredPartyLeader: 'My_Merchant'
+  }).accepted, true);
+  assert.equal(f.controller.startAutonomy({ maxActions: 4 }).accepted, true);
+
+  const dispatched = f.controller.tick();
+  assert.equal(dispatched.state, 'DISPATCHED');
+  assert.deepEqual(f.state.dispatches[0], { name: 'send_party_invite', args: ['My_Warrior'] });
+  assert.equal(f.controller.status().suspended, false);
+  assert.ok(f.controller.status().metrics.partyPeerBlocks >= 1);
+
+  await flush();
+  const confirmed = f.controller.tick();
+  assert.equal(confirmed.state, 'CONFIRMED');
+  assert.equal(confirmed.targetName, 'My_Warrior');
+
+  const waiting = f.controller.plan();
+  assert.equal(waiting.state, 'WAITING');
+  assert.equal(waiting.reason, 'H33_PARTY_MEMBER_PEER_UNAVAILABLE');
+  assert.deepEqual(Array.from(waiting.peerUnavailableNames), ['My_Priest']);
+});
+
+test('H33 transient invalid party invite rejection backs off only that target and keeps party recovery alive', async () => {
+  const f = fixture({
+    onlineNames: ['My_Merchant', 'My_Priest', 'My_Ranger', 'My_Warrior'],
+    runnerActiveNames: ['My_Merchant', 'My_Priest', 'My_Ranger', 'My_Warrior'],
+    partyMembers: ['My_Merchant', 'My_Ranger'],
+    partyLeader: 'My_Merchant',
+    crossWindowPeers: [
+      { name: 'My_Priest', running: true },
+      { name: 'My_Ranger', running: true },
+      { name: 'My_Warrior', running: true }
+    ],
+    noMutation: true,
+    rejectPromise: true,
+    rejectReason: 'invalid',
+    partyRetryBackoffMs: 1500
+  });
+  f.state.character.name = 'My_Merchant';
+  f.state.character.ctype = 'merchant';
+
+  assert.equal(f.controller.setPolicy({
+    desiredActiveNames: ['My_Merchant', 'My_Priest', 'My_Ranger', 'My_Warrior'],
+    desiredRuntimeRunningNames: [],
+    desiredPartyMemberNames: ['My_Merchant', 'My_Priest', 'My_Ranger', 'My_Warrior'],
+    desiredPartyLeader: 'My_Merchant'
+  }).accepted, true);
+  assert.equal(f.controller.startAutonomy({ maxActions: 4 }).accepted, true);
+
+  const first = f.controller.tick();
+  assert.equal(first.state, 'DISPATCHED');
+  assert.deepEqual(f.state.dispatches[0], { name: 'send_party_invite', args: ['My_Priest'] });
+  await flush();
+
+  const rejected = f.controller.tick();
+  assert.equal(rejected.state, 'WAITING');
+  assert.equal(rejected.reason, 'H33_PARTY_TARGET_TRANSIENTLY_UNAVAILABLE');
+  assert.equal(rejected.targetName, 'My_Priest');
+  assert.equal(f.controller.status().suspended, false);
+  assert.equal(f.controller.status().autonomyEnabled, true);
+  assert.equal(f.controller.status().metrics.partyTransientRejects, 1);
+
+  const second = f.controller.tick();
+  assert.equal(second.state, 'DISPATCHED');
+  assert.deepEqual(f.state.dispatches[1], { name: 'send_party_invite', args: ['My_Warrior'] });
 });
 
 test('H19 party leader restores only a previously captured party member', async () => {
