@@ -1,4 +1,4 @@
-/* AL Bot 0.26.19-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.20-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -20443,6 +20443,7 @@
       this.scope = null;
       this.pending = null;
       this.request = null;
+      this.riskPreview = null;
       this.suspendedReason = null;
       this.lastPlan = null;
       this.lastAction = null;
@@ -20494,7 +20495,10 @@
         mutationRiskChecks: 0,
         mutationRiskAccepted: 0,
         mutationRiskHolds: 0,
-        mutationRiskHoldSkips: 0
+        mutationRiskHoldSkips: 0,
+        mutationAuthoritativePreviews: 0,
+        mutationAuthoritativeAccepted: 0,
+        mutationAuthoritativeHolds: 0
       };
     }
 
@@ -20515,6 +20519,7 @@
       this.scope = null;
       this.pending = null;
       this.request = null;
+      this.riskPreview = null;
       this.lastAction = { at: nowIso(), type: 'STOP', reason: cleanText(reason, 240) };
       return { stopped: true };
     }
@@ -20522,6 +20527,7 @@
     resetSafety(reason = 'H15_EXPLICIT_RESET') {
       this.pending = null;
       this.request = null;
+      this.riskPreview = null;
       this.suspendedReason = null;
       this.attemptsThisSession = 0;
       this.riskHolds.clear();
@@ -20533,6 +20539,7 @@
     cancelRequest(reason = 'H15_REQUEST_CANCELLED') {
       this.pending = null;
       this.request = null;
+      this.riskPreview = null;
       this.lastAction = { at: nowIso(), type: 'REQUEST_CANCELLED', reason: cleanText(reason, 240) };
       return this.status();
     }
@@ -20702,6 +20709,22 @@
       };
     }
 
+    _normalizeMutationChance(response) {
+      const raw = typeof response === 'number'
+        ? response
+        : response && response.chance != null
+          ? Number(response.chance)
+          : response && response.success_chance != null
+            ? Number(response.success_chance)
+            : response && response.data && response.data.chance != null
+              ? Number(response.data.chance)
+              : null;
+      if (!Number.isFinite(raw) || raw < 0) return null;
+      if (raw <= 1) return raw;
+      if (raw <= 100) return raw / 100;
+      return null;
+    }
+
     _mutationChance(kind, evaluation, targetLevel) {
       const wanted = Math.max(0, Number(targetLevel) || 0);
       const future = evaluation && evaluation.futureGear || null;
@@ -20714,7 +20737,7 @@
       return null;
     }
 
-    _mutationRiskDecision(kind, row, definition, inventory, inputSlots, evaluation, targetLevel) {
+    _mutationRiskDecision(kind, row, definition, inventory, inputSlots, evaluation, targetLevel, options = {}) {
       // H15 can still be used as a low-level/manual controller in isolation.
       // Production autonomy always wires FutureGearEconomyEvaluator; apply the
       // V3 risk policy whenever that authority exists.
@@ -20764,7 +20787,9 @@
       const benefitCredit = Math.min(0.10, Math.max(0, futureImprovementRatio - 0.05) * 0.50);
       const minChance = Math.max(0.05, Math.min(0.995,
         base + levelPenalty + compoundPenalty + partyPenalty + valuePenalty - benefitCredit));
-      const chance = this._mutationChance(kind, evaluation, targetLevel);
+      const chance = options.chanceProvided === true
+        ? this._normalizeMutationChance(options.chance)
+        : this._mutationChance(kind, evaluation, targetLevel);
       const allowed = chance != null && chance >= minChance;
       const decision = {
         at: nowIso(),
@@ -20778,6 +20803,7 @@
         minChance,
         replacement,
         usefulNow,
+        serverAuthoritative: options.serverAuthoritative === true,
         threshold: { base, levelPenalty, compoundPenalty, partyPenalty, valuePenalty, benefitCredit, futureImprovementRatio, spareEquivalents: spare }
       };
       this.metrics.mutationRiskChecks += 1;
@@ -21237,6 +21263,124 @@
       }).catch(() => {});
     }
 
+    _riskPreviewArgs(request) {
+      return request.kind === 'COMPOUND'
+        ? request.itemSlots.concat([request.scrollSlot, request.offeringSlot])
+        : [request.itemSlot, request.scrollSlot, request.offeringSlot];
+    }
+
+    _watchRiskPreview(value, preview) {
+      if (!value || typeof value.then !== 'function') {
+        preview.settlement = 'RETURNED';
+        preview.response = value == null ? null : clone(value);
+        return;
+      }
+      Promise.resolve(value).then(response => {
+        if (!this.riskPreview || this.riskPreview.id !== preview.id) return;
+        this.riskPreview.settlement = 'RESOLVED';
+        this.riskPreview.response = response == null ? null : clone(response);
+      }, error => {
+        if (!this.riskPreview || this.riskPreview.id !== preview.id) return;
+        this.riskPreview.settlement = 'REJECTED';
+        this.riskPreview.error = cleanText(error && (error.reason || error.message) || error || 'MUTATION_CHANCE_UNAVAILABLE', 500);
+      }).catch(() => {});
+    }
+
+    _beginAuthoritativeRiskPreview(request) {
+      if (!this.gearProgression || !this.actions || typeof this.actions.previewMutation !== 'function') return null;
+      let result;
+      try {
+        result = this.actions.previewMutation(
+          request.kind === 'COMPOUND' ? 'compound' : 'upgrade',
+          this._riskPreviewArgs(request)
+        );
+      } catch (error) {
+        result = { state: 'UNKNOWN', value: null, error: { message: cleanText(error && error.message || error, 300) } };
+      }
+      this.metrics.mutationAuthoritativePreviews += 1;
+      if (!result || result.state !== 'PREVIEWED') {
+        const reason = result && result.state === 'BLOCKED'
+          ? 'H15_MUTATION_CHANCE_PREVIEW_BLOCKED'
+          : result && result.state === 'UNAVAILABLE'
+            ? 'H15_MUTATION_CHANCE_PREVIEW_UNAVAILABLE'
+            : 'H15_MUTATION_CHANCE_PREVIEW_UNKNOWN';
+        const inventory = this._inventory();
+        const row = inventory && this._rowAt(inventory, request.kind === 'COMPOUND' ? request.itemSlots[0] : request.itemSlot);
+        const definition = row ? this._definition(row.name) : null;
+        const risk = row && definition
+          ? this._mutationRiskDecision(
+              request.kind, row, definition, inventory,
+              request.kind === 'COMPOUND' ? request.itemSlots : [request.itemSlot],
+              request.progression, request.targetLevel,
+              { chanceProvided: true, chance: null, serverAuthoritative: true }
+            )
+          : null;
+        this.metrics.mutationAuthoritativeHolds += 1;
+        this.request = null;
+        this.riskPreview = null;
+        this.lastAction = { at: nowIso(), type: request.kind + '_BLOCKED', reason, risk: risk ? clone(risk) : null };
+        return { state: 'BLOCKED', reason, risk: risk ? clone(risk) : null };
+      }
+      const preview = {
+        id: 'h15-risk-preview-' + (++this.sequence),
+        requestId: request.id,
+        kind: request.kind,
+        startedAt: nowIso(),
+        settlement: 'PENDING',
+        response: null,
+        error: null
+      };
+      this.riskPreview = preview;
+      this.lastAction = { at: preview.startedAt, type: request.kind + '_RISK_PREVIEW_STARTED', requestId: request.id };
+      this._watchRiskPreview(result.value, preview);
+      if (preview.settlement !== 'PENDING') return this._observeRiskPreview();
+      return { state: 'RISK_PENDING', preview: clone(preview) };
+    }
+
+    _observeRiskPreview() {
+      const preview = this.riskPreview;
+      const request = this.request;
+      if (!preview || !request || preview.requestId !== request.id) {
+        this.riskPreview = null;
+        return { state: 'BLOCKED', reason: 'H15_MUTATION_CHANCE_PREVIEW_ORPHANED' };
+      }
+      if (preview.settlement === 'PENDING') return { state: 'RISK_PENDING', preview: clone(preview) };
+
+      const inventory = this._inventory();
+      const itemSlot = request.kind === 'COMPOUND' ? request.itemSlots[0] : request.itemSlot;
+      const row = inventory && this._rowAt(inventory, itemSlot);
+      const definition = row ? this._definition(row.name) : null;
+      if (!inventory || inventory.available === false || !row || !definition || this._fingerprint(row) !== request.fingerprint) {
+        this.riskPreview = null;
+        this.request = null;
+        this.lastAction = { at: nowIso(), type: request.kind + '_BLOCKED', reason: 'H15_SOURCE_CHANGED_DURING_RISK_PREVIEW' };
+        return { state: 'BLOCKED', reason: 'H15_SOURCE_CHANGED_DURING_RISK_PREVIEW' };
+      }
+
+      const chance = preview.settlement === 'REJECTED' ? null : this._normalizeMutationChance(preview.response);
+      const risk = this._mutationRiskDecision(
+        request.kind, row, definition, inventory,
+        request.kind === 'COMPOUND' ? request.itemSlots : [request.itemSlot],
+        request.progression, request.targetLevel,
+        { chanceProvided: true, chance, serverAuthoritative: true }
+      );
+      this.riskPreview = null;
+      if (!risk.allowed) {
+        this.metrics.mutationAuthoritativeHolds += 1;
+        this.request = null;
+        const reason = risk.reason === 'MUTATION_CHANCE_UNAVAILABLE'
+          ? 'H15_MUTATION_CHANCE_UNAVAILABLE'
+          : risk.reason;
+        this.lastAction = { at: nowIso(), type: request.kind + '_BLOCKED', reason, risk: clone(risk) };
+        return { state: 'BLOCKED', reason, risk: clone(risk) };
+      }
+
+      this.metrics.mutationAuthoritativeAccepted += 1;
+      this.request.authoritativeRisk = clone(risk);
+      this.lastAction = { at: nowIso(), type: request.kind + '_RISK_ACCEPTED', requestId: request.id, risk: clone(risk) };
+      return { state: 'RISK_ACCEPTED', risk: clone(risk) };
+    }
+
     _dispatch(request, inventory) {
       if (!this.actions || typeof this.actions.dispatch !== 'function') return { accepted: false, reason: 'H15_ACTION_BOUNDARY_UNAVAILABLE' };
       const beforeScrollQuantity = this._quantityByName(inventory, request.scrollName);
@@ -21403,6 +21547,10 @@
         return this.pending ? { state: 'PENDING', pending: clone(this.pending) } : { state: 'READY' };
       }
 
+      if (this.riskPreview) {
+        return this._observeRiskPreview();
+      }
+
       const request = this.request;
       if (!request) return this.plan();
       const inventory = this._inventory();
@@ -21414,6 +21562,12 @@
         else this.metrics.safetyBlocks += 1;
         this.lastAction = { at: nowIso(), type: request.kind + '_BLOCKED', reason: valid.reason };
         return { state: 'BLOCKED', reason: valid.reason };
+      }
+      if (this.gearProgression
+          && this.actions
+          && typeof this.actions.previewMutation === 'function'
+          && !request.authoritativeRisk) {
+        return this._beginAuthoritativeRiskPreview(request);
       }
       return this._dispatch(request, inventory);
     }
@@ -21427,6 +21581,7 @@
         attemptsThisSession: this.attemptsThisSession,
         pending: clone(this.pending),
         request: clone(this.request),
+        riskPreview: clone(this.riskPreview),
         lastPlan: clone(this.lastPlan),
         lastAction: clone(this.lastAction),
         lastMutationRiskDecision: clone(this.lastMutationRiskDecision),
@@ -27816,7 +27971,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.19-h26';
+      this.version = options.version || '0.26.20-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -35926,7 +36081,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.19-h26',
+    version: '0.26.20-h26',
     bootCount,
     replacedPrevious: !!previous
   });
