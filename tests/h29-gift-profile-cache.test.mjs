@@ -75,6 +75,36 @@ test('gift items use normal gear/economy authority instead of hard protection', 
   assert.equal(bank._safeDepositRows().length, 1);
 });
 
+test('account strategy start persists local equipment before any merchant reads profiles', () => {
+  const root = context();
+  vm.runInNewContext(src('account-strategy.js'), root, { filename: 'account-strategy.js' });
+  const Controller = root.__ALBOT_INTERNALS__.AccountStrategyController;
+  const shared = storage();
+  const controller = new Controller({
+    root,
+    storage: shared,
+    roster: {
+      refresh: () => ({
+        accountCharacters: [{ name: 'My_Priest', ctype: 'priest', level: 35, online: true }],
+        onlineCharacterNames: ['My_Priest']
+      })
+    },
+    game: {
+      snapshot: () => ({ available: true, character: { name: 'My_Priest', ctype: 'priest', level: 35, gold: 777 } }),
+      equipmentSnapshot: () => ({ available: true, slots: { mainhand: { name: 'staff', level: 3 } } }),
+      bankSnapshot: () => ({ available: false })
+    },
+    gear: { score: () => 1 }
+  });
+
+  controller.start({});
+  const raw = shared.rows.get('albot:h28:account-profile-cache:v1:My_Priest');
+  assert.ok(raw);
+  const cached = JSON.parse(raw);
+  assert.equal(cached.equipment.mainhand.name, 'staff');
+  assert.equal(cached.equipment.mainhand.level, 3);
+});
+
 test('local profile is persisted without requiring account-wide profiles()', () => {
   const root = context();
   vm.runInNewContext(src('account-strategy.js'), root, { filename: 'account-strategy.js' });
