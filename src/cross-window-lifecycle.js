@@ -678,6 +678,7 @@
           range: Number.isFinite(Number(row.profile.range)) ? Number(row.profile.range) : null,
           rip: row.profile.rip === true,
           map: cleanText(row.profile.map || '', 120) || null,
+          gold: Number.isFinite(Number(row.profile.gold)) ? Math.max(0, Number(row.profile.gold)) : null,
           gearScore: Number.isFinite(Number(row.profile.gearScore)) ? Math.max(0, Number(row.profile.gearScore)) : 0,
           equipment: row.profile.equipment && typeof row.profile.equipment === 'object'
             ? Object.fromEntries(Object.entries(row.profile.equipment).slice(0, 20).map(([slot, item]) => {
