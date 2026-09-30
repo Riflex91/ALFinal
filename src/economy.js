@@ -457,6 +457,8 @@
       if (materialNeed && materialNeed.consumableName) {
         const consumableName = cleanText(materialNeed.consumableName, 160);
         const nowMs = Date.now();
+        // Bank knowledge belongs to the consumable, not to one item/level mutation.
+        // Reuse a recent confirmed absence across consecutive upgrades/compounds.
         const cachedMiss = this.materialBankMisses.get(consumableName) || null;
         if (cachedMiss && nowMs - Number(cachedMiss.checkedAtMs || 0) > this.config.materialBankKnowledgeTtlMs) {
           this.materialBankMisses.delete(consumableName);
