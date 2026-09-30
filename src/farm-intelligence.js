@@ -73,7 +73,8 @@
         groupRetargetDistance: Math.max(20, Math.min(100, Number(options.groupRetargetDistance) || 75)),
         groupRetargetMs: Math.max(700, Math.min(5000, Number(options.groupRetargetMs) || 2500)),
         groupLeaderRecoveryMaxStep: Math.max(25, Math.min(90, Number(options.groupLeaderRecoveryMaxStep) || 60)),
-        groupLeaderRecoveryMinImprovement: Math.max(3, Math.min(40, Number(options.groupLeaderRecoveryMinImprovement) || 6))
+        groupLeaderRecoveryMinImprovement: Math.max(3, Math.min(40, Number(options.groupLeaderRecoveryMinImprovement) || 6)),
+        groupMovementRetryMs: Math.max(500, Math.min(10000, Number(options.groupMovementRetryMs) || 2000))
       };
 
       this.moduleActive = false;
@@ -83,6 +84,8 @@
       this.sequence = 0;
       this.groupPolicy = { leaderName: null, memberNames: [] };
       this.groupMove = null;
+      this.groupMoveRetryAfterMs = null;
+      this.lastTransientMovementFailureOrderId = null;
       this.currentSelection = null;
       this.lastPlan = null;
       this.lastAction = null;
@@ -113,6 +116,7 @@
         groupLeaderHolds: 0,
         groupLeaderRecoveries: 0,
         groupCrossMapRegroups: 0,
+        transientMovementRecoveries: 0,
         combatUnknownSuspensions: 0
       };
     }
@@ -177,6 +181,8 @@
         memberNames: this.session.groupMemberNames.slice()
       };
       this.groupMove = null;
+      this.groupMoveRetryAfterMs = null;
+      this.lastTransientMovementFailureOrderId = null;
       this.currentSelection = null;
       this.lastPlan = null;
       this.lastAction = null;
@@ -199,6 +205,8 @@
       this.session = null;
       this.currentSelection = null;
       this.groupMove = null;
+      this.groupMoveRetryAfterMs = null;
+      this.lastTransientMovementFailureOrderId = null;
       this.suspendedReason = null;
       return { stopped: true, session: ended };
     }
@@ -947,8 +955,36 @@
       if (movement && movement.lastOrder
         && String(movement.lastOrder.owner || '').startsWith('farm-intelligence-h9')
         && ['UNKNOWN', 'FAILED_SAFE'].includes(String(movement.lastOrder.state || ''))) {
-        this.metrics.movementUnknown += 1;
-        return this._suspend('H9_MOVEMENT_' + String(movement.lastOrder.state));
+        const failedOrder = movement.lastOrder;
+        const failedOrderId = String(failedOrder.id || '');
+        if (failedOrder.transient === true) {
+          if (!failedOrderId || this.lastTransientMovementFailureOrderId !== failedOrderId) {
+            this.metrics.movementUnknown += 1;
+            this.metrics.transientMovementRecoveries += 1;
+            this.lastTransientMovementFailureOrderId = failedOrderId || null;
+            this.groupMove = null;
+            this.groupMoveRetryAfterMs = this.now() + this.config.groupMovementRetryMs;
+            this.lastAction = {
+              at: new Date().toISOString(),
+              type: 'GROUP_REGROUP_TRANSIENT_MOVEMENT_FAILURE',
+              orderId: failedOrderId || null,
+              movementState: String(failedOrder.state || ''),
+              movementReason: cleanText(failedOrder.reason || failedOrder.commandError || '', 240) || null,
+              retryAfterMs: this.groupMoveRetryAfterMs
+            };
+          }
+          if (this.groupMoveRetryAfterMs && this.now() < this.groupMoveRetryAfterMs) {
+            return {
+              state: 'WAITING',
+              reason: 'H9_GROUP_REGROUP_RETRY_BACKOFF',
+              leaderName: group && group.leaderName || null,
+              retryAfterMs: this.groupMoveRetryAfterMs
+            };
+          }
+        } else {
+          this.metrics.movementUnknown += 1;
+          return this._suspend('H9_MOVEMENT_' + String(failedOrder.state));
+        }
       }
       if (!group.local || !group.leader || !group.complete) {
         this._stopOwnedFarming('H9_GROUP_LEADER_POSITION_UNAVAILABLE');
@@ -975,6 +1011,7 @@
         });
         if (!move || move.accepted !== true) return { state: 'WAITING', reason: move && move.reason || 'H9_GROUP_CROSS_MAP_REGROUP_REJECTED' };
         this.groupMove = { atMs: this.now(), destination: clone(destination) };
+        this.groupMoveRetryAfterMs = null;
         this.metrics.groupRegroups += 1;
         this.metrics.groupCrossMapRegroups += 1;
         return { state: 'TRAVELLING', reason: 'H9_GROUP_CROSS_MAP_REGROUP_STARTED', leaderName: group.leaderName, destination };
@@ -1039,6 +1076,7 @@
           return { state: 'WAITING', reason: move && move.reason || 'H9_GROUP_REGROUP_REJECTED', distance: group.distance };
         }
         this.groupMove = { atMs: this.now(), destination: clone(destination) };
+        this.groupMoveRetryAfterMs = null;
         this.metrics.groupRegroups += 1;
         this.lastAction = {
           at: new Date().toISOString(),
