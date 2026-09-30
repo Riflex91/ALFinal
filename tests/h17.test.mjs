@@ -50,7 +50,8 @@ function fixture(options = {}) {
     bank: {
       state: options.bankState || 'READY',
       reason: options.bankState === 'NEEDS_BANK' ? 'H12_BANK_NOT_MOUNTED' : 'H12_BANK_READY',
-      safeDepositRows: clone(options.bankRows || [])
+      safeDepositRows: clone(options.bankRows || []),
+      packs: clone(options.bankPacks || [])
     },
     trade: {
       state: 'READY',
@@ -62,8 +63,10 @@ function fixture(options = {}) {
     },
     upgrade: {
       state: 'READY',
+      policy: { maxConsumableCost: options.maxConsumableCost == null ? 250000 : options.maxConsumableCost },
       upgradeCandidates: clone(options.upgrades || []),
-      compoundCandidates: clone(options.compounds || [])
+      compoundCandidates: clone(options.compounds || []),
+      materialNeeds: clone(options.materialNeeds || [])
     },
     exchangeCraft: {
       state: 'READY',
@@ -96,6 +99,12 @@ function fixture(options = {}) {
       statuses.bank.request = { id: 'bank-deposit' };
       statuses.bank.lastAction = { at: 't' + (++clock), type: 'DEPOSIT_QUEUED' };
       return { accepted: true, request: clone(statuses.bank.request) };
+    },
+    queueWithdraw: (packName, bankSlot) => {
+      calls.push({ module: 'bank', kind: 'WITHDRAW', packName, bankSlot });
+      statuses.bank.request = { id: 'bank-withdraw' };
+      statuses.bank.lastAction = { at: 't' + (++clock), type: 'WITHDRAW_QUEUED' };
+      return { accepted: true, request: clone(statuses.bank.request) };
     }
   });
 
@@ -117,6 +126,12 @@ function fixture(options = {}) {
       if (options.rejectNpcSell) return { accepted: false, reason: 'H13_TEST_REJECT' };
       statuses.trade.request = { id: 'trade-npc-sell' };
       statuses.trade.lastAction = { at: 't' + (++clock), type: 'NPC_SELL_QUEUED' };
+      return { accepted: true, request: clone(statuses.trade.request) };
+    },
+    queueAcquire: (itemName, quantity, opts) => {
+      calls.push({ module: 'trade', kind: 'ACQUIRE', itemName, quantity, opts: clone(opts) });
+      statuses.trade.request = { id: 'trade-acquire' };
+      statuses.trade.lastAction = { at: 't' + (++clock), type: 'NPC_BUY_QUEUED' };
       return { accepted: true, request: clone(statuses.trade.request) };
     }
   });
@@ -250,6 +265,58 @@ test('H17 common planner exposes safe proposals across the economy modules', () 
   for (const kind of ['GEAR_EQUIP', 'MARKET_SELL', 'EXCHANGE', 'CRAFT', 'UPGRADE', 'COMPOUND']) {
     assert.equal(kinds.has(kind), true, 'missing proposal ' + kind);
   }
+});
+
+test('H17 mounts the bank to resolve a safe upgrade material dependency before declaring the Merchant idle', () => {
+  const f = fixture({
+    bankState: 'NEEDS_BANK',
+    materialNeeds: [{
+      kind: 'UPGRADE_SCROLL', mutationKind: 'UPGRADE', itemSlot: 5, itemName: 'sword',
+      consumableName: 'scroll0', quantity: 1
+    }]
+  });
+  const plan = f.economy.plan();
+  assert.equal(plan.state, 'READY');
+  assert.equal(plan.selected.kind, 'BANK_MOUNT');
+  assert.equal(plan.selected.purpose, 'MATERIAL_LOOKUP');
+  assert.equal(plan.selected.itemName, 'scroll0');
+});
+
+test('H17 withdraws required mutation material from the mounted bank before buying it', () => {
+  const f = fixture({
+    bankState: 'READY',
+    bankPacks: [{ name: 'items0', items: [{ slot: 7, name: 'scroll0', quantity: 12 }] }],
+    materialNeeds: [{
+      kind: 'UPGRADE_SCROLL', mutationKind: 'UPGRADE', itemSlot: 5, itemName: 'sword',
+      consumableName: 'scroll0', quantity: 1
+    }]
+  });
+  assert.equal(f.economy.plan().selected.kind, 'BANK_WITHDRAW');
+  assert.equal(f.economy.startAutonomy({ maxActions: 2 }).accepted, true);
+  const tick = f.economy.tick();
+  assert.equal(tick.state, 'QUEUED');
+  assert.deepEqual(f.calls[0], { module: 'bank', kind: 'WITHDRAW', packName: 'items0', bankSlot: 7 });
+});
+
+test('H17 acquires a missing mutation consumable within the H15 consumable budget', () => {
+  const f = fixture({
+    bankState: 'READY',
+    npcPrice: 250,
+    maxConsumableCost: 1000,
+    materialNeeds: [{
+      kind: 'UPGRADE_SCROLL', mutationKind: 'UPGRADE', itemSlot: 5, itemName: 'sword',
+      consumableName: 'scroll0', quantity: 1
+    }]
+  });
+  const plan = f.economy.plan();
+  assert.equal(plan.selected.kind, 'MATERIAL_ACQUIRE');
+  assert.equal(plan.selected.maxUnitPrice, 250);
+  assert.equal(f.economy.startAutonomy({ maxActions: 2 }).accepted, true);
+  const tick = f.economy.tick();
+  assert.equal(tick.state, 'QUEUED');
+  assert.deepEqual(f.calls[0], {
+    module: 'trade', kind: 'ACQUIRE', itemName: 'scroll0', quantity: 1, opts: { maxUnitPrice: 250 }
+  });
 });
 
 test('H17 immediately confirms a bank mount race that reports already mounted', () => {
