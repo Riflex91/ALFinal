@@ -357,7 +357,9 @@ test('rejoined follower cancels regroup before evaluating a stale leader retarge
   assert.equal(started.tick.state, 'TRAVELLING');
   assert.equal(f.state.moves.length, 1);
 
-  f.state.leaderX = 80;
+  // Rejoin now means live leader cohesion as well as formation cohesion.
+  // Keep this stale-retarget regression inside the actual 70px stop radius.
+  f.state.leaderX = 60;
   f.state.nowMs = 20000;
   const rejoined = f.controller.tick();
   assert.equal(rejoined.state, 'FARMING');
@@ -416,8 +418,8 @@ test('H9 propagates a changed group policy into an already-owned H8 session', ()
   assert.deepEqual([...f.state.farmGroupConfigs[0].groupMemberNames], ['My_Mage', 'My_Priest', 'My_Ranger1']);
 });
 
-test('group follower starts mirror-only farming when already inside formation', () => {
-  const f = h9FollowerFixture({ leaderX: 80 });
+test('group follower starts mirror-only farming when already inside live leader and formation cohesion', () => {
+  const f = h9FollowerFixture({ leaderX: 60 });
   const started = f.controller.startAutonomy({
     owner: 'full-autonomy',
     groupLeaderName: 'My_Warrior',
