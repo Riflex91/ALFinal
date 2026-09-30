@@ -26,6 +26,16 @@
     merchant: ['ECONOMY', 'LOGISTICS']
   });
 
+  function defaultGearRole(ctype) {
+    const type = String(ctype || '').toLowerCase();
+    if (type === 'merchant') return 'economy';
+    if (type === 'warrior' || type === 'paladin') return 'tank';
+    if (type === 'priest') return 'healer';
+    if (type === 'mage') return 'aoe';
+    if (type === 'ranger' || type === 'rogue') return 'dps';
+    return null;
+  }
+
   const TASK_DEFAULTS = Object.freeze({
     FARM: {
       minMembers: 3, maxMembers: 3, required: ['DPS'], combatOnly: true,
@@ -176,6 +186,7 @@
         schemaVersion: 1,
         name: cleanText(character.name, 120),
         ctype,
+        gearRole: defaultGearRole(ctype),
         level: finite(character.level),
         hp: finite(character.hp),
         maxHp: finite(character.maxHp),
@@ -204,6 +215,7 @@
         schemaVersion: 1,
         name: cleanText(row.name, 120),
         ctype,
+        gearRole: defaultGearRole(ctype),
         level: finite(row.level),
         hp: null,
         maxHp: null,
@@ -280,6 +292,8 @@
         schemaVersion: 1,
         name: cleanText(raw.name, 120),
         ctype,
+        gearRole: cleanText(raw.gearRole || raw.combatRole || raw.farmRole || raw.localRole || raw.role || '', 40).toLowerCase()
+          || defaultGearRole(ctype),
         level: finite(raw.level),
         hp: finite(raw.hp),
         maxHp: finite(raw.maxHp),
