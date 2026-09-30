@@ -1,4 +1,4 @@
-/* AL Bot 0.26.38-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.39-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -10135,17 +10135,33 @@
       return row && typeof row === 'object' && !Array.isArray(row) ? row : {};
     }
 
+    _profileCacheEntryKey(name) {
+      const normalized = cleanText(name || '', 120);
+      return normalized ? this.profileCacheKey + ':' + encodeURIComponent(normalized) : null;
+    }
+
+    _cachedProfile(name) {
+      const normalized = cleanText(name || '', 120);
+      if (!normalized) return null;
+      const key = this._profileCacheEntryKey(normalized);
+      const direct = key ? this._storageRead(key, null) : null;
+      if (direct && typeof direct === 'object' && !Array.isArray(direct)) return direct;
+      const legacy = this._cachedProfiles();
+      const row = legacy[normalized];
+      return row && typeof row === 'object' && !Array.isArray(row) ? row : null;
+    }
+
     _rememberProfile(profile) {
       if (!profile || !profile.name) return false;
       const normalized = this._normalizeProfile(profile);
       if (!normalized) return false;
       if (!normalized.equipment && finite(normalized.gold) == null) return false;
-      const cache = this._cachedProfiles();
-      cache[normalized.name] = {
+      const key = this._profileCacheEntryKey(normalized.name);
+      if (!key) return false;
+      return this._storageWrite(key, {
         ...clone(normalized),
         cachedAtMs: this.now()
-      };
-      return this._storageWrite(this.profileCacheKey, cache);
+      });
     }
 
     _cachedBankGold() {
@@ -10281,12 +10297,12 @@
       const account = roster && Array.isArray(roster.accountCharacters) ? roster.accountCharacters : [];
       const online = new Set(roster && Array.isArray(roster.onlineCharacterNames) ? roster.onlineCharacterNames.map(String) : []);
       const byName = new Map();
-      const cachedProfiles = this._cachedProfiles();
 
       for (const row of account) {
         const fallback = this._fallbackProfile(row);
         if (!fallback) continue;
-        const cached = cachedProfiles[fallback.name] && this._normalizeProfile(cachedProfiles[fallback.name]);
+        const cachedRaw = this._cachedProfile(fallback.name);
+        const cached = cachedRaw && this._normalizeProfile(cachedRaw);
         byName.set(fallback.name, cached ? {
           ...fallback,
           ...cached,
@@ -16228,7 +16244,6 @@
       // live protection and V3 future-gear safety still have to pass.
       if (item.locked) return { disposition: 'PROTECT', reason: 'ITEM_LOCKED', protected: true };
       if (item.giveaway) return { disposition: 'PROTECT', reason: 'ITEM_GIVEAWAY', protected: true };
-      if (item.gift) return { disposition: 'PROTECT', reason: 'ITEM_GIFT', protected: true };
       if (item.expiresAt) return { disposition: 'PROTECT', reason: 'ITEM_EXPIRING', protected: true };
       if (goalTargets.has(name)) return { disposition: 'RESERVE', reason: 'ACTIVE_COLLECTION_GOAL', protected: true };
       if (type === 'quest' || definition.quest === true) {
@@ -17486,7 +17501,7 @@
       if (!plan || plan.state !== 'READY') return [];
       return (plan.items || []).filter(row => {
         if (!row || !row.name || String(row.disposition || '').toUpperCase() !== 'BANK') return false;
-        if (row.locked === true || row.giveaway === true || row.gift === true || row.expiresAt) return false;
+        if (row.locked === true || row.giveaway === true || row.expiresAt) return false;
         const future = row.futureGearEvaluation || null;
         const offlineGear = !!(future
           && future.checked === true
@@ -18300,7 +18315,7 @@
       ]);
       return (plan.items || []).filter(row => {
         if (!row || !row.name || String(row.disposition || '').toUpperCase() !== 'SELL') return false;
-        if (row.locked === true || row.giveaway === true || row.gift === true || row.expiresAt) return false;
+        if (row.locked === true || row.giveaway === true || row.expiresAt) return false;
         const definition = row.definition || {};
         if (definition.quest === true || String(definition.type || '').toLowerCase() === 'quest') return false;
 
@@ -20815,7 +20830,6 @@
       if (!item || !item.name) return 'ITEM_INVALID';
       if (item.locked === true) return 'ITEM_LOCKED';
       if (item.giveaway === true) return 'ITEM_GIVEAWAY';
-      if (item.gift === true) return 'ITEM_GIFT';
       if (item.expiresAt) return 'ITEM_EXPIRING';
       if (!meta) return 'ITEM_DEFINITION_UNKNOWN';
       if (meta.quest === true || String(meta.type || '').toLowerCase() === 'quest') return 'QUEST_ITEM';
@@ -21397,7 +21411,7 @@
     }
 
     _safeItem(row) {
-      return !!(row && row.name && row.locked !== true && row.giveaway !== true && row.gift !== true && !row.expiresAt);
+      return !!(row && row.name && row.locked !== true && row.giveaway !== true && !row.expiresAt);
     }
 
     _safeDefinition(definition) {
@@ -29009,7 +29023,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.38-h26';
+      this.version = options.version || '0.26.39-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -37127,7 +37141,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.38-h26',
+    version: '0.26.39-h26',
     bootCount,
     replacedPrevious: !!previous
   });
