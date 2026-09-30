@@ -51,7 +51,7 @@
         outcomeTimeoutMs: Math.max(3000, Math.min(120000, Number(options.outcomeTimeoutMs) || 15000)),
         startOutcomeTimeoutMs: Math.max(15000, Math.min(120000, Number(options.startOutcomeTimeoutMs) || 60000)),
         browserSwapTimeoutMs: Math.max(20000, Math.min(180000, Number(options.browserSwapTimeoutMs) || 90000)),
-        browserSwapSessionRecoveryLimit: Math.max(0, Math.min(3,
+        browserSwapSessionRecoveryLimit: Math.max(1, Math.min(3,
           Number.isFinite(Number(options.browserSwapSessionRecoveryLimit))
             ? Math.floor(Number(options.browserSwapSessionRecoveryLimit))
             : 1
@@ -1065,7 +1065,19 @@
             && peer.characterNavigateCapable === true
             && peer.characterDisconnectCapable === true
             && this.crossWindow && typeof this.crossWindow.requestCharacterNavigation === 'function') {
-          const desiredName = remainingMissing.shift();
+          const desiredName = String(remainingMissing[0] || '');
+          const recoveryAttempts = this._browserSwapRecoveryCount(name, desiredName);
+          if (recoveryAttempts >= this.config.browserSwapSessionRecoveryLimit) {
+            return {
+              state: 'BLOCKED',
+              reason: 'H31_BROWSER_SWAP_RETRY_LIMIT_REACHED:' + name + '->' + desiredName,
+              targetName: name,
+              desiredName,
+              recoveryAttempts,
+              recoveryLimit: this.config.browserSwapSessionRecoveryLimit
+            };
+          }
+          remainingMissing.shift();
           return {
             state: 'READY',
             reason: 'H25_BROWSER_CHARACTER_ROTATION',
