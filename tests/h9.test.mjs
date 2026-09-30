@@ -633,7 +633,7 @@ test('H9 keeps moderate same-map separation on local follow rather than escalati
     groupMemberNames: ['My_Ranger1', 'My_Warrior']
   });
   assert.equal(started.tick.state, 'TRAVELLING');
-  assert.equal(started.tick.reason, 'H9_GROUP_LOCAL_REGROUP_STARTED');
+  assert.equal(started.tick.reason, 'H9_GROUP_LOCAL_FOLLOW_STARTED');
   assert.equal(f.movementCalls.filter(row => row.type === 'local').length, 1);
   assert.equal(f.movementCalls.filter(row => row.type === 'smart').length, 0);
 });
