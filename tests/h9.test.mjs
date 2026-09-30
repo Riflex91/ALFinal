@@ -524,13 +524,13 @@ test('H9 near follower ignores another farmer\'s large gap instead of restarting
   assert.equal(f.movementCalls.filter(row => row.type === 'local').length, 0);
 });
 
-test('H9 leader keeps its farm travel while followers catch up instead of backtracking', () => {
+test('H9 leader may finish current farm travel only while group separation stays below hard-regroup distance', () => {
   const f = makeFixture({
     characterName: 'My_Ranger1',
     ctype: 'ranger',
     partyOwnedMembers: [
       { name: 'My_Ranger1', ctype: 'ranger', damageType: 'physical', map: 'main', x: 0, y: 0 },
-      { name: 'My_Rogue', ctype: 'rogue', damageType: 'physical', map: 'main', x: 300, y: 0 }
+      { name: 'My_Rogue', ctype: 'rogue', damageType: 'physical', map: 'main', x: 175, y: 0 }
     ]
   });
   f.setActiveMovementOwner('farm-intelligence-h9');
@@ -542,6 +542,44 @@ test('H9 leader keeps its farm travel while followers catch up instead of backtr
   assert.equal(started.tick.state, 'TRAVELLING');
   assert.equal(started.tick.reason, 'H9_GROUP_LEADER_TRAVEL_CONTINUES');
   assert.equal(f.movementCalls.some(row => row.type === 'cancel'), false);
+});
+
+test('H9 leader cancels farm travel on hard separation so a lagging follower can catch up', () => {
+  const f = makeFixture({
+    characterName: 'My_Warrior',
+    ctype: 'warrior',
+    partyOwnedMembers: [
+      { name: 'My_Warrior', ctype: 'warrior', damageType: 'physical', map: 'main', x: 0, y: 0 },
+      { name: 'My_Ranger1', ctype: 'ranger', damageType: 'physical', map: 'main', x: 300, y: 0 }
+    ]
+  });
+  f.setActiveMovementOwner('farm-intelligence-h9');
+  const started = f.controller.startAutonomy({
+    owner: 'full-autonomy',
+    groupLeaderName: 'My_Warrior',
+    groupMemberNames: ['My_Warrior', 'My_Ranger1']
+  });
+  assert.notEqual(started.tick.reason, 'H9_GROUP_LEADER_TRAVEL_CONTINUES');
+  assert.equal(f.movementCalls.some(row => row.type === 'cancel'), true);
+});
+
+test('H9 leader keeps waiting after trigger recovery until the group reaches the stop radius', () => {
+  const f = makeFixture({
+    characterName: 'My_Warrior',
+    ctype: 'warrior',
+    partyOwnedMembers: [
+      { name: 'My_Warrior', ctype: 'warrior', damageType: 'physical', map: 'main', x: 0, y: 0 },
+      { name: 'My_Ranger1', ctype: 'ranger', damageType: 'physical', map: 'main', x: 100, y: 0 }
+    ]
+  });
+  const started = f.controller.startAutonomy({
+    owner: 'full-autonomy',
+    groupLeaderName: 'My_Warrior',
+    groupMemberNames: ['My_Warrior', 'My_Ranger1']
+  });
+  assert.equal(started.tick.state, 'WAITING');
+  assert.equal(started.tick.reason, 'H9_WAITING_FOR_TEAM_COHESION');
+  assert.equal(f.farmingCalls.length, 0);
 });
 
 test('H9 retries a transient far same-map regroup with path-checked local steps instead of smart_move looping', () => {
