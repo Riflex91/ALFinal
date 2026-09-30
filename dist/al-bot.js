@@ -1,4 +1,4 @@
-/* AL Bot 0.26.36-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.37-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -21545,7 +21545,14 @@
       }
       const activeHold = this._activeRiskHold(kind, row);
       if (activeHold) {
-        const decision = { ...clone(activeHold.decision), allowed: false, reason: 'MUTATION_RISK_EXCEEDS_POLICY', held: true, holdUntilMs: activeHold.untilMs };
+        const held = clone(activeHold.decision) || {};
+        const decision = {
+          ...held,
+          allowed: false,
+          reason: held.reason || 'MUTATION_RISK_EXCEEDS_POLICY',
+          held: true,
+          holdUntilMs: activeHold.untilMs
+        };
         this.lastMutationRiskDecision = clone(decision);
         return decision;
       }
@@ -28981,7 +28988,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.36-h26';
+      this.version = options.version || '0.26.37-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -37099,7 +37106,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.36-h26',
+    version: '0.26.37-h26',
     bootCount,
     replacedPrevious: !!previous
   });
