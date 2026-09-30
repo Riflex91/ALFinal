@@ -500,6 +500,10 @@ test('H29 local cross-window transport never invokes failing send_cm when Broadc
   assert.equal(b.transport.status().metrics.sendCmFailures, 0);
   assert.ok(a.transport.status().metrics.localTransportPreferred >= 1);
   assert.ok(b.transport.status().metrics.localTransportPreferred >= 1);
+  assert.equal(a.transport.status().transportPolicy.localCrossWindowPrimary, true);
+  assert.equal(a.transport.status().transportPolicy.sendCmFallbackOnly, true);
+  assert.equal(b.transport.status().transportPolicy.localCrossWindowPrimary, true);
+  assert.equal(b.transport.status().transportPolicy.sendCmFallbackOnly, true);
 
   a.transport.destroy();
   b.transport.destroy();
