@@ -586,13 +586,15 @@ test('H9 leader cancels farm travel on hard separation so a lagging follower can
   assert.equal(f.movementCalls.some(row => row.type === 'cancel'), true);
 });
 
-test('H9 leader keeps waiting after trigger recovery until the group reaches the stop radius', () => {
+test('H9 leader resumes V3-style farm travel once group recovery is inside the trigger envelope', () => {
   const f = makeFixture({
     characterName: 'My_Warrior',
     ctype: 'warrior',
+    safe: [],
+    catalog: [{ key: 'catalog:main:crab:0', map: 'main', mtype: 'crab', x: -1202.5, y: -66, count: 4 }],
     partyOwnedMembers: [
       { name: 'My_Warrior', ctype: 'warrior', damageType: 'physical', map: 'main', x: 0, y: 0 },
-      { name: 'My_Ranger1', ctype: 'ranger', damageType: 'physical', map: 'main', x: 100, y: 0 }
+      { name: 'My_Ranger1', ctype: 'ranger', damageType: 'physical', map: 'main', x: 106.6, y: 0 }
     ]
   });
   const started = f.controller.startAutonomy({
@@ -600,8 +602,12 @@ test('H9 leader keeps waiting after trigger recovery until the group reaches the
     groupLeaderName: 'My_Warrior',
     groupMemberNames: ['My_Warrior', 'My_Ranger1']
   });
-  assert.equal(started.tick.state, 'WAITING');
-  assert.equal(started.tick.reason, 'H9_WAITING_FOR_TEAM_COHESION');
+  assert.equal(started.tick.state, 'TRAVELLING');
+  assert.equal(started.tick.reason, 'H9_MOVING_TO_SELECTED_SPOT');
+  const travel = f.movementCalls.find(row => row.type === 'smart');
+  assert.ok(travel);
+  assert.equal(travel.args.owner, 'farm-intelligence-h9');
+  assert.deepEqual(travel.destination, { map: 'main', x: -1202.5, y: -66 });
   assert.equal(f.farmingCalls.length, 0);
 });
 
