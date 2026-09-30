@@ -142,6 +142,19 @@
       if (this.suspendedReason) return { accepted: false, reason: this.suspendedReason };
       if (this.currentAction) return { accepted: false, reason: 'H17_ACTION_ACTIVE' };
       if (this.canAct && this.canAct('economy') !== true) return { accepted: false, reason: 'H17_RUNTIME_ACTION_BLOCKED' };
+      // H15's mutation cap is a session budget, not a lifetime budget. Full
+      // Autonomy intentionally releases idle H17 sessions for logistics/stand
+      // probes, so a fresh H17 session must also start a fresh bounded H15
+      // attempt window without clearing risk holds or any safety suspension.
+      if (this.upgrade && typeof this.upgrade.beginAutonomySession === 'function') {
+        const mutationSession = this.upgrade.beginAutonomySession('H17_ECONOMY_AUTONOMY_START');
+        if (!mutationSession || mutationSession.accepted !== true) {
+          return {
+            accepted: false,
+            reason: mutationSession && mutationSession.reason || 'H17_MUTATION_SESSION_START_REJECTED'
+          };
+        }
+      }
       if (options.maxActions != null) {
         this.config.maxActionsPerSession = Math.max(1, Math.min(100, Math.floor(Number(options.maxActions) || 1)));
       }

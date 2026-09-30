@@ -1048,7 +1048,7 @@
       const activeOwnMove = this._ownedMovement(movement);
       const activeOwner = movement && movement.activeOrder && String(movement.activeOrder.owner || '');
       if (activeOwnMove) {
-        if (formationDistance != null && formationDistance <= this.config.groupRegroupStopDistance) {
+        if (localRegroupDistance <= this.config.groupRegroupStopDistance) {
           try { this.movement.cancel('H9_GROUP_REJOINED_FORMATION'); } catch (_) {}
           this.groupMove = null;
         } else if (activeOwner === 'farm-intelligence-h9-group-regroup') {
@@ -1082,12 +1082,24 @@
       // Hard separation deliberately bypasses local stepping and enters the
       // stable live-leader smart route below.
       const useSmartRegroup = localRegroupDistance >= this.config.groupHardRegroupDistance;
-      if (!useSmartRegroup && formation && formationDistance != null
-          && formationDistance > this.config.groupRegroupStopDistance) {
+      if (!useSmartRegroup && formation && localRegroupDistance > this.config.groupRegroupStopDistance) {
         const cx = Number(group.local.x);
         const cy = Number(group.local.y);
-        const angle = Math.atan2(Number(formation.y) - cy, Number(formation.x) - cx);
-        const travel = Math.max(0, formationDistance - this.config.groupRegroupStopDistance * 0.75);
+        // Formation distance alone is not enough to declare a follower rejoined:
+        // the live logs can satisfy the offset while the follower is still outside
+        // the leader stop radius, leaving the leader waiting forever for cohesion.
+        // Prefer the formation point while it still needs closing; otherwise take
+        // one bounded local step toward the live leader.
+        const localFollowTarget = formationDistance != null
+          && formationDistance > this.config.groupRegroupStopDistance
+          ? formation
+          : group.leader;
+        const angle = Math.atan2(Number(localFollowTarget.y) - cy, Number(localFollowTarget.x) - cx);
+        // Size the step against the target we actually chose. When the
+        // formation offset is already satisfied, using formationDistance here
+        // would produce a zero-length step even though the live leader gap remains.
+        const localFollowDistance = distance(group.local, localFollowTarget);
+        const travel = Math.max(0, Number(localFollowDistance || 0) - this.config.groupRegroupStopDistance * 0.75);
         const step = Math.min(this.config.groupFollowStep, travel);
         let waypoint = null;
         for (const offsetDeg of [0, 20, -20, 35, -35, 50, -50, 70, -70, 90, -90]) {

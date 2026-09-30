@@ -504,6 +504,29 @@ test('H9 follower inside the stop radius does not restart regroup movement', () 
   assert.equal(f.movementCalls.length, 0);
 });
 
+test('H9 follower closes the live leader gap when its formation offset is already inside the stop radius', () => {
+  const f = makeFixture({
+    characterName: 'My_Ranger2',
+    ctype: 'ranger',
+    partyOwnedMembers: [
+      { name: 'My_Warrior', ctype: 'warrior', damageType: 'physical', map: 'main', x: 0, y: 0 },
+      { name: 'My_Ranger1', ctype: 'ranger', damageType: 'physical', map: 'main', x: -45, y: 0 },
+      { name: 'My_Ranger2', ctype: 'ranger', damageType: 'physical', map: 'main', x: -75, y: 0 }
+    ]
+  });
+  const started = f.controller.startAutonomy({
+    owner: 'full-autonomy',
+    groupLeaderName: 'My_Warrior',
+    groupMemberNames: ['My_Warrior', 'My_Ranger1', 'My_Ranger2']
+  });
+  assert.equal(started.tick.state, 'TRAVELLING');
+  assert.equal(started.tick.reason, 'H9_GROUP_LOCAL_FOLLOW_STARTED');
+  const local = f.movementCalls.find(row => row.type === 'local');
+  assert.ok(local);
+  assert.ok(Math.hypot(local.destination.x, local.destination.y) < 75);
+  assert.equal(f.farmState().active, false);
+});
+
 test('H9 near follower ignores another farmer\'s large gap instead of restarting regroup', () => {
   const f = makeFixture({
     characterName: 'My_Ranger2',
@@ -763,9 +786,9 @@ test('H9 control center and one-click live suite are wired', () => {
   assert.match(runtime, /visibleSafe\.length > 0/);
   assert.match(runtime, /h9-adaptive-decisions/);
   assert.match(runtime, /timeoutMs: 85000/);
-  assert.match(entry, /0\.26\.29-h26/);
+  assert.match(entry, /0\.26\.30-h26/);
   assert.match(entry, /farmIntelligence:/);
-  assert.match(build, /const runtimeVersion = '0\.26\.29-h26'/);
+  assert.match(build, /const runtimeVersion = '0\.26\.30-h26'/);
 });
 
 test('H9 game adapter normalizes live farm data for scoring', () => {

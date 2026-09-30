@@ -229,6 +229,7 @@ function fixture(options = {}) {
     bank,
     settleGraceMs: options.settleGraceMs || 100,
     outcomeTimeoutMs: options.outcomeTimeoutMs || 1200,
+    maxAttemptsPerSession: options.maxAttemptsPerSession,
     maxItemValueAtRisk: options.maxItemValueAtRisk,
     maxConsumableCost: options.maxConsumableCost,
     offeringMode: options.offeringMode,
@@ -238,6 +239,35 @@ function fixture(options = {}) {
 
   return { controller, state, game, actions };
 }
+
+test('H15 renews the bounded mutation attempt budget only at a new autonomy-session boundary', () => {
+  const { controller } = fixture({ maxAttemptsPerSession: 1 });
+  assert.equal(controller.queueUpgrade(0).accepted, true);
+  assert.equal(controller.tick().state, 'DISPATCHED');
+  controller.tick();
+
+  const exhausted = controller.queueUpgrade(0);
+  assert.equal(exhausted.accepted, false);
+  assert.equal(exhausted.reason, 'H15_SESSION_ATTEMPT_BUDGET_EXHAUSTED');
+  assert.equal(controller.status().attemptsThisSession, 1);
+  assert.equal(controller.status().lastAction.type, 'UPGRADE_SUCCEEDED');
+
+  const renewed = controller.beginAutonomySession('TEST_NEW_H17_SESSION');
+  assert.equal(renewed.accepted, true);
+  assert.equal(controller.status().attemptsThisSession, 0);
+  assert.equal(controller.status().attemptSession.generation, 1);
+  assert.equal(controller.status().attemptSession.reason, 'TEST_NEW_H17_SESSION');
+  assert.equal(controller.status().lastAction.type, 'UPGRADE_SUCCEEDED');
+  assert.equal(controller.queueUpgrade(0).accepted, true);
+});
+
+test('H15 refuses attempt-budget renewal while a mutation request is active', () => {
+  const { controller } = fixture({ maxAttemptsPerSession: 1 });
+  assert.equal(controller.queueUpgrade(0).accepted, true);
+  const renewal = controller.beginAutonomySession('TEST_BUSY_RENEWAL');
+  assert.equal(renewal.accepted, false);
+  assert.equal(renewal.reason, 'H15_SESSION_ACTIVE_MUTATION');
+});
 
 test('H15 plans safe upgrade and compound candidates with grade scrolls', () => {
   const { controller } = fixture();

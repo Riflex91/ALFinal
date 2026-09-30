@@ -161,6 +161,15 @@ function fixture(options = {}) {
     }
   });
 
+  if (options.trackUpgradeSession) {
+    upgrade.beginAutonomySession = reason => {
+      calls.push({ module: 'upgrade', kind: 'BEGIN_SESSION', reason });
+      if (options.rejectUpgradeSession) return { accepted: false, reason: 'H15_SESSION_ACTIVE_MUTATION' };
+      statuses.upgrade.attemptsThisSession = 0;
+      return { accepted: true, generation: 1 };
+    };
+  }
+
   const exchangeCraft = controller('exchangeCraft', {
     queueExchange: inventorySlot => {
       calls.push({ module: 'exchangeCraft', kind: 'EXCHANGE', inventorySlot });
@@ -643,6 +652,34 @@ test('H17 active child action cannot be forgotten by reset or autonomy restart',
   assert.ok(f.economy.status().currentAction);
 });
 
+test('H17 starts a fresh bounded H15 mutation session when economy autonomy restarts', () => {
+  const f = fixture({
+    trackUpgradeSession: true,
+    upgrades: [{ itemSlot: 5, itemName: 'sword', fromLevel: 0, budget: { itemValueAtRisk: 500 } }]
+  });
+  const started = f.economy.startAutonomy({ maxActions: 3 });
+  assert.equal(started.accepted, true);
+  assert.deepEqual(f.calls[0], {
+    module: 'upgrade',
+    kind: 'BEGIN_SESSION',
+    reason: 'H17_ECONOMY_AUTONOMY_START'
+  });
+  assert.equal(f.economy.tick().state, 'QUEUED');
+  assert.equal(f.calls.some(row => row.module === 'upgrade' && row.kind === 'UPGRADE'), true);
+});
+
+test('H17 fails closed when H15 cannot begin a new mutation session', () => {
+  const f = fixture({
+    trackUpgradeSession: true,
+    rejectUpgradeSession: true,
+    upgrades: [{ itemSlot: 5, itemName: 'sword', fromLevel: 0, budget: { itemValueAtRisk: 500 } }]
+  });
+  const started = f.economy.startAutonomy({ maxActions: 3 });
+  assert.equal(started.accepted, false);
+  assert.equal(started.reason, 'H15_SESSION_ACTIVE_MUTATION');
+  assert.equal(f.economy.status().autonomyEnabled, false);
+});
+
 test('H17 session action budget stops bounded autonomy', () => {
   const f = fixture({
     exchanges: [{ safe: true, itemName: 'anniversarygift', inventorySlot: 4, requiredQuantity: 1, valueAtRisk: 100 }]
@@ -671,7 +708,7 @@ test('H17 runtime, API, UI, build and generated bundle are wired without direct 
   assert.match(runtime, /new ns\.EconomyController/);
   assert.match(runtime, /id: 'economy'/);
   assert.match(runtime, /id: 'h17-economy-autonomy'/);
-  assert.match(runtime, /options\.version \|\| '0\.26\.29-h26'/);
+  assert.match(runtime, /options\.version \|\| '0\.26\.30-h26'/);
   assert.match(runtime, /trade\.movementUnknown/);
   assert.match(runtime, /inventory\.lootUnknown/);
   assert.match(runtime, /status\.pendingLoot/);
@@ -679,17 +716,18 @@ test('H17 runtime, API, UI, build and generated bundle are wired without direct 
   assert.match(source, /child\.pendingLoot/);
   assert.match(source, /type\.includes\('BLOCKED'\)/);
   assert.match(source, /if \(observed\.state !== 'IDLE'\) return observed/);
-  assert.match(entry, /0\.26\.29-h26/);
+  assert.match(source, /beginAutonomySession\('H17_ECONOMY_AUTONOMY_START'\)/);
+  assert.match(entry, /0\.26\.30-h26/);
   assert.match(entry, /runtime\.economy\.startAutonomy/);
   assert.match(entry, /Object\.freeze\(api\.economy\)/);
   assert.match(ui, /data-tab="economy"/);
   assert.match(ui, /H17 Economy Autonomy/);
   assert.match(build, /src\/economy\.js/);
-  assert.match(build, /const runtimeVersion = '0\.26\.29-h26'/);
-  assert.match(dist, /AL Bot 0\.26\.29-h26/);
+  assert.match(build, /const runtimeVersion = '0\.26\.30-h26'/);
+  assert.match(dist, /AL Bot 0\.26\.30-h26/);
   assert.match(dist, /class EconomyController/);
   assert.doesNotMatch(source, /actions\.dispatch/);
-  assert.equal(pkg.version, '0.26.29');
+  assert.equal(pkg.version, '0.26.30');
 });
 
 

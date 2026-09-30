@@ -47,6 +47,9 @@
       this.lastAction = null;
       this.sequence = 0;
       this.attemptsThisSession = 0;
+      this.attemptSessionGeneration = 0;
+      this.attemptSessionStartedAt = null;
+      this.attemptSessionReason = null;
       this.riskHolds = new Map();
       this.lastMutationRiskDecision = null;
       this.config = {
@@ -110,6 +113,24 @@
         this.scope.interval('upgrade-compound-tick', () => this.tick(), this.config.tickMs, { immediate: true });
       }
       return { started: true };
+    }
+
+    beginAutonomySession(reason = 'H15_AUTONOMY_SESSION_START') {
+      if (!this.moduleActive) return { accepted: false, reason: 'H15_MODULE_NOT_ACTIVE' };
+      if (this.suspendedReason) return { accepted: false, reason: this.suspendedReason };
+      if (this.pending || this.request || this.riskPreview) {
+        return { accepted: false, reason: 'H15_SESSION_ACTIVE_MUTATION' };
+      }
+      this.attemptsThisSession = 0;
+      this.attemptSessionGeneration += 1;
+      this.attemptSessionStartedAt = nowIso();
+      this.attemptSessionReason = cleanText(reason, 240) || 'H15_AUTONOMY_SESSION_START';
+      return {
+        accepted: true,
+        generation: this.attemptSessionGeneration,
+        startedAt: this.attemptSessionStartedAt,
+        maxAttempts: this.config.maxAttemptsPerSession
+      };
     }
 
     stop(reason = 'H15_MODULE_STOP') {
@@ -1177,6 +1198,11 @@
         suspended: !!this.suspendedReason,
         suspendedReason: this.suspendedReason,
         attemptsThisSession: this.attemptsThisSession,
+        attemptSession: {
+          generation: this.attemptSessionGeneration,
+          startedAt: this.attemptSessionStartedAt,
+          reason: this.attemptSessionReason
+        },
         pending: clone(this.pending),
         request: clone(this.request),
         riskPreview: clone(this.riskPreview),
