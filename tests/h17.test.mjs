@@ -716,6 +716,7 @@ test('H17 runtime, API, UI, build and generated bundle are wired without direct 
   assert.match(source, /child\.pendingLoot/);
   assert.match(source, /type\.includes\('BLOCKED'\)/);
   assert.match(source, /if \(observed\.state !== 'IDLE'\) return observed/);
+  assert.match(source, /beginAutonomySession\('H17_ECONOMY_AUTONOMY_START'\)/);
   assert.match(entry, /0\.26\.30-h26/);
   assert.match(entry, /runtime\.economy\.startAutonomy/);
   assert.match(entry, /Object\.freeze\(api\.economy\)/);
