@@ -197,6 +197,8 @@ function autonomyFixture(options = {}) {
           running: true,
           fullAutonomyEnabled: true,
           fullAutonomyDesiredCharacterNames: ['My_Merchant', 'My_Ranger1', 'My_Ranger2', 'My_Rogue'],
+          fullAutonomyDesiredSource: options.merchantAuthority === false ? 'bootstrap-hint' : 'merchant-authority',
+          fullAutonomyDesiredChangedAtMs: options.merchantAuthority === false ? null : 123456,
           fullAutonomyLeaderName: 'My_Ranger1'
         };
       },
@@ -214,6 +216,29 @@ function autonomyFixture(options = {}) {
   });
   return { controller, runtime, strategy, calls, online, profiles, initialPlan, fallbackPlan };
 }
+
+test('H27 non-Merchant waits without lifecycle actions until Merchant authority is fresh', () => {
+  const { controller, calls } = autonomyFixture({ localName: 'My_Ranger1', merchantAuthority: false });
+  const started = controller.startAutonomy({ taskType: 'FARM' });
+
+  assert.equal(started.accepted, true);
+  assert.equal(started.tick.state, 'WARMING');
+  assert.equal(started.tick.reason, 'FULL_AUTONOMY_WAITING_MERCHANT_SELECTION');
+  assert.equal(started.tick.lifecycleArmed, false);
+  assert.equal(calls.policies.length, 0);
+  assert.equal(calls.lifecycleStarts, 0);
+  assert.deepEqual(Array.from(controller.status().desiredCharacterNames), []);
+});
+
+test('H27 Merchant promotes its quartet to explicit distributed authority', () => {
+  const { controller } = autonomyFixture({ localName: 'My_Merchant' });
+  const started = controller.startAutonomy({ taskType: 'FARM' });
+
+  assert.equal(started.accepted, true);
+  assert.equal(controller.status().desiredSource, 'merchant-authority');
+  assert.equal(Number.isFinite(controller.status().desiredChangedAtMs), true);
+  assert.deepEqual(Array.from(controller.status().desiredCharacterNames), ['My_Merchant', 'My_Ranger1', 'My_Ranger2', 'My_Rogue']);
+});
 
 test('H24 Full Autonomy preserves the requested catch-up quartet and fails closed when rotation is not controllable', () => {
   const { controller, calls } = autonomyFixture({ localName: 'My_Ranger1' });

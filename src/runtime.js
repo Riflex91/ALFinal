@@ -269,6 +269,18 @@
         const snapshot = this.game.snapshot();
         const server = snapshot && snapshot.server || {};
         if (!server.region || !server.identifier) throw new Error('H25_BROWSER_SERVER_IDENTITY_UNAVAILABLE');
+        const sourceName = snapshot && snapshot.character && snapshot.character.name
+          ? String(snapshot.character.name)
+          : null;
+        const onlineNames = new Set(roster && Array.isArray(roster.onlineCharacterNames)
+          ? roster.onlineCharacterNames.map(String)
+          : []);
+        if (sourceName && onlineNames.has(sourceName)) {
+          throw new Error('H27_BROWSER_ROTATION_SOURCE_STILL_ONLINE');
+        }
+        if (!onlineNames.has(name) && onlineNames.size >= 4) {
+          throw new Error('H27_ACCOUNT_CHARACTER_SLOT_LIMIT_REACHED');
+        }
         const view = resolveH25BrowserWindow();
         if (!view || !view.location || typeof view.location.assign !== 'function') {
           throw new Error('H25_BROWSER_NAVIGATION_UNAVAILABLE');
@@ -303,6 +315,12 @@
             fullAutonomyDesiredCharacterNames: this.fullAutonomy
               ? this.fullAutonomy.status().desiredCharacterNames || []
               : [],
+            fullAutonomyDesiredSource: this.fullAutonomy
+              ? this.fullAutonomy.status().desiredSource || null
+              : null,
+            fullAutonomyDesiredChangedAtMs: this.fullAutonomy
+              ? this.fullAutonomy.status().desiredChangedAtMs || null
+              : null,
             fullAutonomyLeaderName: this.fullAutonomy
               && this.fullAutonomy.status().lastPlan
               ? this.fullAutonomy.status().lastPlan.leaderName || null

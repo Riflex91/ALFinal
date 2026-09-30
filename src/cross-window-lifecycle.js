@@ -341,6 +341,10 @@
         fullAutonomyDesiredCharacterNames: Array.isArray(row.fullAutonomyDesiredCharacterNames)
           ? [...new Set(row.fullAutonomyDesiredCharacterNames.map(name => cleanText(name, 120)).filter(Boolean))].sort().slice(0, 4)
           : [],
+        fullAutonomyDesiredSource: cleanText(row.fullAutonomyDesiredSource || '', 80) || null,
+        fullAutonomyDesiredChangedAtMs: Number.isFinite(Number(row.fullAutonomyDesiredChangedAtMs))
+          ? Number(row.fullAutonomyDesiredChangedAtMs)
+          : null,
         fullAutonomyLeaderName: cleanText(row.fullAutonomyLeaderName || '', 120) || null,
         characterDisconnectCapable: row.characterDisconnectCapable === true,
         characterNavigateCapable: row.characterNavigateCapable === true,
@@ -437,6 +441,10 @@
         fullAutonomyDesiredCharacterNames: Array.isArray(state.fullAutonomyDesiredCharacterNames)
           ? [...new Set(state.fullAutonomyDesiredCharacterNames.map(name => cleanText(name, 120)).filter(Boolean))].sort().slice(0, 4)
           : [],
+        fullAutonomyDesiredSource: cleanText(state.fullAutonomyDesiredSource || '', 80) || null,
+        fullAutonomyDesiredChangedAtMs: Number.isFinite(Number(state.fullAutonomyDesiredChangedAtMs))
+          ? Number(state.fullAutonomyDesiredChangedAtMs)
+          : null,
         fullAutonomyLeaderName: cleanText(state.fullAutonomyLeaderName || '', 120) || null,
         characterDisconnectCapable: state.characterDisconnectCapable === true,
         characterNavigateCapable: state.characterNavigateCapable === true,
@@ -669,6 +677,20 @@
       throw new Error(timeoutReason);
     }
 
+    async _waitForOwnedCharacterOffline(characterName, timeoutMs = 6000) {
+      const target = cleanText(characterName || '', 120);
+      if (!target) throw new Error('H27_BROWSER_SWAP_SOURCE_REQUIRED');
+      const pollMs = 100;
+      const attempts = Math.max(1, Math.ceil(Math.max(1000, Number(timeoutMs) || 6000) / pollMs));
+      for (let attempt = 0; attempt < attempts; attempt += 1) {
+        if (!this._onlineOwnedNames().has(target)) {
+          return { offline: true, characterName: target, attempts: attempt + 1 };
+        }
+        if (attempt + 1 < attempts) await this._delay(pollMs);
+      }
+      throw new Error('H27_BROWSER_SWAP_SOURCE_OFFLINE_TIMEOUT');
+    }
+
     async _executePartyLeave(sender) {
       const localState = this._localStatePayload();
       const localName = this._localName();
@@ -837,24 +859,45 @@
           if (before.running !== true) throw new Error('H25_CROSS_WINDOW_CHARACTER_RUNTIME_NOT_RUNNING');
           if (before.emergencyStopLatched === true) throw new Error('H25_CROSS_WINDOW_CHARACTER_EMERGENCY_STOP_LATCHED');
           if (before.characterNavigateCapable !== true) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_CAPABILITY_MISSING');
-          if (!desiredCharacterName || desiredCharacterName === this._localName()) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_INVALID');
+          if (before.characterDisconnectCapable !== true) throw new Error('H27_CROSS_WINDOW_CHARACTER_DISCONNECT_CAPABILITY_MISSING');
+          const sourceCharacterName = this._localName();
+          if (!desiredCharacterName || desiredCharacterName === sourceCharacterName) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_INVALID');
           if (!this._ownedNames().has(desiredCharacterName)) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_NOT_OWNED');
           if (this._onlineOwnedNames().has(desiredCharacterName)) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_ALREADY_ONLINE');
           if (!this.setTimeoutFn) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TIMER_UNAVAILABLE');
-          // Send the settlement first. The actual page navigation destroys this
-          // runtime and therefore cannot be used as its own transport ACK.
+
+          // Adventure Land enforces 3 characters + 1 merchant. Navigating directly
+          // can attempt the replacement before the old server session is gone and
+          // transiently becomes a fifth login. Disconnect first and require account-
+          // roster offline evidence before any navigation to the replacement.
+          const disconnect = this.disconnectLocal('H27_SAFE_BROWSER_ROTATION:' + sender);
+          if (disconnect && disconnect.settlement && typeof disconnect.settlement.then === 'function') {
+            await disconnect.settlement;
+          }
+          const offline = await this._waitForOwnedCharacterOffline(sourceCharacterName, 6000);
+
+          // The settlement must still be emitted before page navigation destroys
+          // the current runtime. The navigation is scheduled only after offline proof.
           this.setTimeoutFn(() => {
-            try { this.navigateCharacterLocal(desiredCharacterName, 'H25_REMOTE_BROWSER_ROTATION:' + sender); }
-            catch (error) {
+            try {
+              const value = this.navigateCharacterLocal(desiredCharacterName, 'H27_SAFE_BROWSER_ROTATION:' + sender);
+              if (value && typeof value.then === 'function') {
+                Promise.resolve(value).catch(error => {
+                  this.lastError = { at: nowIso(this.now()), reason: errorReason(error, 'H25_CROSS_WINDOW_CHARACTER_NAVIGATION_FAILED') };
+                  this._log('error', 'H25 Cross-Window Character Navigation fehlgeschlagen', this.lastError);
+                });
+              }
+            } catch (error) {
               this.lastError = { at: nowIso(this.now()), reason: errorReason(error, 'H25_CROSS_WINDOW_CHARACTER_NAVIGATION_FAILED') };
               this._log('error', 'H25 Cross-Window Character Navigation fehlgeschlagen', this.lastError);
             }
           }, 100);
           outcome = {
-            reason: 'H25_CROSS_WINDOW_CHARACTER_NAVIGATION_ACCEPTED',
+            reason: 'H27_CROSS_WINDOW_SAFE_CHARACTER_ROTATION_ACCEPTED',
             details: {
-              fromCharacterName: this._localName(),
+              fromCharacterName: sourceCharacterName,
               desiredCharacterName,
+              sourceOfflineConfirmed: offline.offline === true,
               completionEvidence: 'OLD_ACCOUNT_OFFLINE_AND_NEW_CHARACTER_PRESENT'
             }
           };
@@ -994,6 +1037,7 @@
       if (peer.running !== true) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H25_CROSS_WINDOW_CHARACTER_RUNTIME_NOT_RUNNING' } };
       if (peer.emergencyStopLatched === true) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H25_CROSS_WINDOW_CHARACTER_EMERGENCY_STOP_LATCHED' } };
       if (peer.characterNavigateCapable !== true) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H25_CROSS_WINDOW_CHARACTER_NAVIGATION_CAPABILITY_MISSING' } };
+      if (peer.characterDisconnectCapable !== true) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H27_CROSS_WINDOW_CHARACTER_DISCONNECT_CAPABILITY_MISSING' } };
       return this._requestCommand(target, 'NAVIGATE_CHARACTER', {
         peer,
         payload: { desiredCharacterName: desired },

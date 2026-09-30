@@ -203,7 +203,7 @@ function fixture(options = {}) {
     },
     requestCharacterNavigation(name, desiredName) {
       const peer = runtimePeers.get(String(name));
-      if (!peer || peer.running !== true || peer.characterNavigateCapable !== true) {
+      if (!peer || peer.running !== true || peer.characterNavigateCapable !== true || peer.characterDisconnectCapable !== true) {
         return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H25_CROSS_WINDOW_CHARACTER_NAVIGATION_CAPABILITY_MISSING' } };
       }
       state.crossWindowDispatches.push({
@@ -1277,7 +1277,21 @@ test('H26 transient start authorization rejection waits and retries without susp
 });
 
 
-test('H26 local outgoing browser can rotate itself to the missing desired character', () => {
+test('H27 hard slot guard rejects a fifth START before dispatch', () => {
+  const f = fixture({
+    onlineNames: ['My_Ranger', 'My_Priest', 'My_Merchant', 'My_Warrior'],
+    runnerActiveNames: ['My_Ranger', 'My_Priest', 'My_Merchant', 'My_Warrior']
+  });
+  f.state.account.push({ name: 'My_Mage', ctype: 'mage', online: false });
+  assert.equal(f.controller.queueStart('My_Mage').accepted, true);
+
+  const result = f.controller.tick();
+  assert.equal(result.accepted, false);
+  assert.equal(result.reason, 'H27_ACCOUNT_CHARACTER_SLOT_LIMIT_REACHED');
+  assert.equal(f.state.dispatches.filter(row => row.name === 'start_character').length, 0);
+});
+
+test('H27 local outgoing browser fails closed and leaves rotation to the Merchant coordinator', () => {
   const { controller, state } = fixture({
     onlineNames: ['My_Merchant', 'My_Ranger', 'My_Priest', 'My_Warrior'],
     runnerActiveNames: ['My_Priest'],
@@ -1291,25 +1305,9 @@ test('H26 local outgoing browser can rotate itself to the missing desired charac
 
   const desired = ['My_Mage', 'My_Merchant', 'My_Ranger', 'My_Warrior'];
   const readiness = controller.characterRotationReadiness(desired);
-  assert.equal(readiness.ready, true);
-  assert.deepEqual(clone(readiness.browserSwapPairs), [{ from: 'My_Priest', to: 'My_Mage', local: true }]);
-
-  assert.equal(controller.setPolicy({
-    desiredActiveNames: desired,
-    desiredPartyMemberNames: desired,
-    desiredPartyLeader: 'My_Ranger'
-  }).accepted, true);
-  assert.equal(controller.startAutonomy({ maxActions: 4 }).accepted, true);
-
-  const plan = controller.plan();
-  assert.equal(plan.state, 'READY');
-  assert.equal(plan.reason, 'H25_LOCAL_BROWSER_CHARACTER_ROTATION');
-  assert.equal(plan.request.kind, 'BROWSER_SWAP');
-  assert.equal(plan.request.targetName, 'My_Priest');
-  assert.equal(plan.request.desiredName, 'My_Mage');
-
-  const dispatched = controller.tick();
-  assert.equal(dispatched.state, 'DISPATCHED');
-  assert.deepEqual(clone(state.localNavigations), [{ from: 'My_Priest', to: 'My_Mage' }]);
-  assert.equal(state.dispatches.filter(row => row.name === 'stop_character' || row.name === 'start_character').length, 0);
+  assert.equal(readiness.ready, false);
+  assert.equal(readiness.reason, 'H27_ROTATION_LOCAL_REPLACEMENT_REQUIRES_MERCHANT_COORDINATOR:My_Priest');
+  assert.deepEqual(clone(readiness.browserSwapPairs), []);
+  assert.deepEqual(clone(state.localNavigations), []);
+  assert.equal(state.dispatches.length, 0);
 });
