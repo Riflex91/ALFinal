@@ -1522,6 +1522,10 @@
         sharedStorageFallback: this._sharedStorageAvailable(),
         browserChannelFallback: !!this.browserChannel,
         browserChannelName: this.browserChannelName,
+        transportPolicy: {
+          localCrossWindowPrimary: true,
+          sendCmFallbackOnly: true
+        },
         sessionId: this.sessionId,
         localName: this._localName(),
         server: this._serverIdentity(),
