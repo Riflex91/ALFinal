@@ -19,7 +19,7 @@
   const ROLE_CAPABILITIES = Object.freeze({
     warrior: ['TANK', 'DPS', 'MELEE'],
     priest: ['HEALER', 'HEAL', 'REVIVE', 'SUPPORT', 'DPS', 'RANGED'],
-    ranger: ['DPS', 'RANGED'],
+    ranger: ['DPS', 'AOE', 'RANGED'],
     mage: ['DPS', 'AOE', 'RANGED', 'SUPPORT'],
     rogue: ['DPS', 'MELEE'],
     paladin: ['TANK', 'HEAL', 'SUPPORT', 'DPS', 'MELEE'],
