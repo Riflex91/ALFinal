@@ -9,6 +9,8 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const progressionSource = fs.readFileSync(path.resolve(here, '../src/gear-progression.js'), 'utf8');
 const inventorySource = fs.readFileSync(path.resolve(here, '../src/inventory.js'), 'utf8');
 const partyLogisticsSource = fs.readFileSync(path.resolve(here, '../src/party-logistics.js'), 'utf8');
+const accountStrategySource = fs.readFileSync(path.resolve(here, '../src/account-strategy.js'), 'utf8');
+const upgradeSource = fs.readFileSync(path.resolve(here, '../src/upgrade.js'), 'utf8');
 
 function clone(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value));
@@ -151,6 +153,66 @@ function evaluator(options = {}) {
   });
   return { root, service };
 }
+
+test('account strategy persists offline equipment and gold and computes account-wide wealth', () => {
+  const storage = memoryStorage();
+  const rootA = context();
+  vm.runInNewContext(accountStrategySource, rootA, { filename: 'account-strategy.js' });
+  const ControllerA = rootA.__ALBOT_INTERNALS__.AccountStrategyController;
+  const controllerA = new ControllerA({
+    root: rootA,
+    storage,
+    roster: {
+      refresh: () => ({
+        accountCharacters: [{ name: 'My_Warrior', ctype: 'warrior', level: 80, online: true }],
+        onlineCharacterNames: ['My_Warrior']
+      })
+    },
+    game: {
+      snapshot: () => ({ available: true, character: { name: 'My_Warrior', ctype: 'warrior', level: 80, gold: 40000000 } }),
+      equipmentSnapshot: () => ({ available: true, slots: { mainhand: { name: 'old_sword', level: 0 } } }),
+      bankSnapshot: () => ({ available: true, gold: 70000000 })
+    },
+    gear: { score: () => 1 }
+  });
+  controllerA.profiles();
+
+  const rootB = context();
+  vm.runInNewContext(accountStrategySource, rootB, { filename: 'account-strategy.js' });
+  const ControllerB = rootB.__ALBOT_INTERNALS__.AccountStrategyController;
+  const controllerB = new ControllerB({
+    root: rootB,
+    storage,
+    roster: {
+      refresh: () => ({
+        accountCharacters: [
+          { name: 'My_Warrior', ctype: 'warrior', level: 80, online: false },
+          { name: 'My_Merchant', ctype: 'merchant', level: 80, online: true }
+        ],
+        onlineCharacterNames: ['My_Merchant']
+      })
+    },
+    game: {
+      snapshot: () => ({ available: true, character: { name: 'My_Merchant', ctype: 'merchant', level: 80, gold: 50000000 } }),
+      equipmentSnapshot: () => ({ available: true, slots: {} }),
+      bankSnapshot: () => ({ available: true, gold: 70000000 })
+    },
+    gear: { score: () => 1 }
+  });
+
+  const profiles = controllerB.profiles();
+  const offline = profiles.find(profile => profile.name === 'My_Warrior');
+  assert.equal(offline.online, false);
+  assert.equal(offline.cached, true);
+  assert.equal(offline.gold, 40000000);
+  assert.equal(offline.equipment.mainhand.name, 'old_sword');
+
+  const wealth = controllerB.accountWealth();
+  assert.equal(wealth.known, true);
+  assert.equal(wealth.characterGold, 90000000);
+  assert.equal(wealth.bankGold, 70000000);
+  assert.equal(wealth.totalGold, 160000000);
+});
 
 test('offline account characters remain gear targets and ready gear is reserved for bank delivery', () => {
   const storage = memoryStorage();
@@ -307,6 +369,60 @@ test('reserved gear can only be queued for the exact owned party target', () => 
   assert.equal(accepted.accepted, true);
   assert.equal(accepted.request.kind, 'GEAR');
   assert.equal(accepted.request.targetName, 'My_Warrior');
+});
+
+test('upgrade execution boundary honors account-level no-risk policy before producing a candidate', () => {
+  const root = context();
+  vm.runInNewContext(upgradeSource, root, { filename: 'upgrade.js' });
+  const Upgrade = root.__ALBOT_INTERNALS__.UpgradeCompoundController;
+  const rows = [
+    row(0, 'future_sword'),
+    row(1, 'scroll0', 0, { quantity: 5 })
+  ];
+  const progression = {
+    evaluateInventory: () => ({
+      state: 'READY',
+      evaluations: [{
+        slot: 0,
+        item: 'future_sword',
+        observedLevel: 0,
+        checked: true,
+        protected: true,
+        sellSafe: false,
+        action: 'UPGRADE',
+        futureGear: {
+          currentScore: 20,
+          observedMeaningful: false,
+          improvement: 20,
+          curve: [{ level: 1, stepChance: 0.99 }]
+        }
+      }]
+    }),
+    mutationRiskPolicy: () => ({
+      allowed: false,
+      reason: 'NO_RISK_ITEM_MUTATION_BLOCKED',
+      minChance: 1
+    })
+  };
+  const controller = new Upgrade({
+    root,
+    game: {
+      inventorySnapshot: () => inventory(rows),
+      equipmentDefinition: name => name === 'future_sword'
+        ? { id: name, type: 'weapon', wtype: 'sword', stats: { attack: 10 }, upgradeGrowth: { attack: 20 }, upgradeable: true, compoundable: false, grades: [8, 9], g: 1000, cash: false, quest: false }
+        : null,
+      itemDefinition: name => name === 'scroll0' ? { id: name, type: 'uscroll', g: 0 } : null
+    },
+    combat: { status: () => ({ active: false, state: 'IDLE' }) },
+    gearProgression: progression
+  });
+
+  const plan = controller.plan();
+  assert.equal(plan.upgradeCandidates.length, 0);
+  const direct = controller._upgradeCandidate(rows[0], inventory(rows), { progressionPlan: progression.evaluateInventory() });
+  assert.equal(direct.ok, false);
+  assert.equal(direct.reason, 'NO_RISK_ITEM_MUTATION_BLOCKED');
+  assert.equal(direct.risk.accountPolicy.reason, 'NO_RISK_ITEM_MUTATION_BLOCKED');
 });
 
 test('runtime wiring exposes account wealth, market economics and gear delivery dependencies', () => {
