@@ -125,6 +125,7 @@
       this.scope = null;
       this.heartbeat = null;
       this.lastTrainingTickMs = null;
+      try { this.persistLocalProfile(); } catch (_) {}
       return this.status();
     }
 
@@ -288,6 +289,13 @@
       };
     }
 
+    persistLocalProfile() {
+      const profile = this.localProfile();
+      if (!profile) return null;
+      this._rememberProfile(profile);
+      return clone(profile);
+    }
+
     _fallbackProfile(row) {
       if (!row || !row.name) return null;
       const ctype = cleanText(row.ctype || row.type || '', 40).toLowerCase();
@@ -360,7 +368,7 @@
         this._rememberProfile(profile);
       }
 
-      const local = this.localProfile();
+      const local = this.persistLocalProfile();
       if (local) {
         local.running = true;
         local.emergencyStopLatched = false;
@@ -368,7 +376,6 @@
         local.local = true;
         byName.set(local.name, local);
         online.add(local.name);
-        this._rememberProfile(local);
       }
 
       const rows = [...byName.values()].map(row => ({
