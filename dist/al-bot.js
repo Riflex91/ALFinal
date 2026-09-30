@@ -1,4 +1,4 @@
-/* AL Bot 0.26.31-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.32-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -7007,6 +7007,7 @@
           range: Number.isFinite(Number(row.profile.range)) ? Number(row.profile.range) : null,
           rip: row.profile.rip === true,
           map: cleanText(row.profile.map || '', 120) || null,
+          gold: Number.isFinite(Number(row.profile.gold)) ? Math.max(0, Number(row.profile.gold)) : null,
           gearScore: Number.isFinite(Number(row.profile.gearScore)) ? Math.max(0, Number(row.profile.gearScore)) : 0,
           equipment: row.profile.equipment && typeof row.profile.equipment === 'object'
             ? Object.fromEntries(Object.entries(row.profile.equipment).slice(0, 20).map(([slot, item]) => {
@@ -28403,7 +28404,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.31-h26';
+      this.version = options.version || '0.26.32-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -28542,9 +28543,14 @@
         logger: this.logger,
         game: this.game,
         gear: this.gear,
+        market: this.trade,
+        storage: this.storage,
         getProfiles: () => this.accountStrategy && typeof this.accountStrategy.profiles === 'function'
           ? this.accountStrategy.profiles()
-          : []
+          : [],
+        getAccountWealth: () => this.accountStrategy && typeof this.accountStrategy.accountWealth === 'function'
+          ? this.accountStrategy.accountWealth()
+          : { known: false, totalGold: null }
       });
       this.inventory.gearProgression = this.gearProgression;
       this.trade.gearProgression = this.gearProgression;
@@ -28582,6 +28588,7 @@
         gearProgression: this.gearProgression,
         upgrade: this.upgrade,
         exchangeCraft: this.exchangeCraft,
+        party: this.party,
         canAct: action => this.actionAllowed(action)
       });
       this.partyLogistics = new ns.PartyLogisticsController({
@@ -28600,6 +28607,7 @@
         upgrade: this.upgrade,
         exchangeCraft: this.exchangeCraft,
         economy: this.economy,
+        gearProgression: this.gearProgression,
         canAct: action => this.actionAllowed(action)
       });
       const dispatchH19CrossWindowPartyAction = (actionName, args = []) => {
@@ -28834,7 +28842,8 @@
         roster: this.roster,
         party: this.party,
         crossWindow: this.lifecycleTransport,
-        gear: this.gear
+        gear: this.gear,
+        storage: this.storage
       });
       this.encounters = new ns.EncounterController({
         root: this.root,
@@ -36513,7 +36522,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.31-h26',
+    version: '0.26.32-h26',
     bootCount,
     replacedPrevious: !!previous
   });
