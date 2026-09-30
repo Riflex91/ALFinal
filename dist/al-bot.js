@@ -1,4 +1,4 @@
-/* AL Bot 0.26.7-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.8-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -6551,6 +6551,10 @@
         fullAutonomyDesiredCharacterNames: Array.isArray(row.fullAutonomyDesiredCharacterNames)
           ? [...new Set(row.fullAutonomyDesiredCharacterNames.map(name => cleanText(name, 120)).filter(Boolean))].sort().slice(0, 4)
           : [],
+        fullAutonomyDesiredSource: cleanText(row.fullAutonomyDesiredSource || '', 80) || null,
+        fullAutonomyDesiredChangedAtMs: Number.isFinite(Number(row.fullAutonomyDesiredChangedAtMs))
+          ? Number(row.fullAutonomyDesiredChangedAtMs)
+          : null,
         fullAutonomyLeaderName: cleanText(row.fullAutonomyLeaderName || '', 120) || null,
         characterDisconnectCapable: row.characterDisconnectCapable === true,
         characterNavigateCapable: row.characterNavigateCapable === true,
@@ -6647,6 +6651,10 @@
         fullAutonomyDesiredCharacterNames: Array.isArray(state.fullAutonomyDesiredCharacterNames)
           ? [...new Set(state.fullAutonomyDesiredCharacterNames.map(name => cleanText(name, 120)).filter(Boolean))].sort().slice(0, 4)
           : [],
+        fullAutonomyDesiredSource: cleanText(state.fullAutonomyDesiredSource || '', 80) || null,
+        fullAutonomyDesiredChangedAtMs: Number.isFinite(Number(state.fullAutonomyDesiredChangedAtMs))
+          ? Number(state.fullAutonomyDesiredChangedAtMs)
+          : null,
         fullAutonomyLeaderName: cleanText(state.fullAutonomyLeaderName || '', 120) || null,
         characterDisconnectCapable: state.characterDisconnectCapable === true,
         characterNavigateCapable: state.characterNavigateCapable === true,
@@ -6879,6 +6887,20 @@
       throw new Error(timeoutReason);
     }
 
+    async _waitForOwnedCharacterOffline(characterName, timeoutMs = 6000) {
+      const target = cleanText(characterName || '', 120);
+      if (!target) throw new Error('H27_BROWSER_SWAP_SOURCE_REQUIRED');
+      const pollMs = 100;
+      const attempts = Math.max(1, Math.ceil(Math.max(1000, Number(timeoutMs) || 6000) / pollMs));
+      for (let attempt = 0; attempt < attempts; attempt += 1) {
+        if (!this._onlineOwnedNames().has(target)) {
+          return { offline: true, characterName: target, attempts: attempt + 1 };
+        }
+        if (attempt + 1 < attempts) await this._delay(pollMs);
+      }
+      throw new Error('H27_BROWSER_SWAP_SOURCE_OFFLINE_TIMEOUT');
+    }
+
     async _executePartyLeave(sender) {
       const localState = this._localStatePayload();
       const localName = this._localName();
@@ -7047,24 +7069,45 @@
           if (before.running !== true) throw new Error('H25_CROSS_WINDOW_CHARACTER_RUNTIME_NOT_RUNNING');
           if (before.emergencyStopLatched === true) throw new Error('H25_CROSS_WINDOW_CHARACTER_EMERGENCY_STOP_LATCHED');
           if (before.characterNavigateCapable !== true) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_CAPABILITY_MISSING');
-          if (!desiredCharacterName || desiredCharacterName === this._localName()) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_INVALID');
+          if (before.characterDisconnectCapable !== true) throw new Error('H27_CROSS_WINDOW_CHARACTER_DISCONNECT_CAPABILITY_MISSING');
+          const sourceCharacterName = this._localName();
+          if (!desiredCharacterName || desiredCharacterName === sourceCharacterName) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_INVALID');
           if (!this._ownedNames().has(desiredCharacterName)) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_NOT_OWNED');
           if (this._onlineOwnedNames().has(desiredCharacterName)) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_ALREADY_ONLINE');
           if (!this.setTimeoutFn) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TIMER_UNAVAILABLE');
-          // Send the settlement first. The actual page navigation destroys this
-          // runtime and therefore cannot be used as its own transport ACK.
+
+          // Adventure Land enforces 3 characters + 1 merchant. Navigating directly
+          // can attempt the replacement before the old server session is gone and
+          // transiently becomes a fifth login. Disconnect first and require account-
+          // roster offline evidence before any navigation to the replacement.
+          const disconnect = this.disconnectLocal('H27_SAFE_BROWSER_ROTATION:' + sender);
+          if (disconnect && disconnect.settlement && typeof disconnect.settlement.then === 'function') {
+            await disconnect.settlement;
+          }
+          const offline = await this._waitForOwnedCharacterOffline(sourceCharacterName, 6000);
+
+          // The settlement must still be emitted before page navigation destroys
+          // the current runtime. The navigation is scheduled only after offline proof.
           this.setTimeoutFn(() => {
-            try { this.navigateCharacterLocal(desiredCharacterName, 'H25_REMOTE_BROWSER_ROTATION:' + sender); }
-            catch (error) {
+            try {
+              const value = this.navigateCharacterLocal(desiredCharacterName, 'H27_SAFE_BROWSER_ROTATION:' + sender);
+              if (value && typeof value.then === 'function') {
+                Promise.resolve(value).catch(error => {
+                  this.lastError = { at: nowIso(this.now()), reason: errorReason(error, 'H25_CROSS_WINDOW_CHARACTER_NAVIGATION_FAILED') };
+                  this._log('error', 'H25 Cross-Window Character Navigation fehlgeschlagen', this.lastError);
+                });
+              }
+            } catch (error) {
               this.lastError = { at: nowIso(this.now()), reason: errorReason(error, 'H25_CROSS_WINDOW_CHARACTER_NAVIGATION_FAILED') };
               this._log('error', 'H25 Cross-Window Character Navigation fehlgeschlagen', this.lastError);
             }
           }, 100);
           outcome = {
-            reason: 'H25_CROSS_WINDOW_CHARACTER_NAVIGATION_ACCEPTED',
+            reason: 'H27_CROSS_WINDOW_SAFE_CHARACTER_ROTATION_ACCEPTED',
             details: {
-              fromCharacterName: this._localName(),
+              fromCharacterName: sourceCharacterName,
               desiredCharacterName,
+              sourceOfflineConfirmed: offline.offline === true,
               completionEvidence: 'OLD_ACCOUNT_OFFLINE_AND_NEW_CHARACTER_PRESENT'
             }
           };
@@ -7204,6 +7247,7 @@
       if (peer.running !== true) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H25_CROSS_WINDOW_CHARACTER_RUNTIME_NOT_RUNNING' } };
       if (peer.emergencyStopLatched === true) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H25_CROSS_WINDOW_CHARACTER_EMERGENCY_STOP_LATCHED' } };
       if (peer.characterNavigateCapable !== true) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H25_CROSS_WINDOW_CHARACTER_NAVIGATION_CAPABILITY_MISSING' } };
+      if (peer.characterDisconnectCapable !== true) return { id: null, state: 'UNAVAILABLE', dispatched: false, error: { message: 'H27_CROSS_WINDOW_CHARACTER_DISCONNECT_CAPABILITY_MISSING' } };
       return this._requestCommand(target, 'NAVIGATE_CHARACTER', {
         peer,
         payload: { desiredCharacterName: desired },
@@ -7968,17 +8012,14 @@
       const stopActionAvailable = this._actionAvailable('stop_character');
       const startActionAvailable = this._actionAvailable('start_character');
       const remainingMissing = missingDesiredNames.slice();
+      const occupiedCharacterNames = [...startEvidence]
+        .filter(name => owned.has(String(name)))
+        .sort((a, b) => a.localeCompare(b));
 
       for (const name of unexpectedOnlineNames) {
         if (String(name) === String(localName)) {
-          if (remainingMissing.length
-              && this.navigateCharacterLocal
-              && this.canNavigateCharacterLocal() === true) {
-            browserSwapPairs.push({ from: String(name), to: String(remainingMissing.shift()), local: true });
-            continue;
-          }
           blockers.push(remainingMissing.length
-            ? 'H25_ROTATION_LOCAL_BROWSER_NAVIGATION_UNAVAILABLE:' + name
+            ? 'H27_ROTATION_LOCAL_REPLACEMENT_REQUIRES_MERCHANT_COORDINATOR:' + name
             : 'H19_ROTATION_WOULD_STOP_LOCAL:' + name);
           continue;
         }
@@ -7990,7 +8031,9 @@
           ? this.crossWindow.freshPeer(name)
           : null;
         if (remainingMissing.length) {
-          if (peer && peer.running === true && peer.characterNavigateCapable === true
+          if (peer && peer.running === true
+              && peer.characterNavigateCapable === true
+              && peer.characterDisconnectCapable === true
               && this.crossWindow && typeof this.crossWindow.requestCharacterNavigation === 'function') {
             browserSwapPairs.push({ from: String(name), to: String(remainingMissing.shift()) });
             continue;
@@ -8005,7 +8048,9 @@
         blockers.push('H19_ROTATION_STOP_NOT_RUNNER_CONTROLLABLE:' + name);
       }
 
-      if (remainingMissing.length && !startActionAvailable) {
+      if (remainingMissing.length && occupiedCharacterNames.length >= 4) {
+        blockers.push('H27_ACCOUNT_CHARACTER_SLOT_LIMIT_REACHED');
+      } else if (remainingMissing.length && !startActionAvailable) {
         blockers.push('H19_ROTATION_START_ACTION_UNAVAILABLE');
       }
 
@@ -8021,6 +8066,7 @@
         startEvidenceCharacterNames: [...startEvidence].sort((a, b) => a.localeCompare(b)),
         browserSwapPairs: clone(browserSwapPairs),
         remoteDisconnectNames: remoteDisconnectNames.sort((a, b) => a.localeCompare(b)),
+        occupiedCharacterNames,
         unexpectedOnlineNames,
         missingDesiredNames,
         stopActionAvailable,
@@ -8087,12 +8133,11 @@
         if (!desiredName || !desiredOwned || desiredName === targetName) return { ok: false, reason: 'H25_BROWSER_SWAP_TARGET_INVALID' };
         if (desiredPresent) return { ok: false, reason: 'H25_BROWSER_SWAP_TARGET_ALREADY_PRESENT' };
         if (isLocal) {
-          if (!this.navigateCharacterLocal || this.canNavigateCharacterLocal() !== true) {
-            return { ok: false, reason: 'H25_LOCAL_BROWSER_SWAP_NAVIGATION_UNAVAILABLE' };
-          }
-          return { ok: true, roster, owned, active, runnerActive, peer: null, desiredOwned, desiredName, transport: 'local-browser-navigation' };
+          return { ok: false, reason: 'H27_LOCAL_BROWSER_SWAP_REQUIRES_REMOTE_MERCHANT_COORDINATOR' };
         }
-        if (!peer || peer.running !== true || peer.characterNavigateCapable !== true
+        if (!peer || peer.running !== true
+            || peer.characterNavigateCapable !== true
+            || peer.characterDisconnectCapable !== true
             || !this.crossWindow || typeof this.crossWindow.requestCharacterNavigation !== 'function') {
           return { ok: false, reason: 'H25_BROWSER_SWAP_NAVIGATION_UNAVAILABLE' };
         }
@@ -8100,6 +8145,16 @@
       }
 
       if (mode === 'START') {
+        const occupiedCharacterNames = [...this._startEvidenceSet(roster)]
+          .filter(name => this._ownedRow(name, roster))
+          .sort((a, b) => a.localeCompare(b));
+        if (!startPresent && occupiedCharacterNames.length >= 4) {
+          return {
+            ok: false,
+            reason: 'H27_ACCOUNT_CHARACTER_SLOT_LIMIT_REACHED',
+            occupiedCharacterNames
+          };
+        }
         if (options.requireCharacterStateChange === true) {
           if (startPresent) return { ok: false, reason: 'H19_TARGET_ALREADY_ACTIVE' };
           if (!this._actionAvailable('start_character')) return { ok: false, reason: 'H19_ROTATION_START_ACTION_UNAVAILABLE' };
@@ -8400,32 +8455,21 @@
       const remainingMissing = missingDesired.slice();
       for (const name of undesiredActive) {
         if (String(name) === String(localName)) {
-          if (remainingMissing.length
-              && this.navigateCharacterLocal
-              && this.canNavigateCharacterLocal() === true) {
-            const desiredName = remainingMissing.shift();
-            return {
-              state: 'READY',
-              reason: 'H25_LOCAL_BROWSER_CHARACTER_ROTATION',
-              request: {
-                id: 'h25-auto-local-browser-swap-' + name + '-to-' + desiredName,
-                kind: 'BROWSER_SWAP',
-                targetName: name,
-                desiredName,
-                queuedAt: nowIso(),
-                automatic: true,
-                requireCharacterStateChange: true
-              }
-            };
-          }
-          continue;
+          return {
+            state: 'BLOCKED',
+            reason: remainingMissing.length
+              ? 'H27_ROTATION_LOCAL_REPLACEMENT_REQUIRES_MERCHANT_COORDINATOR:' + name
+              : 'H19_ROTATION_WOULD_STOP_LOCAL:' + name
+          };
         }
         const peer = this.crossWindow && typeof this.crossWindow.freshPeer === 'function'
           ? this.crossWindow.freshPeer(name)
           : null;
         if (!runnerActive.has(String(name))
             && remainingMissing.length
-            && peer && peer.running === true && peer.characterNavigateCapable === true
+            && peer && peer.running === true
+            && peer.characterNavigateCapable === true
+            && peer.characterDisconnectCapable === true
             && this.crossWindow && typeof this.crossWindow.requestCharacterNavigation === 'function') {
           const desiredName = remainingMissing.shift();
           return {
@@ -8491,6 +8535,17 @@
         if (!this._ownedRow(name, roster)) continue;
         if (crossWindowManaged.has(name)) continue;
         if (!startEvidence.has(name)) {
+          const occupiedCharacterNames = [...startEvidence]
+            .filter(value => this._ownedRow(value, roster))
+            .sort((a, b) => a.localeCompare(b));
+          if (occupiedCharacterNames.length >= 4) {
+            return {
+              state: 'BLOCKED',
+              reason: 'H27_ACCOUNT_CHARACTER_SLOT_LIMIT_REACHED',
+              targetName: name,
+              occupiedCharacterNames
+            };
+          }
           const retry = this.transientStartRetries.get(String(name)) || null;
           if (retry && Number(retry.retryAtMs || 0) > Date.now()) {
             this.metrics.transientStartRetryBlocks += 1;
@@ -10741,9 +10796,20 @@
           ? transport.freshPeer(merchant)
           : null;
         if (!peer || peer.running !== true || peer.fullAutonomyEnabled !== true) return null;
+        if (cleanText(peer.fullAutonomyDesiredSource || '', 80) !== 'merchant-authority') return null;
+        if (!Number.isFinite(Number(peer.fullAutonomyDesiredChangedAtMs))
+            || Number(peer.fullAutonomyDesiredChangedAtMs) <= 0) return null;
         const desired = this._normalizeDesired(peer.fullAutonomyDesiredCharacterNames);
         if (desired.length !== 4 || !desired.includes(merchant)) return null;
-        return { peer, desired };
+        return {
+          peer,
+          desired,
+          authority: {
+            source: 'merchant-authority',
+            changedAtMs: Number(peer.fullAutonomyDesiredChangedAtMs),
+            sessionId: peer.sessionId || null
+          }
+        };
       } catch (_) {
         return null;
       }
@@ -10767,6 +10833,10 @@
       if (candidate.join('|') === current.join('|')) {
         this.selectionCandidateNames = [];
         this.selectionCandidateSinceMs = null;
+        if (this.desiredSource !== 'merchant-authority') {
+          this.desiredSource = 'merchant-authority';
+          if (!Number.isFinite(this.desiredChangedAtMs)) this.desiredChangedAtMs = now;
+        }
         return current;
       }
 
@@ -10973,13 +11043,18 @@
       const stableMerchantCoordinator = support[0] && onlineDesired.includes(String(support[0]))
         ? String(support[0])
         : null;
+      if (!stableMerchantCoordinator) {
+        return {
+          ok: false,
+          reason: 'FULL_AUTONOMY_MERCHANT_COORDINATOR_UNAVAILABLE',
+          merchantName: support[0] || null,
+          onlineCharacterNames: readiness.online.slice()
+        };
+      }
       const effectiveLeader = completeCurrentParty
         ? String(currentLeader)
-        : (stableMerchantCoordinator || selectedLeader);
-      const coordinatorName = stableMerchantCoordinator
-        || (onlineDesired.includes(String(effectiveLeader || ''))
-          ? String(effectiveLeader)
-          : (onlineDesired[0] || localName));
+        : stableMerchantCoordinator;
+      const coordinatorName = stableMerchantCoordinator;
       const coordinator = localName === String(coordinatorName);
       const desiredActiveNames = stableDesired.slice();
       const desiredPartyMembers = desiredPartyAll.slice();
@@ -11080,6 +11155,20 @@
         recoverySafetyBlocked,
         recoveryBlockReason
       };
+    }
+
+    _disarmLifecycle(reason = 'FULL_AUTONOMY_WAITING_MERCHANT_AUTHORITY') {
+      const lifecycle = this.runtime && this.runtime.lifecycle;
+      if (lifecycle && typeof lifecycle.status === 'function') {
+        try {
+          const status = lifecycle.status();
+          if (status && status.autonomyEnabled === true && typeof lifecycle.stopAutonomy === 'function') {
+            lifecycle.stopAutonomy(reason);
+          }
+        } catch (_) {}
+      }
+      this.started.lifecycle = false;
+      this.lifecycleArmed = false;
     }
 
     _pauseOwnedRoleWork(reason = 'FULL_AUTONOMY_RECOVERY_PAUSE') {
@@ -11452,25 +11541,30 @@
           this.selectionCandidateSinceMs = null;
           this.desiredSource = 'merchant-peer';
           selectionSource = 'merchant-peer';
-        } else if (localName === String(merchantName || '') || !readiness.online.includes(String(merchantName || ''))) {
+        } else if (localName === String(merchantName || '')) {
           nextDesired = this._stabilizeAuthoritativeDesired(quartet.names, readiness);
           plan = this._alignPlanToDesired(plan, nextDesired, merchantName, plan.leaderName || null);
           quartet = this._desiredQuartet(plan);
-          selectionSource = localName === String(merchantName || '') ? 'merchant-authority' : 'merchant-offline-fallback';
+          selectionSource = 'merchant-authority';
         } else {
+          this._disarmLifecycle('FULL_AUTONOMY_WAITING_MERCHANT_AUTHORITY');
           try {
             if (this.runtime.lifecycleTransport && typeof this.runtime.lifecycleTransport.broadcastHeartbeat === 'function') {
               this.runtime.lifecycleTransport.broadcastHeartbeat();
             }
           } catch (_) {}
+          const merchantOnline = readiness.online.includes(String(merchantName || ''));
           return this.lastDecision = {
             at: new Date().toISOString(),
             state: 'WARMING',
-            reason: 'FULL_AUTONOMY_WAITING_MERCHANT_SELECTION',
+            reason: merchantOnline
+              ? 'FULL_AUTONOMY_WAITING_MERCHANT_SELECTION'
+              : 'FULL_AUTONOMY_WAITING_MERCHANT_AUTHORITY',
             merchantName,
             onlineCharacterNames: readiness.online,
             missingProfiles: [...new Set([...(readiness.missing || []), merchantName].filter(Boolean))].sort(),
-            missingPeerNames: [...new Set([...(readiness.missingPeerNames || []), merchantName].filter(Boolean))].sort()
+            missingPeerNames: [...new Set([...(readiness.missingPeerNames || []), merchantName].filter(Boolean))].sort(),
+            lifecycleArmed: false
           };
         }
 
@@ -26470,7 +26564,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.7-h26';
+      this.version = options.version || '0.26.8-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -26734,6 +26828,18 @@
         const snapshot = this.game.snapshot();
         const server = snapshot && snapshot.server || {};
         if (!server.region || !server.identifier) throw new Error('H25_BROWSER_SERVER_IDENTITY_UNAVAILABLE');
+        const sourceName = snapshot && snapshot.character && snapshot.character.name
+          ? String(snapshot.character.name)
+          : null;
+        const onlineNames = new Set(roster && Array.isArray(roster.onlineCharacterNames)
+          ? roster.onlineCharacterNames.map(String)
+          : []);
+        if (sourceName && onlineNames.has(sourceName)) {
+          throw new Error('H27_BROWSER_ROTATION_SOURCE_STILL_ONLINE');
+        }
+        if (!onlineNames.has(name) && onlineNames.size >= 4) {
+          throw new Error('H27_ACCOUNT_CHARACTER_SLOT_LIMIT_REACHED');
+        }
         const view = resolveH25BrowserWindow();
         if (!view || !view.location || typeof view.location.assign !== 'function') {
           throw new Error('H25_BROWSER_NAVIGATION_UNAVAILABLE');
@@ -26768,6 +26874,12 @@
             fullAutonomyDesiredCharacterNames: this.fullAutonomy
               ? this.fullAutonomy.status().desiredCharacterNames || []
               : [],
+            fullAutonomyDesiredSource: this.fullAutonomy
+              ? this.fullAutonomy.status().desiredSource || null
+              : null,
+            fullAutonomyDesiredChangedAtMs: this.fullAutonomy
+              ? this.fullAutonomy.status().desiredChangedAtMs || null
+              : null,
             fullAutonomyLeaderName: this.fullAutonomy
               && this.fullAutonomy.status().lastPlan
               ? this.fullAutonomy.status().lastPlan.leaderName || null
@@ -34539,7 +34651,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.7-h26',
+    version: '0.26.8-h26',
     bootCount,
     replacedPrevious: !!previous
   });

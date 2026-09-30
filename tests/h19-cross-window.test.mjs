@@ -16,7 +16,8 @@ function makeRoster(localName, names, state = {}) {
   return {
     refresh: () => {
       const online = new Set(Array.isArray(state.onlineNames) ? state.onlineNames.map(String) : names.map(String));
-      online.add(String(localName));
+      if (state.disconnected === true) online.delete(String(localName));
+      else online.add(String(localName));
       return {
         accountStateAvailable: true,
         onlineStateAvailable: true,
@@ -113,6 +114,11 @@ function makeContext(name, names, network, state, nowRef) {
       emergencyStopLatched: state.emergencyStopLatched,
       lifecycleAutonomyEnabled: state.autonomyEnabled === true,
       fullAutonomyEnabled: state.fullAutonomyEnabled === true,
+      fullAutonomyDesiredCharacterNames: Array.isArray(state.fullAutonomyDesiredCharacterNames)
+        ? state.fullAutonomyDesiredCharacterNames.slice()
+        : [],
+      fullAutonomyDesiredSource: state.fullAutonomyDesiredSource || null,
+      fullAutonomyDesiredChangedAtMs: state.fullAutonomyDesiredChangedAtMs || null,
       characterDisconnectCapable: state.characterDisconnectCapable === true,
       characterNavigateCapable: state.characterNavigateCapable === true,
       version: '0.19.0-h19'
@@ -226,7 +232,15 @@ test('H26 cross-window heartbeat exposes Full Autonomy readiness', () => {
   const network = new Map();
   const nowRef = { value: 1500 };
   const aState = { running: true, runEpoch: 1, emergencyStopLatched: false, fullAutonomyEnabled: true };
-  const bState = { running: true, runEpoch: 2, emergencyStopLatched: false, fullAutonomyEnabled: true };
+  const bState = {
+    running: true,
+    runEpoch: 2,
+    emergencyStopLatched: false,
+    fullAutonomyEnabled: true,
+    fullAutonomyDesiredCharacterNames: ['My_Merchant', 'My_Ranger1', 'My_Ranger2', 'My_Rogue'],
+    fullAutonomyDesiredSource: 'merchant-authority',
+    fullAutonomyDesiredChangedAtMs: 1499
+  };
   const a = makeContext('My_Ranger1', names, network, aState, nowRef);
   const b = makeContext('My_Merchant', names, network, bState, nowRef);
 
@@ -238,6 +252,9 @@ test('H26 cross-window heartbeat exposes Full Autonomy readiness', () => {
   assert.ok(peer);
   assert.equal(peer.running, true);
   assert.equal(peer.fullAutonomyEnabled, true);
+  assert.deepEqual(Array.from(peer.fullAutonomyDesiredCharacterNames), ['My_Merchant', 'My_Ranger1', 'My_Ranger2', 'My_Rogue']);
+  assert.equal(peer.fullAutonomyDesiredSource, 'merchant-authority');
+  assert.equal(peer.fullAutonomyDesiredChangedAtMs, 1499);
 
   a.transport.destroy();
   b.transport.destroy();
@@ -336,7 +353,7 @@ test('H25 cross-window browser navigation settles before the page navigation des
   const network = new Map();
   const nowRef = { value: 2850 };
   const aState = { running: true, runEpoch: 1, emergencyStopLatched: false, characterNavigateCapable: true };
-  const bState = { running: true, runEpoch: 3, emergencyStopLatched: false, characterNavigateCapable: true, navigations: [] };
+  const bState = { running: true, runEpoch: 3, emergencyStopLatched: false, characterDisconnectCapable: true, characterNavigateCapable: true, navigations: [] };
   const a = makeContext('My_Ranger1', names, network, aState, nowRef);
   const b = makeContext('My_Priest', names, network, bState, nowRef);
   a.transport.install();
@@ -367,12 +384,15 @@ test('H25 cross-window browser navigation settles before the page navigation des
   assert.equal(dispatched.state, 'DISPATCHED');
   const settlement = await dispatched.value;
   assert.equal(settlement.success, true);
-  assert.equal(settlement.reason, 'H25_CROSS_WINDOW_CHARACTER_NAVIGATION_ACCEPTED');
+  assert.equal(settlement.reason, 'H27_CROSS_WINDOW_SAFE_CHARACTER_ROTATION_ACCEPTED');
+  assert.equal(settlement.details.sourceOfflineConfirmed, true);
   assert.equal(settlement.details.desiredCharacterName, 'My_Mage');
   assert.equal(settlement.details.completionEvidence, 'OLD_ACCOUNT_OFFLINE_AND_NEW_CHARACTER_PRESENT');
   assert.deepEqual(bState.navigations, [], 'navigation must occur only after the settlement is emitted');
 
   await new Promise(resolve => setTimeout(resolve, 130));
+  assert.equal(bState.disconnects, 1);
+  assert.equal(bState.disconnected, true);
   assert.deepEqual(bState.navigations, ['My_Mage']);
   assert.equal(bState.navigatedTo, 'My_Mage');
   a2.transport.destroy();

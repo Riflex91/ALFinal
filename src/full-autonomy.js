@@ -231,9 +231,20 @@
           ? transport.freshPeer(merchant)
           : null;
         if (!peer || peer.running !== true || peer.fullAutonomyEnabled !== true) return null;
+        if (cleanText(peer.fullAutonomyDesiredSource || '', 80) !== 'merchant-authority') return null;
+        if (!Number.isFinite(Number(peer.fullAutonomyDesiredChangedAtMs))
+            || Number(peer.fullAutonomyDesiredChangedAtMs) <= 0) return null;
         const desired = this._normalizeDesired(peer.fullAutonomyDesiredCharacterNames);
         if (desired.length !== 4 || !desired.includes(merchant)) return null;
-        return { peer, desired };
+        return {
+          peer,
+          desired,
+          authority: {
+            source: 'merchant-authority',
+            changedAtMs: Number(peer.fullAutonomyDesiredChangedAtMs),
+            sessionId: peer.sessionId || null
+          }
+        };
       } catch (_) {
         return null;
       }
@@ -257,6 +268,10 @@
       if (candidate.join('|') === current.join('|')) {
         this.selectionCandidateNames = [];
         this.selectionCandidateSinceMs = null;
+        if (this.desiredSource !== 'merchant-authority') {
+          this.desiredSource = 'merchant-authority';
+          if (!Number.isFinite(this.desiredChangedAtMs)) this.desiredChangedAtMs = now;
+        }
         return current;
       }
 
@@ -463,13 +478,18 @@
       const stableMerchantCoordinator = support[0] && onlineDesired.includes(String(support[0]))
         ? String(support[0])
         : null;
+      if (!stableMerchantCoordinator) {
+        return {
+          ok: false,
+          reason: 'FULL_AUTONOMY_MERCHANT_COORDINATOR_UNAVAILABLE',
+          merchantName: support[0] || null,
+          onlineCharacterNames: readiness.online.slice()
+        };
+      }
       const effectiveLeader = completeCurrentParty
         ? String(currentLeader)
-        : (stableMerchantCoordinator || selectedLeader);
-      const coordinatorName = stableMerchantCoordinator
-        || (onlineDesired.includes(String(effectiveLeader || ''))
-          ? String(effectiveLeader)
-          : (onlineDesired[0] || localName));
+        : stableMerchantCoordinator;
+      const coordinatorName = stableMerchantCoordinator;
       const coordinator = localName === String(coordinatorName);
       const desiredActiveNames = stableDesired.slice();
       const desiredPartyMembers = desiredPartyAll.slice();
@@ -570,6 +590,20 @@
         recoverySafetyBlocked,
         recoveryBlockReason
       };
+    }
+
+    _disarmLifecycle(reason = 'FULL_AUTONOMY_WAITING_MERCHANT_AUTHORITY') {
+      const lifecycle = this.runtime && this.runtime.lifecycle;
+      if (lifecycle && typeof lifecycle.status === 'function') {
+        try {
+          const status = lifecycle.status();
+          if (status && status.autonomyEnabled === true && typeof lifecycle.stopAutonomy === 'function') {
+            lifecycle.stopAutonomy(reason);
+          }
+        } catch (_) {}
+      }
+      this.started.lifecycle = false;
+      this.lifecycleArmed = false;
     }
 
     _pauseOwnedRoleWork(reason = 'FULL_AUTONOMY_RECOVERY_PAUSE') {
@@ -942,25 +976,30 @@
           this.selectionCandidateSinceMs = null;
           this.desiredSource = 'merchant-peer';
           selectionSource = 'merchant-peer';
-        } else if (localName === String(merchantName || '') || !readiness.online.includes(String(merchantName || ''))) {
+        } else if (localName === String(merchantName || '')) {
           nextDesired = this._stabilizeAuthoritativeDesired(quartet.names, readiness);
           plan = this._alignPlanToDesired(plan, nextDesired, merchantName, plan.leaderName || null);
           quartet = this._desiredQuartet(plan);
-          selectionSource = localName === String(merchantName || '') ? 'merchant-authority' : 'merchant-offline-fallback';
+          selectionSource = 'merchant-authority';
         } else {
+          this._disarmLifecycle('FULL_AUTONOMY_WAITING_MERCHANT_AUTHORITY');
           try {
             if (this.runtime.lifecycleTransport && typeof this.runtime.lifecycleTransport.broadcastHeartbeat === 'function') {
               this.runtime.lifecycleTransport.broadcastHeartbeat();
             }
           } catch (_) {}
+          const merchantOnline = readiness.online.includes(String(merchantName || ''));
           return this.lastDecision = {
             at: new Date().toISOString(),
             state: 'WARMING',
-            reason: 'FULL_AUTONOMY_WAITING_MERCHANT_SELECTION',
+            reason: merchantOnline
+              ? 'FULL_AUTONOMY_WAITING_MERCHANT_SELECTION'
+              : 'FULL_AUTONOMY_WAITING_MERCHANT_AUTHORITY',
             merchantName,
             onlineCharacterNames: readiness.online,
             missingProfiles: [...new Set([...(readiness.missing || []), merchantName].filter(Boolean))].sort(),
-            missingPeerNames: [...new Set([...(readiness.missingPeerNames || []), merchantName].filter(Boolean))].sort()
+            missingPeerNames: [...new Set([...(readiness.missingPeerNames || []), merchantName].filter(Boolean))].sort(),
+            lifecycleArmed: false
           };
         }
 

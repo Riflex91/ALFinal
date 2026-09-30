@@ -577,17 +577,14 @@
       const stopActionAvailable = this._actionAvailable('stop_character');
       const startActionAvailable = this._actionAvailable('start_character');
       const remainingMissing = missingDesiredNames.slice();
+      const occupiedCharacterNames = [...startEvidence]
+        .filter(name => owned.has(String(name)))
+        .sort((a, b) => a.localeCompare(b));
 
       for (const name of unexpectedOnlineNames) {
         if (String(name) === String(localName)) {
-          if (remainingMissing.length
-              && this.navigateCharacterLocal
-              && this.canNavigateCharacterLocal() === true) {
-            browserSwapPairs.push({ from: String(name), to: String(remainingMissing.shift()), local: true });
-            continue;
-          }
           blockers.push(remainingMissing.length
-            ? 'H25_ROTATION_LOCAL_BROWSER_NAVIGATION_UNAVAILABLE:' + name
+            ? 'H27_ROTATION_LOCAL_REPLACEMENT_REQUIRES_MERCHANT_COORDINATOR:' + name
             : 'H19_ROTATION_WOULD_STOP_LOCAL:' + name);
           continue;
         }
@@ -599,7 +596,9 @@
           ? this.crossWindow.freshPeer(name)
           : null;
         if (remainingMissing.length) {
-          if (peer && peer.running === true && peer.characterNavigateCapable === true
+          if (peer && peer.running === true
+              && peer.characterNavigateCapable === true
+              && peer.characterDisconnectCapable === true
               && this.crossWindow && typeof this.crossWindow.requestCharacterNavigation === 'function') {
             browserSwapPairs.push({ from: String(name), to: String(remainingMissing.shift()) });
             continue;
@@ -614,7 +613,9 @@
         blockers.push('H19_ROTATION_STOP_NOT_RUNNER_CONTROLLABLE:' + name);
       }
 
-      if (remainingMissing.length && !startActionAvailable) {
+      if (remainingMissing.length && occupiedCharacterNames.length >= 4) {
+        blockers.push('H27_ACCOUNT_CHARACTER_SLOT_LIMIT_REACHED');
+      } else if (remainingMissing.length && !startActionAvailable) {
         blockers.push('H19_ROTATION_START_ACTION_UNAVAILABLE');
       }
 
@@ -630,6 +631,7 @@
         startEvidenceCharacterNames: [...startEvidence].sort((a, b) => a.localeCompare(b)),
         browserSwapPairs: clone(browserSwapPairs),
         remoteDisconnectNames: remoteDisconnectNames.sort((a, b) => a.localeCompare(b)),
+        occupiedCharacterNames,
         unexpectedOnlineNames,
         missingDesiredNames,
         stopActionAvailable,
@@ -696,12 +698,11 @@
         if (!desiredName || !desiredOwned || desiredName === targetName) return { ok: false, reason: 'H25_BROWSER_SWAP_TARGET_INVALID' };
         if (desiredPresent) return { ok: false, reason: 'H25_BROWSER_SWAP_TARGET_ALREADY_PRESENT' };
         if (isLocal) {
-          if (!this.navigateCharacterLocal || this.canNavigateCharacterLocal() !== true) {
-            return { ok: false, reason: 'H25_LOCAL_BROWSER_SWAP_NAVIGATION_UNAVAILABLE' };
-          }
-          return { ok: true, roster, owned, active, runnerActive, peer: null, desiredOwned, desiredName, transport: 'local-browser-navigation' };
+          return { ok: false, reason: 'H27_LOCAL_BROWSER_SWAP_REQUIRES_REMOTE_MERCHANT_COORDINATOR' };
         }
-        if (!peer || peer.running !== true || peer.characterNavigateCapable !== true
+        if (!peer || peer.running !== true
+            || peer.characterNavigateCapable !== true
+            || peer.characterDisconnectCapable !== true
             || !this.crossWindow || typeof this.crossWindow.requestCharacterNavigation !== 'function') {
           return { ok: false, reason: 'H25_BROWSER_SWAP_NAVIGATION_UNAVAILABLE' };
         }
@@ -709,6 +710,16 @@
       }
 
       if (mode === 'START') {
+        const occupiedCharacterNames = [...this._startEvidenceSet(roster)]
+          .filter(name => this._ownedRow(name, roster))
+          .sort((a, b) => a.localeCompare(b));
+        if (!startPresent && occupiedCharacterNames.length >= 4) {
+          return {
+            ok: false,
+            reason: 'H27_ACCOUNT_CHARACTER_SLOT_LIMIT_REACHED',
+            occupiedCharacterNames
+          };
+        }
         if (options.requireCharacterStateChange === true) {
           if (startPresent) return { ok: false, reason: 'H19_TARGET_ALREADY_ACTIVE' };
           if (!this._actionAvailable('start_character')) return { ok: false, reason: 'H19_ROTATION_START_ACTION_UNAVAILABLE' };
@@ -1009,32 +1020,21 @@
       const remainingMissing = missingDesired.slice();
       for (const name of undesiredActive) {
         if (String(name) === String(localName)) {
-          if (remainingMissing.length
-              && this.navigateCharacterLocal
-              && this.canNavigateCharacterLocal() === true) {
-            const desiredName = remainingMissing.shift();
-            return {
-              state: 'READY',
-              reason: 'H25_LOCAL_BROWSER_CHARACTER_ROTATION',
-              request: {
-                id: 'h25-auto-local-browser-swap-' + name + '-to-' + desiredName,
-                kind: 'BROWSER_SWAP',
-                targetName: name,
-                desiredName,
-                queuedAt: nowIso(),
-                automatic: true,
-                requireCharacterStateChange: true
-              }
-            };
-          }
-          continue;
+          return {
+            state: 'BLOCKED',
+            reason: remainingMissing.length
+              ? 'H27_ROTATION_LOCAL_REPLACEMENT_REQUIRES_MERCHANT_COORDINATOR:' + name
+              : 'H19_ROTATION_WOULD_STOP_LOCAL:' + name
+          };
         }
         const peer = this.crossWindow && typeof this.crossWindow.freshPeer === 'function'
           ? this.crossWindow.freshPeer(name)
           : null;
         if (!runnerActive.has(String(name))
             && remainingMissing.length
-            && peer && peer.running === true && peer.characterNavigateCapable === true
+            && peer && peer.running === true
+            && peer.characterNavigateCapable === true
+            && peer.characterDisconnectCapable === true
             && this.crossWindow && typeof this.crossWindow.requestCharacterNavigation === 'function') {
           const desiredName = remainingMissing.shift();
           return {
@@ -1100,6 +1100,17 @@
         if (!this._ownedRow(name, roster)) continue;
         if (crossWindowManaged.has(name)) continue;
         if (!startEvidence.has(name)) {
+          const occupiedCharacterNames = [...startEvidence]
+            .filter(value => this._ownedRow(value, roster))
+            .sort((a, b) => a.localeCompare(b));
+          if (occupiedCharacterNames.length >= 4) {
+            return {
+              state: 'BLOCKED',
+              reason: 'H27_ACCOUNT_CHARACTER_SLOT_LIMIT_REACHED',
+              targetName: name,
+              occupiedCharacterNames
+            };
+          }
           const retry = this.transientStartRetries.get(String(name)) || null;
           if (retry && Number(retry.retryAtMs || 0) > Date.now()) {
             this.metrics.transientStartRetryBlocks += 1;
