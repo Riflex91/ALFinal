@@ -215,8 +215,10 @@ test('V3 merchant speed regression guard rejects a nominal stat upgrade that los
   const result = evaluator.evaluateInventory(inventory([item(10, 'merchant_slow')])).evaluations[0];
   assert.equal(result.checked, true);
   assert.equal(result.futureGear, null);
-  assert.equal(result.action, 'KEEP');
-  assert.equal(result.protected, true);
+  // Speed regression means it is not Merchant gear. Once every other future
+  // gear use is disproved, normal sell economics may dispose of the item.
+  assert.notEqual(result.action, 'UPGRADE');
+  assert.notEqual(result.reason, 'FUTURE_GEAR_UPGRADE_POTENTIAL');
 });
 
 test('future gear disposal remains fail-closed when a live party profile lacks equipment evidence', () => {
