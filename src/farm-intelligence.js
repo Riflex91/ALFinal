@@ -1095,6 +1095,9 @@
           ? formation
           : group.leader;
         const angle = Math.atan2(Number(localFollowTarget.y) - cy, Number(localFollowTarget.x) - cx);
+        // Size the step against the target we actually chose. When the
+        // formation offset is already satisfied, using formationDistance here
+        // would produce a zero-length step even though the live leader gap remains.
         const localFollowDistance = distance(group.local, localFollowTarget);
         const travel = Math.max(0, Number(localFollowDistance || 0) - this.config.groupRegroupStopDistance * 0.75);
         const step = Math.min(this.config.groupFollowStep, travel);
