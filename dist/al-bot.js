@@ -1,4 +1,4 @@
-/* AL Bot 0.26.30-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.37-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -5547,6 +5547,7 @@
       this.upgrade = options.upgrade || null;
       this.exchangeCraft = options.exchangeCraft || null;
       this.economy = options.economy || null;
+      this.gearProgression = options.gearProgression || null;
       this.canAct = typeof options.canAct === 'function' ? options.canAct : null;
 
       this.moduleActive = false;
@@ -5581,6 +5582,11 @@
         suppliesConfirmed: 0,
         suppliesRejected: 0,
         suppliesUnknown: 0,
+        gearQueued: 0,
+        gearDispatched: 0,
+        gearConfirmed: 0,
+        gearRejected: 0,
+        gearUnknown: 0,
         goldQueued: 0,
         goldDispatched: 0,
         goldConfirmed: 0,
@@ -5602,7 +5608,7 @@
 
     start(context = {}) {
       if (this.moduleActive) return { started: false, reason: 'H18_ALREADY_ACTIVE' };
-      const resumedInFlight = !!(this.currentAction && ['SUPPLY','GOLD'].includes(String(this.currentAction.kind || '')));
+      const resumedInFlight = !!(this.currentAction && ['SUPPLY','GEAR','GOLD'].includes(String(this.currentAction.kind || '')));
       this.moduleActive = true;
       this.scope = context.scope || null;
       this.autonomyEnabled = false;
@@ -5618,7 +5624,7 @@
     }
 
     stop(reason = 'H18_MODULE_STOP') {
-      const preserveInFlight = !!(this.currentAction && ['SUPPLY','GOLD'].includes(String(this.currentAction.kind || '')));
+      const preserveInFlight = !!(this.currentAction && ['SUPPLY','GEAR','GOLD'].includes(String(this.currentAction.kind || '')));
       this.moduleActive = false;
       this.autonomyEnabled = false;
       this.scope = null;
@@ -5770,6 +5776,17 @@
         && this._safeSupplyRow(row)) || null;
     }
 
+    _gearDeliveryRow(slot, targetName) {
+      const inventory = this._inventory();
+      if (!inventory || inventory.available === false) return null;
+      const row = (inventory.items || []).find(item => Number(item.slot) === Number(slot)) || null;
+      if (!row || !row.name || row.locked || row.giveaway || row.gift || row.expiresAt) return null;
+      if (!this.gearProgression || typeof this.gearProgression.deliveryAuthorization !== 'function') return null;
+      let authorization = null;
+      try { authorization = this.gearProgression.deliveryAuthorization(row, targetName); } catch (_) {}
+      return authorization && authorization.allowed === true ? { row, authorization } : null;
+    }
+
     _externalBusy() {
       const rows = [
         ['inventory', this.inventory],
@@ -5791,7 +5808,9 @@
       }
       let economy = null;
       try { economy = this.economy && typeof this.economy.status === 'function' ? this.economy.status() : null; } catch (_) {}
-      if (economy && (economy.currentAction || economy.autonomyEnabled)) {
+      const economyDelegatingHere = economy && economy.currentAction
+        && String(economy.currentAction.module || '') === 'partyLogistics';
+      if (economy && !economyDelegatingHere && (economy.currentAction || economy.autonomyEnabled)) {
         blockers.push({ module: 'economy', reason: economy.currentAction ? 'BUSY' : 'AUTONOMY_ACTIVE' });
       }
       return blockers;
@@ -5826,6 +5845,33 @@
       this.queue.push(request);
       this.metrics.suppliesQueued += 1;
       this.lastAction = { at: nowIso(), type: 'SUPPLY_QUEUED', request: clone(request) };
+      return { accepted: true, request: clone(request) };
+    }
+
+    queueGearDelivery(targetName, inventorySlot) {
+      if (!this.moduleActive) return { accepted: false, reason: 'H18_MODULE_NOT_ACTIVE' };
+      if (this.suspendedReason) return { accepted: false, reason: this.suspendedReason };
+      if (this.queue.length >= this.config.maxQueue) return { accepted: false, reason: 'H18_QUEUE_FULL' };
+      const party = this._partySnapshot();
+      if (!party || !party.coordinationEnabled) return { accepted: false, reason: 'H18_OWNED_PARTY_REQUIRED' };
+      const target = this._ownedTarget(targetName, party);
+      if (!target) return { accepted: false, reason: 'H18_TARGET_NOT_OWNED_PARTY_MEMBER' };
+      const authorized = this._gearDeliveryRow(inventorySlot, target.name);
+      if (!authorized) return { accepted: false, reason: 'H18_GEAR_DELIVERY_NOT_AUTHORIZED' };
+      const row = authorized.row;
+      const request = {
+        id: 'h18-request-' + (++this.sequence),
+        kind: 'GEAR',
+        targetName: String(target.name),
+        itemName: String(row.name),
+        inventorySlot: Number(row.slot),
+        fingerprint: authorized.authorization.reservation && authorized.authorization.reservation.fingerprint || null,
+        quantity: 1,
+        createdAt: nowIso()
+      };
+      this.queue.push(request);
+      this.metrics.gearQueued += 1;
+      this.lastAction = { at: nowIso(), type: 'GEAR_QUEUED', request: clone(request) };
       return { accepted: true, request: clone(request) };
     }
 
@@ -5933,6 +5979,29 @@
             quantity: request.quantity,
             slot: Number(row.slot),
             beforeQuantity: available
+          }
+        };
+      }
+
+      if (request.kind === 'GEAR') {
+        const authorized = this._gearDeliveryRow(request.inventorySlot, request.targetName);
+        if (!authorized) return { state: 'BLOCKED', reason: 'H18_GEAR_DELIVERY_NOT_AUTHORIZED', selected: null };
+        const row = authorized.row;
+        if (!this.actions || typeof this.actions.available !== 'function' || !this.actions.available('send_item')) {
+          return { state: 'BLOCKED', reason: 'H18_SEND_ITEM_UNAVAILABLE', selected: null };
+        }
+        return {
+          state: 'READY',
+          reason: 'H18_GEAR_DELIVERY_READY',
+          selected: {
+            kind: 'GEAR',
+            requestId: request.id,
+            targetName: target.name,
+            itemName: row.name,
+            quantity: 1,
+            slot: Number(row.slot),
+            fingerprint: request.fingerprint || authorized.authorization.reservation && authorized.authorization.reservation.fingerprint || null,
+            beforeQuantity: Math.max(1, Math.floor(Number(row.quantity) || 1))
           }
         };
       }
@@ -6056,16 +6125,26 @@
       if (outcome === 'CONFIRMED') {
         this.actionsThisSession += current && current.kind !== 'APPROACH' ? 1 : 0;
         if (current && current.kind === 'SUPPLY') this.metrics.suppliesConfirmed += 1;
+        if (current && current.kind === 'GEAR') {
+          this.metrics.gearConfirmed += 1;
+          try {
+            if (this.gearProgression && typeof this.gearProgression.completeGearDelivery === 'function') {
+              this.gearProgression.completeGearDelivery(current.fingerprint || '', current.targetName);
+            }
+          } catch (_) {}
+        }
         if (current && current.kind === 'GOLD') this.metrics.goldConfirmed += 1;
         if (current && current.kind === 'REGROUP') this.metrics.regroupsConfirmed += 1;
-        if (current && ['SUPPLY','GOLD'].includes(current.kind)) this._dequeueRequest(current.requestId);
+        if (current && ['SUPPLY','GEAR','GOLD'].includes(current.kind)) this._dequeueRequest(current.requestId);
       } else if (outcome === 'REJECTED') {
         if (current && current.kind === 'SUPPLY') this.metrics.suppliesRejected += 1;
+        if (current && current.kind === 'GEAR') this.metrics.gearRejected += 1;
         if (current && current.kind === 'GOLD') this.metrics.goldRejected += 1;
         if (current && current.kind === 'REGROUP') this.metrics.regroupsRejected += 1;
-        if (current && ['SUPPLY','GOLD'].includes(current.kind)) this._dequeueRequest(current.requestId);
+        if (current && ['SUPPLY','GEAR','GOLD'].includes(current.kind)) this._dequeueRequest(current.requestId);
       } else {
         if (current && current.kind === 'SUPPLY') this.metrics.suppliesUnknown += 1;
+        if (current && current.kind === 'GEAR') this.metrics.gearUnknown += 1;
         if (current && current.kind === 'GOLD') this.metrics.goldUnknown += 1;
         if (current && ['REGROUP','APPROACH'].includes(current.kind)) this.metrics.regroupsUnknown += 1;
       }
@@ -6124,8 +6203,10 @@
       }
 
       const settlementFinished = current.settlement !== 'PENDING';
-      if (current.kind === 'SUPPLY') {
-        const row = this._supplyRowAt(current.slot, current.itemName);
+      if (current.kind === 'SUPPLY' || current.kind === 'GEAR') {
+        const row = current.kind === 'GEAR'
+          ? (this._inventory() && (this._inventory().items || []).find(item => Number(item.slot) === Number(current.slot) && String(item.name || '') === String(current.itemName || '')))
+          : this._supplyRowAt(current.slot, current.itemName);
         const after = row ? Math.max(1, Math.floor(Number(row.quantity) || 1)) : 0;
         if (settlementFinished && current.beforeQuantity - after >= current.quantity) {
           return { state: 'CONFIRMED', result: this._finishCurrent('CONFIRMED', {
@@ -6191,7 +6272,7 @@
       }
       let actionName;
       let args;
-      if (selected.kind === 'SUPPLY') {
+      if (selected.kind === 'SUPPLY' || selected.kind === 'GEAR') {
         actionName = 'send_item';
         args = [selected.targetName, selected.slot, selected.quantity];
       } else if (selected.kind === 'GOLD') {
@@ -6228,6 +6309,7 @@
         slot: selected.slot == null ? null : Number(selected.slot),
         amount: selected.amount || null,
         beforeQuantity: selected.beforeQuantity == null ? null : Number(selected.beforeQuantity),
+        fingerprint: selected.fingerprint || null,
         beforeGold: selected.beforeGold == null ? null : Number(selected.beforeGold),
         dispatchedAt: nowIso(),
         dispatchedAtMs: now,
@@ -6238,6 +6320,7 @@
       };
       this.currentAction = current;
       if (selected.kind === 'SUPPLY') this.metrics.suppliesDispatched += 1;
+      if (selected.kind === 'GEAR') this.metrics.gearDispatched += 1;
       if (selected.kind === 'GOLD') this.metrics.goldDispatched += 1;
       this.lastAction = { at: current.dispatchedAt, type: selected.kind + '_DISPATCHED', action: clone(current) };
       this._watch(dispatch.value, current);
@@ -6265,7 +6348,17 @@
       }
 
       const plan = this.plan();
-      if (!this.autonomyEnabled) return { state: 'OBSERVE', plan };
+      let delegatedGear = false;
+      if (!this.autonomyEnabled && this.queue[0] && String(this.queue[0].kind || '') === 'GEAR') {
+        try {
+          const economy = this.economy && typeof this.economy.status === 'function' ? this.economy.status() : null;
+          delegatedGear = !!(economy
+            && economy.currentAction
+            && String(economy.currentAction.module || '') === 'partyLogistics'
+            && String(economy.currentAction.kind || '') === 'GEAR_DELIVER');
+        } catch (_) {}
+      }
+      if (!this.autonomyEnabled && !delegatedGear) return { state: 'OBSERVE', plan };
       if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason, plan };
       if (this.actionsThisSession >= this.config.maxActionsPerSession) {
         this.metrics.sessionBudgetBlocks += 1;
@@ -6288,9 +6381,10 @@
         if (result && result.state === 'SUSPENDED') return result;
         const selected = plan.selected || {};
         if (selected.kind === 'SUPPLY') this.metrics.suppliesRejected += 1;
+        if (selected.kind === 'GEAR') this.metrics.gearRejected += 1;
         if (selected.kind === 'GOLD') this.metrics.goldRejected += 1;
         if (selected.kind === 'REGROUP') this.metrics.regroupsRejected += 1;
-        if (selected.requestId && ['SUPPLY','GOLD'].includes(selected.kind)) this._dequeueRequest(selected.requestId);
+        if (selected.requestId && ['SUPPLY','GEAR','GOLD'].includes(selected.kind)) this._dequeueRequest(selected.requestId);
         this.lastAction = {
           at: nowIso(),
           type: 'ACTION_QUEUE_REJECTED',
@@ -7007,6 +7101,7 @@
           range: Number.isFinite(Number(row.profile.range)) ? Number(row.profile.range) : null,
           rip: row.profile.rip === true,
           map: cleanText(row.profile.map || '', 120) || null,
+          gold: Number.isFinite(Number(row.profile.gold)) ? Math.max(0, Number(row.profile.gold)) : null,
           gearScore: Number.isFinite(Number(row.profile.gearScore)) ? Math.max(0, Number(row.profile.gearScore)) : 0,
           equipment: row.profile.equipment && typeof row.profile.equipment === 'object'
             ? Object.fromEntries(Object.entries(row.profile.equipment).slice(0, 20).map(([slot, item]) => {
@@ -9970,6 +10065,7 @@
       this.party = options.party || null;
       this.crossWindow = options.crossWindow || null;
       this.gear = options.gear || null;
+      this.storage = options.storage || null;
       this.now = typeof options.now === 'function' ? options.now : () => Date.now();
       this.moduleActive = false;
       this.scope = null;
@@ -9979,6 +10075,8 @@
       this.lastProfiles = [];
       this.lastProgression = null;
       this.lastTaskPlan = null;
+      this.profileCacheKey = cleanText(options.profileCacheKey || 'albot:h28:account-profile-cache:v1', 200);
+      this.wealthCacheKey = cleanText(options.wealthCacheKey || 'albot:h28:account-wealth-cache:v1', 200);
       this.config = {
         targetCorridor: clamp(options.targetCorridor == null ? 0.08 : options.targetCorridor, 0, 0.5),
         maxProfileAgeMs: Math.max(1500, Math.min(30000, Number(options.maxProfileAgeMs) || 9000)),
@@ -10004,6 +10102,66 @@
     setCrossWindow(value) {
       this.crossWindow = value || null;
       return this.status();
+    }
+
+    _storageRead(key, fallback = null) {
+      if (!this.storage || !key) return fallback;
+      try {
+        const shared = typeof this.storage.getShared === 'function' ? this.storage.getShared(key) : null;
+        const raw = shared == null && typeof this.storage.get === 'function' ? this.storage.get(key) : shared;
+        if (!raw) return fallback;
+        const parsed = JSON.parse(raw);
+        return parsed == null ? fallback : parsed;
+      } catch (_) {
+        return fallback;
+      }
+    }
+
+    _storageWrite(key, value) {
+      if (!this.storage || !key) return false;
+      const raw = JSON.stringify(value);
+      try {
+        if (typeof this.storage.setShared === 'function' && this.storage.setShared(key, raw) !== false) return true;
+      } catch (_) {}
+      try {
+        return typeof this.storage.set === 'function' ? this.storage.set(key, raw) !== false : false;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    _cachedProfiles() {
+      const row = this._storageRead(this.profileCacheKey, {});
+      return row && typeof row === 'object' && !Array.isArray(row) ? row : {};
+    }
+
+    _rememberProfile(profile) {
+      if (!profile || !profile.name) return false;
+      const normalized = this._normalizeProfile(profile);
+      if (!normalized) return false;
+      if (!normalized.equipment && finite(normalized.gold) == null) return false;
+      const cache = this._cachedProfiles();
+      cache[normalized.name] = {
+        ...clone(normalized),
+        cachedAtMs: this.now()
+      };
+      return this._storageWrite(this.profileCacheKey, cache);
+    }
+
+    _cachedBankGold() {
+      const row = this._storageRead(this.wealthCacheKey, null);
+      const value = finite(row && row.bankGold);
+      return value == null ? null : Math.max(0, value);
+    }
+
+    _rememberBankGold(bankGold) {
+      const value = finite(bankGold);
+      if (value == null || value < 0) return false;
+      return this._storageWrite(this.wealthCacheKey, {
+        schemaVersion: 1,
+        bankGold: value,
+        observedAtMs: this.now()
+      });
     }
 
     recordTraining(active) {
@@ -10076,6 +10234,7 @@
         range: finite(character.range),
         rip: character.rip === true,
         map: cleanText(character.map || '', 120) || null,
+        gold: finite(character.gold),
         gearScore: this._localGearScore(character),
         equipment: this._localEquipment(character),
         trainingMs: Math.max(0, Math.floor(this.trainingMs)),
@@ -10105,6 +10264,7 @@
         range: null,
         rip: false,
         map: null,
+        gold: finite(row.gold),
         gearScore: 0,
         equipment: null,
         trainingMs: 0,
@@ -10121,10 +10281,21 @@
       const account = roster && Array.isArray(roster.accountCharacters) ? roster.accountCharacters : [];
       const online = new Set(roster && Array.isArray(roster.onlineCharacterNames) ? roster.onlineCharacterNames.map(String) : []);
       const byName = new Map();
+      const cachedProfiles = this._cachedProfiles();
 
       for (const row of account) {
         const fallback = this._fallbackProfile(row);
-        if (fallback) byName.set(fallback.name, fallback);
+        if (!fallback) continue;
+        const cached = cachedProfiles[fallback.name] && this._normalizeProfile(cachedProfiles[fallback.name]);
+        byName.set(fallback.name, cached ? {
+          ...fallback,
+          ...cached,
+          online: false,
+          running: false,
+          peerFresh: false,
+          local: false,
+          cached: true
+        } : fallback);
       }
 
       let peers = [];
@@ -10141,6 +10312,7 @@
         profile.peerFresh = true;
         profile.observedAtMs = finite(peer.observedAtMs) || profile.observedAtMs;
         byName.set(profile.name, profile);
+        this._rememberProfile(profile);
       }
 
       const local = this.localProfile();
@@ -10151,11 +10323,12 @@
         local.local = true;
         byName.set(local.name, local);
         online.add(local.name);
+        this._rememberProfile(local);
       }
 
       const rows = [...byName.values()].map(row => ({
         ...row,
-        online: online.has(String(row.name)) || row.online === true
+        online: online.has(String(row.name))
       })).sort((a, b) => a.name.localeCompare(b.name));
       this.lastProfiles = clone(rows);
       return clone(rows);
@@ -10183,11 +10356,52 @@
         range: finite(raw.range),
         rip: raw.rip === true,
         map: cleanText(raw.map || '', 120) || null,
+        gold: finite(raw.gold),
         gearScore: Math.max(0, finite(raw.gearScore) || 0),
         equipment: raw.equipment && typeof raw.equipment === 'object' ? clone(raw.equipment) : null,
         trainingMs: Math.max(0, finite(raw.trainingMs) || 0),
         capabilities: clone(ROLE_CAPABILITIES[ctype] || []),
         observedAtMs: finite(raw.observedAtMs)
+      };
+    }
+
+    accountWealth() {
+      const profiles = this.profiles();
+      let characterGold = 0;
+      const missingCharacterGold = [];
+      for (const profile of profiles) {
+        const gold = finite(profile && profile.gold);
+        if (gold == null) missingCharacterGold.push(profile && profile.name || 'UNKNOWN');
+        else characterGold += Math.max(0, gold);
+      }
+
+      let bankGold = null;
+      let bankSource = 'UNKNOWN';
+      try {
+        const bank = this.game && typeof this.game.bankSnapshot === 'function' ? this.game.bankSnapshot() : null;
+        if (bank && bank.available !== false && finite(bank.gold) != null) {
+          bankGold = Math.max(0, finite(bank.gold));
+          bankSource = 'LIVE_BANK';
+          this._rememberBankGold(bankGold);
+        }
+      } catch (_) {}
+      if (bankGold == null) {
+        bankGold = this._cachedBankGold();
+        if (bankGold != null) bankSource = 'PERSISTED_BANK';
+      }
+
+      const known = missingCharacterGold.length === 0 && bankGold != null && profiles.length > 0;
+      const partialGold = characterGold + Math.max(0, bankGold || 0);
+      return {
+        schemaVersion: 1,
+        known,
+        totalGold: known ? partialGold : null,
+        partialGold,
+        characterGold,
+        bankGold,
+        bankSource,
+        characterCount: profiles.length,
+        missingCharacterGold
       };
     }
 
@@ -16038,13 +16252,21 @@
             futureGearEvaluation: clone(futureGear)
           };
         }
+        const offlineGearReady = String(futureGear.action || '').toUpperCase() === 'GEAR'
+          && futureGear.futureGear
+          && futureGear.futureGear.targetOnline === false
+          && futureGear.futureGear.targetCharacter;
         return {
-          disposition: 'PROTECT',
-          reason: futureGear.action === 'GEAR'
-            ? 'CURRENT_OR_FUTURE_GEAR_UPGRADE'
-            : futureGear.action === 'ACCUMULATE'
-              ? 'FUTURE_GEAR_COMPOUND_ACCUMULATION'
-              : 'FUTURE_GEAR_OR_ECONOMIC_PROGRESSION',
+          disposition: offlineGearReady ? 'BANK' : 'PROTECT',
+          reason: offlineGearReady
+            ? 'OFFLINE_TARGET_GEAR_BANK'
+            : futureGear.action === 'GEAR'
+              ? 'CURRENT_OR_FUTURE_GEAR_UPGRADE'
+              : futureGear.action === 'ACCUMULATE'
+                ? 'FUTURE_GEAR_COMPOUND_ACCUMULATION'
+                : futureGear.action === 'HOLD'
+                  ? 'GEAR_MUTATION_RISK_HOLD'
+                  : 'FUTURE_GEAR_OR_ECONOMIC_PROGRESSION',
           protected: true,
           futureGearEvaluation: clone(futureGear)
         };
@@ -17256,16 +17478,21 @@
     _safeDepositRows() {
       const plan = this._inventoryPlan();
       if (!plan || plan.state !== 'READY') return [];
-      return (plan.items || []).filter(row =>
-        row && row.name
-        && String(row.disposition || '').toUpperCase() === 'BANK'
-        && row.locked !== true
-        && row.giveaway !== true
-        && row.gift !== true
-        && !row.expiresAt
-        && Math.max(0, Number(row.level) || 0) === 0
-        && !(row.definition && (row.definition.quest === true || row.definition.upgrade === true || row.definition.compound === true))
-      );
+      return (plan.items || []).filter(row => {
+        if (!row || !row.name || String(row.disposition || '').toUpperCase() !== 'BANK') return false;
+        if (row.locked === true || row.giveaway === true || row.gift === true || row.expiresAt) return false;
+        const future = row.futureGearEvaluation || null;
+        const offlineGear = !!(future
+          && future.checked === true
+          && future.protected === true
+          && String(future.action || '').toUpperCase() === 'GEAR'
+          && future.futureGear
+          && future.futureGear.targetOnline === false
+          && future.futureGear.targetCharacter);
+        if (offlineGear) return true;
+        return Math.max(0, Number(row.level) || 0) === 0
+          && !(row.definition && (row.definition.quest === true || row.definition.upgrade === true || row.definition.compound === true));
+      });
     }
 
     _ledger(inventory, bank) {
@@ -17459,7 +17686,8 @@
       const reserved = Math.max(0, Math.floor(Number(this.reservations[row.name]) || 0));
       const totalInBank = this._quantityInBank(bank, this._fingerprint(row));
       const stackQuantity = Math.max(1, Math.floor(Number(row.quantity) || 1));
-      if (totalInBank != null && totalInBank - stackQuantity < reserved) {
+      const gearDelivery = String(options.purpose || '').toUpperCase() === 'GEAR_DELIVERY';
+      if (!gearDelivery && totalInBank != null && totalInBank - stackQuantity < reserved) {
         return { accepted: false, reason: 'H12_BANK_RESERVATION_BLOCKED' };
       }
       const inventory = this._inventorySnapshot();
@@ -17486,6 +17714,7 @@
         bankSlot: slot,
         inventorySlot,
         beforeQuantity: stackQuantity,
+        purpose: cleanText(options.purpose || '', 80) || null,
         createdAt: nowIso()
       };
       this.lastAction = { at: nowIso(), type: 'WITHDRAW_QUEUED', itemName: row.name, pack, bankSlot: slot };
@@ -17641,6 +17870,7 @@
           pack: pending.pack || null,
           bankSlot: pending.bankSlot == null ? null : pending.bankSlot,
           inventorySlot: pending.inventorySlot == null ? null : pending.inventorySlot,
+          purpose: pending.purpose || null,
           amount: pending.amount || null
         };
         return true;
@@ -17820,6 +18050,7 @@
           inventorySlot: request.inventorySlot,
           pack: request.pack,
           bankSlot: request.bankSlot,
+          purpose: request.purpose || null,
           beforeInventoryQuantity,
           beforeBankQuantity
         });
@@ -20024,13 +20255,23 @@
       this.logger = options.logger || null;
       this.game = options.game || null;
       this.gear = options.gear || null;
+      this.market = options.market || null;
+      this.storage = options.storage || null;
       this.getProfiles = typeof options.getProfiles === 'function' ? options.getProfiles : () => [];
+      this.getAccountWealth = typeof options.getAccountWealth === 'function' ? options.getAccountWealth : () => ({ known: false, totalGold: null });
+      this.deliveryKey = cleanText(options.deliveryKey || 'albot:h28:offline-gear-deliveries:v1', 220);
+      this.riskMode = null;
+      this.lastRiskState = null;
       this.config = {
         minImprovementRatio: Math.max(0.001, Math.min(1, finite(options.minImprovementRatio, 0.05))),
         maxProbeLevel: Math.max(1, Math.min(12, Math.floor(finite(options.maxProbeLevel, 12)))),
         farmerUpgradeMaxLevel: Math.max(1, Math.min(12, Math.floor(finite(options.farmerUpgradeMaxLevel, 7)))),
         economicUpgradeMaxLevel: Math.max(1, Math.min(12, Math.floor(finite(options.economicUpgradeMaxLevel, 7)))),
-        economicCompoundMaxLevel: Math.max(1, Math.min(12, Math.floor(finite(options.economicCompoundMaxLevel, 10))))
+        economicCompoundMaxLevel: Math.max(1, Math.min(12, Math.floor(finite(options.economicCompoundMaxLevel, 10)))),
+        conservativeEnterGold: Math.max(0, finite(options.conservativeEnterGold, 150000000)),
+        conservativeExitGold: Math.max(0, finite(options.conservativeExitGold, 170000000)),
+        conservativeMinChance: Math.max(0, Math.min(1, finite(options.conservativeMinChance, 0.80))),
+        noRiskItemValueGold: Math.max(0, finite(options.noRiskItemValueGold, 50000000))
       };
       this.lastPlan = null;
       this.lastBySlot = new Map();
@@ -20082,7 +20323,7 @@
       let rows = [];
       try { rows = this.getProfiles() || []; } catch (_) {}
       return (Array.isArray(rows) ? rows : [])
-        .filter(row => row && row.name && row.ctype && row.rip !== true && (row.online !== false || row.local === true))
+        .filter(row => row && row.name && row.ctype && row.rip !== true)
         .map(row => clone(row));
     }
 
@@ -20222,6 +20463,7 @@
           targetCharacter: profile.name,
           targetCtype: profile.ctype,
           targetSlot: slot,
+          targetOnline: profile.online === true,
           roleProfile: roleProfile(profile),
           currentItem: current.item,
           currentScore: finite(current.score && current.score.total, 0),
@@ -20268,6 +20510,136 @@
       return { name, cost: cost != null && cost >= 0 ? cost : null };
     }
 
+    _marketBid(itemName, level) {
+      if (!this.market || typeof this.market.marketAnalysis !== 'function') return null;
+      let analysis = null;
+      try { analysis = this.market.marketAnalysis(itemName, { level: Math.max(0, Math.floor(finite(level, 0))) }); } catch (_) {}
+      const bid = analysis && analysis.bestBid || null;
+      const price = finite(bid && bid.price);
+      if (!bid || price == null || price <= 0) return null;
+      return {
+        unitPrice: price,
+        quantity: Math.max(1, Math.floor(finite(bid.quantity, 1))),
+        playerName: bid.playerName || null,
+        slot: bid.slot || null,
+        rid: bid.rid || null
+      };
+    }
+
+    _saleValue(itemOrName, explicitLevel = null, quantity = 1) {
+      const item = typeof itemOrName === 'string' ? { name: itemOrName } : itemOrName || {};
+      const name = String(item.name || '');
+      const level = Math.max(0, Math.floor(explicitLevel == null ? levelOf(item) : finite(explicitLevel, 0)));
+      const count = Math.max(0, Math.floor(finite(quantity, 1)));
+      if (!name || count <= 0) return { modeled: !!name, gold: 0, npcGold: 0, marketGold: 0, source: 'NONE', marketBid: null };
+      const npcUnit = npcSellValue(this._gameData(), name, level, 1);
+      const bid = this._marketBid(name, level);
+      if (npcUnit == null && !bid) return { modeled: false, gold: null, npcGold: null, marketGold: null, source: 'UNKNOWN', marketBid: null };
+      const safeNpc = Math.max(0, finite(npcUnit, 0));
+      const marketUnits = bid && bid.unitPrice > safeNpc ? Math.min(count, bid.quantity) : 0;
+      const marketGold = marketUnits * (bid ? bid.unitPrice : 0);
+      const npcGold = (count - marketUnits) * safeNpc;
+      const gold = marketGold + npcGold;
+      return {
+        modeled: true,
+        gold,
+        npcGold: safeNpc * count,
+        marketGold,
+        source: marketUnits > 0 ? (marketUnits === count ? 'MARKET_BID' : 'MARKET_PLUS_NPC') : 'NPC',
+        marketBid: bid ? clone(bid) : null
+      };
+    }
+
+    _accountRiskState() {
+      let wealth = null;
+      try { wealth = this.getAccountWealth() || null; } catch (_) {}
+      const known = !!(wealth && wealth.known === true && finite(wealth.totalGold) != null);
+      const totalGold = known ? Math.max(0, finite(wealth.totalGold, 0)) : null;
+      if (!known) {
+        this.riskMode = 'CONSERVATIVE';
+      } else if (this.riskMode === 'CONSERVATIVE') {
+        if (totalGold >= this.config.conservativeExitGold) this.riskMode = 'NORMAL';
+      } else if (this.riskMode === 'NORMAL') {
+        if (totalGold < this.config.conservativeEnterGold) this.riskMode = 'CONSERVATIVE';
+      } else {
+        this.riskMode = totalGold < this.config.conservativeEnterGold ? 'CONSERVATIVE' : 'NORMAL';
+      }
+      this.lastRiskState = {
+        mode: this.riskMode,
+        wealthKnown: known,
+        totalGold,
+        enterBelowGold: this.config.conservativeEnterGold,
+        exitAtGold: this.config.conservativeExitGold,
+        conservativeMinChance: this.config.conservativeMinChance,
+        wealth: wealth ? clone(wealth) : null
+      };
+      return clone(this.lastRiskState);
+    }
+
+    _noRiskClassification(item, meta) {
+      const rarity = String(meta && (meta.rarity || meta.quality || meta.tier) || '').trim().toLowerCase();
+      const rare = !!(meta && (meta.rare === true || meta.unique === true || meta.exclusive === true || meta.legacy === true))
+        || ['rare', 'epic', 'legendary', 'mythic', 'unique', 'artifact', 'relic'].includes(rarity);
+      const sale = this._saleValue(item, levelOf(item), 1);
+      const valuable = sale.modeled === true && finite(sale.gold) != null && sale.gold >= this.config.noRiskItemValueGold;
+      return {
+        noRisk: rare || valuable,
+        reason: rare ? 'EXTREME_RARITY' : valuable ? 'EXTREME_VALUE' : null,
+        rarity: rarity || null,
+        liquidationGold: finite(sale.gold),
+        thresholdGold: this.config.noRiskItemValueGold,
+        sale
+      };
+    }
+
+    mutationRiskPolicy(kind, item, meta = null, evaluation = null, targetLevel = null, chanceOverride = null, options = {}) {
+      const definition = meta || this._rawItem(item && item.name);
+      const chance = finite(chanceOverride);
+      const risk = this._accountRiskState();
+      const noRisk = this._noRiskClassification(item, definition);
+      const deterministic = chance != null && chance >= 1;
+      if (noRisk.noRisk && !deterministic) {
+        return {
+          allowed: false,
+          reason: 'NO_RISK_ITEM_MUTATION_BLOCKED',
+          mode: risk.mode,
+          chance,
+          minChance: 1,
+          noRisk,
+          wealth: risk,
+          kind: String(kind || '').toUpperCase(),
+          targetLevel: targetLevel == null ? null : Math.max(0, Math.floor(finite(targetLevel, 0))),
+          itemCount: Math.max(1, Math.floor(finite(options.itemCount, 1)))
+        };
+      }
+      if (risk.mode === 'CONSERVATIVE' && (chance == null || chance < this.config.conservativeMinChance)) {
+        return {
+          allowed: false,
+          reason: chance == null ? 'CONSERVATIVE_CHANCE_UNKNOWN' : 'CONSERVATIVE_CHANCE_BELOW_80_PERCENT',
+          mode: risk.mode,
+          chance,
+          minChance: this.config.conservativeMinChance,
+          noRisk,
+          wealth: risk,
+          kind: String(kind || '').toUpperCase(),
+          targetLevel: targetLevel == null ? null : Math.max(0, Math.floor(finite(targetLevel, 0))),
+          itemCount: Math.max(1, Math.floor(finite(options.itemCount, 1)))
+        };
+      }
+      return {
+        allowed: true,
+        reason: noRisk.noRisk && deterministic ? 'NO_RISK_DETERMINISTIC_MUTATION' : 'ACCOUNT_RISK_POLICY_ACCEPTED',
+        mode: risk.mode,
+        chance,
+        minChance: risk.mode === 'CONSERVATIVE' ? this.config.conservativeMinChance : null,
+        noRisk,
+        wealth: risk,
+        kind: String(kind || '').toUpperCase(),
+        targetLevel: targetLevel == null ? null : Math.max(0, Math.floor(finite(targetLevel, 0))),
+        itemCount: Math.max(1, Math.floor(finite(options.itemCount, 1)))
+      };
+    }
+
     _upgradeEconomics(item, meta) {
       const G = this._gameData();
       const currentLevel = levelOf(item);
@@ -20275,9 +20647,9 @@
       const values = new Map();
       const direct = new Map();
       for (let level = currentLevel; level <= maxLevel; level += 1) {
-        const sell = npcSellValue(G, item.name, level, 1);
+        const sell = this._saleValue(item.name, level, 1);
         direct.set(level, sell);
-        values.set(level, { expectedGold: sell, targetLevel: level, action: 'SELL', chance: null, scroll: null, scrollCost: 0 });
+        values.set(level, { expectedGold: sell.gold, targetLevel: level, action: 'SELL', chance: null, scroll: null, scrollCost: 0, sale: clone(sell) });
       }
       for (let level = maxLevel - 1; level >= currentLevel; level -= 1) {
         const nextLevel = level + 1;
@@ -20285,19 +20657,24 @@
         const scroll = this._scrollCost(meta, level, false);
         const next = values.get(nextLevel);
         const sale = direct.get(level);
-        if (chance == null || scroll.cost == null || next == null || sale == null) continue;
+        if (chance == null || scroll.cost == null || next == null || !sale || sale.gold == null) continue;
+        const policy = this.mutationRiskPolicy('UPGRADE', { ...item, level }, meta, null, nextLevel, chance, { itemCount: 1 });
+        if (!policy.allowed) continue;
         const expected = chance * next.expectedGold - scroll.cost;
-        if (expected > sale) values.set(level, {
+        if (expected > sale.gold) values.set(level, {
           expectedGold: expected,
           targetLevel: next.targetLevel,
           action: 'UPGRADE',
           chance,
           scroll: scroll.name,
-          scrollCost: scroll.cost
+          scrollCost: scroll.cost,
+          sale: clone(sale),
+          riskPolicy: clone(policy)
         });
       }
       const choice = values.get(currentLevel) || {};
-      const directSellGold = direct.get(currentLevel);
+      const directSale = direct.get(currentLevel) || {};
+      const directSellGold = finite(directSale.gold);
       return {
         modeled: directSellGold != null,
         family: 'UPGRADE',
@@ -20306,59 +20683,124 @@
         targetLevel: choice.targetLevel == null ? currentLevel : choice.targetLevel,
         expectedGold: finite(choice.expectedGold, directSellGold),
         directSellGold,
+        directSale: clone(directSale),
         expectedGain: finite(choice.expectedGold, directSellGold) - finite(directSellGold, 0),
         nextChance: choice.chance == null ? null : choice.chance,
         scroll: choice.scroll || null,
-        scrollCost: finite(choice.scrollCost, 0)
+        scrollCost: finite(choice.scrollCost, 0),
+        riskPolicy: choice.riskPolicy ? clone(choice.riskPolicy) : null
       };
     }
 
+    _binomialProbability(n, k, p) {
+      if (k < 0 || k > n) return 0;
+      let choose = 1;
+      for (let i = 1; i <= k; i += 1) choose = choose * (n - (k - i)) / i;
+      return choose * Math.pow(p, k) * Math.pow(1 - p, n - k);
+    }
+
+    _compoundOptimalValue(item, meta, level, count, maxLevel, memo = new Map()) {
+      const safeCount = Math.max(0, Math.floor(finite(count, 0)));
+      const key = String(level) + ':' + String(safeCount);
+      if (memo.has(key)) return memo.get(key);
+      const sale = this._saleValue(item.name, level, safeCount);
+      const direct = finite(sale.gold, 0);
+      let best = {
+        expectedGold: direct,
+        action: 'SELL',
+        targetLevel: level,
+        nextChance: null,
+        scroll: null,
+        scrollCost: 0,
+        directSale: clone(sale)
+      };
+      if (safeCount < 3 || level >= maxLevel) {
+        memo.set(key, best);
+        return best;
+      }
+
+      const nextLevel = level + 1;
+      const chance = progressionProbability(this._gameData(), meta, nextLevel, true);
+      const scroll = this._scrollCost(meta, level, true);
+      const policy = this.mutationRiskPolicy('COMPOUND', { ...item, level }, meta, null, nextLevel, chance, { itemCount: 3 });
+      if (chance == null || scroll.cost == null || !policy.allowed) {
+        best.riskPolicy = clone(policy);
+        memo.set(key, best);
+        return best;
+      }
+
+      const groups = Math.floor(safeCount / 3);
+      const remainder = safeCount % 3;
+      const remainderValue = finite(this._saleValue(item.name, level, remainder).gold, 0);
+      let expected = remainderValue - groups * scroll.cost;
+      let deepest = nextLevel;
+      for (let successes = 0; successes <= groups; successes += 1) {
+        const probability = this._binomialProbability(groups, successes, chance);
+        if (probability <= 0) continue;
+        const future = this._compoundOptimalValue(item, meta, nextLevel, successes, maxLevel, memo);
+        expected += probability * finite(future.expectedGold, 0);
+        deepest = Math.max(deepest, future.targetLevel || nextLevel);
+      }
+      if (expected > direct) {
+        best = {
+          expectedGold: expected,
+          action: 'COMPOUND',
+          targetLevel: deepest,
+          nextChance: chance,
+          scroll: scroll.name,
+          scrollCost: scroll.cost,
+          directSale: clone(sale),
+          groups,
+          riskPolicy: clone(policy)
+        };
+      }
+      memo.set(key, best);
+      return best;
+    }
+
     _compoundEconomics(item, meta, sameCount) {
-      const G = this._gameData();
       const currentLevel = levelOf(item);
-      const directOne = npcSellValue(G, item.name, currentLevel, 1);
       const maxLevel = Math.max(currentLevel, Math.min(12, this.config.economicCompoundMaxLevel));
-      if (currentLevel >= maxLevel || directOne == null) {
-        return { modeled: directOne != null, family: 'COMPOUND', action: 'SELL', currentLevel, targetLevel: currentLevel, directSellGold: directOne, expectedGold: directOne, expectedGain: 0, sameCount };
-      }
-      const nextLevel = currentLevel + 1;
-      const chance = progressionProbability(G, meta, nextLevel, true);
-      const scroll = this._scrollCost(meta, currentLevel, true);
-      const nextSell = npcSellValue(G, item.name, nextLevel, 1);
-      if (chance == null || scroll.cost == null || nextSell == null) {
-        return { modeled: false, family: 'COMPOUND', action: 'KEEP', currentLevel, targetLevel: currentLevel, directSellGold: directOne, expectedGold: directOne, expectedGain: 0, sameCount };
-      }
-      const directSet = directOne * 3;
-      const expected = chance * nextSell - scroll.cost;
-      const profitable = expected > directSet;
+      const actualCount = Math.max(0, Math.floor(finite(sameCount, 0)));
+      const planCount = Math.max(3, actualCount);
+      const directActual = this._saleValue(item.name, currentLevel, Math.max(1, actualCount));
+      const optimized = this._compoundOptimalValue(item, meta, currentLevel, planCount, maxLevel);
+      const profitable = optimized.action === 'COMPOUND' && optimized.expectedGold > finite(optimized.directSale && optimized.directSale.gold, 0);
+      const action = profitable ? (actualCount >= 3 ? 'COMPOUND' : 'ACCUMULATE') : 'SELL';
       return {
-        modeled: true,
+        modeled: directActual.modeled === true,
         family: 'COMPOUND',
-        action: profitable ? (sameCount >= 3 ? 'COMPOUND' : 'ACCUMULATE') : 'SELL',
+        action,
         currentLevel,
-        targetLevel: profitable ? nextLevel : currentLevel,
-        expectedGold: profitable ? expected : directSet,
-        directSellGold: directSet,
-        expectedGain: expected - directSet,
-        nextChance: chance,
-        scroll: scroll.name,
-        scrollCost: scroll.cost,
-        sameCount
+        targetLevel: profitable ? optimized.targetLevel : currentLevel,
+        expectedGold: profitable ? optimized.expectedGold : directActual.gold,
+        directSellGold: directActual.gold,
+        directSale: clone(directActual),
+        expectedGain: profitable ? optimized.expectedGold - finite(optimized.directSale && optimized.directSale.gold, 0) : 0,
+        nextChance: optimized.nextChance == null ? null : optimized.nextChance,
+        scroll: optimized.scroll || null,
+        scrollCost: finite(optimized.scrollCost, 0),
+        sameCount: actualCount,
+        modeledCount: planCount,
+        groups: optimized.groups || 0,
+        multiStep: profitable && optimized.targetLevel > currentLevel + 1,
+        riskPolicy: optimized.riskPolicy ? clone(optimized.riskPolicy) : null
       };
     }
 
     _economicDecision(item, meta, sameCount) {
       if (meta && meta.compound) return this._compoundEconomics(item, meta, sameCount);
       if (meta && meta.upgrade) return this._upgradeEconomics(item, meta);
-      const directSellGold = npcSellValue(this._gameData(), item, levelOf(item), 1);
+      const direct = this._saleValue(item, levelOf(item), 1);
       return {
-        modeled: directSellGold != null,
+        modeled: direct.modeled === true,
         family: 'NONE',
         action: 'SELL',
         currentLevel: levelOf(item),
         targetLevel: levelOf(item),
-        expectedGold: directSellGold,
-        directSellGold,
+        expectedGold: direct.gold,
+        directSellGold: direct.gold,
+        directSale: clone(direct),
         expectedGain: 0
       };
     }
@@ -20448,20 +20890,39 @@
       if (protection) {
         const family = meta.compound ? 'COMPOUND' : meta.upgrade ? 'UPGRADE' : 'GEAR';
         const needsMutation = protection.targetLevel > levelOf(item);
-        const action = needsMutation && family === 'COMPOUND' && sameCount < 3
+        let action = needsMutation && family === 'COMPOUND' && sameCount < 3
           ? 'ACCUMULATE'
           : needsMutation ? family : 'GEAR';
+        let mutationPolicy = null;
+        if (needsMutation) {
+          const nextLevel = Math.max(levelOf(item) + 1, finite(protection.nextMutationLevel, levelOf(item) + 1));
+          const nextStep = (protection.curve || []).find(row => Math.max(0, Number(row && row.level) || 0) === nextLevel);
+          const chance = finite(nextStep && nextStep.stepChance);
+          mutationPolicy = this.mutationRiskPolicy(family, item, meta, protection, nextLevel, chance, {
+            itemCount: family === 'COMPOUND' ? 3 : 1
+          });
+          if (!mutationPolicy.allowed) action = 'HOLD';
+        } else if (protection.targetOnline !== true) {
+          this._rememberGearReservation(item, protection);
+        }
         return {
           checked: true,
           protected: true,
           sellSafe: false,
-          reason: protection.targetLevel > levelOf(item) ? 'FUTURE_GEAR_UPGRADE_POTENTIAL' : 'CURRENT_GEAR_UPGRADE_POTENTIAL',
+          reason: action === 'HOLD'
+            ? mutationPolicy && mutationPolicy.reason || 'GEAR_MUTATION_RISK_HOLD'
+            : protection.targetLevel > levelOf(item)
+              ? 'FUTURE_GEAR_UPGRADE_POTENTIAL'
+              : protection.targetOnline === true
+                ? 'CURRENT_GEAR_UPGRADE_POTENTIAL'
+                : 'OFFLINE_TARGET_GEAR_READY',
           action,
           item: item.name,
           observedLevel: levelOf(item),
           sameCount,
           futureGear: clone(protection),
           economic: null,
+          mutationPolicy: mutationPolicy ? clone(mutationPolicy) : null,
           checkedCharacterCount,
           expectedCharacterCount: profiles.length
         };
@@ -20482,6 +20943,109 @@
         economic: clone(economic),
         checkedCharacterCount,
         expectedCharacterCount: profiles.length
+      };
+    }
+
+    _storageRead(key, fallback = null) {
+      if (!this.storage || !key) return fallback;
+      try {
+        const shared = typeof this.storage.getShared === 'function' ? this.storage.getShared(key) : null;
+        const raw = shared == null && typeof this.storage.get === 'function' ? this.storage.get(key) : shared;
+        if (!raw) return fallback;
+        const parsed = JSON.parse(raw);
+        return parsed == null ? fallback : parsed;
+      } catch (_) {
+        return fallback;
+      }
+    }
+
+    _storageWrite(key, value) {
+      if (!this.storage || !key) return false;
+      const raw = JSON.stringify(value);
+      try {
+        if (typeof this.storage.setShared === 'function' && this.storage.setShared(key, raw) !== false) return true;
+      } catch (_) {}
+      try {
+        return typeof this.storage.set === 'function' ? this.storage.set(key, raw) !== false : false;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    _deliveryReservations() {
+      const rows = this._storageRead(this.deliveryKey, []);
+      return Array.isArray(rows) ? rows.filter(row => row && row.fingerprint && row.targetCharacter) : [];
+    }
+
+    _saveDeliveryReservations(rows) {
+      return this._storageWrite(this.deliveryKey, (Array.isArray(rows) ? rows : []).slice(-100));
+    }
+
+    _rememberGearReservation(item, protection) {
+      if (!item || !item.name || !protection || !protection.targetCharacter) return false;
+      const fingerprint = identityKey(item);
+      const rows = this._deliveryReservations();
+      const next = rows.filter(row => !(row.fingerprint === fingerprint && row.targetCharacter === protection.targetCharacter));
+      next.push({
+        schemaVersion: 1,
+        fingerprint,
+        itemName: item.name,
+        level: levelOf(item),
+        statType: item.statType != null ? item.statType : item.stat_type || null,
+        property: item.property == null ? (item.p == null ? null : clone(item.p)) : clone(item.property),
+        targetCharacter: protection.targetCharacter,
+        targetSlot: protection.targetSlot || null,
+        targetCtype: protection.targetCtype || null,
+        createdAt: new Date().toISOString()
+      });
+      return this._saveDeliveryReservations(next);
+    }
+
+    pendingGearReservations() {
+      const profiles = new Map(this._profiles().map(row => [String(row.name), row]));
+      return this._deliveryReservations().map(row => ({
+        ...clone(row),
+        targetOnline: profiles.get(String(row.targetCharacter)) && profiles.get(String(row.targetCharacter)).online === true
+      }));
+    }
+
+    reservationForItem(item, targetCharacter = null) {
+      if (!item || !item.name) return null;
+      const fingerprint = identityKey(item);
+      return this.pendingGearReservations().find(row =>
+        row.fingerprint === fingerprint
+        && (!targetCharacter || String(row.targetCharacter) === String(targetCharacter))) || null;
+    }
+
+    completeGearDelivery(itemOrFingerprint, targetCharacter) {
+      const fingerprint = typeof itemOrFingerprint === 'string' ? itemOrFingerprint : identityKey(itemOrFingerprint);
+      const target = String(targetCharacter || '');
+      const rows = this._deliveryReservations();
+      const next = rows.filter(row => !(row.fingerprint === fingerprint && String(row.targetCharacter) === target));
+      this._saveDeliveryReservations(next);
+      return rows.length !== next.length;
+    }
+
+    cancelGearReservation(fingerprint, targetCharacter) {
+      return this.completeGearDelivery(String(fingerprint || ''), targetCharacter);
+    }
+
+    deliveryAuthorization(item, targetCharacter) {
+      if (!item || !item.name || !targetCharacter) return { allowed: false, reason: 'GEAR_DELIVERY_ARGUMENT_INVALID' };
+      const reservation = this.reservationForItem(item, targetCharacter);
+      if (!reservation) return { allowed: false, reason: 'GEAR_DELIVERY_RESERVATION_MISSING' };
+      const evaluation = this.evaluateItem(item, { profiles: this._profiles(), sameCount: 1 });
+      const protection = evaluation && evaluation.futureGear;
+      const allowed = !!(evaluation
+        && evaluation.checked === true
+        && evaluation.action === 'GEAR'
+        && protection
+        && String(protection.targetCharacter) === String(targetCharacter));
+      return {
+        allowed,
+        reason: allowed ? 'GEAR_DELIVERY_AUTHORIZED' : 'GEAR_DELIVERY_NO_LONGER_VALID',
+        reservation: clone(reservation),
+        evaluation: evaluation ? clone(evaluation) : null
       };
     }
 
@@ -20528,8 +21092,12 @@
           equipmentKnown: !!this._profileEquipment(row),
           local: row.local === true,
           peerFresh: row.peerFresh === true,
-          roleProfile: roleProfile(row)
+          roleProfile: roleProfile(row),
+          online: row.online === true,
+          cached: row.cached === true
         })),
+        riskState: this._accountRiskState(),
+        pendingGearReservations: this.pendingGearReservations(),
         evaluations
       };
       return clone(this.lastPlan);
@@ -20580,7 +21148,11 @@
         riskAdjustedTargetSelection: true,
         roleAwareGearScoring: true,
         merchantSpeedPriority: 'WEIGHTED_PRIMARY_WITH_NET_REGRESSION_GUARD',
-        economicsModel: 'NPC_SELL_EXPECTED_VALUE_V1',
+        accountWideProfilesIncludingOffline: true,
+        offlineGearReservationEnabled: true,
+        economicsModel: 'MARKET_OR_NPC_EXPECTED_VALUE_V2_MULTI_STEP_COMPOUND',
+        riskState: this._accountRiskState(),
+        pendingGearReservations: this.pendingGearReservations(),
         config: clone(this.config),
         lastPlan: clone(this.lastPlan),
         metrics: clone(this.metrics)
@@ -20973,7 +21545,14 @@
       }
       const activeHold = this._activeRiskHold(kind, row);
       if (activeHold) {
-        const decision = { ...clone(activeHold.decision), allowed: false, reason: 'MUTATION_RISK_EXCEEDS_POLICY', held: true, holdUntilMs: activeHold.untilMs };
+        const held = clone(activeHold.decision) || {};
+        const decision = {
+          ...held,
+          allowed: false,
+          reason: held.reason || 'MUTATION_RISK_EXCEEDS_POLICY',
+          held: true,
+          holdUntilMs: activeHold.untilMs
+        };
         this.lastMutationRiskDecision = clone(decision);
         return decision;
       }
@@ -21004,21 +21583,62 @@
       const chance = options.chanceProvided === true
         ? this._normalizeMutationChance(options.chance)
         : this._mutationChance(kind, evaluation, targetLevel);
-      const allowed = chance != null && chance >= minChance;
+      let accountPolicy = null;
+      if (this.gearProgression && typeof this.gearProgression.mutationRiskPolicy === 'function') {
+        try {
+          accountPolicy = this.gearProgression.mutationRiskPolicy(
+            kind,
+            row,
+            definition,
+            evaluation,
+            targetLevel,
+            chance,
+            { itemCount: String(kind || '').toUpperCase() === 'COMPOUND' ? 3 : 1 }
+          );
+        } catch (_) {
+          accountPolicy = {
+            allowed: false,
+            reason: 'ACCOUNT_MUTATION_RISK_POLICY_UNAVAILABLE',
+            minChance: null
+          };
+        }
+      }
+      const accountMinChance = finite(accountPolicy && accountPolicy.minChance);
+      const effectiveMinChance = Math.max(minChance, accountMinChance == null ? 0 : accountMinChance);
+      const accountAllowed = !accountPolicy || accountPolicy.allowed === true;
+      const allowed = accountAllowed && chance != null && chance >= effectiveMinChance;
       const decision = {
         at: nowIso(),
         allowed,
-        reason: allowed ? 'MUTATION_RISK_ACCEPTED' : chance == null ? 'MUTATION_CHANCE_UNAVAILABLE' : 'MUTATION_RISK_EXCEEDS_POLICY',
+        reason: allowed
+          ? 'MUTATION_RISK_ACCEPTED'
+          : accountPolicy && accountPolicy.allowed !== true
+            ? accountPolicy.reason || 'ACCOUNT_MUTATION_RISK_BLOCKED'
+            : chance == null
+              ? 'MUTATION_CHANCE_UNAVAILABLE'
+              : 'MUTATION_RISK_EXCEEDS_POLICY',
         kind: String(kind || '').toUpperCase(),
         item: row && row.name || null,
         level,
         targetLevel: Math.max(0, Number(targetLevel) || 0),
         chance,
-        minChance,
+        minChance: effectiveMinChance,
+        accountPolicy: accountPolicy ? clone(accountPolicy) : null,
         replacement,
         usefulNow,
         serverAuthoritative: options.serverAuthoritative === true,
-        threshold: { base, levelPenalty, compoundPenalty, partyPenalty, valuePenalty, benefitCredit, futureImprovementRatio, spareEquivalents: spare }
+        threshold: {
+          base,
+          levelPenalty,
+          compoundPenalty,
+          partyPenalty,
+          valuePenalty,
+          benefitCredit,
+          futureImprovementRatio,
+          spareEquivalents: spare,
+          localMinChance: minChance,
+          accountMinChance
+        }
       };
       this.metrics.mutationRiskChecks += 1;
       if (allowed) {
@@ -22876,6 +23496,7 @@
   }
 
   const DEFAULT_PRIORITIES = Object.freeze({
+    GEAR_DELIVER: 120,
     BANK_MOUNT: 110,
     BANK_WITHDRAW: 108,
     BANK_DEPOSIT: 106,
@@ -22891,6 +23512,7 @@
   });
 
   const DEFAULT_KINDS = Object.freeze({
+    GEAR_DELIVER: true,
     BANK_MOUNT: true,
     BANK_WITHDRAW: true,
     BANK_EXIT: true,
@@ -22920,6 +23542,7 @@
       this.gearProgression = options.gearProgression || null;
       this.upgrade = options.upgrade || null;
       this.exchangeCraft = options.exchangeCraft || null;
+      this.party = options.party || null;
       this.partyLogistics = options.partyLogistics || null;
       this.canAct = typeof options.canAct === 'function' ? options.canAct : null;
 
@@ -23079,6 +23702,11 @@
       catch (_) { return null; }
     }
 
+    _partySnapshot() {
+      try { return this.party && typeof this.party.snapshot === 'function' ? this.party.snapshot() : null; }
+      catch (_) { return null; }
+    }
+
     _combatActive() {
       try {
         const status = this.combat && typeof this.combat.status === 'function' ? this.combat.status() : null;
@@ -23123,14 +23751,14 @@
       return output;
     }
 
-    _childBusy(child) {
+    _childBusy(child, module = null) {
       return !!(child && (
         child.pending
         || child.request
         || child.delivery
         || child.pendingLoot
         || child.currentAction
-        || child.autonomyEnabled
+        || (String(module || '') !== 'partyLogistics' && child.autonomyEnabled)
         || Array.isArray(child.queue) && child.queue.length
       ));
     }
@@ -23257,7 +23885,7 @@
       }
 
       const busyChildren = Object.entries(children)
-        .filter(([, status]) => this._childBusy(status))
+        .filter(([module, status]) => this._childBusy(status, module))
         .map(([module, status]) => ({ module, reason: 'BUSY', lastAction: status && status.lastAction || null }));
       if (!this.currentAction && busyChildren.length) {
         this.metrics.conflictBlocks += 1;
@@ -23274,6 +23902,77 @@
       const exchangePlan = this._callPlan(this.exchangeCraft);
 
       const pressure = merchantPlan && merchantPlan.pressure && merchantPlan.pressure.state || 'NORMAL';
+
+      const partyPlan = this._partySnapshot();
+      const partyTargets = new Set(
+        partyPlan && partyPlan.coordinationEnabled && Array.isArray(partyPlan.ownedMembers)
+          ? partyPlan.ownedMembers.filter(row => row && !row.local).map(row => String(row.name || '')).filter(Boolean)
+          : []
+      );
+      const pendingGearDeliveries = this.gearProgression && typeof this.gearProgression.pendingGearReservations === 'function'
+        ? this.gearProgression.pendingGearReservations()
+        : [];
+      const activeGearDelivery = pendingGearDeliveries.find(row =>
+        row && row.targetOnline === true && partyTargets.has(String(row.targetCharacter || ''))) || null;
+
+      if (activeGearDelivery && this.gearProgression) {
+        let inventory = null;
+        try { inventory = this.game && typeof this.game.inventorySnapshot === 'function' ? this.game.inventorySnapshot() : null; } catch (_) {}
+        let inventoryItem = null;
+        for (const row of inventory && inventory.items || []) {
+          try {
+            const reservation = this.gearProgression.reservationForItem(row, activeGearDelivery.targetCharacter);
+            if (reservation) { inventoryItem = row; break; }
+          } catch (_) {}
+        }
+
+        if (inventoryItem) {
+          const proposal = this._proposal('GEAR_DELIVER', 'partyLogistics', {
+            key: activeGearDelivery.fingerprint + ':' + activeGearDelivery.targetCharacter,
+            targetCharacter: activeGearDelivery.targetCharacter,
+            inventorySlot: Number(inventoryItem.slot),
+            itemName: inventoryItem.name,
+            fingerprint: activeGearDelivery.fingerprint,
+            risk: 0
+          });
+          if (proposal) proposals.push(proposal);
+        } else if (bankPlan && bankPlan.state === 'READY') {
+          let bankItem = null;
+          for (const pack of bankPlan.packs || []) {
+            for (const row of pack.items || []) {
+              try {
+                const reservation = this.gearProgression.reservationForItem(row, activeGearDelivery.targetCharacter);
+                if (reservation) {
+                  bankItem = { ...clone(row), packName: pack.name };
+                  break;
+                }
+              } catch (_) {}
+            }
+            if (bankItem) break;
+          }
+          if (bankItem) {
+            const proposal = this._proposal('BANK_WITHDRAW', 'bank', {
+              key: 'gear:' + activeGearDelivery.fingerprint + ':' + bankItem.packName + ':' + bankItem.slot,
+              itemName: bankItem.name,
+              packName: bankItem.packName,
+              bankSlot: Number(bankItem.slot),
+              quantity: 1,
+              purpose: 'GEAR_DELIVERY',
+              targetCharacter: activeGearDelivery.targetCharacter,
+              risk: 0
+            });
+            if (proposal) proposals.push(proposal);
+          }
+        } else if (bankPlan && bankPlan.state === 'NEEDS_BANK') {
+          const proposal = this._proposal('BANK_MOUNT', 'bank', {
+            key: 'gear-delivery:' + activeGearDelivery.fingerprint,
+            purpose: 'GEAR_DELIVERY',
+            targetCharacter: activeGearDelivery.targetCharacter,
+            risk: 0
+          });
+          if (proposal) proposals.push(proposal);
+        }
+      }
 
       // Mutation consumables are short-lived execution resources, not maintenance
       // cargo. H15 may need the exact scroll/offering now (or be about to retrieve
@@ -23525,6 +24224,8 @@
         futureGearEvaluation: upgradePlan && upgradePlan.futureGearEvaluation
           ? clone(upgradePlan.futureGearEvaluation)
           : null,
+        pendingGearDeliveries: clone(pendingGearDeliveries),
+        activeGearDelivery: activeGearDelivery ? clone(activeGearDelivery) : null,
         selected: selected ? clone(selected) : null,
         proposals: clone(proposals),
         blockers: clone(blockers),
@@ -23541,6 +24242,7 @@
         gear: this.gear,
         upgrade: this.upgrade,
         exchangeCraft: this.exchangeCraft,
+        partyLogistics: this.partyLogistics,
         movement: this.movement
       }[module] || null;
     }
@@ -23558,13 +24260,15 @@
           })
         : null;
       else if (proposal.kind === 'BANK_WITHDRAW') result = this.bank && this.bank.queueWithdraw
-        ? this.bank.queueWithdraw(proposal.packName, proposal.bankSlot) : null;
+        ? this.bank.queueWithdraw(proposal.packName, proposal.bankSlot, { purpose: proposal.purpose || null }) : null;
       else if (proposal.kind === 'BANK_DEPOSIT') result = this.bank && this.bank.queueDeposit
         ? this.bank.queueDeposit(proposal.itemName, { inventorySlot: proposal.inventorySlot }) : null;
       else if (proposal.kind === 'MATERIAL_ACQUIRE') result = this.trade && this.trade.queueAcquire
         ? this.trade.queueAcquire(proposal.itemName, proposal.quantity, { maxUnitPrice: proposal.maxUnitPrice }) : null;
       else if (proposal.kind === 'GEAR_EQUIP') result = this.gear && this.gear.queueEquip
         ? this.gear.queueEquip(proposal.inventorySlot, proposal.slot) : null;
+      else if (proposal.kind === 'GEAR_DELIVER') result = this.partyLogistics && this.partyLogistics.queueGearDelivery
+        ? this.partyLogistics.queueGearDelivery(proposal.targetCharacter, proposal.inventorySlot) : null;
       else if (proposal.kind === 'MARKET_SELL') result = this.trade && this.trade.queueMarketSell
         ? this.trade.queueMarketSell(proposal.playerName, proposal.tradeSlot, proposal.quantity, { minUnitPrice: proposal.minUnitPrice }) : null;
       else if (proposal.kind === 'NPC_SELL') result = this.trade && this.trade.queueNpcSell
@@ -23683,7 +24387,7 @@
         this._finishCurrent('UNKNOWN', { module: current.module, reason: child.suspendedReason || null });
         return { state: 'SUSPENDED', reason: this.suspendedReason };
       }
-      if (this._childBusy(child)) return { state: 'WAITING', action: clone(current) };
+      if (this._childBusy(child, current.module)) return { state: 'WAITING', action: clone(current) };
 
       const after = this._lastActionSignature(child);
       if (after && after !== current.beforeLastAction) {
@@ -28284,7 +28988,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.30-h26';
+      this.version = options.version || '0.26.37-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -28423,9 +29127,14 @@
         logger: this.logger,
         game: this.game,
         gear: this.gear,
+        market: this.trade,
+        storage: this.storage,
         getProfiles: () => this.accountStrategy && typeof this.accountStrategy.profiles === 'function'
           ? this.accountStrategy.profiles()
-          : []
+          : [],
+        getAccountWealth: () => this.accountStrategy && typeof this.accountStrategy.accountWealth === 'function'
+          ? this.accountStrategy.accountWealth()
+          : { known: false, totalGold: null }
       });
       this.inventory.gearProgression = this.gearProgression;
       this.trade.gearProgression = this.gearProgression;
@@ -28463,6 +29172,7 @@
         gearProgression: this.gearProgression,
         upgrade: this.upgrade,
         exchangeCraft: this.exchangeCraft,
+        party: this.party,
         canAct: action => this.actionAllowed(action)
       });
       this.partyLogistics = new ns.PartyLogisticsController({
@@ -28481,6 +29191,7 @@
         upgrade: this.upgrade,
         exchangeCraft: this.exchangeCraft,
         economy: this.economy,
+        gearProgression: this.gearProgression,
         canAct: action => this.actionAllowed(action)
       });
       const dispatchH19CrossWindowPartyAction = (actionName, args = []) => {
@@ -28715,7 +29426,8 @@
         roster: this.roster,
         party: this.party,
         crossWindow: this.lifecycleTransport,
-        gear: this.gear
+        gear: this.gear,
+        storage: this.storage
       });
       this.encounters = new ns.EncounterController({
         root: this.root,
@@ -36394,7 +37106,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.30-h26',
+    version: '0.26.37-h26',
     bootCount,
     replacedPrevious: !!previous
   });

@@ -40,6 +40,7 @@
       this.upgrade = options.upgrade || null;
       this.exchangeCraft = options.exchangeCraft || null;
       this.economy = options.economy || null;
+      this.gearProgression = options.gearProgression || null;
       this.canAct = typeof options.canAct === 'function' ? options.canAct : null;
 
       this.moduleActive = false;
@@ -74,6 +75,11 @@
         suppliesConfirmed: 0,
         suppliesRejected: 0,
         suppliesUnknown: 0,
+        gearQueued: 0,
+        gearDispatched: 0,
+        gearConfirmed: 0,
+        gearRejected: 0,
+        gearUnknown: 0,
         goldQueued: 0,
         goldDispatched: 0,
         goldConfirmed: 0,
@@ -95,7 +101,7 @@
 
     start(context = {}) {
       if (this.moduleActive) return { started: false, reason: 'H18_ALREADY_ACTIVE' };
-      const resumedInFlight = !!(this.currentAction && ['SUPPLY','GOLD'].includes(String(this.currentAction.kind || '')));
+      const resumedInFlight = !!(this.currentAction && ['SUPPLY','GEAR','GOLD'].includes(String(this.currentAction.kind || '')));
       this.moduleActive = true;
       this.scope = context.scope || null;
       this.autonomyEnabled = false;
@@ -111,7 +117,7 @@
     }
 
     stop(reason = 'H18_MODULE_STOP') {
-      const preserveInFlight = !!(this.currentAction && ['SUPPLY','GOLD'].includes(String(this.currentAction.kind || '')));
+      const preserveInFlight = !!(this.currentAction && ['SUPPLY','GEAR','GOLD'].includes(String(this.currentAction.kind || '')));
       this.moduleActive = false;
       this.autonomyEnabled = false;
       this.scope = null;
@@ -263,6 +269,17 @@
         && this._safeSupplyRow(row)) || null;
     }
 
+    _gearDeliveryRow(slot, targetName) {
+      const inventory = this._inventory();
+      if (!inventory || inventory.available === false) return null;
+      const row = (inventory.items || []).find(item => Number(item.slot) === Number(slot)) || null;
+      if (!row || !row.name || row.locked || row.giveaway || row.gift || row.expiresAt) return null;
+      if (!this.gearProgression || typeof this.gearProgression.deliveryAuthorization !== 'function') return null;
+      let authorization = null;
+      try { authorization = this.gearProgression.deliveryAuthorization(row, targetName); } catch (_) {}
+      return authorization && authorization.allowed === true ? { row, authorization } : null;
+    }
+
     _externalBusy() {
       const rows = [
         ['inventory', this.inventory],
@@ -284,7 +301,9 @@
       }
       let economy = null;
       try { economy = this.economy && typeof this.economy.status === 'function' ? this.economy.status() : null; } catch (_) {}
-      if (economy && (economy.currentAction || economy.autonomyEnabled)) {
+      const economyDelegatingHere = economy && economy.currentAction
+        && String(economy.currentAction.module || '') === 'partyLogistics';
+      if (economy && !economyDelegatingHere && (economy.currentAction || economy.autonomyEnabled)) {
         blockers.push({ module: 'economy', reason: economy.currentAction ? 'BUSY' : 'AUTONOMY_ACTIVE' });
       }
       return blockers;
@@ -319,6 +338,33 @@
       this.queue.push(request);
       this.metrics.suppliesQueued += 1;
       this.lastAction = { at: nowIso(), type: 'SUPPLY_QUEUED', request: clone(request) };
+      return { accepted: true, request: clone(request) };
+    }
+
+    queueGearDelivery(targetName, inventorySlot) {
+      if (!this.moduleActive) return { accepted: false, reason: 'H18_MODULE_NOT_ACTIVE' };
+      if (this.suspendedReason) return { accepted: false, reason: this.suspendedReason };
+      if (this.queue.length >= this.config.maxQueue) return { accepted: false, reason: 'H18_QUEUE_FULL' };
+      const party = this._partySnapshot();
+      if (!party || !party.coordinationEnabled) return { accepted: false, reason: 'H18_OWNED_PARTY_REQUIRED' };
+      const target = this._ownedTarget(targetName, party);
+      if (!target) return { accepted: false, reason: 'H18_TARGET_NOT_OWNED_PARTY_MEMBER' };
+      const authorized = this._gearDeliveryRow(inventorySlot, target.name);
+      if (!authorized) return { accepted: false, reason: 'H18_GEAR_DELIVERY_NOT_AUTHORIZED' };
+      const row = authorized.row;
+      const request = {
+        id: 'h18-request-' + (++this.sequence),
+        kind: 'GEAR',
+        targetName: String(target.name),
+        itemName: String(row.name),
+        inventorySlot: Number(row.slot),
+        fingerprint: authorized.authorization.reservation && authorized.authorization.reservation.fingerprint || null,
+        quantity: 1,
+        createdAt: nowIso()
+      };
+      this.queue.push(request);
+      this.metrics.gearQueued += 1;
+      this.lastAction = { at: nowIso(), type: 'GEAR_QUEUED', request: clone(request) };
       return { accepted: true, request: clone(request) };
     }
 
@@ -426,6 +472,29 @@
             quantity: request.quantity,
             slot: Number(row.slot),
             beforeQuantity: available
+          }
+        };
+      }
+
+      if (request.kind === 'GEAR') {
+        const authorized = this._gearDeliveryRow(request.inventorySlot, request.targetName);
+        if (!authorized) return { state: 'BLOCKED', reason: 'H18_GEAR_DELIVERY_NOT_AUTHORIZED', selected: null };
+        const row = authorized.row;
+        if (!this.actions || typeof this.actions.available !== 'function' || !this.actions.available('send_item')) {
+          return { state: 'BLOCKED', reason: 'H18_SEND_ITEM_UNAVAILABLE', selected: null };
+        }
+        return {
+          state: 'READY',
+          reason: 'H18_GEAR_DELIVERY_READY',
+          selected: {
+            kind: 'GEAR',
+            requestId: request.id,
+            targetName: target.name,
+            itemName: row.name,
+            quantity: 1,
+            slot: Number(row.slot),
+            fingerprint: request.fingerprint || authorized.authorization.reservation && authorized.authorization.reservation.fingerprint || null,
+            beforeQuantity: Math.max(1, Math.floor(Number(row.quantity) || 1))
           }
         };
       }
@@ -549,16 +618,26 @@
       if (outcome === 'CONFIRMED') {
         this.actionsThisSession += current && current.kind !== 'APPROACH' ? 1 : 0;
         if (current && current.kind === 'SUPPLY') this.metrics.suppliesConfirmed += 1;
+        if (current && current.kind === 'GEAR') {
+          this.metrics.gearConfirmed += 1;
+          try {
+            if (this.gearProgression && typeof this.gearProgression.completeGearDelivery === 'function') {
+              this.gearProgression.completeGearDelivery(current.fingerprint || '', current.targetName);
+            }
+          } catch (_) {}
+        }
         if (current && current.kind === 'GOLD') this.metrics.goldConfirmed += 1;
         if (current && current.kind === 'REGROUP') this.metrics.regroupsConfirmed += 1;
-        if (current && ['SUPPLY','GOLD'].includes(current.kind)) this._dequeueRequest(current.requestId);
+        if (current && ['SUPPLY','GEAR','GOLD'].includes(current.kind)) this._dequeueRequest(current.requestId);
       } else if (outcome === 'REJECTED') {
         if (current && current.kind === 'SUPPLY') this.metrics.suppliesRejected += 1;
+        if (current && current.kind === 'GEAR') this.metrics.gearRejected += 1;
         if (current && current.kind === 'GOLD') this.metrics.goldRejected += 1;
         if (current && current.kind === 'REGROUP') this.metrics.regroupsRejected += 1;
-        if (current && ['SUPPLY','GOLD'].includes(current.kind)) this._dequeueRequest(current.requestId);
+        if (current && ['SUPPLY','GEAR','GOLD'].includes(current.kind)) this._dequeueRequest(current.requestId);
       } else {
         if (current && current.kind === 'SUPPLY') this.metrics.suppliesUnknown += 1;
+        if (current && current.kind === 'GEAR') this.metrics.gearUnknown += 1;
         if (current && current.kind === 'GOLD') this.metrics.goldUnknown += 1;
         if (current && ['REGROUP','APPROACH'].includes(current.kind)) this.metrics.regroupsUnknown += 1;
       }
@@ -617,8 +696,10 @@
       }
 
       const settlementFinished = current.settlement !== 'PENDING';
-      if (current.kind === 'SUPPLY') {
-        const row = this._supplyRowAt(current.slot, current.itemName);
+      if (current.kind === 'SUPPLY' || current.kind === 'GEAR') {
+        const row = current.kind === 'GEAR'
+          ? (this._inventory() && (this._inventory().items || []).find(item => Number(item.slot) === Number(current.slot) && String(item.name || '') === String(current.itemName || '')))
+          : this._supplyRowAt(current.slot, current.itemName);
         const after = row ? Math.max(1, Math.floor(Number(row.quantity) || 1)) : 0;
         if (settlementFinished && current.beforeQuantity - after >= current.quantity) {
           return { state: 'CONFIRMED', result: this._finishCurrent('CONFIRMED', {
@@ -684,7 +765,7 @@
       }
       let actionName;
       let args;
-      if (selected.kind === 'SUPPLY') {
+      if (selected.kind === 'SUPPLY' || selected.kind === 'GEAR') {
         actionName = 'send_item';
         args = [selected.targetName, selected.slot, selected.quantity];
       } else if (selected.kind === 'GOLD') {
@@ -721,6 +802,7 @@
         slot: selected.slot == null ? null : Number(selected.slot),
         amount: selected.amount || null,
         beforeQuantity: selected.beforeQuantity == null ? null : Number(selected.beforeQuantity),
+        fingerprint: selected.fingerprint || null,
         beforeGold: selected.beforeGold == null ? null : Number(selected.beforeGold),
         dispatchedAt: nowIso(),
         dispatchedAtMs: now,
@@ -731,6 +813,7 @@
       };
       this.currentAction = current;
       if (selected.kind === 'SUPPLY') this.metrics.suppliesDispatched += 1;
+      if (selected.kind === 'GEAR') this.metrics.gearDispatched += 1;
       if (selected.kind === 'GOLD') this.metrics.goldDispatched += 1;
       this.lastAction = { at: current.dispatchedAt, type: selected.kind + '_DISPATCHED', action: clone(current) };
       this._watch(dispatch.value, current);
@@ -758,7 +841,17 @@
       }
 
       const plan = this.plan();
-      if (!this.autonomyEnabled) return { state: 'OBSERVE', plan };
+      let delegatedGear = false;
+      if (!this.autonomyEnabled && this.queue[0] && String(this.queue[0].kind || '') === 'GEAR') {
+        try {
+          const economy = this.economy && typeof this.economy.status === 'function' ? this.economy.status() : null;
+          delegatedGear = !!(economy
+            && economy.currentAction
+            && String(economy.currentAction.module || '') === 'partyLogistics'
+            && String(economy.currentAction.kind || '') === 'GEAR_DELIVER');
+        } catch (_) {}
+      }
+      if (!this.autonomyEnabled && !delegatedGear) return { state: 'OBSERVE', plan };
       if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason, plan };
       if (this.actionsThisSession >= this.config.maxActionsPerSession) {
         this.metrics.sessionBudgetBlocks += 1;
@@ -781,9 +874,10 @@
         if (result && result.state === 'SUSPENDED') return result;
         const selected = plan.selected || {};
         if (selected.kind === 'SUPPLY') this.metrics.suppliesRejected += 1;
+        if (selected.kind === 'GEAR') this.metrics.gearRejected += 1;
         if (selected.kind === 'GOLD') this.metrics.goldRejected += 1;
         if (selected.kind === 'REGROUP') this.metrics.regroupsRejected += 1;
-        if (selected.requestId && ['SUPPLY','GOLD'].includes(selected.kind)) this._dequeueRequest(selected.requestId);
+        if (selected.requestId && ['SUPPLY','GEAR','GOLD'].includes(selected.kind)) this._dequeueRequest(selected.requestId);
         this.lastAction = {
           at: nowIso(),
           type: 'ACTION_QUEUE_REJECTED',
