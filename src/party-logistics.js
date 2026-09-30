@@ -841,7 +841,17 @@
       }
 
       const plan = this.plan();
-      if (!this.autonomyEnabled) return { state: 'OBSERVE', plan };
+      let delegatedGear = false;
+      if (!this.autonomyEnabled && this.queue[0] && String(this.queue[0].kind || '') === 'GEAR') {
+        try {
+          const economy = this.economy && typeof this.economy.status === 'function' ? this.economy.status() : null;
+          delegatedGear = !!(economy
+            && economy.currentAction
+            && String(economy.currentAction.module || '') === 'partyLogistics'
+            && String(economy.currentAction.kind || '') === 'GEAR_DELIVER');
+        } catch (_) {}
+      }
+      if (!this.autonomyEnabled && !delegatedGear) return { state: 'OBSERVE', plan };
       if (this.suspendedReason) return { state: 'SUSPENDED', reason: this.suspendedReason, plan };
       if (this.actionsThisSession >= this.config.maxActionsPerSession) {
         this.metrics.sessionBudgetBlocks += 1;
