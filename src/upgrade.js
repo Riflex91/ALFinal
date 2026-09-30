@@ -409,21 +409,62 @@
       const chance = options.chanceProvided === true
         ? this._normalizeMutationChance(options.chance)
         : this._mutationChance(kind, evaluation, targetLevel);
-      const allowed = chance != null && chance >= minChance;
+      let accountPolicy = null;
+      if (this.gearProgression && typeof this.gearProgression.mutationRiskPolicy === 'function') {
+        try {
+          accountPolicy = this.gearProgression.mutationRiskPolicy(
+            kind,
+            row,
+            definition,
+            evaluation,
+            targetLevel,
+            chance,
+            { itemCount: String(kind || '').toUpperCase() === 'COMPOUND' ? 3 : 1 }
+          );
+        } catch (_) {
+          accountPolicy = {
+            allowed: false,
+            reason: 'ACCOUNT_MUTATION_RISK_POLICY_UNAVAILABLE',
+            minChance: null
+          };
+        }
+      }
+      const accountMinChance = finite(accountPolicy && accountPolicy.minChance);
+      const effectiveMinChance = Math.max(minChance, accountMinChance == null ? 0 : accountMinChance);
+      const accountAllowed = !accountPolicy || accountPolicy.allowed === true;
+      const allowed = accountAllowed && chance != null && chance >= effectiveMinChance;
       const decision = {
         at: nowIso(),
         allowed,
-        reason: allowed ? 'MUTATION_RISK_ACCEPTED' : chance == null ? 'MUTATION_CHANCE_UNAVAILABLE' : 'MUTATION_RISK_EXCEEDS_POLICY',
+        reason: allowed
+          ? 'MUTATION_RISK_ACCEPTED'
+          : accountPolicy && accountPolicy.allowed !== true
+            ? accountPolicy.reason || 'ACCOUNT_MUTATION_RISK_BLOCKED'
+            : chance == null
+              ? 'MUTATION_CHANCE_UNAVAILABLE'
+              : 'MUTATION_RISK_EXCEEDS_POLICY',
         kind: String(kind || '').toUpperCase(),
         item: row && row.name || null,
         level,
         targetLevel: Math.max(0, Number(targetLevel) || 0),
         chance,
-        minChance,
+        minChance: effectiveMinChance,
+        accountPolicy: accountPolicy ? clone(accountPolicy) : null,
         replacement,
         usefulNow,
         serverAuthoritative: options.serverAuthoritative === true,
-        threshold: { base, levelPenalty, compoundPenalty, partyPenalty, valuePenalty, benefitCredit, futureImprovementRatio, spareEquivalents: spare }
+        threshold: {
+          base,
+          levelPenalty,
+          compoundPenalty,
+          partyPenalty,
+          valuePenalty,
+          benefitCredit,
+          futureImprovementRatio,
+          spareEquivalents: spare,
+          localMinChance: minChance,
+          accountMinChance
+        }
       };
       this.metrics.mutationRiskChecks += 1;
       if (allowed) {
