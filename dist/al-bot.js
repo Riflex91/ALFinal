@@ -1,4 +1,4 @@
-/* AL Bot 0.26.9-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.10-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -74,6 +74,28 @@
     _ls() {
       try { return this.root && this.root.localStorage ? this.root.localStorage : null; } catch (_) { return null; }
     }
+    _sharedLs() {
+      let current = this.root;
+      for (let depth = 0; depth < 8 && current; depth += 1) {
+        try {
+          const ls = current.localStorage || null;
+          if (ls && typeof ls.getItem === 'function' && typeof ls.setItem === 'function') {
+            ls.getItem('__albot_shared_storage_probe__');
+            return ls;
+          }
+        } catch (_) {}
+        let parentWindow = null;
+        try {
+          parentWindow = current.parent && current.parent !== current ? current.parent : null;
+          if (parentWindow) void parentWindow.document;
+        } catch (_) {
+          parentWindow = null;
+        }
+        if (!parentWindow) break;
+        current = parentWindow;
+      }
+      return null;
+    }
     get(key) {
       const ls = this._ls();
       if (ls) { try { return ls.getItem(key); } catch (_) {} }
@@ -88,6 +110,24 @@
       const ls = this._ls();
       if (ls) { try { ls.removeItem(key); } catch (_) {} }
       this.memory.delete(key);
+    }
+    sharedAvailable() {
+      return !!this._sharedLs();
+    }
+    getShared(key) {
+      const ls = this._sharedLs();
+      if (!ls) return null;
+      try { return ls.getItem(key); } catch (_) { return null; }
+    }
+    setShared(key, value) {
+      const ls = this._sharedLs();
+      if (!ls) return false;
+      try { ls.setItem(key, value); return true; } catch (_) { return false; }
+    }
+    removeShared(key) {
+      const ls = this._sharedLs();
+      if (!ls) return false;
+      try { ls.removeItem(key); return true; } catch (_) { return false; }
     }
   }
 
@@ -6300,6 +6340,9 @@
       this.sequence = 0;
       this.peers = new Map();
       this.sharedSeenMessageIds = new Map();
+      this.browserChannel = null;
+      this.browserChannelName = null;
+      this.browserChannelHandler = null;
       this.pending = new Map();
       this.inboundCommands = new Map();
       this.partyRecoveryLease = null;
@@ -6321,6 +6364,9 @@
         sharedPeerLoads: 0,
         sharedMessagesPublished: 0,
         sharedMessagesReceived: 0,
+        browserChannelPublishes: 0,
+        browserChannelReceived: 0,
+        browserChannelInstallFailures: 0,
         sendCmFailures: 0,
         transportFailures: 0,
         rejectedUntrusted: 0,
@@ -6427,9 +6473,11 @@
     }
 
     _sharedStorageAvailable() {
-      return !!(this.storage
-        && typeof this.storage.get === 'function'
-        && typeof this.storage.set === 'function');
+      if (!this.storage
+          || typeof this.storage.sharedAvailable !== 'function'
+          || typeof this.storage.getShared !== 'function'
+          || typeof this.storage.setShared !== 'function') return false;
+      try { return this.storage.sharedAvailable() === true; } catch (_) { return false; }
     }
 
     _sharedScope() {
@@ -6450,7 +6498,7 @@
     _sharedRead(key, fallback) {
       if (!this._sharedStorageAvailable()) return fallback;
       try {
-        const raw = this.storage.get(key);
+        const raw = this.storage.getShared(key);
         if (!raw) return fallback;
         const parsed = JSON.parse(raw);
         return parsed == null ? fallback : parsed;
@@ -6462,7 +6510,7 @@
     _sharedWrite(key, value) {
       if (!this._sharedStorageAvailable()) return false;
       try {
-        return this.storage.set(key, JSON.stringify(value)) !== false;
+        return this.storage.setShared(key, JSON.stringify(value)) !== false;
       } catch (_) {
         return false;
       }
@@ -6551,6 +6599,149 @@
       return { received };
     }
 
+    _resolveBroadcastChannelCtor() {
+      for (const candidate of this._roots()) {
+        try {
+          if (candidate && typeof candidate.BroadcastChannel === 'function') return candidate.BroadcastChannel;
+        } catch (_) {}
+      }
+      return null;
+    }
+
+    _browserChannelKey() {
+      return 'albot-h29-cross-window-v1:' + this._sharedScope();
+    }
+
+    _browserFrameValid(frame) {
+      const row = asObject(frame);
+      if (!row || row.schemaVersion !== 1 || row.protocol !== PROTOCOL) return false;
+      const server = this._serverIdentity();
+      if (server.region && cleanText(row.serverRegion || '', 80) !== server.region) return false;
+      if (server.identifier && cleanText(row.serverIdentifier || '', 80) !== server.identifier) return false;
+      const created = Number(row.createdAtMs);
+      const validUntil = Number(row.validUntilMs);
+      const now = this.now();
+      if (!Number.isFinite(created) || !Number.isFinite(validUntil)
+          || now < created - 5000 || now > validUntil) return false;
+      return true;
+    }
+
+    _handleBrowserChannelMessage(event) {
+      const frame = asObject(event && event.data);
+      if (!this._browserFrameValid(frame)) return false;
+      const local = this._localName();
+      const sender = cleanText(frame.senderCharacterName || '', 120);
+      if (!sender || sender === local || !this._ownedNames().has(sender)) return false;
+
+      if (frame.kind === 'STATE') {
+        const state = asObject(frame.state);
+        if (!state) return false;
+        this._updatePeer(sender, {
+          ...state,
+          sessionId: frame.sessionId || state.sessionId
+        }, Number(frame.createdAtMs));
+        this.metrics.browserChannelReceived += 1;
+        return true;
+      }
+
+      if (frame.kind === 'ENVELOPE') {
+        const envelope = asObject(frame.envelope);
+        if (!envelope) return false;
+        this.metrics.browserChannelReceived += 1;
+        try { this._receive(sender, envelope); } catch (_) {}
+        return true;
+      }
+      return false;
+    }
+
+    _installBrowserChannel() {
+      if (this.browserChannel) return true;
+      const Ctor = this._resolveBroadcastChannelCtor();
+      if (!Ctor) return false;
+      try {
+        const channel = new Ctor(this._browserChannelKey());
+        const handler = event => this._handleBrowserChannelMessage(event);
+        if (typeof channel.addEventListener === 'function') channel.addEventListener('message', handler);
+        else channel.onmessage = handler;
+        this.browserChannel = channel;
+        this.browserChannelName = this._browserChannelKey();
+        this.browserChannelHandler = handler;
+        return true;
+      } catch (error) {
+        this.metrics.browserChannelInstallFailures += 1;
+        this._log('warn', 'H29 Browser-Channel konnte nicht installiert werden', {
+          reason: errorReason(error, 'H29_BROWSER_CHANNEL_INSTALL_FAILED')
+        });
+        return false;
+      }
+    }
+
+    _publishBrowserState(state = null) {
+      if (!this.browserChannel) return false;
+      const local = this._localName();
+      if (!local) return false;
+      const server = this._serverIdentity();
+      const now = this.now();
+      try {
+        this.browserChannel.postMessage({
+          schemaVersion: 1,
+          protocol: PROTOCOL,
+          kind: 'STATE',
+          senderCharacterName: local,
+          sessionId: this.sessionId,
+          serverRegion: server.region,
+          serverIdentifier: server.identifier,
+          createdAtMs: now,
+          validUntilMs: now + this.config.staleMs,
+          state: clone(state || this._localStatePayload())
+        });
+        this.metrics.browserChannelPublishes += 1;
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    _publishBrowserEnvelope(envelope) {
+      if (!this.browserChannel || !envelope) return false;
+      const local = this._localName();
+      if (!local) return false;
+      const server = this._serverIdentity();
+      const now = this.now();
+      try {
+        this.browserChannel.postMessage({
+          schemaVersion: 1,
+          protocol: PROTOCOL,
+          kind: 'ENVELOPE',
+          senderCharacterName: local,
+          sessionId: this.sessionId,
+          serverRegion: server.region,
+          serverIdentifier: server.identifier,
+          createdAtMs: now,
+          validUntilMs: Number(envelope.validUntilMs) || now + this.config.settlementTimeoutMs,
+          envelope: clone(envelope)
+        });
+        this.metrics.browserChannelPublishes += 1;
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    _destroyBrowserChannel() {
+      const channel = this.browserChannel;
+      const handler = this.browserChannelHandler;
+      this.browserChannel = null;
+      this.browserChannelHandler = null;
+      this.browserChannelName = null;
+      if (!channel) return;
+      try {
+        if (handler && typeof channel.removeEventListener === 'function') channel.removeEventListener('message', handler);
+        else if (channel.onmessage === handler) channel.onmessage = null;
+      } catch (_) {}
+      try { if (typeof channel.close === 'function') channel.close(); } catch (_) {}
+    }
+
     _resolveSendCm() {
       for (const candidate of this._roots()) {
         try {
@@ -6605,13 +6796,17 @@
       const sharedPublished = envelope && envelope.type === 'HEARTBEAT'
         ? this._publishSharedState(envelope.state)
         : this._publishSharedEnvelope(target, envelope);
+      const browserPublished = envelope && envelope.type === 'HEARTBEAT'
+        ? this._publishBrowserState(envelope.state)
+        : this._publishBrowserEnvelope(envelope);
+      const fallbackPublished = sharedPublished || browserPublished;
       let value = null;
       try {
         value = this._sendRaw(target, envelope);
       } catch (error) {
         this.metrics.sendCmFailures += 1;
         this.lastError = { at: nowIso(this.now()), reason: errorReason(error) };
-        if (!sharedPublished) {
+        if (!fallbackPublished) {
           this.metrics.transportFailures += 1;
           this._log('warn', 'H19 Cross-Window CM Versand fehlgeschlagen', {
             target: cleanText(target || '', 120),
@@ -6622,7 +6817,7 @@
         }
       }
       if (metric) this.metrics[metric] += 1;
-      if (value && typeof value.then === 'function' && sharedPublished) {
+      if (value && typeof value.then === 'function' && fallbackPublished) {
         Promise.resolve(value).catch(error => {
           this.metrics.sendCmFailures += 1;
           this.lastError = { at: nowIso(this.now()), reason: errorReason(error) };
@@ -7491,6 +7686,7 @@
         this.receiveMode = 'legacy-on_cm';
       }
       this.installed = true;
+      try { this._installBrowserChannel(); } catch (_) {}
       try { this._pollSharedMailbox(); } catch (_) {}
       try { this.broadcastHeartbeat(); } catch (_) {}
       if (this.setIntervalFn) {
@@ -7534,6 +7730,7 @@
       this.onCmHandler = null;
       this.previousOnCm = null;
       this.receiveMode = null;
+      this._destroyBrowserChannel();
 
       for (const pending of this.pending.values()) {
         try {
@@ -7549,8 +7746,8 @@
           const key = this._sharedStateKey(this._localName());
           const row = this._sharedRead(key, null);
           if (row && cleanText(row.sessionId || '', 240) === this.sessionId
-              && typeof this.storage.remove === 'function') {
-            this.storage.remove(key);
+              && typeof this.storage.removeShared === 'function') {
+            this.storage.removeShared(key);
           }
         } catch (_) {}
       }
@@ -7572,6 +7769,8 @@
         installed: this.installed,
         receiveMode: this.receiveMode,
         sharedStorageFallback: this._sharedStorageAvailable(),
+        browserChannelFallback: !!this.browserChannel,
+        browserChannelName: this.browserChannelName,
         sessionId: this.sessionId,
         localName: this._localName(),
         server: this._serverIdentity(),
@@ -26730,7 +26929,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.9-h26';
+      this.version = options.version || '0.26.10-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -34818,7 +35017,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.9-h26',
+    version: '0.26.10-h26',
     bootCount,
     replacedPrevious: !!previous
   });
