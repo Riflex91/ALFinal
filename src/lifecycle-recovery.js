@@ -79,6 +79,7 @@
       this.partySignals = [];
       this.transientStartRetries = new Map();
       this.browserSwapRecoveryAttempts = new Map();
+      this.pendingBrowserSwapRecoveryKey = null;
       this.previousPartyInviteHandler = null;
       this.previousPartyRequestHandler = null;
       this.partyInviteHandler = null;
@@ -617,8 +618,9 @@
         if (remainingMissing.length) {
           const desiredCandidate = String(remainingMissing[0] || '');
           const recoveryAttempts = this._browserSwapRecoveryCount(name, desiredCandidate);
-          if (recoveryAttempts >= this.config.browserSwapSessionRecoveryLimit
-              && this.config.browserSwapSessionRecoveryLimit >= 0) {
+          const recoveryKey = this._browserSwapRecoveryKey(name, desiredCandidate);
+          const retryPermit = !!recoveryKey && this.pendingBrowserSwapRecoveryKey === recoveryKey;
+          if (recoveryAttempts >= this.config.browserSwapSessionRecoveryLimit && !retryPermit) {
             blockers.push('H31_BROWSER_SWAP_RETRY_LIMIT_REACHED:' + name + '->' + desiredCandidate);
             continue;
           }
@@ -900,7 +902,10 @@
         this.config.maxActionsPerSession = value;
       }
       const nextDesiredKey = this.policyState.desiredActiveNames.join('\u0000');
-      if (nextDesiredKey !== previousDesiredKey) this.browserSwapRecoveryAttempts.clear();
+      if (nextDesiredKey !== previousDesiredKey) {
+        this.browserSwapRecoveryAttempts.clear();
+        this.pendingBrowserSwapRecoveryKey = null;
+      }
       this._persistPolicy();
       return { accepted: true, policy: clone({ ...this.policyState, maxActionsPerSession: this.config.maxActionsPerSession }) };
     }
@@ -1067,7 +1072,9 @@
             && this.crossWindow && typeof this.crossWindow.requestCharacterNavigation === 'function') {
           const desiredName = String(remainingMissing[0] || '');
           const recoveryAttempts = this._browserSwapRecoveryCount(name, desiredName);
-          if (recoveryAttempts >= this.config.browserSwapSessionRecoveryLimit) {
+          const recoveryKey = this._browserSwapRecoveryKey(name, desiredName);
+          const retryPermit = !!recoveryKey && this.pendingBrowserSwapRecoveryKey === recoveryKey;
+          if (recoveryAttempts >= this.config.browserSwapSessionRecoveryLimit && !retryPermit) {
             return {
               state: 'BLOCKED',
               reason: 'H31_BROWSER_SWAP_RETRY_LIMIT_REACHED:' + name + '->' + desiredName,
@@ -1475,6 +1482,14 @@
       action.settlement = 'PENDING';
       action.actionBoundaryId = dispatched.id || null;
       this.currentAction = action;
+      if (request.kind === 'BROWSER_SWAP') {
+        const recoveryKey = this._browserSwapRecoveryKey(request.targetName, request.desiredName);
+        if (recoveryKey && this.pendingBrowserSwapRecoveryKey === recoveryKey) {
+          const attempts = Number(this.browserSwapRecoveryAttempts.get(recoveryKey) || 0);
+          this.browserSwapRecoveryAttempts.set(recoveryKey, attempts + 1);
+          this.pendingBrowserSwapRecoveryKey = null;
+        }
+      }
       this.metrics.actionsDispatched += 1;
       if (request.kind === 'PARTY_INVITE') this.metrics.partyInvitesDispatched += 1;
       if (request.kind === 'PARTY_REQUEST') this.metrics.partyRequestsDispatched += 1;
@@ -1497,7 +1512,10 @@
       if (current.kind === 'BROWSER_SWAP') {
         this.metrics.browserSwapsConfirmed += 1;
         const recoveryKey = this._browserSwapRecoveryKey(current.targetName, current.desiredName);
-        if (recoveryKey) this.browserSwapRecoveryAttempts.delete(recoveryKey);
+        if (recoveryKey) {
+          this.browserSwapRecoveryAttempts.delete(recoveryKey);
+          if (this.pendingBrowserSwapRecoveryKey === recoveryKey) this.pendingBrowserSwapRecoveryKey = null;
+        }
       }
       if (current.kind === 'RESPAWN') this.metrics.respawnsConfirmed += 1;
       if (current.kind === 'PARTY_INVITE') this.metrics.partyInvitesConfirmed += 1;
@@ -1626,6 +1644,7 @@
             }
 
             if (previousRecoveries >= recoveryLimit) {
+              if (this.pendingBrowserSwapRecoveryKey === recoveryKey) this.pendingBrowserSwapRecoveryKey = null;
               this.metrics.browserSwapRecoveryBlocks += 1;
               this.lastAction = {
                 at: nowIso(),
@@ -1651,7 +1670,7 @@
               };
             }
 
-            if (recoveryKey) this.browserSwapRecoveryAttempts.set(recoveryKey, previousRecoveries + 1);
+            if (recoveryKey) this.pendingBrowserSwapRecoveryKey = recoveryKey;
             this.metrics.browserSwapSessionRecoveries += 1;
             this.lastAction = {
               at: nowIso(),
@@ -1662,7 +1681,8 @@
               desiredName: desiredName || null,
               previousTargetSessionId,
               targetSessionId,
-              recoveryAttempts: previousRecoveries + 1,
+              recoveryAttempts: previousRecoveries,
+              retryPermitGranted: !!recoveryKey,
               recoveryLimit,
               previousSettlement: current.settlement || null,
               previousError: current.error || null,
@@ -1675,7 +1695,8 @@
               desiredName: desiredName || null,
               previousTargetSessionId,
               targetSessionId,
-              recoveryAttempts: previousRecoveries + 1,
+              recoveryAttempts: previousRecoveries,
+              retryPermitGranted: !!recoveryKey,
               recoveryLimit,
               autonomyResumed: resumedAutonomy
             };
@@ -1888,6 +1909,7 @@
         browserSwapRecoveryAttempts: [...this.browserSwapRecoveryAttempts.entries()]
           .map(([key, attempts]) => ({ key, attempts }))
           .sort((a, b) => a.key.localeCompare(b.key)),
+        pendingBrowserSwapRecoveryKey: this.pendingBrowserSwapRecoveryKey,
         metrics: clone(this.metrics)
       };
     }
