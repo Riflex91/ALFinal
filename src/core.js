@@ -73,6 +73,28 @@
     _ls() {
       try { return this.root && this.root.localStorage ? this.root.localStorage : null; } catch (_) { return null; }
     }
+    _sharedLs() {
+      let current = this.root;
+      for (let depth = 0; depth < 8 && current; depth += 1) {
+        try {
+          const ls = current.localStorage || null;
+          if (ls && typeof ls.getItem === 'function' && typeof ls.setItem === 'function') {
+            ls.getItem('__albot_shared_storage_probe__');
+            return ls;
+          }
+        } catch (_) {}
+        let parentWindow = null;
+        try {
+          parentWindow = current.parent && current.parent !== current ? current.parent : null;
+          if (parentWindow) void parentWindow.document;
+        } catch (_) {
+          parentWindow = null;
+        }
+        if (!parentWindow) break;
+        current = parentWindow;
+      }
+      return null;
+    }
     get(key) {
       const ls = this._ls();
       if (ls) { try { return ls.getItem(key); } catch (_) {} }
@@ -87,6 +109,24 @@
       const ls = this._ls();
       if (ls) { try { ls.removeItem(key); } catch (_) {} }
       this.memory.delete(key);
+    }
+    sharedAvailable() {
+      return !!this._sharedLs();
+    }
+    getShared(key) {
+      const ls = this._sharedLs();
+      if (!ls) return null;
+      try { return ls.getItem(key); } catch (_) { return null; }
+    }
+    setShared(key, value) {
+      const ls = this._sharedLs();
+      if (!ls) return false;
+      try { ls.setItem(key, value); return true; } catch (_) { return false; }
+    }
+    removeShared(key) {
+      const ls = this._sharedLs();
+      if (!ls) return false;
+      try { ls.removeItem(key); return true; } catch (_) { return false; }
     }
   }
 
