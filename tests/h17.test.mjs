@@ -263,6 +263,27 @@ test('H17 is observe-only until autonomy is explicitly enabled', () => {
   assert.equal(f.economy.status().autonomyEnabled, false);
 });
 
+test('H17 exits an idle mounted bank instead of handing Full Autonomy a stranded Merchant', () => {
+  const f = fixture({
+    map: 'bank',
+    bankState: 'READY',
+    bankRows: [],
+    bankPacks: []
+  });
+  const plan = f.economy.plan();
+  assert.equal(plan.state, 'READY');
+  assert.equal(plan.reason, 'H17_PLAN_READY');
+  assert.equal(plan.bankExitRequired, true);
+  assert.equal(plan.selected.kind, 'BANK_EXIT');
+  assert.equal(plan.selected.reason, 'H17_BANK_IDLE_EXIT');
+
+  assert.equal(f.economy.startAutonomy({ maxActions: 2 }).accepted, true);
+  const queued = f.economy.tick();
+  assert.equal(queued.state, 'QUEUED');
+  assert.equal(queued.plan.selected.kind, 'BANK_EXIT');
+  assert.deepEqual(f.calls[0].destination, { map: 'main' });
+});
+
 test('H17 exits the bank before dispatching upgrade or other non-bank work', () => {
   const f = fixture({
     map: 'bank',
