@@ -1210,7 +1210,7 @@
         };
       }
 
-      if (group.maxPairDistance <= this.config.groupRegroupTriggerDistance) {
+      if (group.maxPairDistance <= this.config.groupRegroupStopDistance) {
         if (movement && movement.activeOrder
             && String(movement.activeOrder.owner || '') === 'farm-intelligence-h9-leader-regroup') {
           try { this.movement.cancel('H9_GROUP_COHESION_RECOVERED'); } catch (_) {}
@@ -1233,9 +1233,11 @@
       }
 
       const activeOrder = movement && movement.activeOrder;
-      // Do not reverse a valid leader-owned farm trip. Followers close the gap
-      // while the leader keeps the selected farm destination.
-      if (activeOrder && String(activeOrder.owner || '') === 'farm-intelligence-h9') {
+      // Mild separation may be closed while the leader finishes its current farm
+      // travel. Once the group exceeds the hard-regroup distance, stop advancing
+      // the target and let lagging followers fully close to the stop radius.
+      if (activeOrder && String(activeOrder.owner || '') === 'farm-intelligence-h9'
+          && group.maxPairDistance <= this.config.groupHardRegroupDistance) {
         return {
           state: 'TRAVELLING',
           reason: 'H9_GROUP_LEADER_TRAVEL_CONTINUES',
@@ -1243,6 +1245,10 @@
           maxPairDistance: group.maxPairDistance,
           destination: clone(activeOrder.destination || null)
         };
+      }
+      if (activeOrder && String(activeOrder.owner || '') === 'farm-intelligence-h9'
+          && group.maxPairDistance > this.config.groupHardRegroupDistance) {
+        try { this.movement.cancel('H9_GROUP_HARD_COHESION_RECOVERY'); } catch (_) {}
       }
 
       this._stopOwnedFarming('H9_WAITING_FOR_TEAM_COHESION');

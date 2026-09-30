@@ -429,6 +429,39 @@ test('H17 remembers a mounted-bank material miss and buys after one exit instead
   assert.ok(f.economy.status().metrics.materialBankMountSkips >= 1);
 });
 
+test('H17 reuses fresh negative bank knowledge for the same scroll across different upgrade targets', () => {
+  const f = fixture({
+    map: 'bank',
+    bankState: 'READY',
+    bankPacks: [],
+    npcPrice: 250,
+    maxConsumableCost: 1000,
+    materialNeeds: [{
+      kind: 'UPGRADE_SCROLL', mutationKind: 'UPGRADE', itemSlot: 3, itemName: 'partyhat',
+      fromLevel: 0, targetLevel: 1, consumableName: 'scroll0', quantity: 1
+    }]
+  });
+
+  const first = f.economy.plan();
+  assert.equal(first.selected.kind, 'BANK_EXIT');
+  assert.equal(f.economy.status().materialBankMisses.length, 1);
+  assert.equal(f.economy.status().materialBankMisses[0].needKey, 'scroll0');
+
+  f.character.map = 'main';
+  f.plans.bank.state = 'NEEDS_BANK';
+  f.plans.bank.reason = 'H12_BANK_NOT_MOUNTED';
+  f.plans.upgrade.materialNeeds = [{
+    kind: 'UPGRADE_SCROLL', mutationKind: 'UPGRADE', itemSlot: 9, itemName: 'helmet',
+    fromLevel: 2, targetLevel: 3, consumableName: 'scroll0', quantity: 1
+  }];
+
+  const second = f.economy.plan();
+  assert.equal(second.selected.kind, 'MATERIAL_ACQUIRE');
+  assert.equal(second.selected.itemName, 'scroll0');
+  assert.equal(second.selected.bankCheckedMissing, true);
+  assert.equal(second.proposals.some(row => row.kind === 'BANK_MOUNT' && row.purpose === 'MATERIAL_LOOKUP'), false);
+});
+
 test('H17 withdraws required mutation material from the mounted bank before buying it', () => {
   const f = fixture({
     bankState: 'READY',
@@ -638,7 +671,7 @@ test('H17 runtime, API, UI, build and generated bundle are wired without direct 
   assert.match(runtime, /new ns\.EconomyController/);
   assert.match(runtime, /id: 'economy'/);
   assert.match(runtime, /id: 'h17-economy-autonomy'/);
-  assert.match(runtime, /options\.version \|\| '0\.26\.27-h26'/);
+  assert.match(runtime, /options\.version \|\| '0\.26\.28-h26'/);
   assert.match(runtime, /trade\.movementUnknown/);
   assert.match(runtime, /inventory\.lootUnknown/);
   assert.match(runtime, /status\.pendingLoot/);
@@ -646,17 +679,17 @@ test('H17 runtime, API, UI, build and generated bundle are wired without direct 
   assert.match(source, /child\.pendingLoot/);
   assert.match(source, /type\.includes\('BLOCKED'\)/);
   assert.match(source, /if \(observed\.state !== 'IDLE'\) return observed/);
-  assert.match(entry, /0\.26\.27-h26/);
+  assert.match(entry, /0\.26\.28-h26/);
   assert.match(entry, /runtime\.economy\.startAutonomy/);
   assert.match(entry, /Object\.freeze\(api\.economy\)/);
   assert.match(ui, /data-tab="economy"/);
   assert.match(ui, /H17 Economy Autonomy/);
   assert.match(build, /src\/economy\.js/);
-  assert.match(build, /const runtimeVersion = '0\.26\.27-h26'/);
-  assert.match(dist, /AL Bot 0\.26\.27-h26/);
+  assert.match(build, /const runtimeVersion = '0\.26\.28-h26'/);
+  assert.match(dist, /AL Bot 0\.26\.28-h26/);
   assert.match(dist, /class EconomyController/);
   assert.doesNotMatch(source, /actions\.dispatch/);
-  assert.equal(pkg.version, '0.26.27');
+  assert.equal(pkg.version, '0.26.28');
 });
 
 
