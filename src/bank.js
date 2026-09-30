@@ -213,16 +213,21 @@
     _safeDepositRows() {
       const plan = this._inventoryPlan();
       if (!plan || plan.state !== 'READY') return [];
-      return (plan.items || []).filter(row =>
-        row && row.name
-        && String(row.disposition || '').toUpperCase() === 'BANK'
-        && row.locked !== true
-        && row.giveaway !== true
-        && row.gift !== true
-        && !row.expiresAt
-        && Math.max(0, Number(row.level) || 0) === 0
-        && !(row.definition && (row.definition.quest === true || row.definition.upgrade === true || row.definition.compound === true))
-      );
+      return (plan.items || []).filter(row => {
+        if (!row || !row.name || String(row.disposition || '').toUpperCase() !== 'BANK') return false;
+        if (row.locked === true || row.giveaway === true || row.gift === true || row.expiresAt) return false;
+        const future = row.futureGearEvaluation || null;
+        const offlineGear = !!(future
+          && future.checked === true
+          && future.protected === true
+          && String(future.action || '').toUpperCase() === 'GEAR'
+          && future.futureGear
+          && future.futureGear.targetOnline === false
+          && future.futureGear.targetCharacter);
+        if (offlineGear) return true;
+        return Math.max(0, Number(row.level) || 0) === 0
+          && !(row.definition && (row.definition.quest === true || row.definition.upgrade === true || row.definition.compound === true));
+      });
     }
 
     _ledger(inventory, bank) {
