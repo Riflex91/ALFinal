@@ -161,6 +161,15 @@ function fixture(options = {}) {
     }
   });
 
+  if (options.trackUpgradeSession) {
+    upgrade.beginAutonomySession = reason => {
+      calls.push({ module: 'upgrade', kind: 'BEGIN_SESSION', reason });
+      if (options.rejectUpgradeSession) return { accepted: false, reason: 'H15_SESSION_ACTIVE_MUTATION' };
+      statuses.upgrade.attemptsThisSession = 0;
+      return { accepted: true, generation: 1 };
+    };
+  }
+
   const exchangeCraft = controller('exchangeCraft', {
     queueExchange: inventorySlot => {
       calls.push({ module: 'exchangeCraft', kind: 'EXCHANGE', inventorySlot });
@@ -641,6 +650,34 @@ test('H17 active child action cannot be forgotten by reset or autonomy restart',
   assert.equal(reset.reset, false);
   assert.equal(reset.reason, 'H17_ACTION_ACTIVE');
   assert.ok(f.economy.status().currentAction);
+});
+
+test('H17 starts a fresh bounded H15 mutation session when economy autonomy restarts', () => {
+  const f = fixture({
+    trackUpgradeSession: true,
+    upgrades: [{ itemSlot: 5, itemName: 'sword', fromLevel: 0, budget: { itemValueAtRisk: 500 } }]
+  });
+  const started = f.economy.startAutonomy({ maxActions: 3 });
+  assert.equal(started.accepted, true);
+  assert.deepEqual(f.calls[0], {
+    module: 'upgrade',
+    kind: 'BEGIN_SESSION',
+    reason: 'H17_ECONOMY_AUTONOMY_START'
+  });
+  assert.equal(f.economy.tick().state, 'QUEUED');
+  assert.equal(f.calls.some(row => row.module === 'upgrade' && row.kind === 'UPGRADE'), true);
+});
+
+test('H17 fails closed when H15 cannot begin a new mutation session', () => {
+  const f = fixture({
+    trackUpgradeSession: true,
+    rejectUpgradeSession: true,
+    upgrades: [{ itemSlot: 5, itemName: 'sword', fromLevel: 0, budget: { itemValueAtRisk: 500 } }]
+  });
+  const started = f.economy.startAutonomy({ maxActions: 3 });
+  assert.equal(started.accepted, false);
+  assert.equal(started.reason, 'H15_SESSION_ACTIVE_MUTATION');
+  assert.equal(f.economy.status().autonomyEnabled, false);
 });
 
 test('H17 session action budget stops bounded autonomy', () => {
