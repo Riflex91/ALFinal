@@ -582,7 +582,7 @@ test('H9 leader keeps waiting after trigger recovery until the group reaches the
   assert.equal(f.farmingCalls.length, 0);
 });
 
-test('H9 retries a transient far same-map regroup with path-checked local steps instead of smart_move looping', () => {
+test('H9 retries a transient far same-map smart regroup to the live leader', () => {
   const f = makeFixture({
     characterName: 'My_Rogue',
     ctype: 'rogue',
@@ -598,10 +598,10 @@ test('H9 retries a transient far same-map regroup with path-checked local steps 
   });
   assert.equal(started.accepted, true);
   assert.equal(started.tick.state, 'TRAVELLING');
-  assert.equal(started.tick.reason, 'H9_GROUP_LOCAL_REGROUP_STARTED');
-  assert.equal(f.movementCalls.filter(row => row.type === 'local').length, 1);
-  assert.equal(f.movementCalls.filter(row => row.type === 'smart').length, 0);
-  assert.equal(f.movementCalls.find(row => row.type === 'local').args.owner, 'farm-intelligence-h9-group-follow');
+  assert.equal(started.tick.reason, 'H9_GROUP_REGROUP_STARTED');
+  assert.equal(f.movementCalls.filter(row => row.type === 'local').length, 0);
+  assert.equal(f.movementCalls.filter(row => row.type === 'smart').length, 1);
+  assert.deepEqual(f.movementCalls.find(row => row.type === 'smart').destination, { map: 'main', x: 300, y: 0 });
 
   f.movementUnknown(true);
   const backoff = f.controller.tick();
@@ -613,10 +613,29 @@ test('H9 retries a transient far same-map regroup with path-checked local steps 
   f.advance(2500);
   const retry = f.controller.tick();
   assert.equal(retry.state, 'TRAVELLING');
-  assert.equal(retry.reason, 'H9_GROUP_LOCAL_REGROUP_STARTED');
-  assert.equal(f.movementCalls.filter(row => row.type === 'local').length, 2);
-  assert.equal(f.movementCalls.filter(row => row.type === 'smart').length, 0);
+  assert.equal(retry.reason, 'H9_GROUP_REGROUP_STARTED');
+  assert.equal(f.movementCalls.filter(row => row.type === 'smart').length, 2);
   assert.equal(f.controller.status().suspended, false);
+});
+
+test('H9 keeps moderate same-map separation on local follow rather than escalating to smart regroup', () => {
+  const f = makeFixture({
+    characterName: 'My_Ranger1',
+    ctype: 'ranger',
+    partyOwnedMembers: [
+      { name: 'My_Ranger1', ctype: 'ranger', damageType: 'physical', map: 'main', x: 0, y: 0 },
+      { name: 'My_Warrior', ctype: 'warrior', damageType: 'physical', map: 'main', x: 170, y: 0 }
+    ]
+  });
+  const started = f.controller.startAutonomy({
+    owner: 'full-autonomy',
+    groupLeaderName: 'My_Warrior',
+    groupMemberNames: ['My_Ranger1', 'My_Warrior']
+  });
+  assert.equal(started.tick.state, 'TRAVELLING');
+  assert.equal(started.tick.reason, 'H9_GROUP_LOCAL_FOLLOW_STARTED');
+  assert.equal(f.movementCalls.filter(row => row.type === 'local').length, 1);
+  assert.equal(f.movementCalls.filter(row => row.type === 'smart').length, 0);
 });
 
 test('H9 far same-map follower falls back to the live leader position when no safe local step exists', () => {
@@ -744,9 +763,9 @@ test('H9 control center and one-click live suite are wired', () => {
   assert.match(runtime, /visibleSafe\.length > 0/);
   assert.match(runtime, /h9-adaptive-decisions/);
   assert.match(runtime, /timeoutMs: 85000/);
-  assert.match(entry, /0\.26\.28-h26/);
+  assert.match(entry, /0\.26\.29-h26/);
   assert.match(entry, /farmIntelligence:/);
-  assert.match(build, /const runtimeVersion = '0\.26\.28-h26'/);
+  assert.match(build, /const runtimeVersion = '0\.26\.29-h26'/);
 });
 
 test('H9 game adapter normalizes live farm data for scoring', () => {

@@ -1075,10 +1075,14 @@
         }
       }
 
-      // V3-style same-map regroup: progress in short, path-checked local steps.
-      // A full smart_move to a computed formation coordinate can be rejected when
-      // that exact coordinate is not pathable even though the leader is reachable.
-      if (formation && formationDistance != null
+      // V3 hybrid regroup: cheap local follow for moderate separation,
+      // but a stable smart route to the live leader for genuinely large gaps.
+      // The all-local strategy needed dozens of 70px moves over 500+ units and
+      // kept the whole group waiting for cohesion far too long.
+      // Hard separation deliberately bypasses local stepping and enters the
+      // stable live-leader smart route below.
+      const useSmartRegroup = localRegroupDistance >= this.config.groupHardRegroupDistance;
+      if (!useSmartRegroup && formation && formationDistance != null
           && formationDistance > this.config.groupRegroupStopDistance) {
         const cx = Number(group.local.x);
         const cy = Number(group.local.y);
