@@ -267,6 +267,27 @@ test('H17 common planner exposes safe proposals across the economy modules', () 
   }
 });
 
+test('H17 reserves a live mutation scroll from normal bank maintenance so withdraw cannot ping-pong into deposit', () => {
+  const f = fixture({
+    pressure: 'NORMAL',
+    bankState: 'READY',
+    bankRows: [{ slot: 4, name: 'scroll0', quantity: 1 }],
+    upgrades: [{
+      itemSlot: 8,
+      itemName: 'sword',
+      fromLevel: 0,
+      scrollName: 'scroll0',
+      offering: null,
+      budget: { itemValueAtRisk: 1000 }
+    }]
+  });
+  const plan = f.economy.plan();
+  assert.equal(plan.selected.kind, 'UPGRADE');
+  assert.deepEqual(plan.mutationReservedNames, ['scroll0']);
+  assert.equal(plan.suppressedBankMaintenanceRows, 1);
+  assert.equal(plan.proposals.some(row => row.kind === 'BANK_DEPOSIT' && row.itemName === 'scroll0'), false);
+});
+
 test('H17 mounts the bank to resolve a safe upgrade material dependency before declaring the Merchant idle', () => {
   const f = fixture({
     bankState: 'NEEDS_BANK',
