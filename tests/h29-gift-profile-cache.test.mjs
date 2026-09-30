@@ -75,6 +75,40 @@ test('gift items use normal gear/economy authority instead of hard protection', 
   assert.equal(bank._safeDepositRows().length, 1);
 });
 
+test('account profile cache still reads the legacy aggregate map', () => {
+  const root = context();
+  vm.runInNewContext(src('account-strategy.js'), root, { filename: 'account-strategy.js' });
+  const Controller = root.__ALBOT_INTERNALS__.AccountStrategyController;
+  const shared = storage();
+  shared.setShared('albot:h28:account-profile-cache:v1', JSON.stringify({
+    My_Ranger3: {
+      name: 'My_Ranger3',
+      ctype: 'ranger',
+      level: 59,
+      gold: 1234,
+      equipment: { helmet: { name: 'helmet', level: 5 } }
+    }
+  }));
+  const controller = new Controller({
+    root,
+    storage: shared,
+    roster: { refresh: () => ({
+      accountCharacters: [{ name: 'My_Ranger3', ctype: 'ranger', level: 59, online: false }],
+      onlineCharacterNames: []
+    })},
+    game: {
+      snapshot: () => ({ available: false }),
+      equipmentSnapshot: () => ({ available: false }),
+      bankSnapshot: () => ({ available: false })
+    },
+    gear: { score: () => 1 }
+  });
+  const profile = controller.profiles()[0];
+  assert.equal(profile.name, 'My_Ranger3');
+  assert.equal(profile.cached, true);
+  assert.equal(profile.equipment.helmet.name, 'helmet');
+});
+
 test('account profile cache writes independent durable keys per character', () => {
   const root = context();
   vm.runInNewContext(src('account-strategy.js'), root, { filename: 'account-strategy.js' });
