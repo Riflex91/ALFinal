@@ -28,6 +28,7 @@
       this.root = options.root || root;
       this.logger = options.logger || null;
       this.roster = options.roster || null;
+      this.storage = options.storage || null;
       this.getLocalState = typeof options.getLocalState === 'function'
         ? options.getLocalState
         : () => ({ running: false, runEpoch: 0, emergencyStopLatched: false });
@@ -88,6 +89,7 @@
       this.heartbeatTimer = null;
       this.sequence = 0;
       this.peers = new Map();
+      this.sharedSeenMessageIds = new Map();
       this.pending = new Map();
       this.inboundCommands = new Map();
       this.partyRecoveryLease = null;
@@ -105,6 +107,11 @@
         settlementsReceived: 0,
         settlementsSucceeded: 0,
         settlementsFailed: 0,
+        sharedStatePublishes: 0,
+        sharedPeerLoads: 0,
+        sharedMessagesPublished: 0,
+        sharedMessagesReceived: 0,
+        sendCmFailures: 0,
         transportFailures: 0,
         rejectedUntrusted: 0,
         rejectedWrongTarget: 0,
@@ -209,6 +216,131 @@
       return new Set(rows.map(String).filter(name => owned.has(name)));
     }
 
+    _sharedStorageAvailable() {
+      return !!(this.storage
+        && typeof this.storage.get === 'function'
+        && typeof this.storage.set === 'function');
+    }
+
+    _sharedScope() {
+      const server = this._serverIdentity();
+      const region = encodeURIComponent(cleanText(server.region || 'unknown', 80));
+      const identifier = encodeURIComponent(cleanText(server.identifier || 'unknown', 80));
+      return region + ':' + identifier;
+    }
+
+    _sharedStateKey(name) {
+      return 'albot:h28:cross-window-state:v1:' + this._sharedScope() + ':' + encodeURIComponent(cleanText(name || '', 120));
+    }
+
+    _sharedMailboxKey(name) {
+      return 'albot:h28:cross-window-mailbox:v1:' + this._sharedScope() + ':' + encodeURIComponent(cleanText(name || '', 120));
+    }
+
+    _sharedRead(key, fallback) {
+      if (!this._sharedStorageAvailable()) return fallback;
+      try {
+        const raw = this.storage.get(key);
+        if (!raw) return fallback;
+        const parsed = JSON.parse(raw);
+        return parsed == null ? fallback : parsed;
+      } catch (_) {
+        return fallback;
+      }
+    }
+
+    _sharedWrite(key, value) {
+      if (!this._sharedStorageAvailable()) return false;
+      try {
+        return this.storage.set(key, JSON.stringify(value)) !== false;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    _publishSharedState(state = null) {
+      const local = this._localName();
+      if (!local || !this._sharedStorageAvailable()) return false;
+      const server = this._serverIdentity();
+      const at = this.now();
+      const payload = {
+        schemaVersion: 1,
+        protocol: PROTOCOL,
+        transport: 'shared-storage',
+        characterName: local,
+        sessionId: this.sessionId,
+        serverRegion: server.region,
+        serverIdentifier: server.identifier,
+        observedAtMs: at,
+        validUntilMs: at + this.config.staleMs,
+        state: clone(state || this._localStatePayload())
+      };
+      const written = this._sharedWrite(this._sharedStateKey(local), payload);
+      if (written) this.metrics.sharedStatePublishes += 1;
+      return written;
+    }
+
+    _loadSharedPeer(name) {
+      const target = cleanText(name || '', 120);
+      if (!target || target === this._localName() || !this._ownedNames().has(target)) return null;
+      const row = this._sharedRead(this._sharedStateKey(target), null);
+      if (!row || row.schemaVersion !== 1 || row.protocol !== PROTOCOL || row.transport !== 'shared-storage') return null;
+      if (cleanText(row.characterName || '', 120) !== target) return null;
+      const server = this._serverIdentity();
+      if (server.region && cleanText(row.serverRegion || '', 80) !== server.region) return null;
+      if (server.identifier && cleanText(row.serverIdentifier || '', 80) !== server.identifier) return null;
+      const observedAtMs = Number(row.observedAtMs);
+      const validUntilMs = Number(row.validUntilMs);
+      const now = this.now();
+      if (!Number.isFinite(observedAtMs) || !Number.isFinite(validUntilMs)
+          || now < observedAtMs - 5000 || now > validUntilMs) return null;
+      const state = asObject(row.state);
+      if (!state) return null;
+      const peer = this._updatePeer(target, {
+        ...state,
+        sessionId: row.sessionId || state.sessionId
+      }, observedAtMs);
+      if (peer) this.metrics.sharedPeerLoads += 1;
+      return peer;
+    }
+
+    _publishSharedEnvelope(target, envelope) {
+      const name = cleanText(target || '', 120);
+      if (!name || !envelope || !this._sharedStorageAvailable()) return false;
+      const now = this.now();
+      const key = this._sharedMailboxKey(name);
+      const existing = this._sharedRead(key, []);
+      const rows = (Array.isArray(existing) ? existing : [])
+        .filter(row => row && Number(row.validUntilMs) >= now - 1000)
+        .filter(row => cleanText(row.messageId || '', 240) !== cleanText(envelope.messageId || '', 240))
+        .slice(-63);
+      rows.push(clone(envelope));
+      const written = this._sharedWrite(key, rows);
+      if (written) this.metrics.sharedMessagesPublished += 1;
+      return written;
+    }
+
+    _pollSharedMailbox() {
+      const local = this._localName();
+      if (!local || !this._sharedStorageAvailable()) return { received: 0, reason: 'H28_SHARED_STORAGE_UNAVAILABLE' };
+      const now = this.now();
+      const rows = this._sharedRead(this._sharedMailboxKey(local), []);
+      if (!Array.isArray(rows) || !rows.length) return { received: 0 };
+      let received = 0;
+      for (const envelope of rows) {
+        if (!envelope || envelope.protocol !== PROTOCOL || envelope.schemaVersion !== 1) continue;
+        const messageId = cleanText(envelope.messageId || '', 240);
+        if (!messageId || this.sharedSeenMessageIds.has(messageId)) continue;
+        if (Number.isFinite(Number(envelope.validUntilMs)) && now > Number(envelope.validUntilMs)) continue;
+        if (cleanText(envelope.receiverCharacterName || '', 120) !== local) continue;
+        this._boundedPut(this.sharedSeenMessageIds, messageId, now, Math.max(64, this.config.maxInboundCommands * 4));
+        this.metrics.sharedMessagesReceived += 1;
+        received += 1;
+        try { this._receive(envelope.senderCharacterName, envelope); } catch (_) {}
+      }
+      return { received };
+    }
+
     _resolveSendCm() {
       for (const candidate of this._roots()) {
         try {
@@ -260,20 +392,34 @@
     }
 
     _sendEnvelope(target, envelope, metric) {
+      const sharedPublished = envelope && envelope.type === 'HEARTBEAT'
+        ? this._publishSharedState(envelope.state)
+        : this._publishSharedEnvelope(target, envelope);
+      let value = null;
       try {
-        const value = this._sendRaw(target, envelope);
-        if (metric) this.metrics[metric] += 1;
-        return value;
+        value = this._sendRaw(target, envelope);
       } catch (error) {
-        this.metrics.transportFailures += 1;
+        this.metrics.sendCmFailures += 1;
         this.lastError = { at: nowIso(this.now()), reason: errorReason(error) };
-        this._log('warn', 'H19 Cross-Window CM Versand fehlgeschlagen', {
-          target: cleanText(target || '', 120),
-          type: envelope && envelope.type || null,
-          reason: this.lastError.reason
-        });
-        throw error;
+        if (!sharedPublished) {
+          this.metrics.transportFailures += 1;
+          this._log('warn', 'H19 Cross-Window CM Versand fehlgeschlagen', {
+            target: cleanText(target || '', 120),
+            type: envelope && envelope.type || null,
+            reason: this.lastError.reason
+          });
+          throw error;
+        }
       }
+      if (metric) this.metrics[metric] += 1;
+      if (value && typeof value.then === 'function' && sharedPublished) {
+        Promise.resolve(value).catch(error => {
+          this.metrics.sendCmFailures += 1;
+          this.lastError = { at: nowIso(this.now()), reason: errorReason(error) };
+        });
+        return null;
+      }
+      return value;
     }
 
     _serverMatches(envelope) {
@@ -483,6 +629,7 @@
     freshPeer(name) {
       const target = cleanText(name || '', 120);
       if (!target) return null;
+      this._loadSharedPeer(target);
       const peer = this.peers.get(target);
       if (!peer) return null;
       const now = this.now();
@@ -498,7 +645,10 @@
 
     freshPeers() {
       const out = [];
-      for (const name of this.peers.keys()) {
+      const local = this._localName();
+      const names = new Set([...this.peers.keys(), ...this._ownedNames()]);
+      for (const name of names) {
+        if (!name || String(name) === String(local || '')) continue;
         const peer = this.freshPeer(name);
         if (peer) out.push(peer);
       }
@@ -511,11 +661,13 @@
       if (!local) return { sent: 0, reason: 'H19_CROSS_WINDOW_LOCAL_NAME_UNAVAILABLE' };
       const targets = [...this._onlineOwnedNames()].filter(name => name !== local).sort();
       this.lastHeartbeatAt = nowIso(this.now());
+      const sharedState = this._localStatePayload();
+      this._publishSharedState(sharedState);
       let sent = 0;
       for (const target of targets) {
         const envelope = this._baseEnvelope('HEARTBEAT', target, {
           validUntilMs: this.now() + this.config.staleMs,
-          state: this._localStatePayload()
+          state: sharedState
         });
         try {
           const value = this._sendEnvelope(target, envelope, 'heartbeatsSent');
@@ -1129,9 +1281,11 @@
         this.receiveMode = 'legacy-on_cm';
       }
       this.installed = true;
+      try { this._pollSharedMailbox(); } catch (_) {}
       try { this.broadcastHeartbeat(); } catch (_) {}
       if (this.setIntervalFn) {
         this.heartbeatTimer = this.setIntervalFn(() => {
+          try { this._pollSharedMailbox(); } catch (_) {}
           try { this.broadcastHeartbeat(); } catch (_) {}
         }, this.config.heartbeatIntervalMs);
         try {
@@ -1179,6 +1333,17 @@
       }
       this.pending.clear();
       this.partyRecoveryLease = null;
+      this.sharedSeenMessageIds.clear();
+      if (this._sharedStorageAvailable()) {
+        try {
+          const key = this._sharedStateKey(this._localName());
+          const row = this._sharedRead(key, null);
+          if (row && cleanText(row.sessionId || '', 240) === this.sessionId
+              && typeof this.storage.remove === 'function') {
+            this.storage.remove(key);
+          }
+        } catch (_) {}
+      }
       return this.status();
     }
 
@@ -1196,6 +1361,7 @@
         protocol: PROTOCOL,
         installed: this.installed,
         receiveMode: this.receiveMode,
+        sharedStorageFallback: this._sharedStorageAvailable(),
         sessionId: this.sessionId,
         localName: this._localName(),
         server: this._serverIdentity(),

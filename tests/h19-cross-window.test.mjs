@@ -35,7 +35,16 @@ function makeRoster(localName, names, state = {}) {
   };
 }
 
-function makeContext(name, names, network, state, nowRef) {
+function createMemoryStorage(seed = new Map()) {
+  return {
+    get: key => seed.has(String(key)) ? seed.get(String(key)) : null,
+    set: (key, value) => { seed.set(String(key), String(value)); return true; },
+    remove: key => seed.delete(String(key)),
+    map: seed
+  };
+}
+
+function makeContext(name, names, network, state, nowRef, options = {}) {
   const intervals = new Map();
   let intervalSeq = 0;
   const timeouts = new Set();
@@ -65,6 +74,7 @@ function makeContext(name, names, network, state, nowRef) {
     parent: null,
     on_cm: null,
     send_cm(target, payload) {
+      if (options.dropCm === true) return { receivers: [String(target)], dropped: true };
       const peer = network.get(String(target));
       if (!peer) throw new Error('TARGET_UNAVAILABLE:' + target);
       if (peer.character && typeof peer.character.__emit === 'function') {
@@ -102,6 +112,7 @@ function makeContext(name, names, network, state, nowRef) {
   const transport = new Transport({
     root: ctx,
     roster: makeRoster(name, names, state),
+    storage: options.storage || null,
     now: () => nowRef.value,
     heartbeatIntervalMs: 1500,
     staleMs: 5000,
@@ -255,6 +266,75 @@ test('H26 cross-window heartbeat exposes Full Autonomy readiness', () => {
   assert.deepEqual(Array.from(peer.fullAutonomyDesiredCharacterNames), ['My_Merchant', 'My_Ranger1', 'My_Ranger2', 'My_Rogue']);
   assert.equal(peer.fullAutonomyDesiredSource, 'merchant-authority');
   assert.equal(peer.fullAutonomyDesiredChangedAtMs, 1499);
+
+  a.transport.destroy();
+  b.transport.destroy();
+});
+
+test('H28 shared-storage fallback keeps Merchant authority fresh when send_cm silently drops heartbeats', () => {
+  const names = ['My_Ranger1', 'My_Merchant'];
+  const network = new Map();
+  const nowRef = { value: 1750 };
+  const storage = createMemoryStorage();
+  const aState = { running: true, runEpoch: 1, emergencyStopLatched: false, fullAutonomyEnabled: true };
+  const bState = {
+    running: true,
+    runEpoch: 2,
+    emergencyStopLatched: false,
+    fullAutonomyEnabled: true,
+    fullAutonomyDesiredCharacterNames: ['My_Merchant', 'My_Ranger1', 'My_Ranger2', 'My_Rogue'],
+    fullAutonomyDesiredSource: 'merchant-authority',
+    fullAutonomyDesiredChangedAtMs: 1749
+  };
+  const a = makeContext('My_Ranger1', names, network, aState, nowRef, { storage, dropCm: true });
+  const b = makeContext('My_Merchant', names, network, bState, nowRef, { storage, dropCm: true });
+
+  a.transport.install();
+  b.transport.install();
+  b.transport.broadcastHeartbeat();
+
+  const peer = a.transport.freshPeer('My_Merchant');
+  assert.ok(peer);
+  assert.equal(peer.sessionId, 'session-My_Merchant');
+  assert.equal(peer.fullAutonomyEnabled, true);
+  assert.equal(peer.fullAutonomyDesiredSource, 'merchant-authority');
+  assert.deepEqual(Array.from(peer.fullAutonomyDesiredCharacterNames), ['My_Merchant', 'My_Ranger1', 'My_Ranger2', 'My_Rogue']);
+  assert.equal(a.transport.status().sharedStorageFallback, true);
+  assert.ok(a.transport.status().metrics.sharedPeerLoads >= 1);
+
+  a.transport.destroy();
+  b.transport.destroy();
+});
+
+test('H28 shared-storage mailbox settles lifecycle commands when send_cm silently drops them', async () => {
+  const names = ['My_Ranger1', 'My_Merchant'];
+  const network = new Map();
+  const nowRef = { value: 1800 };
+  const storage = createMemoryStorage();
+  const aState = { running: true, runEpoch: 2, emergencyStopLatched: false };
+  const bState = { running: true, runEpoch: 7, emergencyStopLatched: false };
+  const a = makeContext('My_Ranger1', names, network, aState, nowRef, { storage, dropCm: true });
+  const b = makeContext('My_Merchant', names, network, bState, nowRef, { storage, dropCm: true });
+
+  a.transport.install();
+  b.transport.install();
+  a.transport.broadcastHeartbeat();
+  b.transport.broadcastHeartbeat();
+  assert.ok(a.transport.freshPeer('My_Merchant'));
+
+  const stop = a.transport.requestRuntimeState('My_Merchant', false);
+  assert.equal(stop.state, 'DISPATCHED');
+  b.transport._pollSharedMailbox();
+  await flush();
+  a.transport._pollSharedMailbox();
+  await flush();
+
+  const settlement = await stop.value;
+  assert.equal(settlement.success, true);
+  assert.equal(bState.running, false);
+  assert.ok(a.transport.status().metrics.sharedMessagesPublished >= 1);
+  assert.ok(a.transport.status().metrics.sharedMessagesReceived >= 1);
+  assert.ok(b.transport.status().metrics.sharedMessagesReceived >= 1);
 
   a.transport.destroy();
   b.transport.destroy();

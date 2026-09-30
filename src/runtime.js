@@ -302,6 +302,7 @@
         root: this.root,
         logger: this.logger,
         roster: this.roster,
+        storage: this.storage,
         getLocalState: () => {
           let game = null;
           try { game = this.game.snapshot(); } catch (_) {}
