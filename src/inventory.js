@@ -186,13 +186,21 @@
             futureGearEvaluation: clone(futureGear)
           };
         }
+        const offlineGearReady = String(futureGear.action || '').toUpperCase() === 'GEAR'
+          && futureGear.futureGear
+          && futureGear.futureGear.targetOnline === false
+          && futureGear.futureGear.targetCharacter;
         return {
-          disposition: 'PROTECT',
-          reason: futureGear.action === 'GEAR'
-            ? 'CURRENT_OR_FUTURE_GEAR_UPGRADE'
-            : futureGear.action === 'ACCUMULATE'
-              ? 'FUTURE_GEAR_COMPOUND_ACCUMULATION'
-              : 'FUTURE_GEAR_OR_ECONOMIC_PROGRESSION',
+          disposition: offlineGearReady ? 'BANK' : 'PROTECT',
+          reason: offlineGearReady
+            ? 'OFFLINE_TARGET_GEAR_BANK'
+            : futureGear.action === 'GEAR'
+              ? 'CURRENT_OR_FUTURE_GEAR_UPGRADE'
+              : futureGear.action === 'ACCUMULATE'
+                ? 'FUTURE_GEAR_COMPOUND_ACCUMULATION'
+                : futureGear.action === 'HOLD'
+                  ? 'GEAR_MUTATION_RISK_HOLD'
+                  : 'FUTURE_GEAR_OR_ECONOMIC_PROGRESSION',
           protected: true,
           futureGearEvaluation: clone(futureGear)
         };
