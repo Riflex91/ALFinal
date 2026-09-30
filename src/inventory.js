@@ -12,6 +12,29 @@
     return Number.isFinite(number) ? number : null;
   }
 
+  function errorReason(value, fallback = 'H10_LOOT_UNKNOWN') {
+    if (value && typeof value === 'object') {
+      const raw = value.reason || value.code || value.message;
+      if (raw) return cleanText(raw, 500);
+    }
+    const text = cleanText(value, 500);
+    if (text && text !== '[object Object]') return text;
+    return fallback;
+  }
+
+  function knownLootRejection(value) {
+    const reason = errorReason(value, '').trim().toLowerCase().replace(/[\s.-]+/g, '_');
+    if (!reason) return false;
+    return [
+      'nothing_to_loot',
+      'not_there',
+      'too_far',
+      'safety',
+      'no_space',
+      'inventory_full'
+    ].some(token => reason === token || reason.includes(token));
+  }
+
   class LootInventoryController {
     constructor(options = {}) {
       this.root = options.root || root;
@@ -258,7 +281,7 @@
       }, error => {
         if (!this.pendingLoot || this.pendingLoot.id !== pending.id) return;
         this.pendingLoot.settlement = 'REJECTED';
-        this.pendingLoot.error = cleanText(error && error.message || error || 'H10_LOOT_REJECTED', 500);
+        this.pendingLoot.error = errorReason(error, 'H10_LOOT_REJECTED');
       }).catch(() => {});
     }
 
@@ -282,8 +305,19 @@
       this.pendingLoot = null;
 
       if (pending.settlement === 'REJECTED') {
+        const reason = errorReason(pending.error, 'H10_LOOT_UNKNOWN');
+        if (knownLootRejection(reason)) {
+          this.metrics.lootKnownRejected += 1;
+          this.lastAction = {
+            at: new Date().toISOString(),
+            type: 'LOOT_SKIPPED',
+            reason,
+            chestId: pending.chestId
+          };
+          return true;
+        }
         this.metrics.lootUnknown += 1;
-        this.suspendedReason = pending.error || 'H10_LOOT_UNKNOWN';
+        this.suspendedReason = reason;
         this.lastAction = { at: new Date().toISOString(), type: 'LOOT_UNKNOWN', reason: this.suspendedReason };
         return true;
       }
@@ -344,8 +378,14 @@
       const result = this.actions.dispatch('loot', [chestId]);
       if (!result || result.state !== 'DISPATCHED') {
         if (result && result.state === 'UNKNOWN') {
+          const reason = errorReason(result.error, 'H10_LOOT_UNKNOWN');
+          if (knownLootRejection(reason)) {
+            this.metrics.lootKnownRejected += 1;
+            this.lastAction = { at: new Date().toISOString(), type: 'LOOT_SKIPPED', reason, chestId };
+            return { state: 'WAITING', reason, plan };
+          }
           this.metrics.lootUnknown += 1;
-          this.suspendedReason = result.error && result.error.message || 'H10_LOOT_UNKNOWN';
+          this.suspendedReason = reason;
           return { state: 'SUSPENDED', reason: this.suspendedReason, plan };
         }
         this.metrics.lootKnownRejected += 1;
