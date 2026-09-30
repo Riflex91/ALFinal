@@ -1,4 +1,4 @@
-/* AL Bot 0.26.39-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.40-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -10096,6 +10096,7 @@
       this.scope = null;
       this.heartbeat = null;
       this.lastTrainingTickMs = null;
+      try { this.persistLocalProfile(); } catch (_) {}
       return this.status();
     }
 
@@ -10259,6 +10260,13 @@
       };
     }
 
+    persistLocalProfile() {
+      const profile = this.localProfile();
+      if (!profile) return null;
+      this._rememberProfile(profile);
+      return clone(profile);
+    }
+
     _fallbackProfile(row) {
       if (!row || !row.name) return null;
       const ctype = cleanText(row.ctype || row.type || '', 40).toLowerCase();
@@ -10331,7 +10339,7 @@
         this._rememberProfile(profile);
       }
 
-      const local = this.localProfile();
+      const local = this.persistLocalProfile();
       if (local) {
         local.running = true;
         local.emergencyStopLatched = false;
@@ -10339,7 +10347,6 @@
         local.local = true;
         byName.set(local.name, local);
         online.add(local.name);
-        this._rememberProfile(local);
       }
 
       const rows = [...byName.values()].map(row => ({
@@ -29023,7 +29030,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.39-h26';
+      this.version = options.version || '0.26.40-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -29376,7 +29383,9 @@
             characterDisconnectCapable: this.actions.available('disconnect') === true,
             characterNavigateCapable: h25BrowserNavigationCapability(),
             version: this.version,
-            profile: this.accountStrategy ? this.accountStrategy.localProfile() : null,
+            profile: this.accountStrategy && typeof this.accountStrategy.persistLocalProfile === 'function'
+              ? this.accountStrategy.persistLocalProfile()
+              : this.accountStrategy ? this.accountStrategy.localProfile() : null,
             observation: this.observer ? this.observer.summary() : null,
             updateProtection: this.safeUpdater && typeof this.safeUpdater.localProtection === 'function'
               ? this.safeUpdater.localProtection()
@@ -37141,7 +37150,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.39-h26',
+    version: '0.26.40-h26',
     bootCount,
     replacedPrevious: !!previous
   });
