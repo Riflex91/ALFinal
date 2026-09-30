@@ -923,7 +923,7 @@ test('H30 browser swap rebinds to a replacement target session instead of suspen
     'warrior-session-b'
   ]);
 
-  const status = controller.status();
+  let status = controller.status();
   assert.equal(status.suspended, false);
   assert.equal(status.autonomyEnabled, true);
   assert.equal(status.currentAction.kind, 'BROWSER_SWAP');
@@ -932,7 +932,47 @@ test('H30 browser swap rebinds to a replacement target session instead of suspen
   assert.equal(status.metrics.stalePendingDiscarded, 1);
   assert.equal(status.metrics.reconciliations, 1);
   assert.equal(status.metrics.actionsDispatched, 2);
+  assert.deepEqual(clone(status.browserSwapRecoveryAttempts), [
+    { key: 'My_Warrior->My_Mage', attempts: 1 }
+  ]);
   assert.equal(state.dispatches.filter(row => row.name === 'start_character').length, 0);
+
+  // A second reload of the same outgoing character means the handoff itself is
+  // not succeeding. Do not create an infinite logout/reload loop.
+  runtimePeers.set('My_Warrior', {
+    name: 'My_Warrior',
+    sessionId: 'warrior-session-c',
+    running: true,
+    runEpoch: 1,
+    fullAutonomyEnabled: true,
+    characterDisconnectCapable: true,
+    characterNavigateCapable: true
+  });
+  controller.currentAction.settlement = 'REJECTED';
+  controller.currentAction.error = 'H19_CROSS_WINDOW_SETTLEMENT_TIMEOUT';
+  controller.currentAction.unknownRecorded = true;
+  controller.suspended = true;
+  controller.suspendedReason = 'H19_DISPATCH_REJECTED_WITHOUT_LIVE_OUTCOME';
+  controller.autonomyEnabled = false;
+
+  const blockedRecovery = controller.tick();
+  assert.equal(blockedRecovery.state, 'BLOCKED');
+  assert.equal(blockedRecovery.reason, 'H31_BROWSER_SWAP_RETRY_LIMIT_REACHED:My_Warrior->My_Mage');
+  assert.equal(state.crossWindowDispatches.length, 2, 'no third logout/navigation may be dispatched');
+
+  const stableBlock = controller.tick();
+  assert.equal(stableBlock.state, 'BLOCKED');
+  assert.equal(stableBlock.reason, 'H31_BROWSER_SWAP_RETRY_LIMIT_REACHED:My_Warrior->My_Mage');
+  assert.equal(state.crossWindowDispatches.length, 2);
+
+  status = controller.status();
+  assert.equal(status.suspended, false);
+  assert.equal(status.autonomyEnabled, true);
+  assert.equal(status.currentAction, null);
+  assert.equal(status.metrics.browserSwapSessionRecoveries, 1);
+  assert.equal(status.metrics.browserSwapRecoveryBlocks, 1);
+  assert.equal(status.metrics.stalePendingDiscarded, 2);
+  assert.equal(status.metrics.reconciliations, 2);
 
   await flush();
 });

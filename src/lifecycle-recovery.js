@@ -51,6 +51,11 @@
         outcomeTimeoutMs: Math.max(3000, Math.min(120000, Number(options.outcomeTimeoutMs) || 15000)),
         startOutcomeTimeoutMs: Math.max(15000, Math.min(120000, Number(options.startOutcomeTimeoutMs) || 60000)),
         browserSwapTimeoutMs: Math.max(20000, Math.min(180000, Number(options.browserSwapTimeoutMs) || 90000)),
+        browserSwapSessionRecoveryLimit: Math.max(0, Math.min(3,
+          Number.isFinite(Number(options.browserSwapSessionRecoveryLimit))
+            ? Math.floor(Number(options.browserSwapSessionRecoveryLimit))
+            : 1
+        )),
         startRetryBackoffMs: Math.max(750, Math.min(15000, Number(options.startRetryBackoffMs) || 2000)),
         respawnGraceMs: Math.max(12000, Math.min(30000, Number(options.respawnGraceMs) || 13000)),
         maxActionsPerSession: Math.max(1, Math.min(20, Number(options.maxActionsPerSession) || 4)),
@@ -73,6 +78,7 @@
       this.deathObservedAtMs = null;
       this.partySignals = [];
       this.transientStartRetries = new Map();
+      this.browserSwapRecoveryAttempts = new Map();
       this.previousPartyInviteHandler = null;
       this.previousPartyRequestHandler = null;
       this.partyInviteHandler = null;
@@ -120,6 +126,7 @@
         browserSwapsDispatched: 0,
         browserSwapsConfirmed: 0,
         browserSwapSessionRecoveries: 0,
+        browserSwapRecoveryBlocks: 0,
         lateOutcomeRecoveries: 0,
         rotationCapabilityBlocks: 0,
         stalePendingDiscarded: 0,
@@ -139,6 +146,17 @@
     _localName() {
       const local = this._local();
       return cleanText(local && local.name || '', 120);
+    }
+
+    _browserSwapRecoveryKey(targetName, desiredName) {
+      const from = cleanText(targetName || '', 120);
+      const to = cleanText(desiredName || '', 120);
+      return from && to ? from + '->' + to : '';
+    }
+
+    _browserSwapRecoveryCount(targetName, desiredName) {
+      const key = this._browserSwapRecoveryKey(targetName, desiredName);
+      return key ? Number(this.browserSwapRecoveryAttempts.get(key) || 0) : 0;
     }
 
     _respawnReadiness() {
@@ -597,6 +615,13 @@
           ? this.crossWindow.freshPeer(name)
           : null;
         if (remainingMissing.length) {
+          const desiredCandidate = String(remainingMissing[0] || '');
+          const recoveryAttempts = this._browserSwapRecoveryCount(name, desiredCandidate);
+          if (recoveryAttempts >= this.config.browserSwapSessionRecoveryLimit
+              && this.config.browserSwapSessionRecoveryLimit >= 0) {
+            blockers.push('H31_BROWSER_SWAP_RETRY_LIMIT_REACHED:' + name + '->' + desiredCandidate);
+            continue;
+          }
           if (peer && peer.running === true
               && peer.characterNavigateCapable === true
               && peer.characterDisconnectCapable === true
@@ -829,6 +854,7 @@
 
     setPolicy(next = {}) {
       const roster = this._roster();
+      const previousDesiredKey = this.policyState.desiredActiveNames.join('\u0000');
       if (Array.isArray(next.desiredActiveNames)) {
         if (!roster || roster.accountStateAvailable !== true) return { accepted: false, reason: 'H19_ACCOUNT_ROSTER_UNAVAILABLE' };
         const owned = new Set((roster.accountCharacters || []).map(row => String(row.name || '')));
@@ -873,6 +899,8 @@
         if (!Number.isFinite(value) || value < 1 || value > 20) return { accepted: false, reason: 'H19_INVALID_SESSION_BUDGET' };
         this.config.maxActionsPerSession = value;
       }
+      const nextDesiredKey = this.policyState.desiredActiveNames.join('\u0000');
+      if (nextDesiredKey !== previousDesiredKey) this.browserSwapRecoveryAttempts.clear();
       this._persistPolicy();
       return { accepted: true, policy: clone({ ...this.policyState, maxActionsPerSession: this.config.maxActionsPerSession }) };
     }
@@ -1454,7 +1482,11 @@
       this.actionsThisSession += 1;
       if (current.kind === 'START') this.metrics.startsConfirmed += 1;
       if (current.kind === 'STOP') this.metrics.stopsConfirmed += 1;
-      if (current.kind === 'BROWSER_SWAP') this.metrics.browserSwapsConfirmed += 1;
+      if (current.kind === 'BROWSER_SWAP') {
+        this.metrics.browserSwapsConfirmed += 1;
+        const recoveryKey = this._browserSwapRecoveryKey(current.targetName, current.desiredName);
+        if (recoveryKey) this.browserSwapRecoveryAttempts.delete(recoveryKey);
+      }
       if (current.kind === 'RESPAWN') this.metrics.respawnsConfirmed += 1;
       if (current.kind === 'PARTY_INVITE') this.metrics.partyInvitesConfirmed += 1;
       if (current.kind === 'PARTY_REQUEST') this.metrics.partyRequestsConfirmed += 1;
@@ -1563,11 +1595,16 @@
             && targetPeer.characterDisconnectCapable === true);
 
           if (targetSessionReplaced && targetStillOnline && !desiredPresent && targetRetryCapable) {
+            const recoveryKey = this._browserSwapRecoveryKey(targetName, desiredName);
+            const previousRecoveries = recoveryKey
+              ? Number(this.browserSwapRecoveryAttempts.get(recoveryKey) || 0)
+              : 0;
+            const recoveryLimit = this.config.browserSwapSessionRecoveryLimit;
+
             this.currentAction = null;
             this._removeStorage('pending');
             this.metrics.reconciliations += 1;
             this.metrics.stalePendingDiscarded += 1;
-            this.metrics.browserSwapSessionRecoveries += 1;
 
             const resumedAutonomy = current.automatic === true;
             if (resumedAutonomy) {
@@ -1576,6 +1613,34 @@
               this.autonomyEnabled = true;
             }
 
+            if (previousRecoveries >= recoveryLimit) {
+              this.metrics.browserSwapRecoveryBlocks += 1;
+              this.lastAction = {
+                at: nowIso(),
+                type: 'BROWSER_SWAP_RECOVERY_LIMIT_REACHED',
+                actionId: current.id || null,
+                requestId: current.requestId || null,
+                targetName,
+                desiredName: desiredName || null,
+                previousTargetSessionId,
+                targetSessionId,
+                recoveryAttempts: previousRecoveries,
+                recoveryLimit,
+                autonomyResumed: resumedAutonomy
+              };
+              return {
+                state: 'BLOCKED',
+                reason: 'H31_BROWSER_SWAP_RETRY_LIMIT_REACHED:' + targetName + '->' + desiredName,
+                targetName,
+                desiredName: desiredName || null,
+                recoveryAttempts: previousRecoveries,
+                recoveryLimit,
+                autonomyResumed: resumedAutonomy
+              };
+            }
+
+            if (recoveryKey) this.browserSwapRecoveryAttempts.set(recoveryKey, previousRecoveries + 1);
+            this.metrics.browserSwapSessionRecoveries += 1;
             this.lastAction = {
               at: nowIso(),
               type: 'BROWSER_SWAP_TARGET_SESSION_REPLACED_RETRY',
@@ -1585,6 +1650,8 @@
               desiredName: desiredName || null,
               previousTargetSessionId,
               targetSessionId,
+              recoveryAttempts: previousRecoveries + 1,
+              recoveryLimit,
               previousSettlement: current.settlement || null,
               previousError: current.error || null,
               autonomyResumed: resumedAutonomy
@@ -1596,6 +1663,8 @@
               desiredName: desiredName || null,
               previousTargetSessionId,
               targetSessionId,
+              recoveryAttempts: previousRecoveries + 1,
+              recoveryLimit,
               autonomyResumed: resumedAutonomy
             };
           }
@@ -1804,6 +1873,9 @@
         respawn: clone(this._respawnReadiness()),
         lastPlan: clone(this.lastPlan),
         lastAction: clone(this.lastAction),
+        browserSwapRecoveryAttempts: [...this.browserSwapRecoveryAttempts.entries()]
+          .map(([key, attempts]) => ({ key, attempts }))
+          .sort((a, b) => a.key.localeCompare(b.key)),
         metrics: clone(this.metrics)
       };
     }
