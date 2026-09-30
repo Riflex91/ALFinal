@@ -84,8 +84,11 @@ function controllerFixture(options = {}) {
   const actions = {
     dispatch: (name, args) => {
       dispatches.push({ name, args: [...args] });
-      if (options.syncUnknown) return { state: 'UNKNOWN', error: { message: 'NETWORK_UNCERTAIN' } };
-      if (options.rejectPromise) return { state: 'DISPATCHED', value: Promise.reject(new Error('NETWORK_UNCERTAIN')) };
+      if (options.syncUnknown) return { state: 'UNKNOWN', error: options.syncUnknownError || { message: 'NETWORK_UNCERTAIN' } };
+      if (options.rejectPromise) {
+        const rejection = options.rejectValue === undefined ? new Error('NETWORK_UNCERTAIN') : options.rejectValue;
+        return { state: 'DISPATCHED', value: Promise.reject(rejection) };
+      }
       if (options.neverResolvePromise) return { state: 'DISPATCHED', value: new Promise(() => {}) };
       return { state: 'DISPATCHED', value: Promise.resolve(options.lootResponse || { success: true }) };
     }
@@ -244,6 +247,26 @@ test('H10 treats Adventure Land nothing_to_loot and safety responses as known sk
     assert.equal(f.controller.status().metrics.lootUnknown, 0);
     assert.equal(f.dispatches.length, 1);
   }
+});
+
+test('H10 treats rejected Adventure Land not_there loot objects as a recoverable chest race', async () => {
+  const f = controllerFixture({
+    rejectPromise: true,
+    rejectValue: { place: 'loot', reason: 'not_there', failed: true }
+  });
+  const first = f.controller.tick();
+  assert.equal(first.state, 'LOOT_PENDING');
+  assert.equal(f.dispatches.length, 1);
+
+  await new Promise(resolve => setTimeout(resolve, 0));
+  f.setChests([]);
+  const second = f.controller.tick();
+  assert.notEqual(second.state, 'SUSPENDED');
+  assert.equal(f.controller.status().suspended, false);
+  assert.equal(f.controller.status().metrics.lootKnownRejected, 1);
+  assert.equal(f.controller.status().metrics.lootUnknown, 0);
+  assert.equal(f.controller.status().lastAction.type, 'LOOT_SKIPPED');
+  assert.equal(f.controller.status().lastAction.reason, 'not_there');
 });
 
 test('H10 rejected loot promise becomes UNKNOWN and is never blindly retried', async () => {
