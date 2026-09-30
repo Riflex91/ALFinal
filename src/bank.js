@@ -215,7 +215,7 @@
       if (!plan || plan.state !== 'READY') return [];
       return (plan.items || []).filter(row => {
         if (!row || !row.name || String(row.disposition || '').toUpperCase() !== 'BANK') return false;
-        if (row.locked === true || row.giveaway === true || row.gift === true || row.expiresAt) return false;
+        if (row.locked === true || row.giveaway === true || row.expiresAt) return false;
         const future = row.futureGearEvaluation || null;
         const offlineGear = !!(future
           && future.checked === true

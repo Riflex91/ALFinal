@@ -853,7 +853,6 @@
       if (!item || !item.name) return 'ITEM_INVALID';
       if (item.locked === true) return 'ITEM_LOCKED';
       if (item.giveaway === true) return 'ITEM_GIVEAWAY';
-      if (item.gift === true) return 'ITEM_GIFT';
       if (item.expiresAt) return 'ITEM_EXPIRING';
       if (!meta) return 'ITEM_DEFINITION_UNKNOWN';
       if (meta.quest === true || String(meta.type || '').toLowerCase() === 'quest') return 'QUEST_ITEM';
