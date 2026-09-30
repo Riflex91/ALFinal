@@ -1095,7 +1095,8 @@
           ? formation
           : group.leader;
         const angle = Math.atan2(Number(localFollowTarget.y) - cy, Number(localFollowTarget.x) - cx);
-        const travel = Math.max(0, formationDistance - this.config.groupRegroupStopDistance * 0.75);
+        const localFollowDistance = distance(group.local, localFollowTarget);
+        const travel = Math.max(0, Number(localFollowDistance || 0) - this.config.groupRegroupStopDistance * 0.75);
         const step = Math.min(this.config.groupFollowStep, travel);
         let waypoint = null;
         for (const offsetDeg of [0, 20, -20, 35, -35, 50, -50, 70, -70, 90, -90]) {
