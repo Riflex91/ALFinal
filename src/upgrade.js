@@ -313,6 +313,25 @@
     }
 
     _mutationRiskDecision(kind, row, definition, inventory, inputSlots, evaluation, targetLevel) {
+      // H15 can still be used as a low-level/manual controller in isolation.
+      // Production autonomy always wires FutureGearEconomyEvaluator; apply the
+      // V3 risk policy whenever that authority exists.
+      if (!this.gearProgression) {
+        return {
+          at: nowIso(),
+          allowed: true,
+          reason: 'MUTATION_RISK_NOT_REQUIRED_WITHOUT_AUTONOMOUS_PROGRESSION',
+          kind: String(kind || '').toUpperCase(),
+          item: row && row.name || null,
+          level: Math.max(0, Number(row && row.level) || 0),
+          targetLevel: Math.max(0, Number(targetLevel) || 0),
+          chance: null,
+          minChance: null,
+          replacement: null,
+          usefulNow: false,
+          threshold: null
+        };
+      }
       const activeHold = this._activeRiskHold(kind, row);
       if (activeHold) {
         const decision = { ...clone(activeHold.decision), allowed: false, reason: 'MUTATION_RISK_EXCEEDS_POLICY', held: true, holdUntilMs: activeHold.untilMs };
