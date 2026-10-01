@@ -6,6 +6,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "test": "npm run build && npm run verify:transport && node --test tests/*.test.mjs",
-    "verify:transport": "node scripts/verify-v6-transport.mjs"
+    "verify:transport": "node scripts/verify-v6-transport.mjs",
+    "host:local": "node host/telemetry-recorder.mjs"
   }
 }
