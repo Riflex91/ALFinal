@@ -29,6 +29,7 @@
       this.game = options.game || null;
       this.actions = options.actions || null;
       this.classSkills = options.classSkills || null;
+      this.merchantAutonomy = options.merchantAutonomy || null;
       this.roster = options.roster || null;
       this.movement = options.movement || null;
       this.inventory = options.inventory || null;
@@ -678,6 +679,16 @@
       if (this.pending) return { state: 'PENDING', pending: clone(this.pending), plan };
       if (this.backoffUntilMs && Date.now() < this.backoffUntilMs) {
         return { state: 'BACKOFF', untilMs: this.backoffUntilMs, plan };
+      }
+      let merchantAutonomy = null;
+      try {
+        merchantAutonomy = this.merchantAutonomy && typeof this.merchantAutonomy.status === 'function'
+          ? this.merchantAutonomy.status()
+          : null;
+      } catch (_) {}
+      if (merchantAutonomy && merchantAutonomy.exclusive === true) {
+        this.metrics.ownershipBlocks += 1;
+        return { state: 'WAITING', reason: 'H11_MERCHANT_AUTONOMY_OWNERSHIP', plan };
       }
       let logistics = null;
       try { logistics = this.partyLogistics && typeof this.partyLogistics.status === 'function' ? this.partyLogistics.status() : null; } catch (_) {}
