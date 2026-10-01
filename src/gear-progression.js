@@ -373,6 +373,9 @@
 
     _profileEquipment(profile) {
       if (!profile || !profile.equipment || typeof profile.equipment !== 'object') return null;
+      if (profile.equipmentKnown === false) return null;
+      if (profile.equipmentKnown !== true
+          && !Object.values(profile.equipment).some(item => item && item.name)) return null;
       return profile.equipment;
     }
 
