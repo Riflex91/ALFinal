@@ -1,4 +1,4 @@
-/* AL Bot 0.26.51-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.52-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -4019,11 +4019,10 @@
     }),
     mage: Object.freeze({
       h6: Object.freeze(['entangle', 'arcane_needle', 'burst']),
+      h7: Object.freeze(['energize', 'reflection']),
       h8: Object.freeze(['cburst']),
       passive: Object.freeze([]),
       excluded: Object.freeze({
-        energize: 'PARTY_SUPPORT_REQUIRES_AMOUNT_POLICY',
-        reflection: 'PARTY_SUPPORT_REQUIRES_TARGET_POLICY',
         blink: 'MOVEMENT_OWNERSHIP_H4',
         magiport: 'REMOTE_PLAYER_MOVEMENT_REQUIRES_EXPLICIT_INTENT',
         light: 'PVP_ANTI_STEALTH_CONTEXT_ONLY',
@@ -4040,10 +4039,10 @@
     }),
     rogue: Object.freeze({
       h6: Object.freeze(['invis', 'pcoat', 'mentalburst', 'quickstab', 'quickpunch']),
+      h7: Object.freeze(['rspeed']),
       h8: Object.freeze(['fanofknives']),
       passive: Object.freeze(['stack']),
       excluded: Object.freeze({
-        rspeed: 'PARTY_SUPPORT_REQUIRES_TARGET_POLICY',
         pickpocket: 'PLAYER_PVP_THEFT',
         shadowstrike: 'RANDOM_REMOTE_ENEMY_TARGET'
       })
@@ -4831,8 +4830,8 @@
     warrior: Object.freeze(['hardshell', 'charge', 'taunt', 'warcry', 'cleave', 'stomp']),
     priest: Object.freeze(['heal', 'partyheal', 'revive', 'phaseout', 'curse', 'darkblessing']),
     ranger: Object.freeze(['huntersmark', 'poisonarrow', 'piercingshot', 'supershot', '5shot', '3shot']),
-    mage: Object.freeze(['burst', 'cburst', 'entangle', 'arcane_needle']),
-    rogue: Object.freeze(['invis', 'pcoat', 'mentalburst', 'quickstab', 'quickpunch', 'fanofknives']),
+    mage: Object.freeze(['burst', 'cburst', 'entangle', 'arcane_needle', 'reflection']),
+    rogue: Object.freeze(['invis', 'pcoat', 'mentalburst', 'quickstab', 'quickpunch', 'fanofknives', 'rspeed']),
     paladin: Object.freeze(['selfheal', 'shield_slam', 'purify', 'smash']),
     merchant: Object.freeze(['mluck'])
   });
@@ -5680,6 +5679,8 @@
             if (a.local !== b.local) return a.local ? 1 : -1;
             return String(a.name).localeCompare(String(b.name));
           });
+        // Apply rspeed once per eligible owned member; live condition
+        // readiness prevents recasting on members that are already buffed.
         for (const target of targets) {
           const readiness = this._supportReadiness('rspeed', target, false);
           if (readiness && readiness.allowed && readiness.activeCondition !== true) {
@@ -30132,7 +30133,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.51-h26';
+      this.version = options.version || '0.26.52-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -38286,7 +38287,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.51-h26',
+    version: '0.26.52-h26',
     bootCount,
     replacedPrevious: !!previous
   });
