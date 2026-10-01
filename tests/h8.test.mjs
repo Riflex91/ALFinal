@@ -93,7 +93,12 @@ function makeFixture(options = {}) {
     visibleMonsters: () => monsters.map(row => ({ ...row })),
     skillDefinition: id => definitions[id] ? { ...definitions[id] } : null,
     skillReadiness: id => definitions[id]
-      ? { available: true, allowed: options.notReadySkill === id ? false : true, skillId: id, reasons: [] }
+      ? {
+          available: true,
+          allowed: options.notReadySkill === id ? false : true,
+          skillId: id,
+          reasons: options.notReadySkill === id ? [options.notReadyReason || 'SKILL_LEVEL_TOO_LOW'] : []
+        }
       : { available: false, allowed: false, skillId: id, reasons: ['MISSING'] }
   };
 
@@ -285,8 +290,32 @@ test('H8 runtime registers one-click suite and diagnostics surface', () => {
 test('H8 bundle version and build pipeline include farming core', () => {
   const entry = fs.readFileSync(path.resolve(here, '../src/entry.js'), 'utf8');
   const build = fs.readFileSync(path.resolve(here, '../scripts/build.mjs'), 'utf8');
-  assert.match(entry, /0\.26\.48-h26/);
+  assert.match(entry, /0\.26\.52-h26/);
   assert.match(entry, /farming:/);
   assert.match(build, /src\/farming\.js/);
-  assert.match(build, /const runtimeVersion = '0\.26\.48-h26'/);
+  assert.match(build, /const runtimeVersion = '0\.26\.52-h26'/);
+});
+
+
+test('H32 H8 explains exactly why Ranger AoE is not currently usable', () => {
+  const f = makeFixture({
+    ctype: 'ranger',
+    disabledSkills: ['5shot'],
+    notReadySkill: '3shot',
+    notReadyReason: 'SKILL_LEVEL_TOO_LOW'
+  });
+  assert.equal(f.controller.startSession().accepted, true);
+  const plan = f.controller.plan();
+  assert.equal(plan.state, 'SINGLE_TARGET');
+  assert.equal(plan.reason, 'H8_NO_LIVE_READY_AOE_SKILL');
+  assert.ok(Array.isArray(plan.aoeDiagnostics));
+
+  const five = plan.aoeDiagnostics.find(row => row.skillId === '5shot');
+  const three = plan.aoeDiagnostics.find(row => row.skillId === '3shot');
+  assert.ok(five);
+  assert.equal(five.definitionAvailable, false);
+  assert.ok(three);
+  assert.equal(three.readinessAllowed, false);
+  assert.ok(three.readinessReasons.includes('SKILL_LEVEL_TOO_LOW'));
+  assert.equal(three.minimumTargets, 2);
 });

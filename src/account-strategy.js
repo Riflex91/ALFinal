@@ -103,6 +103,8 @@
       this.trainingMs = 0;
       this.lastTrainingTickMs = null;
       this.lastProfiles = [];
+      this.gearRegistry = new Map();
+      this.gearRegistrySource = new Map();
       this.lastProgression = null;
       this.lastTaskPlan = null;
       this.profileCacheKey = cleanText(options.profileCacheKey || 'albot:h28:account-profile-cache:v1', 200);
@@ -172,42 +174,106 @@
       return normalized ? this.profileCacheKey + ':' + encodeURIComponent(normalized) : null;
     }
 
+    _profileHasEquipment(profile) {
+      return !!(profile && profile.equipment && typeof profile.equipment === 'object'
+        && Object.values(profile.equipment).some(item => item && item.name));
+    }
+
+    _betterProfile(current, candidate) {
+      if (!current) return candidate ? clone(candidate) : null;
+      if (!candidate) return clone(current);
+      const currentHasEquipment = this._profileHasEquipment(current);
+      const candidateHasEquipment = this._profileHasEquipment(candidate);
+      if (candidateHasEquipment && !currentHasEquipment) return clone(candidate);
+      if (currentHasEquipment && !candidateHasEquipment) {
+        const merged = { ...clone(candidate), ...clone(current) };
+        if (finite(candidate.gold) != null && finite(current.gold) == null) merged.gold = finite(candidate.gold);
+        return merged;
+      }
+      const currentAt = finite(current.observedAtMs) || finite(current.cachedAtMs) || 0;
+      const candidateAt = finite(candidate.observedAtMs) || finite(candidate.cachedAtMs) || 0;
+      return candidateAt >= currentAt ? { ...clone(current), ...clone(candidate) } : { ...clone(candidate), ...clone(current) };
+    }
+
     _cachedProfile(name) {
       const normalized = cleanText(name || '', 120);
       if (!normalized) return null;
 
+      const inMemory = this.gearRegistry.get(normalized);
+      if (inMemory) return clone(inMemory);
+
+      const key = this._profileCacheEntryKey(normalized);
+      const direct = key ? this._storageRead(key, null) : null;
+      const legacy = this._cachedProfiles();
+      const localCached = this._betterProfile(
+        direct && typeof direct === 'object' && !Array.isArray(direct) ? direct : null,
+        legacy[normalized] && typeof legacy[normalized] === 'object' && !Array.isArray(legacy[normalized]) ? legacy[normalized] : null
+      );
+      if (localCached) {
+        this.gearRegistry.set(normalized, clone(localCached));
+        this.gearRegistrySource.set(normalized, 'BOT_SHARED_CACHE');
+        return clone(localCached);
+      }
+
+      // SSD/host state is optional fallback only. A host row must never shadow
+      // fresher bot-native cross-character state.
       try {
         const hosted = this.hostState && typeof this.hostState.profile === 'function'
           ? this.hostState.profile(normalized)
           : null;
-        if (hosted && typeof hosted === 'object' && !Array.isArray(hosted)) return hosted;
+        if (hosted && typeof hosted === 'object' && !Array.isArray(hosted)) {
+          this.gearRegistry.set(normalized, clone(hosted));
+          this.gearRegistrySource.set(normalized, 'HOST_FALLBACK');
+          return clone(hosted);
+        }
       } catch (_) {}
-
-      const key = this._profileCacheEntryKey(normalized);
-      const direct = key ? this._storageRead(key, null) : null;
-      if (direct && typeof direct === 'object' && !Array.isArray(direct)) return direct;
-      const legacy = this._cachedProfiles();
-      const row = legacy[normalized];
-      return row && typeof row === 'object' && !Array.isArray(row) ? row : null;
+      return null;
     }
 
-    _rememberProfile(profile) {
+    _rememberProfile(profile, source = 'BOT_NATIVE') {
       if (!profile || !profile.name) return false;
       const normalized = this._normalizeProfile(profile);
       if (!normalized) return false;
       if (!normalized.equipment && finite(normalized.gold) == null) return false;
       const key = this._profileCacheEntryKey(normalized.name);
       if (!key) return false;
+
+      const existing = this.gearRegistry.get(normalized.name) || null;
+      const merged = this._betterProfile(existing, normalized);
       const row = {
-        ...clone(normalized),
+        ...clone(merged || normalized),
         cachedAtMs: this.now()
       };
+      this.gearRegistry.set(normalized.name, clone(row));
+      this.gearRegistrySource.set(normalized.name, cleanText(source || 'BOT_NATIVE', 80) || 'BOT_NATIVE');
+
+      // Persist in the bot's own shared browser storage so a Merchant reload
+      // keeps the last cross-character gear snapshot without any external host.
+      const written = this._storageWrite(key, row);
+
+      // Optional mirror only; never authoritative over bot-native state.
       try {
         if (this.hostState && typeof this.hostState.persistProfile === 'function') {
           this.hostState.persistProfile(row);
         }
       } catch (_) {}
-      return this._storageWrite(key, row);
+      return written;
+    }
+
+    _ingestCrossWindowRegistry() {
+      if (!this.crossWindow || typeof this.crossWindow.status !== 'function') return 0;
+      let state = null;
+      try { state = this.crossWindow.status(); } catch (_) { return 0; }
+      const freshNames = new Set((state && Array.isArray(state.freshPeers) ? state.freshPeers : [])
+        .map(peer => cleanText(peer && peer.name || '', 120)).filter(Boolean));
+      const peers = state && Array.isArray(state.peers) ? state.peers : [];
+      let ingested = 0;
+      for (const peer of peers) {
+        if (!peer || !peer.name || !peer.profile) continue;
+        const source = freshNames.has(String(peer.name)) ? 'CROSS_WINDOW_FRESH' : 'CROSS_WINDOW_LAST_KNOWN';
+        if (this._rememberProfile({ ...peer.profile, name: peer.name }, source)) ingested += 1;
+      }
+      return ingested;
     }
 
     _cachedBankGold() {
@@ -321,7 +387,7 @@
     persistLocalProfile() {
       const profile = this.localProfile();
       if (!profile) return null;
-      this._rememberProfile(profile);
+      this._rememberProfile(profile, 'LOCAL_CHARACTER');
       return clone(profile);
     }
 
@@ -358,6 +424,10 @@
     }
 
     profiles() {
+      // V3-style account registry: consume all peer gear snapshots transported
+      // by H19, not only peers that are still fresh at this exact tick.
+      this._ingestCrossWindowRegistry();
+
       let roster = null;
       try { roster = this.roster && this.roster.refresh ? this.roster.refresh() : this.roster && this.roster.status ? this.roster.status() : null; } catch (_) {}
       const account = roster && Array.isArray(roster.accountCharacters) ? roster.accountCharacters : [];
@@ -394,7 +464,7 @@
         profile.peerFresh = true;
         profile.observedAtMs = finite(peer.observedAtMs) || profile.observedAtMs;
         byName.set(profile.name, profile);
-        this._rememberProfile(profile);
+        this._rememberProfile(profile, 'CROSS_WINDOW_FRESH');
       }
 
       const local = this.persistLocalProfile();
@@ -670,12 +740,34 @@
       return result;
     }
 
+    gearRegistryStatus() {
+      const rows = [...this.gearRegistry.entries()].map(([name, profile]) => ({
+        name,
+        ctype: profile && profile.ctype || null,
+        level: finite(profile && profile.level),
+        equipmentKnown: this._profileHasEquipment(profile),
+        equipmentSlots: profile && profile.equipment && typeof profile.equipment === 'object'
+          ? Object.keys(profile.equipment).length
+          : 0,
+        observedAtMs: finite(profile && profile.observedAtMs),
+        cachedAtMs: finite(profile && profile.cachedAtMs),
+        source: this.gearRegistrySource.get(name) || 'UNKNOWN'
+      })).sort((a, b) => a.name.localeCompare(b.name));
+      return {
+        schemaVersion: 1,
+        count: rows.length,
+        equipmentKnownCount: rows.filter(row => row.equipmentKnown).length,
+        rows
+      };
+    }
+
     status() {
       return {
         schemaVersion: 1,
         moduleActive: this.moduleActive,
         localTrainingMs: Math.max(0, Math.floor(this.trainingMs)),
         profiles: clone(this.lastProfiles),
+        gearRegistry: this.gearRegistryStatus(),
         progression: clone(this.lastProgression),
         taskPlan: clone(this.lastTaskPlan),
         config: clone(this.config)

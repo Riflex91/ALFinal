@@ -9,11 +9,11 @@
 
   const RELEVANT_SKILLS = Object.freeze({
     warrior: Object.freeze(['hardshell', 'charge', 'taunt', 'warcry', 'cleave', 'stomp']),
-    priest: Object.freeze(['heal', 'partyheal', 'revive', 'curse', 'darkblessing']),
-    ranger: Object.freeze(['huntersmark', 'supershot', '5shot', '3shot']),
-    mage: Object.freeze(['burst', 'cburst']),
-    rogue: Object.freeze(['invis', 'mentalburst', 'quickpunch', 'fanofknives']),
-    paladin: Object.freeze(['selfheal', 'smash']),
+    priest: Object.freeze(['heal', 'partyheal', 'revive', 'phaseout', 'curse', 'darkblessing']),
+    ranger: Object.freeze(['huntersmark', 'poisonarrow', 'piercingshot', 'supershot', '5shot', '3shot']),
+    mage: Object.freeze(['burst', 'cburst', 'entangle', 'arcane_needle', 'reflection']),
+    rogue: Object.freeze(['invis', 'pcoat', 'mentalburst', 'quickstab', 'quickpunch', 'fanofknives', 'rspeed']),
+    paladin: Object.freeze(['selfheal', 'shield_slam', 'purify', 'smash']),
     merchant: Object.freeze(['mluck'])
   });
 

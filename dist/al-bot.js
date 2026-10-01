@@ -1,4 +1,4 @@
-/* AL Bot 0.26.48-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.52-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -2011,6 +2011,12 @@
       const raw = G && G.skills && G.skills[id];
       if (!raw || typeof raw !== 'object') return null;
       const classesRaw = Array.isArray(raw.class) ? raw.class : (raw.class ? [raw.class] : []);
+      const weaponTypesRaw = Array.isArray(raw.wtype) ? raw.wtype : (raw.wtype ? [raw.wtype] : []);
+      const requirements = raw.requirements && typeof raw.requirements === 'object'
+        ? Object.fromEntries(Object.entries(raw.requirements)
+          .map(([key, value]) => [cleanText(key, 60).toLowerCase(), finite(value)])
+          .filter(([, value]) => value != null))
+        : {};
       return {
         id,
         name: raw.name == null ? id : cleanText(raw.name, 160),
@@ -2018,18 +2024,35 @@
         level: finite(raw.level),
         mp: finite(raw.mp),
         cooldown: finite(raw.cooldown),
+        cooldownMultiplier: finite(raw.cooldown_multiplier),
+        reuseCooldown: finite(raw.reuse_cooldown),
         range: finite(raw.range),
         rangeMultiplier: finite(raw.range_multiplier),
         rangeBonus: finite(raw.range_bonus),
         damageMultiplier: finite(raw.damage_multiplier),
+        ratio: finite(raw.ratio),
         maxTargets: finite(raw.max_targets),
         share: raw.share == null ? null : cleanText(raw.share, 120),
-        target: raw.target == null ? null : safeBoolean(raw.target),
+        target: raw.target == null ? null : (raw.target === true || typeof raw.target === 'string'),
+        targetType: typeof raw.target === 'string' ? cleanText(raw.target, 60).toLowerCase() : (raw.target === true ? 'entity' : null),
         multi: safeBoolean(raw.multi),
         list: safeBoolean(raw.list),
         party: safeBoolean(raw.party),
         heal: safeBoolean(raw.heal),
-        hostile: safeBoolean(raw.hostile)
+        hostile: safeBoolean(raw.hostile),
+        useRange: safeBoolean(raw.use_range),
+        fixedRange: safeBoolean(raw.fixed_range),
+        monsters: raw.monsters == null ? null : safeBoolean(raw.monsters),
+        noSelf: safeBoolean(raw.no_self),
+        toggle: safeBoolean(raw.toggle),
+        aura: safeBoolean(raw.aura),
+        condition: raw.condition == null ? null : cleanText(raw.condition, 120),
+        exclusiveCondition: raw.exclusive_condition == null ? null : cleanText(raw.exclusive_condition, 120),
+        consume: raw.consume == null ? null : cleanText(raw.consume, 160),
+        weaponTypes: weaponTypesRaw.map(value => cleanText(value, 80).toLowerCase()).filter(Boolean),
+        offhandType: raw.offhand_type == null ? null : cleanText(raw.offhand_type, 80).toLowerCase(),
+        slotRequirements: Array.isArray(raw.slot) ? clone(raw.slot) : [],
+        requirements
       };
     }
 
@@ -2045,6 +2068,7 @@
           definition,
           reasons: ['SKILL_OR_CHARACTER_UNAVAILABLE'],
           cooldown: null,
+          cooldownSource: null,
           canUse: null,
           inRange: targetId == null ? true : null,
           activeCondition: false
@@ -2053,15 +2077,82 @@
 
       const reasons = [];
       const c = normalized.character;
+      const G = this._gameData();
       if (definition.classes.length && !definition.classes.includes(String(c.ctype || '').toLowerCase())) {
         reasons.push('SKILL_CLASS_MISMATCH');
       }
       if (definition.level != null && c.level != null && c.level < definition.level) reasons.push('SKILL_LEVEL_TOO_LOW');
       if (definition.mp != null && c.mp != null && c.mp < definition.mp) reasons.push('SKILL_MP_TOO_LOW');
 
+      for (const [stat, required] of Object.entries(definition.requirements || {})) {
+        const observed = finite(character && character[stat]);
+        if (observed == null || observed < required) {
+          reasons.push('SKILL_REQUIREMENT_' + String(stat).toUpperCase() + '_TOO_LOW');
+        }
+      }
+
+      const rawSlots = character.slots && typeof character.slots === 'object' ? character.slots : {};
+      const itemDefinition = slot => {
+        const equipped = rawSlots[slot];
+        const name = equipped && equipped.name;
+        return name && G && G.items && G.items[name] || null;
+      };
+      const equippedWeaponTypes = ['mainhand', 'offhand']
+        .map(itemDefinition)
+        .filter(Boolean)
+        .flatMap(item => Array.isArray(item.wtype) ? item.wtype : (item.wtype ? [item.wtype] : []))
+        .map(value => cleanText(value, 80).toLowerCase())
+        .filter(Boolean);
+      if (definition.weaponTypes.length
+          && !definition.weaponTypes.some(type => equippedWeaponTypes.includes(type))) {
+        reasons.push('SKILL_WEAPON_TYPE_MISMATCH');
+      }
+
+      if (definition.offhandType) {
+        const offhand = itemDefinition('offhand');
+        const offhandKinds = offhand
+          ? [offhand.type, ...(Array.isArray(offhand.wtype) ? offhand.wtype : (offhand.wtype ? [offhand.wtype] : []))]
+            .map(value => cleanText(value, 80).toLowerCase()).filter(Boolean)
+          : [];
+        if (!offhandKinds.includes(definition.offhandType)) reasons.push('SKILL_OFFHAND_TYPE_MISMATCH');
+      }
+
+      if (Array.isArray(definition.slotRequirements) && definition.slotRequirements.length) {
+        const slotOk = definition.slotRequirements.every(requirement => {
+          if (!Array.isArray(requirement) || requirement.length < 2) return false;
+          const slot = cleanText(requirement[0], 80);
+          const item = cleanText(requirement[1], 160);
+          return !!(slot && item && rawSlots[slot] && String(rawSlots[slot].name || '') === item);
+        });
+        if (!slotOk) reasons.push('SKILL_SLOT_REQUIREMENT_MISSING');
+      }
+
+      if (definition.consume) {
+        const inventory = Array.isArray(character.items) ? character.items : [];
+        const available = inventory.some(item => {
+          if (!item || String(item.name || '') !== definition.consume) return false;
+          const quantity = finite(item.q);
+          return quantity == null ? true : quantity > 0;
+        });
+        if (!available) reasons.push('SKILL_CONSUMABLE_MISSING');
+      }
+
       const cooldownFn = this._resolveFunction('is_on_cooldown');
       let cooldown = null;
-      try { if (cooldownFn) cooldown = cooldownFn.fn.call(cooldownFn.owner, definition.id) === true; } catch (_) {}
+      let cooldownSource = null;
+      try {
+        if (cooldownFn) {
+          if (cooldownFn.fn.call(cooldownFn.owner, definition.id) === true) {
+            cooldown = true;
+            cooldownSource = definition.id;
+          } else if (definition.share && cooldownFn.fn.call(cooldownFn.owner, definition.share) === true) {
+            cooldown = true;
+            cooldownSource = definition.share;
+          } else {
+            cooldown = false;
+          }
+        }
+      } catch (_) {}
       if (cooldown === true) reasons.push('SKILL_COOLDOWN');
 
       const canUseFn = this._resolveFunction('can_use');
@@ -2069,15 +2160,30 @@
       try { if (canUseFn) canUse = canUseFn.fn.call(canUseFn.owner, definition.id) === true; } catch (_) {}
       if (canUse === false) reasons.push('SKILL_CAN_USE_FALSE');
 
+      let rawTarget = null;
       let inRange = targetId == null;
       if (targetId != null) {
-        const rawTarget = options.allowDeadTarget === true
-          ? this.playerReference(targetId, { allowDead: true })
-          : this.entityReference(targetId);
+        if (definition.targetType === 'player') {
+          rawTarget = this.playerReference(targetId, { allowDead: options.allowDeadTarget === true });
+        } else {
+          rawTarget = options.allowDeadTarget === true
+            ? (this.playerReference(targetId, { allowDead: true }) || this.entityReference(targetId))
+            : this.entityReference(targetId);
+        }
         if (!rawTarget) {
           inRange = false;
           reasons.push('SKILL_TARGET_UNAVAILABLE');
         } else {
+          const targetIsPlayer = rawTarget === character
+            || rawTarget.type === 'character'
+            || rawTarget.player === true
+            || rawTarget.ctype != null;
+          if (definition.targetType === 'player' && !targetIsPlayer) reasons.push('SKILL_PLAYER_TARGET_REQUIRED');
+          if (definition.monsters === false && !targetIsPlayer) reasons.push('SKILL_MONSTER_TARGET_FORBIDDEN');
+          if (definition.noSelf && (String(rawTarget.name || rawTarget.id || '') === String(character.name || character.id || ''))) {
+            reasons.push('SKILL_SELF_TARGET_FORBIDDEN');
+          }
+
           const inRangeFn = this._resolveFunction('is_in_range');
           let observed = null;
           try { if (inRangeFn) observed = inRangeFn.fn.call(inRangeFn.owner, rawTarget, definition.id) === true; } catch (_) {}
@@ -2091,7 +2197,7 @@
             }
             observed = cp.x != null && cp.y != null && tp.x != null && tp.y != null && allowedRange != null
               ? Math.hypot(cp.x - tp.x, cp.y - tp.y) <= allowedRange
-              : false;
+              : !definition.useRange;
           }
           inRange = observed;
           if (!inRange) reasons.push('SKILL_OUT_OF_RANGE');
@@ -2099,9 +2205,20 @@
       }
 
       let activeCondition = false;
-      try {
-        activeCondition = !!(character.s && character.s[definition.id]);
-      } catch (_) {}
+      const conditionId = definition.condition;
+      if (conditionId) {
+        try {
+          const holder = rawTarget && definition.target ? rawTarget : character;
+          activeCondition = !!(holder && holder.s && holder.s[conditionId]);
+        } catch (_) {}
+      }
+      if (definition.exclusiveCondition) {
+        try {
+          if (character.s && character.s[definition.exclusiveCondition]) {
+            reasons.push('SKILL_EXCLUSIVE_CONDITION_ACTIVE');
+          }
+        } catch (_) {}
+      }
 
       return {
         available: true,
@@ -2110,6 +2227,7 @@
         definition,
         reasons,
         cooldown,
+        cooldownSource,
         canUse,
         inRange,
         activeCondition
@@ -3870,11 +3988,77 @@
   const SUPPORTED_CLASSES = Object.freeze(['warrior', 'ranger', 'mage', 'priest', 'rogue', 'paladin']);
   const CLASS_SKILLS = Object.freeze({
     warrior: Object.freeze(['hardshell', 'charge', 'taunt', 'warcry']),
-    ranger: Object.freeze(['huntersmark', 'supershot']),
-    mage: Object.freeze(['burst']),
-    priest: Object.freeze(['curse', 'darkblessing']),
-    rogue: Object.freeze(['invis', 'mentalburst', 'quickpunch']),
-    paladin: Object.freeze(['selfheal', 'smash'])
+    ranger: Object.freeze(['huntersmark', 'poisonarrow', 'piercingshot', 'supershot']),
+    mage: Object.freeze(['entangle', 'arcane_needle', 'burst']),
+    priest: Object.freeze(['phaseout', 'curse', 'darkblessing']),
+    rogue: Object.freeze(['invis', 'pcoat', 'mentalburst', 'quickstab', 'quickpunch']),
+    paladin: Object.freeze(['selfheal', 'shield_slam', 'purify', 'smash'])
+  });
+
+  // Complete class-skill ownership map. A skill missing from the H6 rotation is
+  // intentional only when another bounded module owns it or its semantics are
+  // unsafe/context-specific for autonomous farming.
+  const CLASS_SKILL_POLICY = Object.freeze({
+    warrior: Object.freeze({
+      h6: Object.freeze(['hardshell', 'charge', 'taunt', 'warcry']),
+      h8: Object.freeze(['cleave', 'stomp']),
+      passive: Object.freeze([]),
+      excluded: Object.freeze({
+        dash: 'MOVEMENT_OWNERSHIP_H4',
+        agitate: 'UNBOUNDED_MASS_AGGRO'
+      })
+    }),
+    ranger: Object.freeze({
+      h6: Object.freeze(['huntersmark', 'poisonarrow', 'piercingshot', 'supershot']),
+      h8: Object.freeze(['3shot', '5shot']),
+      passive: Object.freeze([]),
+      excluded: Object.freeze({
+        track: 'OBSERVATION_UTILITY_NOT_COMBAT_ACTION',
+        '4fingers': 'PLAYER_ONLY_HOSTILE_PVP'
+      })
+    }),
+    mage: Object.freeze({
+      h6: Object.freeze(['entangle', 'arcane_needle', 'burst']),
+      h7: Object.freeze(['energize', 'reflection']),
+      h8: Object.freeze(['cburst']),
+      passive: Object.freeze([]),
+      excluded: Object.freeze({
+        blink: 'MOVEMENT_OWNERSHIP_H4',
+        magiport: 'REMOTE_PLAYER_MOVEMENT_REQUIRES_EXPLICIT_INTENT',
+        light: 'PVP_ANTI_STEALTH_CONTEXT_ONLY',
+        alchemy: 'DESTRUCTIVE_ITEM_CONVERSION'
+      })
+    }),
+    priest: Object.freeze({
+      h6: Object.freeze(['phaseout', 'curse', 'darkblessing']),
+      h7: Object.freeze(['heal', 'partyheal', 'revive']),
+      passive: Object.freeze([]),
+      excluded: Object.freeze({
+        absorb: 'AGGRO_TRANSFER_REQUIRES_EXPLICIT_SAFETY_MODEL'
+      })
+    }),
+    rogue: Object.freeze({
+      h6: Object.freeze(['invis', 'pcoat', 'mentalburst', 'quickstab', 'quickpunch']),
+      h7: Object.freeze(['rspeed']),
+      h8: Object.freeze(['fanofknives']),
+      passive: Object.freeze(['stack']),
+      excluded: Object.freeze({
+        pickpocket: 'PLAYER_PVP_THEFT',
+        shadowstrike: 'RANDOM_REMOTE_ENEMY_TARGET'
+      })
+    }),
+    paladin: Object.freeze({
+      h6: Object.freeze(['selfheal', 'shield_slam', 'purify', 'smash']),
+      passive: Object.freeze([]),
+      excluded: Object.freeze({
+        mshield: 'PERSISTENT_TOGGLE_REQUIRES_DEFENSE_POLICY',
+        aether_shield: 'PERSISTENT_TOGGLE_REQUIRES_DEFENSE_POLICY',
+        cleansing_light: 'ALLY_CLEANSE_REQUIRES_CONDITION_CLASSIFICATION',
+        guardians_oath: 'DAMAGE_TRANSFER_REQUIRES_SURVIVABILITY_MODEL',
+        beacon_of_resolve: 'GROUP_BUFF_REQUIRES_ENCOUNTER_POLICY',
+        paladin_aura: 'MULTI_STATE_AURA_REQUIRES_GROUP_POLICY'
+      })
+    })
   });
 
   function finite(value) {
@@ -3942,7 +4126,10 @@
         spamSkips: 0,
         overkillSkips: 0,
         unavailableSkips: 0,
-        activeConditionSkips: 0
+        activeConditionSkips: 0,
+        requirementSkips: 0,
+        equipmentSkips: 0,
+        consumableSkips: 0
       };
     }
 
@@ -4040,6 +4227,11 @@
         if (reasons.includes('SKILL_COOLDOWN') || reasons.includes('SKILL_CAN_USE_FALSE')) this.metrics.cooldownSkips += 1;
         if (reasons.includes('SKILL_MP_TOO_LOW')) this.metrics.mpSkips += 1;
         if (reasons.includes('SKILL_OUT_OF_RANGE') || reasons.includes('SKILL_TARGET_UNAVAILABLE')) this.metrics.rangeSkips += 1;
+        if (reasons.some(reason => String(reason).startsWith('SKILL_REQUIREMENT_'))) this.metrics.requirementSkips += 1;
+        if (reasons.some(reason => ['SKILL_WEAPON_TYPE_MISMATCH', 'SKILL_OFFHAND_TYPE_MISMATCH', 'SKILL_SLOT_REQUIREMENT_MISSING'].includes(reason))) {
+          this.metrics.equipmentSkips += 1;
+        }
+        if (reasons.includes('SKILL_CONSUMABLE_MISSING')) this.metrics.consumableSkips += 1;
         return null;
       }
 
@@ -4079,6 +4271,15 @@
       const distance = finite(target.distance);
       const range = Math.max(1, finite(character.range) || 40);
       const longFight = targetHp != null && targetHp >= attack * this.config.longFightHpFactor;
+      let targetDefinition = null;
+      try {
+        targetDefinition = this.game && typeof this.game.monsterDefinition === 'function' && target && target.mtype
+          ? this.game.monsterDefinition(target.mtype)
+          : null;
+      } catch (_) {}
+      const targetArmor = finite(targetDefinition && targetDefinition.armor);
+      const targetResistance = finite(targetDefinition && targetDefinition.resistance);
+      const targetAttack = finite(target && target.attack);
 
       if (ctype === 'warrior') {
         if (hpRatio != null && hpRatio <= this.config.defensiveHpRatio) {
@@ -4128,9 +4329,27 @@
             kind: 'support',
             reason: 'RANGER_LONG_FIGHT_HUNTERSMARK',
             recastMs: 10000,
-            utility: 220
+            utility: 240
           });
           if (mark) return mark;
+        }
+        if (longFight && mpRatio != null && mpRatio >= 0.60) {
+          const poison = this._skillCandidate('poisonarrow', target, game, {
+            kind: 'damage',
+            reason: 'RANGER_LONG_FIGHT_POISON_ARROW',
+            recastMs: 1200,
+            utility: 210
+          });
+          if (poison) return poison;
+        }
+        if (targetArmor != null && targetArmor >= 200 && targetHp != null && targetHp > attack * 1.25) {
+          const piercing = this._skillCandidate('piercingshot', target, game, {
+            kind: 'damage',
+            reason: 'RANGER_HIGH_ARMOR_PIERCING_SHOT',
+            recastMs: 300,
+            utility: 200
+          });
+          if (piercing) return piercing;
         }
         if (targetHp != null && targetHp > Math.max(150, attack * 1.5)) {
           const shot = this._skillCandidate('supershot', target, game, {
@@ -4146,20 +4365,67 @@
       }
 
       if (ctype === 'mage') {
-        if (targetHp != null && targetHp > Math.max(100, attack * 1.3)) {
+        const dangerousLongFight = longFight && targetAttack != null && finite(character.maxHp) != null
+          && targetAttack >= Math.max(20, Number(character.maxHp) * 0.04);
+        if (dangerousLongFight && mpRatio != null && mpRatio >= 0.65) {
+          const entangle = this._skillCandidate('entangle', target, game, {
+            kind: 'support',
+            reason: 'MAGE_DANGEROUS_LONG_FIGHT_ENTANGLE',
+            recastMs: 38000,
+            utility: 260
+          });
+          if (entangle) return entangle;
+        }
+        if (targetResistance != null && targetResistance >= 250 && targetHp != null && targetHp > attack * 1.10) {
+          const needle = this._skillCandidate('arcane_needle', target, game, {
+            kind: 'damage',
+            reason: 'MAGE_HIGH_RESISTANCE_ARCANE_NEEDLE',
+            recastMs: 300,
+            utility: 210
+          });
+          if (needle) return needle;
+        }
+
+        // Mana Burst consumes the current mana pool. Use it as a bounded
+        // finisher only when the live MP-derived pure damage should kill the
+        // target; never dump all mana merely because a fight is long.
+        const burstDefinition = this.game && typeof this.game.skillDefinition === 'function'
+          ? this.game.skillDefinition('burst')
+          : null;
+        const burstRatio = finite(burstDefinition && burstDefinition.ratio) != null
+          ? finite(burstDefinition.ratio)
+          : finite(burstDefinition && burstDefinition.damageMultiplier);
+        const currentMp = finite(character.mp);
+        const estimatedBurstDamage = currentMp != null && burstRatio != null ? currentMp * burstRatio : null;
+        if (targetHp != null && estimatedBurstDamage != null
+            && targetHp > Math.max(80, attack * 0.90)
+            && targetHp <= estimatedBurstDamage
+            && mpRatio != null && mpRatio >= 0.45) {
           const burst = this._skillCandidate('burst', target, game, {
             kind: 'damage',
-            reason: 'MAGE_BURST_SAFE_DAMAGE',
-            recastMs: 5000,
-            utility: 180
+            reason: 'MAGE_BURST_KILL_SECURE',
+            recastMs: 5500,
+            utility: 220,
+            mpReserveRatio: 0
           });
           if (burst) return burst;
-        } else if (targetHp != null) {
+        } else if (targetHp != null && estimatedBurstDamage != null && targetHp < attack * 0.90) {
           this.metrics.overkillSkips += 1;
         }
       }
 
       if (ctype === 'priest') {
+        if (hpRatio != null && hpRatio <= 0.30) {
+          const phaseout = this._skillCandidate('phaseout', target, game, {
+            targeted: false,
+            kind: 'defensive',
+            reason: 'PRIEST_CRITICAL_HP_PHASEOUT',
+            recastMs: 4000,
+            utility: 340,
+            mpReserveRatio: 0.05
+          });
+          if (phaseout) return phaseout;
+        }
         if (longFight && mpRatio != null && mpRatio >= 0.80) {
           const blessing = this._skillCandidate('darkblessing', target, game, {
             targeted: false,
@@ -4192,20 +4458,37 @@
           });
           if (invis) return invis;
         }
+        if (longFight && mpRatio != null && mpRatio >= 0.75) {
+          const poisonCoat = this._skillCandidate('pcoat', target, game, {
+            targeted: false,
+            kind: 'support',
+            reason: 'ROGUE_LONG_FIGHT_POISON_COAT',
+            recastMs: 48000,
+            utility: 230
+          });
+          if (poisonCoat) return poisonCoat;
+        }
         if (targetHp != null && targetHp > Math.max(140, attack * 1.5)) {
           const burst = this._skillCandidate('mentalburst', target, game, {
             kind: 'damage',
             reason: 'ROGUE_MENTALBURST_SAFE_DAMAGE',
-            recastMs: 750,
+            recastMs: 850,
             utility: 190
           });
           if (burst) return burst;
         }
         if (targetHp != null && targetHp > Math.max(90, attack * 1.15)) {
+          const stab = this._skillCandidate('quickstab', target, game, {
+            kind: 'damage',
+            reason: 'ROGUE_QUICKSTAB_WEAPON_MATCH',
+            recastMs: 280,
+            utility: 165
+          });
+          if (stab) return stab;
           const punch = this._skillCandidate('quickpunch', target, game, {
             kind: 'damage',
-            reason: 'ROGUE_QUICKPUNCH_SAFE_DAMAGE',
-            recastMs: 300,
+            reason: 'ROGUE_QUICKPUNCH_WEAPON_MATCH',
+            recastMs: 280,
             utility: 150
           });
           if (punch) return punch;
@@ -4220,17 +4503,35 @@
             targeted: false,
             kind: 'defensive',
             reason: 'PALADIN_SELFHEAL_THRESHOLD',
-            recastMs: 1000,
+            recastMs: 1100,
             utility: 280,
             mpReserveRatio: 0.05
           });
           if (heal) return heal;
         }
+        if (targetHp != null && targetHp > Math.max(1800, attack * 4) && mpRatio != null && mpRatio >= 0.60) {
+          const slam = this._skillCandidate('shield_slam', target, game, {
+            kind: 'damage',
+            reason: 'PALADIN_SHIELD_SLAM_HEAVY_TARGET',
+            recastMs: 650,
+            utility: 230
+          });
+          if (slam) return slam;
+        }
+        if (targetHp != null && targetHp > Math.max(1200, attack * 3) && mpRatio != null && mpRatio >= 0.45) {
+          const purify = this._skillCandidate('purify', target, game, {
+            kind: 'damage',
+            reason: 'PALADIN_PURIFY_HEAVY_TARGET',
+            recastMs: 23000,
+            utility: 210
+          });
+          if (purify) return purify;
+        }
         if (targetHp != null && targetHp > Math.max(150, attack * 1.5)) {
           const smash = this._skillCandidate('smash', target, game, {
             kind: 'damage',
             reason: 'PALADIN_SMASH_SAFE_DAMAGE',
-            recastMs: 400,
+            recastMs: 350,
             utility: 170
           });
           if (smash) return smash;
@@ -4266,7 +4567,7 @@
       if (value.includes('disconnect') || value.includes('timeout') || value.includes('network')) return false;
       return [
         'cooldown', 'no_mp', 'mp', 'too_far', 'range', 'not_found', 'not_there', 'cant_use',
-        'cannot_use', 'level', 'weapon', 'requirements', 'disabled', 'stunned'
+        'cannot_use', 'level', 'weapon', 'requirements', 'disabled', 'stunned', 'immune', 'slot', 'consume'
       ].some(token => value.includes(token));
     }
 
@@ -4496,6 +4797,9 @@
         currentClass: ctype,
         supportedSkills: this.supportedSkills(ctype),
         liveSkills: this.liveSkillSummary(ctype),
+        skillPolicy: ctype && CLASS_SKILL_POLICY[String(ctype).toLowerCase()]
+          ? clone(CLASS_SKILL_POLICY[String(ctype).toLowerCase()])
+          : null,
         sessionId: this.sessionId,
         suspended: !!(this.sessionId && this.suspendedSessionId === this.sessionId),
         suspendedReason: this.suspendedReason,
@@ -4509,6 +4813,7 @@
   }
 
   ns.ClassSkillController = ClassSkillController;
+  ns.CLASS_SKILL_POLICY = CLASS_SKILL_POLICY;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
 
 
@@ -4523,11 +4828,11 @@
 
   const RELEVANT_SKILLS = Object.freeze({
     warrior: Object.freeze(['hardshell', 'charge', 'taunt', 'warcry', 'cleave', 'stomp']),
-    priest: Object.freeze(['heal', 'partyheal', 'revive', 'curse', 'darkblessing']),
-    ranger: Object.freeze(['huntersmark', 'supershot', '5shot', '3shot']),
-    mage: Object.freeze(['burst', 'cburst']),
-    rogue: Object.freeze(['invis', 'mentalburst', 'quickpunch', 'fanofknives']),
-    paladin: Object.freeze(['selfheal', 'smash']),
+    priest: Object.freeze(['heal', 'partyheal', 'revive', 'phaseout', 'curse', 'darkblessing']),
+    ranger: Object.freeze(['huntersmark', 'poisonarrow', 'piercingshot', 'supershot', '5shot', '3shot']),
+    mage: Object.freeze(['burst', 'cburst', 'entangle', 'arcane_needle', 'reflection']),
+    rogue: Object.freeze(['invis', 'pcoat', 'mentalburst', 'quickstab', 'quickpunch', 'fanofknives', 'rspeed']),
+    paladin: Object.freeze(['selfheal', 'shield_slam', 'purify', 'smash']),
     merchant: Object.freeze(['mluck'])
   });
 
@@ -5076,6 +5381,9 @@
         healsDispatched: 0,
         partyHealsDispatched: 0,
         revivesDispatched: 0,
+        energizesDispatched: 0,
+        reflectionsDispatched: 0,
+        speedBuffsDispatched: 0,
         supportConfirmed: 0,
         supportRejected: 0,
         supportUnknown: 0,
@@ -5279,39 +5587,108 @@
     _chooseSupport(snapshot) {
       if (!snapshot || !snapshot.coordinationEnabled) return null;
       const local = snapshot.ownedMembers.find(member => member.local);
-      if (!local || String(local.ctype || '').toLowerCase() !== 'priest') return null;
+      if (!local) return null;
       if (this.supportSuspended || this.pendingSupport || this.now() < this.supportBackoffUntil) return null;
 
-      const downed = snapshot.ownedMembers
-        .filter(member => !member.local && member.rip && member.visible)
-        .sort((a, b) => String(a.name).localeCompare(String(b.name)));
-      if (downed.length) {
-        const target = downed[0];
-        const readiness = this._supportReadiness('revive', target, true);
-        if (readiness && readiness.allowed) {
-          return { kind: 'revive', action: 'use_skill', args: ['revive', target.name], target, readiness };
+      const ctype = String(local.ctype || '').toLowerCase();
+
+      if (ctype === 'priest') {
+        const downed = snapshot.ownedMembers
+          .filter(member => !member.local && member.rip && member.visible)
+          .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+        if (downed.length) {
+          const target = downed[0];
+          const readiness = this._supportReadiness('revive', target, true);
+          if (readiness && readiness.allowed) {
+            return { kind: 'revive', action: 'use_skill', args: ['revive', target.name], target, readiness };
+          }
+        }
+
+        const injured = snapshot.ownedMembers
+          .filter(member => !member.rip && member.visible && member.hpRatio != null && member.hpRatio < 0.999)
+          .sort((a, b) => a.hpRatio - b.hpRatio);
+        const partyHealTargets = injured.filter(member => member.hpRatio <= this.config.partyHealHpRatio);
+        if (partyHealTargets.length >= this.config.partyHealMinMembers) {
+          const readiness = this.game.skillReadiness('partyheal');
+          if (readiness && readiness.allowed) {
+            return { kind: 'partyheal', action: 'use_skill', args: ['partyheal'], target: null, readiness };
+          }
+        }
+
+        const target = injured.find(member => member.hpRatio <= this.config.healHpRatio);
+        if (target) {
+          const readiness = this._supportReadiness('heal', target, false);
+          if (readiness && readiness.allowed && this.actions.available('heal')) {
+            const raw = this.game.playerReference(target.name);
+            if (raw) return { kind: 'heal', action: 'heal', args: [raw], target, readiness };
+          }
+        }
+        return null;
+      }
+
+      if (ctype === 'mage') {
+        const localMp = finite(local.mp);
+        const localMaxMp = finite(local.maxMp);
+        const reserve = localMaxMp != null ? Math.ceil(localMaxMp * 0.45) : null;
+        const transferable = localMp != null && reserve != null ? Math.max(0, localMp - reserve) : 0;
+
+        if (transferable > 0) {
+          const energyTarget = snapshot.ownedMembers
+            .filter(member => !member.local && !member.rip && member.visible
+              && finite(member.mp) != null && finite(member.maxMp) != null && finite(member.maxMp) > 0
+              && finite(member.mp) / finite(member.maxMp) < 0.35)
+            .sort((a, b) => (finite(a.mp) / finite(a.maxMp)) - (finite(b.mp) / finite(b.maxMp)))[0] || null;
+          if (energyTarget) {
+            const readiness = this._supportReadiness('energize', energyTarget, false);
+            const amount = Math.min(200, Math.max(1, Math.floor(transferable)));
+            if (readiness && readiness.allowed && readiness.activeCondition !== true && amount > 0) {
+              return {
+                kind: 'energize',
+                action: 'use_skill',
+                args: ['energize', energyTarget.name, amount],
+                target: energyTarget,
+                amount,
+                readiness
+              };
+            }
+          }
+        }
+
+        if (localMp != null && localMaxMp != null && localMaxMp > 0 && localMp / localMaxMp >= 0.65) {
+          const tank = snapshot.ownedMembers
+            .filter(member => !member.local && !member.rip && member.visible
+              && member.role === 'TANK' && member.targetId)
+            .sort((a, b) => (a.hpRatio == null ? 1 : a.hpRatio) - (b.hpRatio == null ? 1 : b.hpRatio))[0] || null;
+          if (tank) {
+            const readiness = this._supportReadiness('reflection', tank, false);
+            if (readiness && readiness.allowed && readiness.activeCondition !== true) {
+              return { kind: 'reflection', action: 'use_skill', args: ['reflection', tank.name], target: tank, readiness };
+            }
+          }
+        }
+        return null;
+      }
+
+      if (ctype === 'rogue') {
+        const localMp = finite(local.mp);
+        const localMaxMp = finite(local.maxMp);
+        if (localMp == null || localMaxMp == null || localMaxMp <= 0 || localMp / localMaxMp < 0.60) return null;
+        const targets = snapshot.ownedMembers
+          .filter(member => !member.rip && member.visible)
+          .sort((a, b) => {
+            if (a.local !== b.local) return a.local ? 1 : -1;
+            return String(a.name).localeCompare(String(b.name));
+          });
+        // Apply rspeed once per eligible owned member; live condition
+        // readiness prevents recasting on members that are already buffed.
+        for (const target of targets) {
+          const readiness = this._supportReadiness('rspeed', target, false);
+          if (readiness && readiness.allowed && readiness.activeCondition !== true) {
+            return { kind: 'rspeed', action: 'use_skill', args: ['rspeed', target.name], target, readiness };
+          }
         }
       }
 
-      const injured = snapshot.ownedMembers
-        .filter(member => !member.rip && member.visible && member.hpRatio != null && member.hpRatio < 0.999)
-        .sort((a, b) => a.hpRatio - b.hpRatio);
-      const partyHealTargets = injured.filter(member => member.hpRatio <= this.config.partyHealHpRatio);
-      if (partyHealTargets.length >= this.config.partyHealMinMembers) {
-        const readiness = this.game.skillReadiness('partyheal');
-        if (readiness && readiness.allowed) {
-          return { kind: 'partyheal', action: 'use_skill', args: ['partyheal'], target: null, readiness };
-        }
-      }
-
-      const target = injured.find(member => member.hpRatio <= this.config.healHpRatio);
-      if (target) {
-        const readiness = this._supportReadiness('heal', target, false);
-        if (readiness && readiness.allowed && this.actions.available('heal')) {
-          const raw = this.game.playerReference(target.name);
-          if (raw) return { kind: 'heal', action: 'heal', args: [raw], target, readiness };
-        }
-      }
       return null;
     }
 
@@ -5371,7 +5748,7 @@
         if (generation !== this.supportGeneration) return;
         if (!this.pendingSupport || this.pendingSupport.id !== pending.id) return;
         const reason = errorReason(error, 'PARTY_SUPPORT_PROMISE_REJECTED');
-        const known = /cooldown|no_mp|too_far|range|not_found|cant_use|cannot_use|level|disabled/i.test(reason);
+        const known = /cooldown|no_mp|too_far|range|not_found|cant_use|cannot_use|level|requirements|weapon|slot|consume|immune|disabled/i.test(reason);
         this._settleSupport(pending, known ? 'REJECTED' : 'UNKNOWN', error);
       }).catch(() => {});
     }
@@ -5390,6 +5767,9 @@
           if (decision.kind === 'heal') this.metrics.healsDispatched += 1;
           if (decision.kind === 'partyheal') this.metrics.partyHealsDispatched += 1;
           if (decision.kind === 'revive') this.metrics.revivesDispatched += 1;
+          if (decision.kind === 'energize') this.metrics.energizesDispatched += 1;
+          if (decision.kind === 'reflection') this.metrics.reflectionsDispatched += 1;
+          if (decision.kind === 'rspeed') this.metrics.speedBuffsDispatched += 1;
 
           const pending = {
             id: dispatch.id,
@@ -5414,6 +5794,9 @@
       if (decision.kind === 'heal') this.metrics.healsDispatched += 1;
       if (decision.kind === 'partyheal') this.metrics.partyHealsDispatched += 1;
       if (decision.kind === 'revive') this.metrics.revivesDispatched += 1;
+      if (decision.kind === 'energize') this.metrics.energizesDispatched += 1;
+      if (decision.kind === 'reflection') this.metrics.reflectionsDispatched += 1;
+      if (decision.kind === 'rspeed') this.metrics.speedBuffsDispatched += 1;
 
       const pending = {
         id: dispatch.id,
@@ -5476,7 +5859,7 @@
       const localClass = snapshot && snapshot.ownedMembers && snapshot.ownedMembers.find(member => member.local);
       const partyBuffSkills = [];
       if (localClass && this.game && typeof this.game.skillDefinition === 'function') {
-        const candidates = ['warcry', 'darkblessing', 'partyheal'];
+        const candidates = ['warcry', 'darkblessing', 'partyheal', 'energize', 'reflection', 'rspeed'];
         for (const id of candidates) {
           const definition = this.game.skillDefinition(id);
           if (definition && definition.classes.includes(String(localClass.ctype || '').toLowerCase()) && (definition.party || definition.multi || id !== 'partyheal')) {
@@ -10414,6 +10797,8 @@
       this.trainingMs = 0;
       this.lastTrainingTickMs = null;
       this.lastProfiles = [];
+      this.gearRegistry = new Map();
+      this.gearRegistrySource = new Map();
       this.lastProgression = null;
       this.lastTaskPlan = null;
       this.profileCacheKey = cleanText(options.profileCacheKey || 'albot:h28:account-profile-cache:v1', 200);
@@ -10483,42 +10868,106 @@
       return normalized ? this.profileCacheKey + ':' + encodeURIComponent(normalized) : null;
     }
 
+    _profileHasEquipment(profile) {
+      return !!(profile && profile.equipment && typeof profile.equipment === 'object'
+        && Object.values(profile.equipment).some(item => item && item.name));
+    }
+
+    _betterProfile(current, candidate) {
+      if (!current) return candidate ? clone(candidate) : null;
+      if (!candidate) return clone(current);
+      const currentHasEquipment = this._profileHasEquipment(current);
+      const candidateHasEquipment = this._profileHasEquipment(candidate);
+      if (candidateHasEquipment && !currentHasEquipment) return clone(candidate);
+      if (currentHasEquipment && !candidateHasEquipment) {
+        const merged = { ...clone(candidate), ...clone(current) };
+        if (finite(candidate.gold) != null && finite(current.gold) == null) merged.gold = finite(candidate.gold);
+        return merged;
+      }
+      const currentAt = finite(current.observedAtMs) || finite(current.cachedAtMs) || 0;
+      const candidateAt = finite(candidate.observedAtMs) || finite(candidate.cachedAtMs) || 0;
+      return candidateAt >= currentAt ? { ...clone(current), ...clone(candidate) } : { ...clone(candidate), ...clone(current) };
+    }
+
     _cachedProfile(name) {
       const normalized = cleanText(name || '', 120);
       if (!normalized) return null;
 
+      const inMemory = this.gearRegistry.get(normalized);
+      if (inMemory) return clone(inMemory);
+
+      const key = this._profileCacheEntryKey(normalized);
+      const direct = key ? this._storageRead(key, null) : null;
+      const legacy = this._cachedProfiles();
+      const localCached = this._betterProfile(
+        direct && typeof direct === 'object' && !Array.isArray(direct) ? direct : null,
+        legacy[normalized] && typeof legacy[normalized] === 'object' && !Array.isArray(legacy[normalized]) ? legacy[normalized] : null
+      );
+      if (localCached) {
+        this.gearRegistry.set(normalized, clone(localCached));
+        this.gearRegistrySource.set(normalized, 'BOT_SHARED_CACHE');
+        return clone(localCached);
+      }
+
+      // SSD/host state is optional fallback only. A host row must never shadow
+      // fresher bot-native cross-character state.
       try {
         const hosted = this.hostState && typeof this.hostState.profile === 'function'
           ? this.hostState.profile(normalized)
           : null;
-        if (hosted && typeof hosted === 'object' && !Array.isArray(hosted)) return hosted;
+        if (hosted && typeof hosted === 'object' && !Array.isArray(hosted)) {
+          this.gearRegistry.set(normalized, clone(hosted));
+          this.gearRegistrySource.set(normalized, 'HOST_FALLBACK');
+          return clone(hosted);
+        }
       } catch (_) {}
-
-      const key = this._profileCacheEntryKey(normalized);
-      const direct = key ? this._storageRead(key, null) : null;
-      if (direct && typeof direct === 'object' && !Array.isArray(direct)) return direct;
-      const legacy = this._cachedProfiles();
-      const row = legacy[normalized];
-      return row && typeof row === 'object' && !Array.isArray(row) ? row : null;
+      return null;
     }
 
-    _rememberProfile(profile) {
+    _rememberProfile(profile, source = 'BOT_NATIVE') {
       if (!profile || !profile.name) return false;
       const normalized = this._normalizeProfile(profile);
       if (!normalized) return false;
       if (!normalized.equipment && finite(normalized.gold) == null) return false;
       const key = this._profileCacheEntryKey(normalized.name);
       if (!key) return false;
+
+      const existing = this.gearRegistry.get(normalized.name) || null;
+      const merged = this._betterProfile(existing, normalized);
       const row = {
-        ...clone(normalized),
+        ...clone(merged || normalized),
         cachedAtMs: this.now()
       };
+      this.gearRegistry.set(normalized.name, clone(row));
+      this.gearRegistrySource.set(normalized.name, cleanText(source || 'BOT_NATIVE', 80) || 'BOT_NATIVE');
+
+      // Persist in the bot's own shared browser storage so a Merchant reload
+      // keeps the last cross-character gear snapshot without any external host.
+      const written = this._storageWrite(key, row);
+
+      // Optional mirror only; never authoritative over bot-native state.
       try {
         if (this.hostState && typeof this.hostState.persistProfile === 'function') {
           this.hostState.persistProfile(row);
         }
       } catch (_) {}
-      return this._storageWrite(key, row);
+      return written;
+    }
+
+    _ingestCrossWindowRegistry() {
+      if (!this.crossWindow || typeof this.crossWindow.status !== 'function') return 0;
+      let state = null;
+      try { state = this.crossWindow.status(); } catch (_) { return 0; }
+      const freshNames = new Set((state && Array.isArray(state.freshPeers) ? state.freshPeers : [])
+        .map(peer => cleanText(peer && peer.name || '', 120)).filter(Boolean));
+      const peers = state && Array.isArray(state.peers) ? state.peers : [];
+      let ingested = 0;
+      for (const peer of peers) {
+        if (!peer || !peer.name || !peer.profile) continue;
+        const source = freshNames.has(String(peer.name)) ? 'CROSS_WINDOW_FRESH' : 'CROSS_WINDOW_LAST_KNOWN';
+        if (this._rememberProfile({ ...peer.profile, name: peer.name }, source)) ingested += 1;
+      }
+      return ingested;
     }
 
     _cachedBankGold() {
@@ -10632,7 +11081,7 @@
     persistLocalProfile() {
       const profile = this.localProfile();
       if (!profile) return null;
-      this._rememberProfile(profile);
+      this._rememberProfile(profile, 'LOCAL_CHARACTER');
       return clone(profile);
     }
 
@@ -10669,6 +11118,10 @@
     }
 
     profiles() {
+      // V3-style account registry: consume all peer gear snapshots transported
+      // by H19, not only peers that are still fresh at this exact tick.
+      this._ingestCrossWindowRegistry();
+
       let roster = null;
       try { roster = this.roster && this.roster.refresh ? this.roster.refresh() : this.roster && this.roster.status ? this.roster.status() : null; } catch (_) {}
       const account = roster && Array.isArray(roster.accountCharacters) ? roster.accountCharacters : [];
@@ -10705,7 +11158,7 @@
         profile.peerFresh = true;
         profile.observedAtMs = finite(peer.observedAtMs) || profile.observedAtMs;
         byName.set(profile.name, profile);
-        this._rememberProfile(profile);
+        this._rememberProfile(profile, 'CROSS_WINDOW_FRESH');
       }
 
       const local = this.persistLocalProfile();
@@ -10981,12 +11434,34 @@
       return result;
     }
 
+    gearRegistryStatus() {
+      const rows = [...this.gearRegistry.entries()].map(([name, profile]) => ({
+        name,
+        ctype: profile && profile.ctype || null,
+        level: finite(profile && profile.level),
+        equipmentKnown: this._profileHasEquipment(profile),
+        equipmentSlots: profile && profile.equipment && typeof profile.equipment === 'object'
+          ? Object.keys(profile.equipment).length
+          : 0,
+        observedAtMs: finite(profile && profile.observedAtMs),
+        cachedAtMs: finite(profile && profile.cachedAtMs),
+        source: this.gearRegistrySource.get(name) || 'UNKNOWN'
+      })).sort((a, b) => a.name.localeCompare(b.name));
+      return {
+        schemaVersion: 1,
+        count: rows.length,
+        equipmentKnownCount: rows.filter(row => row.equipmentKnown).length,
+        rows
+      };
+    }
+
     status() {
       return {
         schemaVersion: 1,
         moduleActive: this.moduleActive,
         localTrainingMs: Math.max(0, Math.floor(this.trainingMs)),
         profiles: clone(this.lastProfiles),
+        gearRegistry: this.gearRegistryStatus(),
         progression: clone(this.lastProgression),
         taskPlan: clone(this.lastTaskPlan),
         config: clone(this.config)
@@ -13187,6 +13662,7 @@
         aoeConfirmed: 0,
         aoeRejected: 0,
         aoeUnknown: 0,
+        aoeReadinessBlocks: 0,
         maxPackObserved: 0
       };
     }
@@ -13484,6 +13960,49 @@
       return null;
     }
 
+    _aoeDiagnostics(character, pack, capacity) {
+      const ctype = String(character && character.ctype || '').toLowerCase();
+      return this.supportedAoeSkills(ctype).map(skillId => {
+        const definition = this.game && typeof this.game.skillDefinition === 'function'
+          ? this.game.skillDefinition(skillId)
+          : null;
+        const readiness = this._skillReady(skillId);
+        const range = definition ? this._effectiveSkillRange(definition, character) : null;
+        const inRange = definition && Array.isArray(pack)
+          ? this._targetsInSkillRange(pack, definition, character)
+          : [];
+        const minimumTargets = skillId === '5shot' ? 4
+          : skillId === '3shot' ? 2
+            : skillId === 'fanofknives' ? 3
+              : skillId === 'cburst' ? 2
+                : (skillId === 'cleave' || skillId === 'stomp' ? 3 : 1);
+        const hardCap = skillId === '5shot' ? 5
+          : skillId === '3shot' ? 3
+            : skillId === 'fanofknives' ? (finite(definition && definition.maxTargets) || 5)
+              : capacity;
+        const targetCount = Math.min(inRange.length, Math.max(0, Math.min(capacity || 0, hardCap || capacity || 0)));
+        const blocked = !definition
+          || !readiness
+          || readiness.allowed !== true
+          || targetCount < minimumTargets;
+        if (blocked) this.metrics.aoeReadinessBlocks += 1;
+        return {
+          skillId,
+          definitionAvailable: !!definition,
+          requiredLevel: definition && definition.level != null ? definition.level : null,
+          mpCost: definition && definition.mp != null ? definition.mp : null,
+          readinessAllowed: readiness ? readiness.allowed === true : false,
+          readinessReasons: readiness && Array.isArray(readiness.reasons) ? readiness.reasons.slice() : ['SKILL_UNAVAILABLE'],
+          range,
+          targetsInRange: inRange.length,
+          usableTargetCount: targetCount,
+          minimumTargets,
+          capacity,
+          blocked
+        };
+      });
+    }
+
     plan() {
       this.metrics.plans += 1;
       const game = this.game && typeof this.game.snapshot === 'function' ? this.game.snapshot() : null;
@@ -13605,6 +14124,7 @@
           hpRatio,
           capacity,
           aggregateAttack,
+          aoeDiagnostics: this._aoeDiagnostics(character, pack, capacity),
           pack
         });
       }
@@ -13640,7 +14160,7 @@
       const value = String(reason || '').toLowerCase();
       if (!value) return false;
       if (value.includes('disconnect') || value.includes('timeout') || value.includes('network')) return false;
-      return ['cooldown', 'no_mp', 'mp', 'too_far', 'range', 'not_found', 'cant_use', 'cannot_use', 'level', 'weapon', 'requirements', 'disabled', 'stunned', 'slot'].some(token => value.includes(token));
+      return ['cooldown', 'no_mp', 'mp', 'too_far', 'range', 'not_found', 'cant_use', 'cannot_use', 'level', 'weapon', 'requirements', 'disabled', 'stunned', 'slot', 'consume', 'immune'].some(token => value.includes(token));
     }
 
     _settle(pending, state, response) {
@@ -29613,7 +30133,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.48-h26';
+      this.version = options.version || '0.26.52-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -37767,7 +38287,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.48-h26',
+    version: '0.26.52-h26',
     bootCount,
     replacedPrevious: !!previous
   });
