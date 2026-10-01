@@ -399,3 +399,167 @@ test('H6 UI exposes class-skill status and one-click test remains the primary wo
   assert.match(ui, /Anti-Spam Skips/);
   assert.match(ui, /Test starten/);
 });
+
+
+test('H32 blocks Rogue mentalburst unless the live 64 INT requirement is met', async t => {
+  const low = await startController({
+    ctype: 'rogue', level: 60, int: 40, mp: 1000, maxMp: 1000,
+    targetX: 50, targetHp: 500, attack: 100
+  });
+  const high = await startController({
+    ctype: 'rogue', level: 60, int: 64, mp: 1000, maxMp: 1000,
+    targetX: 50, targetHp: 500, attack: 100
+  });
+  t.after(async () => {
+    for (const env of [low, high]) {
+      try { env.ctx.ALBot.combat.stop('TEST_CLEANUP'); } catch (_) {}
+      try { await env.ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {}
+    }
+  });
+
+  const blocked = low.ctx.ALBot.__runtime.game.skillReadiness('mentalburst', 'm1');
+  assert.equal(blocked.allowed, false);
+  assert.ok(blocked.reasons.includes('SKILL_REQUIREMENT_INT_TOO_LOW'));
+  assert.notEqual(low.ctx.ALBot.classSkills.preview('m1')?.skillId, 'mentalburst');
+
+  const allowed = high.ctx.ALBot.__runtime.game.skillReadiness('mentalburst', 'm1');
+  assert.equal(allowed.allowed, true);
+  assert.equal(high.ctx.ALBot.classSkills.preview('m1').skillId, 'mentalburst');
+});
+
+test('H32 Rogue quick skills follow the actually equipped weapon type', async t => {
+  const dagger = await startController({
+    ctype: 'rogue', level: 60, int: 40, mp: 1000, maxMp: 1000,
+    targetX: 30, targetHp: 200, attack: 100,
+    slots: { mainhand: { name: 'dagger' } }
+  });
+  const fist = await startController({
+    ctype: 'rogue', level: 60, int: 40, mp: 1000, maxMp: 1000,
+    targetX: 30, targetHp: 200, attack: 100,
+    slots: { mainhand: { name: 'fist' } }
+  });
+  t.after(async () => {
+    for (const env of [dagger, fist]) {
+      try { await env.ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {}
+    }
+  });
+
+  assert.equal(dagger.ctx.ALBot.__runtime.game.skillReadiness('quickstab', 'm1').allowed, true);
+  assert.ok(dagger.ctx.ALBot.__runtime.game.skillReadiness('quickpunch', 'm1').reasons.includes('SKILL_WEAPON_TYPE_MISMATCH'));
+  assert.equal(dagger.ctx.ALBot.classSkills.preview('m1').skillId, 'quickstab');
+
+  assert.equal(fist.ctx.ALBot.__runtime.game.skillReadiness('quickpunch', 'm1').allowed, true);
+  assert.ok(fist.ctx.ALBot.__runtime.game.skillReadiness('quickstab', 'm1').reasons.includes('SKILL_WEAPON_TYPE_MISMATCH'));
+  assert.equal(fist.ctx.ALBot.classSkills.preview('m1').skillId, 'quickpunch');
+});
+
+test('H32 Ranger multi-shot readiness honors level, bow and shared attack cooldown', async t => {
+  const r59 = await startController({
+    ctype: 'ranger', level: 59, mp: 1000, maxMp: 1000,
+    slots: { mainhand: { name: 'bow' } }
+  });
+  const r60 = await startController({
+    ctype: 'ranger', level: 60, mp: 1000, maxMp: 1000,
+    slots: { mainhand: { name: 'bow' } }
+  });
+  t.after(async () => {
+    for (const env of [r59, r60]) {
+      try { await env.ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {}
+    }
+  });
+
+  const low = r59.ctx.ALBot.__runtime.game.skillReadiness('3shot');
+  assert.equal(low.allowed, false);
+  assert.ok(low.reasons.includes('SKILL_LEVEL_TOO_LOW'));
+
+  const ready = r60.ctx.ALBot.__runtime.game.skillReadiness('3shot');
+  assert.equal(ready.allowed, true);
+
+  r60.cooldowns.set('attack', Date.now() + 5000);
+  const shared = r60.ctx.ALBot.__runtime.game.skillReadiness('3shot');
+  assert.equal(shared.allowed, false);
+  assert.ok(shared.reasons.includes('SKILL_COOLDOWN'));
+  assert.equal(shared.cooldownSource, 'attack');
+
+  const five = r60.ctx.ALBot.__runtime.game.skillReadiness('5shot');
+  assert.equal(five.allowed, false);
+  assert.ok(five.reasons.includes('SKILL_LEVEL_TOO_LOW'));
+});
+
+test('H32 consumable and equipment-gated skills fail closed before dispatch', async t => {
+  const noItems = await startController({
+    ctype: 'mage', level: 90, mp: 3000, maxMp: 3000,
+    slots: { mainhand: { name: 'wand' } }
+  });
+  const rogue = await startController({
+    ctype: 'rogue', level: 70, mp: 2000, maxMp: 2000,
+    slots: { mainhand: { name: 'dagger' }, belt: { name: 'knifebelt' } },
+    items: [{ name: 'poison', q: 0 }]
+  });
+  const paladin = await startController({
+    ctype: 'paladin', level: 80, mp: 3000, maxMp: 3000,
+    slots: { mainhand: { name: 'mace' } }
+  });
+  t.after(async () => {
+    for (const env of [noItems, rogue, paladin]) {
+      try { await env.ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {}
+    }
+  });
+
+  const entangle = noItems.ctx.ALBot.__runtime.game.skillReadiness('entangle', 'm1');
+  assert.equal(entangle.allowed, false);
+  assert.ok(entangle.reasons.includes('SKILL_CONSUMABLE_MISSING'));
+  assert.equal(noItems.ctx.ALBot.__runtime.game.skillReadiness('arcane_needle', 'm1').allowed, true);
+
+  const poison = rogue.ctx.ALBot.__runtime.game.skillReadiness('pcoat');
+  assert.equal(poison.allowed, false);
+  assert.ok(poison.reasons.includes('SKILL_CONSUMABLE_MISSING'));
+  assert.equal(rogue.ctx.ALBot.__runtime.game.skillReadiness('fanofknives').allowed, true);
+
+  const slam = paladin.ctx.ALBot.__runtime.game.skillReadiness('shield_slam', 'm1');
+  assert.equal(slam.allowed, false);
+  assert.ok(slam.reasons.includes('SKILL_OFFHAND_TYPE_MISMATCH'));
+  assert.equal(paladin.ctx.ALBot.__runtime.game.skillReadiness('smash', 'm1').allowed, true);
+});
+
+test('H32 Mage Mana Burst is a kill-secure action instead of an unconditional mana dump', async t => {
+  const tooHealthy = await startController({
+    ctype: 'mage', level: 80, mp: 800, maxMp: 800,
+    targetHp: 500, attack: 100, targetX: 50
+  });
+  const killable = await startController({
+    ctype: 'mage', level: 80, mp: 800, maxMp: 800,
+    targetHp: 400, attack: 100, targetX: 50
+  });
+  t.after(async () => {
+    for (const env of [tooHealthy, killable]) {
+      try { await env.ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {}
+    }
+  });
+
+  assert.equal(tooHealthy.ctx.ALBot.classSkills.preview('m1'), null);
+  const preview = killable.ctx.ALBot.classSkills.preview('m1');
+  assert.ok(preview);
+  assert.equal(preview.skillId, 'burst');
+  assert.equal(preview.reason, 'MAGE_BURST_KILL_SECURE');
+});
+
+test('H32 known skill immunity is rejected without suspending the combat session skills', async t => {
+  const { ctx, calls } = await startController({
+    ctype: 'priest', level: 60, mp: 1000, maxMp: 1000,
+    targetHp: 1000, attack: 100, targetX: 50,
+    rejectSkill: 'curse', rejectSkillReason: 'skill_immune'
+  });
+  t.after(async () => {
+    try { ctx.ALBot.combat.stop('TEST_CLEANUP'); } catch (_) {}
+    try { await ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {}
+  });
+
+  assert.equal(ctx.ALBot.combat.start({ owner: 'h32-priest-immune', maxAttack: 200, minMpRatio: 0 }).accepted, true);
+  await sleep(700);
+  const state = ctx.ALBot.classSkills.status();
+  assert.equal(state.suspended, false);
+  assert.equal(state.metrics.unknown, 0);
+  assert.ok(state.metrics.rejected >= 1);
+  assert.equal(calls.skills.filter(row => row.skill === 'curse').length, 1);
+});
