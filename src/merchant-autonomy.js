@@ -1747,12 +1747,14 @@
 
     status() {
       const cooldownUntil = this._merritCooldownUntil();
-      const selected = this.lastPlan && this.lastPlan.selected || null;
+      const movement = this._movementStatus();
+      const ownedMovement = !!(movement && movement.activeOrder
+        && String(movement.activeOrder.owner || '').startsWith('merchant-autonomy'));
       const activeExclusive = !!(this.pending && this.pending.exclusive === true)
         || !!this.childWork
         || !!this.merritSession
-        || !!(selected && selected.exclusive === true
-          && ['MERRIT_SETTLE', 'MERRIT_WAIT', 'MERRIT_TRAVELING', 'GATHER_TRAVELING', 'PONTY_TRAVELING'].includes(selected.kind));
+        || !!this.gatherRestore
+        || ownedMovement;
       return {
         schemaVersion: 1,
         moduleActive: this.moduleActive,
