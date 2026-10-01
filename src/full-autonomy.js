@@ -35,6 +35,7 @@
         logisticsProbeMs: 30000,
         standProbeMs: 60000,
         autoManageMerchantStand: true,
+        autoManageMerchantWork: true,
         selectionStabilityMs: 12000,
         rotationCooldownMs: 45000,
         lifecycleMaxActions: 20,
@@ -52,6 +53,7 @@
       this.tickResourceId = null;
       this.lifecycleArmed = false;
       this.standManagedByFullAutonomy = false;
+      this.merchantWorkManagedByFullAutonomy = false;
     }
 
     start(context = {}) {
@@ -82,6 +84,7 @@
         this.config.standProbeMs = Math.max(15000, Math.min(600000, Math.floor(Number(options.standProbeMs) || 60000)));
       }
       if (options.autoManageMerchantStand != null) this.config.autoManageMerchantStand = options.autoManageMerchantStand === true;
+      if (options.autoManageMerchantWork != null) this.config.autoManageMerchantWork = options.autoManageMerchantWork === true;
       if (options.selectionStabilityMs != null) {
         this.config.selectionStabilityMs = Math.max(3000, Math.min(120000, Math.floor(Number(options.selectionStabilityMs) || 12000)));
       }
@@ -162,6 +165,10 @@
         if (this.standManagedByFullAutonomy && runtime.merchantStand && typeof runtime.merchantStand.configure === 'function') {
           try { runtime.merchantStand.configure({ autoManage: false }); } catch (_) {}
         }
+        if (this.merchantWorkManagedByFullAutonomy && runtime.merchantAutonomy
+            && typeof runtime.merchantAutonomy.configure === 'function') {
+          try { runtime.merchantAutonomy.configure({ autoManage: false }); } catch (_) {}
+        }
       }
       if (this.tickResourceId && this.scope && typeof this.scope.cancel === 'function') {
         try { this.scope.cancel(this.tickResourceId, reason); } catch (_) {}
@@ -175,6 +182,7 @@
       this.desiredSource = null;
       this.lifecycleArmed = false;
       this.standManagedByFullAutonomy = false;
+      this.merchantWorkManagedByFullAutonomy = false;
       this.started = { lifecycle: false, farming: false, economy: false, partyLogistics: false, encounters: false };
       this.lastDecision = { at: new Date().toISOString(), type: 'STOP', reason: cleanText(reason, 200) };
       return this.status();
@@ -757,54 +765,130 @@
       const economy = this.runtime.economy;
       const logistics = this.runtime.partyLogistics;
       const stand = this.runtime.merchantStand || null;
-      if (stand && this.config.autoManageMerchantStand === true && typeof stand.status === 'function' && typeof stand.configure === 'function') {
+      const work = this.runtime.merchantAutonomy || null;
+
+      if (stand && this.config.autoManageMerchantStand === true
+          && typeof stand.status === 'function' && typeof stand.configure === 'function') {
         const before = stand.status();
         if (before && before.autoManage !== true) {
           stand.configure({ autoManage: true });
           this.standManagedByFullAutonomy = true;
         }
       }
+      if (work && this.config.autoManageMerchantWork === true
+          && typeof work.status === 'function' && typeof work.configure === 'function') {
+        const before = work.status();
+        if (before && before.autoManage !== true) {
+          work.configure({ autoManage: true });
+          this.merchantWorkManagedByFullAutonomy = true;
+        }
+      }
+
       const economyStatus = economy.status();
       const logisticsStatus = logistics.status();
       let standStatus = stand && typeof stand.status === 'function' ? stand.status() : null;
+      let workStatus = work && typeof work.status === 'function' ? work.status() : null;
       if (economyStatus.suspendedReason || logisticsStatus.suspendedReason
-          || (standStatus && standStatus.autoManage && standStatus.suspendedReason)) {
+          || (standStatus && standStatus.autoManage && standStatus.suspendedReason)
+          || (workStatus && workStatus.autoManage && workStatus.suspendedReason)) {
         return {
           ok: false,
           reason: economyStatus.suspendedReason
             || logisticsStatus.suspendedReason
             || standStatus && standStatus.suspendedReason
+            || workStatus && workStatus.suspendedReason
             || 'FULL_AUTONOMY_MERCHANT_SUSPENDED'
         };
       }
 
-      const now = Date.now();
-
-      // An already-started stand mutation owns the Merchant until it reaches live evidence.
-      if (standStatus && standStatus.autoManage && standStatus.pending) {
-        const currentEconomy = economy.status();
-        const currentLogistics = logistics.status();
-        if (currentEconomy.currentAction || currentLogistics.currentAction) {
-          return { ok: false, reason: 'FULL_AUTONOMY_MERCHANT_STAND_OWNERSHIP_CONFLICT' };
-        }
-        if (this.started.economy && currentEconomy.autonomyEnabled) {
-          try { economy.stopAutonomy('FULL_AUTONOMY_MERCHANT_STAND_PENDING'); } catch (_) {}
+      const stopEconomy = reason => {
+        const status = economy.status();
+        if (status.currentAction) return false;
+        if (this.started.economy && status.autonomyEnabled) {
+          try { economy.stopAutonomy(reason); } catch (_) {}
           this.started.economy = false;
         }
-        if (this.started.partyLogistics && currentLogistics.autonomyEnabled) {
-          try { logistics.stopAutonomy('FULL_AUTONOMY_MERCHANT_STAND_PENDING'); } catch (_) {}
+        return true;
+      };
+      const stopLogistics = reason => {
+        const status = logistics.status();
+        if (status.currentAction) return false;
+        if (this.started.partyLogistics && status.autonomyEnabled) {
+          try { logistics.stopAutonomy(reason); } catch (_) {}
           this.started.partyLogistics = false;
         }
+        return true;
+      };
+      const currentOwner = () => {
+        const e = economy.status();
+        if (e.currentAction) return { ok: true, merchant: true, owner: 'economy', plan: clone(e.currentAction) };
+        const l = logistics.status();
+        if (l.currentAction) return { ok: true, merchant: true, owner: 'party-logistics', plan: clone(l.currentAction) };
+        return null;
+      };
+
+      const now = Date.now();
+
+      // Finish an already-dispatched stand mutation before handing ownership away.
+      if (standStatus && standStatus.autoManage && standStatus.pending) {
+        const owner = currentOwner();
+        if (owner) return owner;
+        stopEconomy('FULL_AUTONOMY_MERCHANT_STAND_PENDING');
+        stopLogistics('FULL_AUTONOMY_MERCHANT_STAND_PENDING');
         const step = stand.tick();
         standStatus = stand.status();
         if (standStatus.suspendedReason) return { ok: false, reason: standStatus.suspendedReason };
         return { ok: true, merchant: true, owner: 'merchant-stand', plan: clone(step) };
       }
 
-      const logisticsActive = logisticsStatus.autonomyEnabled === true;
+      // Once Merchant Work owns movement or a settlement, H11, stand repricing,
+      // logistics and Economy stay out until that work reaches live evidence.
+      workStatus = work && typeof work.status === 'function' ? work.status() : null;
+      if (workStatus && workStatus.autoManage && workStatus.exclusive === true) {
+        const owner = currentOwner();
+        if (owner) return owner;
+        stopEconomy('FULL_AUTONOMY_MERCHANT_WORK_ACTIVE');
+        stopLogistics('FULL_AUTONOMY_MERCHANT_WORK_ACTIVE');
+        const step = work.tick({ backgroundAllowed: true });
+        workStatus = work.status();
+        if (workStatus.suspendedReason) return { ok: false, reason: workStatus.suspendedReason };
+        return { ok: true, merchant: true, owner: 'merchant-autonomy', plan: clone(step) };
+      }
+
+      // Safety, Merrit, and an Economy speed pre-buff are foreground Merchant work.
+      let foregroundPlan = null;
+      if (work && workStatus && workStatus.autoManage && typeof work.plan === 'function') {
+        try { foregroundPlan = work.plan({ backgroundAllowed: false }); } catch (_) {}
+      }
+      const foreground = foregroundPlan && foregroundPlan.state === 'READY'
+        ? foregroundPlan.selected
+        : null;
+      if (foreground) {
+        const priorityClass = String(foreground.priorityClass || '');
+        const e = economy.status();
+        const l = logistics.status();
+        if (e.currentAction || l.currentAction) return currentOwner();
+
+        const mayPreemptIdleOwners = priorityClass === 'SAFETY' || priorityClass === 'MERRIT';
+        const economyPrebuffReady = priorityClass === 'ECONOMY_PREBUFF'
+          && e.autonomyEnabled !== true && l.autonomyEnabled !== true;
+        if (mayPreemptIdleOwners || economyPrebuffReady) {
+          if (mayPreemptIdleOwners) {
+            stopEconomy('FULL_AUTONOMY_MERCHANT_FOREGROUND_WORK');
+            stopLogistics('FULL_AUTONOMY_MERCHANT_FOREGROUND_WORK');
+          }
+          const step = work.tick({ backgroundAllowed: false });
+          workStatus = work.status();
+          if (workStatus.suspendedReason) return { ok: false, reason: workStatus.suspendedReason };
+          return { ok: true, merchant: true, owner: 'merchant-autonomy', plan: clone(step) };
+        }
+      }
+
+      const logisticsActive = logistics.status().autonomyEnabled === true;
       if (logisticsActive) {
+        const status = logistics.status();
         const plan = logistics.plan();
-        if (!logisticsStatus.currentAction && (!plan || plan.state !== 'READY')) {
+        if (!status.currentAction && (!plan || plan.state !== 'READY')) {
           if (this.started.partyLogistics) {
             try { logistics.stopAutonomy('FULL_AUTONOMY_LOGISTICS_IDLE'); } catch (_) {}
             this.started.partyLogistics = false;
@@ -830,6 +914,7 @@
           economyNow = economy.status();
         }
       }
+
       if (now - this.lastLogisticsProbeAtMs >= this.config.logisticsProbeMs && !economyNow.currentAction) {
         this.lastLogisticsProbeAtMs = now;
         const wasEconomyOwned = this.started.economy && economyNow.autonomyEnabled === true;
@@ -848,7 +933,7 @@
         }
       }
 
-      // Auto-stand is opt-in. Probe it in a bounded window so it never races Economy.
+      // Normal stand management remains above background gathering/market work.
       standStatus = stand && typeof stand.status === 'function' ? stand.status() : null;
       const economyBeforeStand = economy.status();
       const logisticsBeforeStand = logistics.status();
@@ -873,12 +958,28 @@
       const currentEconomy = economy.status();
       const currentLogistics = logistics.status();
       let economyPlan = null;
+      let noSafeEconomyAction = false;
       if (!currentLogistics.autonomyEnabled && !currentLogistics.currentAction && !currentEconomy.autonomyEnabled) {
         try { economyPlan = typeof economy.plan === 'function' ? economy.plan() : null; } catch (_) {}
-        const noSafeEconomyAction = !!(economyPlan
+        noSafeEconomyAction = !!(economyPlan
           && economyPlan.state === 'IDLE'
           && economyPlan.reason === 'H17_NO_SAFE_ECONOMY_ACTION'
           && !economyPlan.selected);
+
+        // Ponty, Giveaways, useful wishlists and Fishing/Mining are free-time work.
+        if (noSafeEconomyAction && work && typeof work.plan === 'function') {
+          let backgroundPlan = null;
+          try { backgroundPlan = work.plan({ backgroundAllowed: true }); } catch (_) {}
+          if (backgroundPlan && ['READY', 'PENDING', 'CHILD_ACTIVE'].includes(String(backgroundPlan.state || ''))) {
+            const step = work.tick({ backgroundAllowed: true });
+            workStatus = work.status();
+            if (workStatus.suspendedReason) return { ok: false, reason: workStatus.suspendedReason };
+            if (step && String(step.state || '') !== 'IDLE') {
+              return { ok: true, merchant: true, owner: 'merchant-autonomy', plan: clone(step) };
+            }
+          }
+        }
+
         if (!noSafeEconomyAction) {
           const started = economy.startAutonomy({ maxActions: this.config.economyMaxActions });
           if (started && started.accepted === true) this.started.economy = true;
@@ -889,6 +990,7 @@
           this.started.economy = false;
         }
       }
+
       return {
         ok: true,
         merchant: true,
