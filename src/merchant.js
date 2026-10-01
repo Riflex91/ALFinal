@@ -28,6 +28,7 @@
       this.logger = options.logger || null;
       this.game = options.game || null;
       this.actions = options.actions || null;
+      this.classSkills = options.classSkills || null;
       this.roster = options.roster || null;
       this.movement = options.movement || null;
       this.inventory = options.inventory || null;
@@ -477,6 +478,10 @@
 
     _dispatchMluck(target) {
       if (!target || !target.name) return { accepted: false, reason: 'H11_MLUCK_TARGET_UNAVAILABLE' };
+      if (this.classSkills && typeof this.classSkills.isSkillEnabled === 'function'
+          && this.classSkills.isSkillEnabled('mluck', 'merchant') !== true) {
+        return { accepted: false, reason: 'H11_MLUCK_DISABLED_BY_SKILL_POLICY' };
+      }
       const claim = this._claimTarget(target.name, 'MLUCK');
       if (!claim.ok) return { accepted: false, reason: claim.reason };
       const condition = this.game && typeof this.game.playerCondition === 'function'
@@ -609,13 +614,15 @@
             delivery: clone(this.delivery)
           };
         } else {
-          const needsMluck = visibleFarmers.filter(row => {
+          const mluckEnabled = !this.classSkills || typeof this.classSkills.isSkillEnabled !== 'function'
+            || this.classSkills.isSkillEnabled('mluck', 'merchant') === true;
+          const needsMluck = mluckEnabled ? visibleFarmers.filter(row => {
             const condition = this.game && typeof this.game.playerCondition === 'function'
               ? this.game.playerCondition(row.name, 'mluck')
               : null;
             return !(condition && condition.active
               && (condition.remainingMs == null || condition.remainingMs > this.config.mluckRefreshMs));
-          });
+          }) : [];
           if (needsMluck.length) {
             needsMluck.sort((a, b) => {
               const ad = a.distance == null ? Number.POSITIVE_INFINITY : a.distance;
