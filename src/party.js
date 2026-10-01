@@ -39,6 +39,7 @@
       this.game = options.game;
       this.actions = options.actions;
       this.roster = options.roster;
+      this.classSkills = options.classSkills || null;
       this.now = typeof options.now === 'function' ? options.now : () => Date.now();
       this.config = {
         tickMs: Math.max(100, Math.min(2000, Number(options.tickMs) || 250)),
@@ -276,6 +277,8 @@
     }
 
     _supportReadiness(skillId, member, allowDead = false) {
+      if (this.classSkills && typeof this.classSkills.isSkillEnabled === 'function'
+          && this.classSkills.isSkillEnabled(skillId) !== true) return null;
       if (!this.game || typeof this.game.skillReadiness !== 'function') return null;
       return this.game.skillReadiness(skillId, member && member.name || null, { allowDeadTarget: allowDead });
     }
@@ -305,7 +308,7 @@
           .sort((a, b) => a.hpRatio - b.hpRatio);
         const partyHealTargets = injured.filter(member => member.hpRatio <= this.config.partyHealHpRatio);
         if (partyHealTargets.length >= this.config.partyHealMinMembers) {
-          const readiness = this.game.skillReadiness('partyheal');
+          const readiness = this._supportReadiness('partyheal', null, false);
           if (readiness && readiness.allowed) {
             return { kind: 'partyheal', action: 'use_skill', args: ['partyheal'], target: null, readiness };
           }
