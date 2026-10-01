@@ -165,6 +165,8 @@ test('H32 bot shared gear cache survives a Merchant controller restart without S
   assert.equal(row.equipmentKnown, true);
 });
 
+// Candidate handoff guard: this test intentionally proves external host state
+// cannot replace the bot-native cross-character registry.
 test('H32 incomplete host fallback cannot overwrite a bot-native gear snapshot', () => {
   const shared = new Map();
   const first = controllerFixture(shared, { withCrossWindow: true });
