@@ -15,6 +15,8 @@ function skillDefs() {
     taunt: { class: ['warrior'], mp: 40, cooldown: 3000, range: 200, target: true, hostile: true },
     hardshell: { class: ['warrior'], level: 60, mp: 480, cooldown: 16000, condition: 'hardshell' },
     warcry: { class: ['warrior'], level: 70, mp: 320, cooldown: 60000, range: 600, condition: 'warcry' },
+    cleave: { class: ['warrior'], level: 52, wtype: ['axe', 'scythe'], mp: 720, range: 160, cooldown: 1200, hostile: true },
+    stomp: { class: ['warrior'], level: 52, wtype: 'basher', mp: 120, range: 400, cooldown: 3200, condition: 'stunned', hostile: true },
 
     huntersmark: { class: ['ranger'], mp: 240, cooldown: 10000, range_multiplier: 3, range_bonus: 20, target: true, condition: 'marked', hostile: true, use_range: true },
     poisonarrow: { class: ['ranger'], wtype: ['bow', 'crossbow'], mp: 360, cooldown: 300, consume: 'poison', target: true, condition: 'poisoned', hostile: true, use_range: true },
@@ -109,6 +111,8 @@ function makeContext(options = {}) {
       fist: { type: 'weapon', wtype: 'fist' },
       dagger: { type: 'weapon', wtype: 'dagger' },
       mace: { type: 'weapon', wtype: 'mace' },
+      axe: { type: 'weapon', wtype: 'axe' },
+      basher: { type: 'weapon', wtype: 'basher' },
       shield: { type: 'shield', wtype: 'shield' },
       knifebelt: { type: 'belt' },
       poison: { type: 'material' },
@@ -129,7 +133,10 @@ function makeContext(options = {}) {
     },
     navigator: { userAgent: 'node-h6-test' },
     character,
-    entities: { [monster.id]: monster },
+    entities: {
+      [monster.id]: monster,
+      ...(options.extraEntities ? JSON.parse(JSON.stringify(options.extraEntities)) : {})
+    },
     ctarget: null,
     G,
     server_region: 'EU',
@@ -562,4 +569,48 @@ test('H32 known skill immunity is rejected without suspending the combat session
   assert.equal(state.metrics.unknown, 0);
   assert.ok(state.metrics.rejected >= 1);
   assert.equal(calls.skills.filter(row => row.skill === 'curse').length, 1);
+});
+
+
+test('H32 readiness covers AoE and party skill prerequisites across all combat classes', async t => {
+  const warrior = await startController({
+    ctype: 'warrior', level: 80, mp: 3000, maxMp: 3000,
+    slots: { mainhand: { name: 'axe' } }
+  });
+  const mage = await startController({ ctype: 'mage', level: 74, mp: 3000, maxMp: 3000 });
+  const priestMissing = await startController({
+    ctype: 'priest', level: 80, mp: 3000, maxMp: 3000,
+    extraEntities: {
+      Ally: { id: 'Ally', name: 'Ally', type: 'character', ctype: 'warrior', rip: true, dead: true, visible: true, real_x: 10, real_y: 0 }
+    }
+  });
+  const priestReady = await startController({
+    ctype: 'priest', level: 80, mp: 3000, maxMp: 3000,
+    items: [{ name: 'essenceoflife', q: 1 }],
+    extraEntities: {
+      Ally: { id: 'Ally', name: 'Ally', type: 'character', ctype: 'warrior', rip: true, dead: true, visible: true, real_x: 10, real_y: 0 }
+    }
+  });
+  t.after(async () => {
+    for (const env of [warrior, mage, priestMissing, priestReady]) {
+      try { await env.ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {}
+    }
+  });
+
+  assert.equal(warrior.ctx.ALBot.__runtime.game.skillReadiness('cleave').allowed, true);
+  const stomp = warrior.ctx.ALBot.__runtime.game.skillReadiness('stomp');
+  assert.equal(stomp.allowed, false);
+  assert.ok(stomp.reasons.includes('SKILL_WEAPON_TYPE_MISMATCH'));
+
+  const cburst = mage.ctx.ALBot.__runtime.game.skillReadiness('cburst');
+  assert.equal(cburst.allowed, false);
+  assert.ok(cburst.reasons.includes('SKILL_LEVEL_TOO_LOW'));
+
+  const missingRevive = priestMissing.ctx.ALBot.__runtime.game.skillReadiness('revive', 'Ally', { allowDeadTarget: true });
+  assert.equal(missingRevive.allowed, false);
+  assert.ok(missingRevive.reasons.includes('SKILL_CONSUMABLE_MISSING'));
+
+  const readyRevive = priestReady.ctx.ALBot.__runtime.game.skillReadiness('revive', 'Ally', { allowDeadTarget: true });
+  assert.equal(readyRevive.allowed, true);
+  assert.equal(readyRevive.definition.targetType, 'player');
 });
