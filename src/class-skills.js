@@ -10,11 +10,11 @@
   const SUPPORTED_CLASSES = Object.freeze(['warrior', 'ranger', 'mage', 'priest', 'rogue', 'paladin']);
   const CLASS_SKILLS = Object.freeze({
     warrior: Object.freeze(['hardshell', 'charge', 'taunt', 'warcry']),
-    ranger: Object.freeze(['huntersmark', 'supershot']),
-    mage: Object.freeze(['burst']),
-    priest: Object.freeze(['curse', 'darkblessing']),
-    rogue: Object.freeze(['invis', 'mentalburst', 'quickpunch']),
-    paladin: Object.freeze(['selfheal', 'smash'])
+    ranger: Object.freeze(['huntersmark', 'poisonarrow', 'piercingshot', 'supershot']),
+    mage: Object.freeze(['entangle', 'arcane_needle', 'burst']),
+    priest: Object.freeze(['phaseout', 'curse', 'darkblessing']),
+    rogue: Object.freeze(['invis', 'pcoat', 'mentalburst', 'quickstab', 'quickpunch']),
+    paladin: Object.freeze(['selfheal', 'shield_slam', 'purify', 'smash'])
   });
 
   function finite(value) {
@@ -82,7 +82,10 @@
         spamSkips: 0,
         overkillSkips: 0,
         unavailableSkips: 0,
-        activeConditionSkips: 0
+        activeConditionSkips: 0,
+        requirementSkips: 0,
+        equipmentSkips: 0,
+        consumableSkips: 0
       };
     }
 
@@ -180,6 +183,11 @@
         if (reasons.includes('SKILL_COOLDOWN') || reasons.includes('SKILL_CAN_USE_FALSE')) this.metrics.cooldownSkips += 1;
         if (reasons.includes('SKILL_MP_TOO_LOW')) this.metrics.mpSkips += 1;
         if (reasons.includes('SKILL_OUT_OF_RANGE') || reasons.includes('SKILL_TARGET_UNAVAILABLE')) this.metrics.rangeSkips += 1;
+        if (reasons.some(reason => String(reason).startsWith('SKILL_REQUIREMENT_'))) this.metrics.requirementSkips += 1;
+        if (reasons.some(reason => ['SKILL_WEAPON_TYPE_MISMATCH', 'SKILL_OFFHAND_TYPE_MISMATCH', 'SKILL_SLOT_REQUIREMENT_MISSING'].includes(reason))) {
+          this.metrics.equipmentSkips += 1;
+        }
+        if (reasons.includes('SKILL_CONSUMABLE_MISSING')) this.metrics.consumableSkips += 1;
         return null;
       }
 
@@ -219,6 +227,15 @@
       const distance = finite(target.distance);
       const range = Math.max(1, finite(character.range) || 40);
       const longFight = targetHp != null && targetHp >= attack * this.config.longFightHpFactor;
+      let targetDefinition = null;
+      try {
+        targetDefinition = this.game && typeof this.game.monsterDefinition === 'function' && target && target.mtype
+          ? this.game.monsterDefinition(target.mtype)
+          : null;
+      } catch (_) {}
+      const targetArmor = finite(targetDefinition && targetDefinition.armor);
+      const targetResistance = finite(targetDefinition && targetDefinition.resistance);
+      const targetAttack = finite(target && target.attack);
 
       if (ctype === 'warrior') {
         if (hpRatio != null && hpRatio <= this.config.defensiveHpRatio) {
@@ -268,9 +285,27 @@
             kind: 'support',
             reason: 'RANGER_LONG_FIGHT_HUNTERSMARK',
             recastMs: 10000,
-            utility: 220
+            utility: 240
           });
           if (mark) return mark;
+        }
+        if (longFight && mpRatio != null && mpRatio >= 0.60) {
+          const poison = this._skillCandidate('poisonarrow', target, game, {
+            kind: 'damage',
+            reason: 'RANGER_LONG_FIGHT_POISON_ARROW',
+            recastMs: 1200,
+            utility: 210
+          });
+          if (poison) return poison;
+        }
+        if (targetArmor != null && targetArmor >= 200 && targetHp != null && targetHp > attack * 1.25) {
+          const piercing = this._skillCandidate('piercingshot', target, game, {
+            kind: 'damage',
+            reason: 'RANGER_HIGH_ARMOR_PIERCING_SHOT',
+            recastMs: 300,
+            utility: 200
+          });
+          if (piercing) return piercing;
         }
         if (targetHp != null && targetHp > Math.max(150, attack * 1.5)) {
           const shot = this._skillCandidate('supershot', target, game, {
@@ -286,20 +321,65 @@
       }
 
       if (ctype === 'mage') {
-        if (targetHp != null && targetHp > Math.max(100, attack * 1.3)) {
+        const dangerousLongFight = longFight && targetAttack != null && finite(character.maxHp) != null
+          && targetAttack >= Math.max(20, Number(character.maxHp) * 0.04);
+        if (dangerousLongFight && mpRatio != null && mpRatio >= 0.65) {
+          const entangle = this._skillCandidate('entangle', target, game, {
+            kind: 'support',
+            reason: 'MAGE_DANGEROUS_LONG_FIGHT_ENTANGLE',
+            recastMs: 38000,
+            utility: 260
+          });
+          if (entangle) return entangle;
+        }
+        if (targetResistance != null && targetResistance >= 250 && targetHp != null && targetHp > attack * 1.10) {
+          const needle = this._skillCandidate('arcane_needle', target, game, {
+            kind: 'damage',
+            reason: 'MAGE_HIGH_RESISTANCE_ARCANE_NEEDLE',
+            recastMs: 300,
+            utility: 210
+          });
+          if (needle) return needle;
+        }
+
+        // Mana Burst consumes the current mana pool. Use it as a bounded
+        // finisher only when the live MP-derived pure damage should kill the
+        // target; never dump all mana merely because a fight is long.
+        const burstDefinition = this.game && typeof this.game.skillDefinition === 'function'
+          ? this.game.skillDefinition('burst')
+          : null;
+        const burstRatio = finite(burstDefinition && burstDefinition.damageMultiplier);
+        const currentMp = finite(character.mp);
+        const estimatedBurstDamage = currentMp != null && burstRatio != null ? currentMp * burstRatio : null;
+        if (targetHp != null && estimatedBurstDamage != null
+            && targetHp > Math.max(80, attack * 0.90)
+            && targetHp <= estimatedBurstDamage
+            && mpRatio != null && mpRatio >= 0.45) {
           const burst = this._skillCandidate('burst', target, game, {
             kind: 'damage',
-            reason: 'MAGE_BURST_SAFE_DAMAGE',
-            recastMs: 5000,
-            utility: 180
+            reason: 'MAGE_BURST_KILL_SECURE',
+            recastMs: 5500,
+            utility: 220,
+            mpReserveRatio: 0
           });
           if (burst) return burst;
-        } else if (targetHp != null) {
+        } else if (targetHp != null && estimatedBurstDamage != null && targetHp < attack * 0.90) {
           this.metrics.overkillSkips += 1;
         }
       }
 
       if (ctype === 'priest') {
+        if (hpRatio != null && hpRatio <= 0.30) {
+          const phaseout = this._skillCandidate('phaseout', target, game, {
+            targeted: false,
+            kind: 'defensive',
+            reason: 'PRIEST_CRITICAL_HP_PHASEOUT',
+            recastMs: 4000,
+            utility: 340,
+            mpReserveRatio: 0.05
+          });
+          if (phaseout) return phaseout;
+        }
         if (longFight && mpRatio != null && mpRatio >= 0.80) {
           const blessing = this._skillCandidate('darkblessing', target, game, {
             targeted: false,
@@ -332,20 +412,37 @@
           });
           if (invis) return invis;
         }
+        if (longFight && mpRatio != null && mpRatio >= 0.75) {
+          const poisonCoat = this._skillCandidate('pcoat', target, game, {
+            targeted: false,
+            kind: 'support',
+            reason: 'ROGUE_LONG_FIGHT_POISON_COAT',
+            recastMs: 48000,
+            utility: 230
+          });
+          if (poisonCoat) return poisonCoat;
+        }
         if (targetHp != null && targetHp > Math.max(140, attack * 1.5)) {
           const burst = this._skillCandidate('mentalburst', target, game, {
             kind: 'damage',
             reason: 'ROGUE_MENTALBURST_SAFE_DAMAGE',
-            recastMs: 750,
+            recastMs: 850,
             utility: 190
           });
           if (burst) return burst;
         }
         if (targetHp != null && targetHp > Math.max(90, attack * 1.15)) {
+          const stab = this._skillCandidate('quickstab', target, game, {
+            kind: 'damage',
+            reason: 'ROGUE_QUICKSTAB_WEAPON_MATCH',
+            recastMs: 280,
+            utility: 165
+          });
+          if (stab) return stab;
           const punch = this._skillCandidate('quickpunch', target, game, {
             kind: 'damage',
-            reason: 'ROGUE_QUICKPUNCH_SAFE_DAMAGE',
-            recastMs: 300,
+            reason: 'ROGUE_QUICKPUNCH_WEAPON_MATCH',
+            recastMs: 280,
             utility: 150
           });
           if (punch) return punch;
@@ -360,17 +457,35 @@
             targeted: false,
             kind: 'defensive',
             reason: 'PALADIN_SELFHEAL_THRESHOLD',
-            recastMs: 1000,
+            recastMs: 1100,
             utility: 280,
             mpReserveRatio: 0.05
           });
           if (heal) return heal;
         }
+        if (targetHp != null && targetHp > Math.max(1800, attack * 4) && mpRatio != null && mpRatio >= 0.60) {
+          const slam = this._skillCandidate('shield_slam', target, game, {
+            kind: 'damage',
+            reason: 'PALADIN_SHIELD_SLAM_HEAVY_TARGET',
+            recastMs: 650,
+            utility: 230
+          });
+          if (slam) return slam;
+        }
+        if (targetHp != null && targetHp > Math.max(1200, attack * 3) && mpRatio != null && mpRatio >= 0.45) {
+          const purify = this._skillCandidate('purify', target, game, {
+            kind: 'damage',
+            reason: 'PALADIN_PURIFY_HEAVY_TARGET',
+            recastMs: 23000,
+            utility: 210
+          });
+          if (purify) return purify;
+        }
         if (targetHp != null && targetHp > Math.max(150, attack * 1.5)) {
           const smash = this._skillCandidate('smash', target, game, {
             kind: 'damage',
             reason: 'PALADIN_SMASH_SAFE_DAMAGE',
-            recastMs: 400,
+            recastMs: 350,
             utility: 170
           });
           if (smash) return smash;
@@ -406,7 +521,7 @@
       if (value.includes('disconnect') || value.includes('timeout') || value.includes('network')) return false;
       return [
         'cooldown', 'no_mp', 'mp', 'too_far', 'range', 'not_found', 'not_there', 'cant_use',
-        'cannot_use', 'level', 'weapon', 'requirements', 'disabled', 'stunned'
+        'cannot_use', 'level', 'weapon', 'requirements', 'disabled', 'stunned', 'immune', 'slot', 'consume'
       ].some(token => value.includes(token));
     }
 
