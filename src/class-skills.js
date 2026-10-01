@@ -348,7 +348,9 @@
         const burstDefinition = this.game && typeof this.game.skillDefinition === 'function'
           ? this.game.skillDefinition('burst')
           : null;
-        const burstRatio = finite(burstDefinition && burstDefinition.damageMultiplier);
+        const burstRatio = finite(burstDefinition && burstDefinition.ratio) != null
+          ? finite(burstDefinition.ratio)
+          : finite(burstDefinition && burstDefinition.damageMultiplier);
         const currentMp = finite(character.mp);
         const estimatedBurstDamage = currentMp != null && burstRatio != null ? currentMp * burstRatio : null;
         if (targetHp != null && estimatedBurstDamage != null
