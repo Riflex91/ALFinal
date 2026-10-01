@@ -212,7 +212,12 @@
     _skillReserve(character) {
       const ctype = cleanText(character && character.ctype || '', 60).toLowerCase();
       const maxMp = Math.max(0, finite(character && character.maxMp) || 0);
-      const ids = RELEVANT_SKILLS[ctype] || [];
+      const fallbackIds = RELEVANT_SKILLS[ctype] || [];
+      const ids = this.classSkills && typeof this.classSkills.reserveSkills === 'function'
+        ? this.classSkills.reserveSkills(ctype)
+        : fallbackIds.filter(id => !this.classSkills
+          || typeof this.classSkills.isSkillEnabled !== 'function'
+          || this.classSkills.isSkillEnabled(id, ctype) === true);
       const rows = [];
       let maxCost = 0;
       for (const id of ids) {

@@ -75,7 +75,7 @@
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.53-h26',
+    version: '0.26.54-h26',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -188,6 +188,9 @@
       status: () => runtime.classSkills.status(),
       supported: ctype => runtime.classSkills.supportedSkills(ctype),
       live: ctype => runtime.classSkills.liveSkillSummary(ctype),
+      catalog: ctype => runtime.classSkills.skillCatalog(ctype),
+      enabled: (skillId, ctype) => runtime.classSkills.isSkillEnabled(skillId, ctype),
+      setEnabled: (skillId, enabled, ctype) => runtime.classSkills.setSkillEnabled(skillId, enabled, ctype),
       preview: targetId => runtime.classSkills.preview(targetId)
     },
 

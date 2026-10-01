@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.53-h26';
+      this.version = options.version || '0.26.54-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -49,7 +49,8 @@
         root: this.root,
         logger: this.logger,
         game: this.game,
-        actions: this.actions
+        actions: this.actions,
+        storage: this.storage
       });
       this.resourceTopoff = new ns.ResourceTopoffController({
         root: this.root,
@@ -75,7 +76,8 @@
         logger: this.logger,
         game: this.game,
         actions: this.actions,
-        roster: this.roster
+        roster: this.roster,
+        classSkills: this.classSkills
       });
       this.farming = new ns.AdaptiveFarmingController({
         root: this.root,

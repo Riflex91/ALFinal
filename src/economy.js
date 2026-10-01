@@ -79,6 +79,7 @@
       this.cooldownUntilMs = null;
       this.rejectionBackoff = new Map();
       this.materialBankMisses = new Map();
+      this.lastBankAuditAtMs = null;
 
       this.config = {
         tickMs: Math.max(250, Math.min(5000, Number(options.tickMs) || 1000)),
@@ -88,6 +89,7 @@
         maxActionsPerSession: Math.max(1, Math.min(100, Math.floor(Number(options.maxActionsPerSession) || 12))),
         minMarketPremiumRatio: Math.max(1, Math.min(10, finite(options.minMarketPremiumRatio) == null ? 1 : finite(options.minMarketPremiumRatio))),
         materialBankKnowledgeTtlMs: Math.max(30000, Math.min(900000, Number(options.materialBankKnowledgeTtlMs) || 120000)),
+        bankAuditIntervalMs: Math.max(60000, Math.min(1800000, Number(options.bankAuditIntervalMs) || 300000)),
         priorities: { ...DEFAULT_PRIORITIES, ...(options.priorities || {}) },
         allowKinds: { ...DEFAULT_KINDS, ...(options.allowKinds || {}) }
       };
@@ -107,6 +109,7 @@
         sessionBudgetBlocks: 0,
         materialBankMisses: 0,
         materialBankMountSkips: 0,
+        bankAuditsPlanned: 0,
         byKind: {}
       };
     }
@@ -417,6 +420,8 @@
 
       const merchantPlan = this._callPlan(this.merchant);
       const bankPlan = this._callPlan(this.bank);
+      const nowMs = Date.now();
+      if (bankPlan && bankPlan.state === 'READY') this.lastBankAuditAtMs = nowMs;
       const tradePlan = this._callPlan(this.trade);
       const gearPlan = this._callPlan(this.gear);
       const upgradePlan = this._callPlan(this.upgrade);
@@ -699,6 +704,25 @@
         const npc = this._npcSellProposal(sellRow);
         if (market) proposals.push(market);
         else if (npc) proposals.push(npc);
+      }
+
+      // If the Merchant has no visible economy work and the bank is not mounted,
+      // perform a bounded account-bank audit. This discovers bank-side gear and
+      // material work that cannot be planned from an unmounted bank, while the TTL
+      // prevents Full Autonomy from bouncing between main and bank forever.
+      const bankAuditDue = bankPlan && bankPlan.state === 'NEEDS_BANK'
+        && (this.lastBankAuditAtMs == null || nowMs - this.lastBankAuditAtMs >= this.config.bankAuditIntervalMs);
+      if (!proposals.length && bankAuditDue) {
+        const audit = this._proposal('BANK_MOUNT', 'bank', {
+          key: 'account-bank-audit',
+          purpose: 'ACCOUNT_BANK_AUDIT',
+          maintenance: true,
+          risk: 0
+        });
+        if (audit) {
+          proposals.push(audit);
+          this.metrics.bankAuditsPlanned += 1;
+        }
       }
 
       proposals.sort((a, b) =>
@@ -1009,6 +1033,8 @@
         cooldownUntilMs: this.cooldownUntilMs,
         rejectionBackoff: Array.from(this.rejectionBackoff.entries()).map(([proposalId, untilMs]) => ({ proposalId, untilMs })),
         materialBankMisses: Array.from(this.materialBankMisses.entries()).map(([needKey, details]) => ({ needKey, ...clone(details) })),
+        lastBankAuditAtMs: this.lastBankAuditAtMs,
+        nextBankAuditAtMs: this.lastBankAuditAtMs == null ? null : this.lastBankAuditAtMs + this.config.bankAuditIntervalMs,
         lastPlan: clone(this.lastPlan),
         lastAction: clone(this.lastAction),
         futureGearPolicy: this.gearProgression && typeof this.gearProgression.status === 'function'

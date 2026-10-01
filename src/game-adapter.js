@@ -1015,6 +1015,10 @@
       return {
         id,
         name: raw.name == null ? id : cleanText(raw.name, 160),
+        skin: raw.skin == null ? null : cleanText(raw.skin, 160),
+        explanation: raw.explanation == null
+          ? (raw.description == null ? null : cleanText(raw.description, 1200))
+          : cleanText(raw.explanation, 1200),
         classes: classesRaw.map(value => cleanText(value, 60).toLowerCase()).filter(Boolean),
         level: finite(raw.level),
         mp: finite(raw.mp),
@@ -1049,6 +1053,18 @@
         slotRequirements: Array.isArray(raw.slot) ? clone(raw.slot) : [],
         requirements
       };
+    }
+
+    classSkillDefinitions(ctype) {
+      const key = cleanText(ctype || '', 60).toLowerCase();
+      if (!key) return [];
+      const G = this._gameData();
+      const skills = G && G.skills && typeof G.skills === 'object' ? G.skills : {};
+      return Object.keys(skills)
+        .map(id => this.skillDefinition(id))
+        .filter(definition => definition && definition.classes.includes(key))
+        .sort((a, b) => String(a.name || a.id).localeCompare(String(b.name || b.id))
+          || String(a.id).localeCompare(String(b.id)));
     }
 
     skillReadiness(skillId, targetId = null, options = {}) {
