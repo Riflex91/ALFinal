@@ -375,6 +375,8 @@
             if (a.local !== b.local) return a.local ? 1 : -1;
             return String(a.name).localeCompare(String(b.name));
           });
+        // Apply rspeed once per eligible owned member; live condition
+        // readiness prevents recasting on members that are already buffed.
         for (const target of targets) {
           const readiness = this._supportReadiness('rspeed', target, false);
           if (readiness && readiness.allowed && readiness.activeCondition !== true) {
