@@ -17,6 +17,73 @@
     paladin: Object.freeze(['selfheal', 'shield_slam', 'purify', 'smash'])
   });
 
+  // Complete class-skill ownership map. A skill missing from the H6 rotation is
+  // intentional only when another bounded module owns it or its semantics are
+  // unsafe/context-specific for autonomous farming.
+  const CLASS_SKILL_POLICY = Object.freeze({
+    warrior: Object.freeze({
+      h6: Object.freeze(['hardshell', 'charge', 'taunt', 'warcry']),
+      h8: Object.freeze(['cleave', 'stomp']),
+      passive: Object.freeze([]),
+      excluded: Object.freeze({
+        dash: 'MOVEMENT_OWNERSHIP_H4',
+        agitate: 'UNBOUNDED_MASS_AGGRO'
+      })
+    }),
+    ranger: Object.freeze({
+      h6: Object.freeze(['huntersmark', 'poisonarrow', 'piercingshot', 'supershot']),
+      h8: Object.freeze(['3shot', '5shot']),
+      passive: Object.freeze([]),
+      excluded: Object.freeze({
+        track: 'OBSERVATION_UTILITY_NOT_COMBAT_ACTION',
+        '4fingers': 'PLAYER_ONLY_HOSTILE_PVP'
+      })
+    }),
+    mage: Object.freeze({
+      h6: Object.freeze(['entangle', 'arcane_needle', 'burst']),
+      h8: Object.freeze(['cburst']),
+      passive: Object.freeze([]),
+      excluded: Object.freeze({
+        energize: 'PARTY_SUPPORT_REQUIRES_AMOUNT_POLICY',
+        reflection: 'PARTY_SUPPORT_REQUIRES_TARGET_POLICY',
+        blink: 'MOVEMENT_OWNERSHIP_H4',
+        magiport: 'REMOTE_PLAYER_MOVEMENT_REQUIRES_EXPLICIT_INTENT',
+        light: 'PVP_ANTI_STEALTH_CONTEXT_ONLY',
+        alchemy: 'DESTRUCTIVE_ITEM_CONVERSION'
+      })
+    }),
+    priest: Object.freeze({
+      h6: Object.freeze(['phaseout', 'curse', 'darkblessing']),
+      h7: Object.freeze(['heal', 'partyheal', 'revive']),
+      passive: Object.freeze([]),
+      excluded: Object.freeze({
+        absorb: 'AGGRO_TRANSFER_REQUIRES_EXPLICIT_SAFETY_MODEL'
+      })
+    }),
+    rogue: Object.freeze({
+      h6: Object.freeze(['invis', 'pcoat', 'mentalburst', 'quickstab', 'quickpunch']),
+      h8: Object.freeze(['fanofknives']),
+      passive: Object.freeze(['stack']),
+      excluded: Object.freeze({
+        rspeed: 'PARTY_SUPPORT_REQUIRES_TARGET_POLICY',
+        pickpocket: 'PLAYER_PVP_THEFT',
+        shadowstrike: 'RANDOM_REMOTE_ENEMY_TARGET'
+      })
+    }),
+    paladin: Object.freeze({
+      h6: Object.freeze(['selfheal', 'shield_slam', 'purify', 'smash']),
+      passive: Object.freeze([]),
+      excluded: Object.freeze({
+        mshield: 'PERSISTENT_TOGGLE_REQUIRES_DEFENSE_POLICY',
+        aether_shield: 'PERSISTENT_TOGGLE_REQUIRES_DEFENSE_POLICY',
+        cleansing_light: 'ALLY_CLEANSE_REQUIRES_CONDITION_CLASSIFICATION',
+        guardians_oath: 'DAMAGE_TRANSFER_REQUIRES_SURVIVABILITY_MODEL',
+        beacon_of_resolve: 'GROUP_BUFF_REQUIRES_ENCOUNTER_POLICY',
+        paladin_aura: 'MULTI_STATE_AURA_REQUIRES_GROUP_POLICY'
+      })
+    })
+  });
+
   function finite(value) {
     if (value == null || value === '') return null;
     const number = Number(value);
@@ -753,6 +820,9 @@
         currentClass: ctype,
         supportedSkills: this.supportedSkills(ctype),
         liveSkills: this.liveSkillSummary(ctype),
+        skillPolicy: ctype && CLASS_SKILL_POLICY[String(ctype).toLowerCase()]
+          ? clone(CLASS_SKILL_POLICY[String(ctype).toLowerCase()])
+          : null,
         sessionId: this.sessionId,
         suspended: !!(this.sessionId && this.suspendedSessionId === this.sessionId),
         suspendedReason: this.suspendedReason,
@@ -766,4 +836,5 @@
   }
 
   ns.ClassSkillController = ClassSkillController;
+  ns.CLASS_SKILL_POLICY = CLASS_SKILL_POLICY;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
