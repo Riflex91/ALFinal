@@ -111,6 +111,9 @@
       this.logger = options.logger || null;
       this.game = options.game;
       this.actions = options.actions;
+      this.storage = options.storage || null;
+      this.preferenceKey = cleanText(options.preferenceKey || 'albot:class-skills:selection:v1', 200);
+      this.skillPreferences = this._loadSkillPreferences();
       this.now = typeof options.now === 'function' ? options.now : () => Date.now();
       this.config = {
         minGlobalIntervalMs: Math.max(150, Math.min(2000, Number(options.minGlobalIntervalMs) || 350)),
@@ -151,7 +154,8 @@
         activeConditionSkips: 0,
         requirementSkips: 0,
         equipmentSkips: 0,
-        consumableSkips: 0
+        consumableSkips: 0,
+        disabledSkips: 0
       };
     }
 
@@ -188,18 +192,134 @@
       return this.status();
     }
 
+    _loadSkillPreferences() {
+      if (!this.storage || !this.preferenceKey) return {};
+      let raw = null;
+      try {
+        raw = typeof this.storage.getShared === 'function' ? this.storage.getShared(this.preferenceKey) : null;
+        if (raw == null && typeof this.storage.get === 'function') raw = this.storage.get(this.preferenceKey);
+        if (!raw) return {};
+        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? clone(parsed) : {};
+      } catch (_) {
+        return {};
+      }
+    }
+
+    _writeSkillPreferences() {
+      if (!this.storage || !this.preferenceKey) return false;
+      const raw = JSON.stringify(this.skillPreferences || {});
+      try {
+        if (typeof this.storage.setShared === 'function' && this.storage.setShared(this.preferenceKey, raw) !== false) return true;
+      } catch (_) {}
+      try {
+        return typeof this.storage.set === 'function' ? this.storage.set(this.preferenceKey, raw) !== false : false;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    _currentClass() {
+      const game = this.game && typeof this.game.snapshot === 'function' ? this.game.snapshot() : null;
+      return cleanText(game && game.character && game.character.ctype || '', 60).toLowerCase();
+    }
+
+    _policySkillOwner(ctype, skillId) {
+      const key = cleanText(ctype || '', 60).toLowerCase();
+      const id = cleanText(skillId || '', 120);
+      const policy = CLASS_SKILL_POLICY[key] || null;
+      if (!policy || !id) return null;
+      for (const owner of ['h6', 'h7', 'h8', 'passive']) {
+        if (Array.isArray(policy[owner]) && policy[owner].includes(id)) return owner.toUpperCase();
+      }
+      if (policy.excluded && Object.prototype.hasOwnProperty.call(policy.excluded, id)) return 'EXCLUDED';
+      return null;
+    }
+
+    _defaultSkillEnabled(ctype, skillId) {
+      const owner = this._policySkillOwner(ctype, skillId);
+      return owner === 'H6' || owner === 'H7' || owner === 'H8';
+    }
+
+    skillCatalog(ctype) {
+      const key = cleanText(ctype || this._currentClass(), 60).toLowerCase();
+      if (!key) return [];
+      let definitions = [];
+      try {
+        definitions = this.game && typeof this.game.classSkillDefinitions === 'function'
+          ? this.game.classSkillDefinitions(key)
+          : [];
+      } catch (_) {
+        definitions = [];
+      }
+      if (!Array.isArray(definitions) || !definitions.length) {
+        const policy = CLASS_SKILL_POLICY[key] || {};
+        const ids = [...new Set([
+          ...(policy.h6 || []),
+          ...(policy.h7 || []),
+          ...(policy.h8 || []),
+          ...(policy.passive || []),
+          ...Object.keys(policy.excluded || {})
+        ])];
+        definitions = ids.map(id => {
+          try { return this.game && typeof this.game.skillDefinition === 'function' ? this.game.skillDefinition(id) : null; }
+          catch (_) { return null; }
+        }).filter(Boolean);
+      }
+      return definitions.map(definition => {
+        const id = definition && definition.id;
+        const owner = this._policySkillOwner(key, id);
+        return {
+          id,
+          available: !!definition,
+          enabled: this.isSkillEnabled(id, key),
+          combatOwned: owner === 'H6' || owner === 'H7' || owner === 'H8',
+          owner,
+          definition: clone(definition)
+        };
+      }).filter(row => row.id);
+    }
+
     supportedSkills(ctype) {
       const key = cleanText(ctype || '', 60).toLowerCase();
       return (CLASS_SKILLS[key] || []).slice();
     }
 
     liveSkillSummary(ctype) {
-      return this.supportedSkills(ctype).map(id => {
-        const definition = this.game && typeof this.game.skillDefinition === 'function'
-          ? this.game.skillDefinition(id)
-          : null;
-        return { id, available: !!definition, definition };
-      });
+      return this.skillCatalog(ctype);
+    }
+
+    isSkillEnabled(skillId, ctype = null) {
+      const key = cleanText(ctype || this._currentClass(), 60).toLowerCase();
+      const id = cleanText(skillId || '', 120);
+      if (!key || !id) return false;
+      const classPreferences = this.skillPreferences && this.skillPreferences[key];
+      if (classPreferences && Object.prototype.hasOwnProperty.call(classPreferences, id)) {
+        return classPreferences[id] === true;
+      }
+      return this._defaultSkillEnabled(key, id);
+    }
+
+    setSkillEnabled(skillId, enabled, ctype = null) {
+      const key = cleanText(ctype || this._currentClass(), 60).toLowerCase();
+      const id = cleanText(skillId || '', 120);
+      if (!key || !id) return { accepted: false, reason: 'SKILL_SELECTION_INVALID' };
+      const catalog = this.skillCatalog(key);
+      if (catalog.length && !catalog.some(row => String(row.id) === id)) {
+        return { accepted: false, reason: 'SKILL_NOT_AVAILABLE_FOR_CLASS', ctype: key, skillId: id };
+      }
+      if (!this.skillPreferences || typeof this.skillPreferences !== 'object') this.skillPreferences = {};
+      if (!this.skillPreferences[key] || typeof this.skillPreferences[key] !== 'object') this.skillPreferences[key] = {};
+      this.skillPreferences[key][id] = enabled === true;
+      const persisted = this._writeSkillPreferences();
+      return { accepted: true, ctype: key, skillId: id, enabled: enabled === true, persisted };
+    }
+
+    reserveSkills(ctype = null) {
+      const key = cleanText(ctype || this._currentClass(), 60).toLowerCase();
+      const policy = CLASS_SKILL_POLICY[key] || {};
+      return [...new Set([...(policy.h6 || []), ...(policy.h8 || [])])]
+        .filter(id => this.isSkillEnabled(id, key));
     }
 
     _suppressionKey(skillId, targetId) {
@@ -230,6 +350,11 @@
 
     _skillCandidate(skillId, target, game, options = {}) {
       const targetId = options.targeted === false ? null : (target && target.id);
+      const ctype = cleanText(game && game.character && game.character.ctype || '', 60).toLowerCase();
+      if (!this.isSkillEnabled(skillId, ctype)) {
+        this.metrics.disabledSkips += 1;
+        return null;
+      }
       if (this._isSuppressed(skillId, targetId)) {
         this.metrics.spamSkips += 1;
         return null;
@@ -408,9 +533,10 @@
           if (needle) return needle;
         }
 
-        // Mana Burst consumes the current mana pool. Use it as a bounded
-        // finisher only when the live MP-derived pure damage should kill the
-        // target; never dump all mana merely because a fight is long.
+        // Mana Burst is a high-cost finisher, not a normal farm rotation.
+        // Require a genuinely long/high-HP kill, a healthy MP pool and a live
+        // MP-derived lethal estimate before accepting the full-mana opportunity
+        // cost. Weak farm mobs are intentionally left to regular attacks.
         const burstDefinition = this.game && typeof this.game.skillDefinition === 'function'
           ? this.game.skillDefinition('burst')
           : null;
@@ -419,16 +545,21 @@
           : finite(burstDefinition && burstDefinition.damageMultiplier);
         const currentMp = finite(character.mp);
         const estimatedBurstDamage = currentMp != null && burstRatio != null ? currentMp * burstRatio : null;
-        if (targetHp != null && estimatedBurstDamage != null
-            && targetHp > Math.max(80, attack * 0.90)
+        const normalHitsToKill = targetHp != null ? Math.ceil(targetHp / attack) : null;
+        const highValueTarget = targetHp != null
+          && targetHp >= Math.max(1200, attack * 4)
+          && normalHitsToKill != null
+          && normalHitsToKill >= 4;
+        if (highValueTarget
+            && estimatedBurstDamage != null
             && targetHp <= estimatedBurstDamage
-            && mpRatio != null && mpRatio >= 0.45) {
+            && mpRatio != null && mpRatio >= 0.75) {
           const burst = this._skillCandidate('burst', target, game, {
             kind: 'damage',
-            reason: 'MAGE_BURST_KILL_SECURE',
+            reason: 'MAGE_BURST_HIGH_VALUE_KILL_SECURE',
             recastMs: 5500,
             utility: 220,
-            mpReserveRatio: 0
+            mpReserveRatio: 0.25
           });
           if (burst) return burst;
         } else if (targetHp != null && estimatedBurstDamage != null && targetHp < attack * 0.90) {
@@ -819,6 +950,9 @@
         currentClass: ctype,
         supportedSkills: this.supportedSkills(ctype),
         liveSkills: this.liveSkillSummary(ctype),
+        enabledCombatSkills: ctype ? this.skillCatalog(ctype).filter(row => row.combatOwned && row.enabled).map(row => row.id) : [],
+        disabledCombatSkills: ctype ? this.skillCatalog(ctype).filter(row => row.combatOwned && !row.enabled).map(row => row.id) : [],
+        preferenceKey: this.preferenceKey,
         skillPolicy: ctype && CLASS_SKILL_POLICY[String(ctype).toLowerCase()]
           ? clone(CLASS_SKILL_POLICY[String(ctype).toLowerCase()])
           : null,
