@@ -52,6 +52,7 @@
       this.farming = options.farming;
       this.movement = options.movement;
       this.party = options.party || null;
+      this.strategy = options.strategy || null;
       this.now = typeof options.now === 'function' ? options.now : () => Date.now();
 
       this.config = {
@@ -119,7 +120,10 @@
         groupLeaderRecoveries: 0,
         groupCrossMapRegroups: 0,
         transientMovementRecoveries: 0,
-        combatUnknownSuspensions: 0
+        combatUnknownSuspensions: 0,
+        damageLimitedBlocks: 0,
+        groupDpsPlans: 0,
+        observedDamagePlans: 0
       };
     }
 
@@ -431,7 +435,39 @@
       const expectedHitChance = candidate.expectedHitChance == null
         ? this._expectedHitChance(character, candidate)
         : clamp(candidate.expectedHitChance);
-      const dps = attack * frequency * expectedHitChance;
+      const localTheoreticalDps = attack * frequency * expectedHitChance;
+
+      const groupPerformance = candidate && candidate.groupPerformance;
+      let dps = groupPerformance && groupPerformance.complete && finite(groupPerformance.aggregateDps) != null
+        ? Math.max(0.1, Number(groupPerformance.aggregateDps))
+        : localTheoreticalDps;
+      let dpsModel = groupPerformance && groupPerformance.complete ? 'GROUP_THEORETICAL' : 'LOCAL_THEORETICAL';
+      if (groupPerformance && groupPerformance.complete) this.metrics.groupDpsPlans += 1;
+
+      let observedDamage = null;
+      try {
+        observedDamage = this.combat && typeof this.combat.damageProfile === 'function'
+          ? this.combat.damageProfile(candidate && candidate.mtype)
+          : null;
+      } catch (_) {}
+      if (observedDamage && Number(observedDamage.samples || 0) >= 3
+          && finite(observedDamage.emaDamage) != null && Number(observedDamage.emaDamage) > 0) {
+        const observedLocalDps = Number(observedDamage.emaDamage) * frequency * expectedHitChance;
+        if (groupPerformance && groupPerformance.complete) {
+          const localName = cleanText(character && character.name || '', 120);
+          const localMember = Array.isArray(groupPerformance.members)
+            ? groupPerformance.members.find(row => row && String(row.name || '') === localName)
+            : null;
+          const localGroupDps = finite(localMember && localMember.theoreticalDps) || localTheoreticalDps;
+          dps = Math.max(0.1, dps - localGroupDps + observedLocalDps);
+          dpsModel = 'GROUP_WITH_LOCAL_OBSERVED_DAMAGE';
+        } else {
+          dps = Math.max(0.1, observedLocalDps);
+          dpsModel = 'LOCAL_OBSERVED_DAMAGE';
+        }
+        this.metrics.observedDamagePlans += 1;
+      }
+
       const hp = finite(definition.hp);
       const killSeconds = hp != null && hp > 0 ? Math.max(0.25, hp / dps) : null;
       const xp = Math.max(0, finite(definition.xp) || 0);
@@ -453,6 +489,10 @@
       return {
         xpPerSecond: killSeconds == null ? 0 : xp / killSeconds,
         goldPerSecond: killSeconds == null ? 0 : gold / killSeconds,
+        dps,
+        dpsModel,
+        groupSize: groupPerformance && groupPerformance.complete ? groupPerformance.members.length : 1,
+        observedDamage: observedDamage ? clone(observedDamage) : null,
         dropSignal,
         expectedHitChance,
         density,
@@ -517,17 +557,32 @@
       try { status = this.party && typeof this.party.status === 'function' ? this.party.status() : null; } catch (_) {}
       const party = status && status.party || null;
       const owned = party && Array.isArray(party.ownedMembers) ? party.ownedMembers : [];
+      let strategyProfiles = [];
+      try {
+        strategyProfiles = this.strategy && typeof this.strategy.profiles === 'function'
+          ? this.strategy.profiles()
+          : [];
+      } catch (_) {}
       const profiles = [];
       const missingMemberNames = [];
 
       for (const name of memberNames) {
-        const profile = String(name) === String(localName)
-          ? character
-          : owned.find(row => row && String(row.name) === String(name)) || null;
-        if (!profile) {
+        if (String(name) === String(localName)) {
+          profiles.push(character);
+          continue;
+        }
+        const live = owned.find(row => row && String(row.name) === String(name)) || null;
+        const strategic = strategyProfiles.find(row => row && String(row.name) === String(name)) || null;
+        if (!live && !strategic) {
           missingMemberNames.push(name);
           continue;
         }
+        const profile = { ...(strategic || {}), ...(live || {}) };
+        for (const key of ['attack', 'frequency', 'maxHp', 'armor', 'resistance', 'speed', 'range']) {
+          if (finite(live && live[key]) == null && finite(strategic && strategic[key]) != null) profile[key] = strategic[key];
+        }
+        if (!profile.ctype && strategic && strategic.ctype) profile.ctype = strategic.ctype;
+        if (!profile.damageType && strategic && strategic.damageType) profile.damageType = strategic.damageType;
         profiles.push(profile);
       }
 
@@ -547,6 +602,20 @@
       return rows.filter(row => {
         if (excluded.has(row.mtype)) return false;
         if (preferred.size && !preferred.has(row.mtype)) return false;
+
+        const definition = row && row.definition || {};
+        const mtype = cleanText(row && row.mtype || '', 120).toLowerCase();
+        // Event/boss targets are not normal FARM candidates. In particular the
+        // Snowman Full Guard mechanic reduces ordinary hits to effectively 1
+        // damage and produces terrible XP/h despite an attractive nominal XP.
+        if (mtype === 'snowman' || definition.boss === true || definition.cooperative === true) {
+          row.exclusionReason = mtype === 'snowman'
+            ? 'H9_DAMAGE_LIMITED_SNOWMAN'
+            : 'H9_ENCOUNTER_TARGET_NOT_NORMAL_FARM';
+          this.metrics.damageLimitedBlocks += 1;
+          return false;
+        }
+
         const expectedHitChance = this._expectedHitChance(character, row);
         row.expectedHitChance = expectedHitChance;
         if (expectedHitChance < this.config.minExpectedHitChance) return false;
@@ -566,6 +635,33 @@
           row.groupHitChance.minimum = row.groupHitChance.members.length
             ? Math.min(...row.groupHitChance.members.map(member => member.expectedHitChance))
             : null;
+
+          const performanceMembers = groupProfiles.profiles.map(profile => {
+            const attack = finite(profile && profile.attack);
+            const frequency = finite(profile && profile.frequency);
+            const hitChance = this._expectedHitChance(profile, row);
+            return {
+              name: cleanText(profile && profile.name || '', 120) || null,
+              ctype: cleanText(profile && profile.ctype || '', 60) || null,
+              attack,
+              frequency,
+              expectedHitChance: hitChance,
+              theoreticalDps: attack != null && frequency != null && attack > 0 && frequency > 0
+                ? attack * frequency * hitChance
+                : null
+            };
+          });
+          const performanceComplete = groupProfiles.complete
+            && performanceMembers.length === groupProfiles.memberNames.length
+            && performanceMembers.every(member => finite(member.theoreticalDps) != null);
+          row.groupPerformance = {
+            complete: performanceComplete,
+            aggregateDps: performanceComplete
+              ? performanceMembers.reduce((sum, member) => sum + Number(member.theoreticalDps), 0)
+              : null,
+            members: performanceMembers,
+            missingMemberNames: groupProfiles.missingMemberNames.slice()
+          };
 
           // H9 is the group-level planner while H5 enforces the same threshold
           // per character. Never elect a farm target that known followers would
