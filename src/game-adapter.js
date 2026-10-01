@@ -1124,8 +1124,11 @@
 
       if (definition.consume) {
         const inventory = Array.isArray(character.items) ? character.items : [];
-        const available = inventory.some(item => item && String(item.name || '') === definition.consume
-          && Math.max(1, finite(item.q) || 1) > 0);
+        const available = inventory.some(item => {
+          if (!item || String(item.name || '') !== definition.consume) return false;
+          const quantity = finite(item.q);
+          return quantity == null ? true : quantity > 0;
+        });
         if (!available) reasons.push('SKILL_CONSUMABLE_MISSING');
       }
 
