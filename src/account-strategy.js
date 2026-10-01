@@ -179,11 +179,20 @@
         && Object.values(profile.equipment).some(item => item && item.name));
     }
 
+    _profileEquipmentKnown(profile) {
+      if (!profile) return false;
+      if (profile.equipmentKnown === true) return !!(profile.equipment && typeof profile.equipment === 'object');
+      if (profile.equipmentKnown === false) return false;
+      // Backward compatibility for H32 cache rows: only a non-empty equipment
+      // object counts as known when no explicit observation bit exists.
+      return this._profileHasEquipment(profile);
+    }
+
     _betterProfile(current, candidate) {
       if (!current) return candidate ? clone(candidate) : null;
       if (!candidate) return clone(current);
-      const currentHasEquipment = this._profileHasEquipment(current);
-      const candidateHasEquipment = this._profileHasEquipment(candidate);
+      const currentHasEquipment = this._profileEquipmentKnown(current);
+      const candidateHasEquipment = this._profileEquipmentKnown(candidate);
       if (candidateHasEquipment && !currentHasEquipment) return clone(candidate);
       if (currentHasEquipment && !candidateHasEquipment) {
         const merged = { ...clone(candidate), ...clone(current) };
@@ -357,6 +366,7 @@
       const character = snapshot && snapshot.character;
       if (!character || !character.name) return null;
       const ctype = cleanText(character.ctype || '', 40).toLowerCase();
+      const equipment = this._localEquipment(character);
       return {
         schemaVersion: 1,
         name: cleanText(character.name, 120),
@@ -377,7 +387,8 @@
         map: cleanText(character.map || '', 120) || null,
         gold: finite(character.gold),
         gearScore: this._localGearScore(character),
-        equipment: this._localEquipment(character),
+        equipment,
+        equipmentKnown: equipment !== null,
         trainingMs: Math.max(0, Math.floor(this.trainingMs)),
         capabilities: clone(ROLE_CAPABILITIES[ctype] || []),
         observedAtMs: this.now()
@@ -415,6 +426,7 @@
         gold: finite(row.gold),
         gearScore: 0,
         equipment: null,
+        equipmentKnown: false,
         trainingMs: 0,
         capabilities: clone(ROLE_CAPABILITIES[ctype] || []),
         observedAtMs: null,
@@ -488,6 +500,8 @@
     _normalizeProfile(raw) {
       if (!raw || !raw.name) return null;
       const ctype = cleanText(raw.ctype || '', 40).toLowerCase();
+      const equipment = raw.equipment && typeof raw.equipment === 'object' ? clone(raw.equipment) : null;
+      const inferredEquipmentKnown = equipment && Object.values(equipment).some(item => item && item.name);
       return {
         schemaVersion: 1,
         name: cleanText(raw.name, 120),
@@ -509,7 +523,12 @@
         map: cleanText(raw.map || '', 120) || null,
         gold: finite(raw.gold),
         gearScore: Math.max(0, finite(raw.gearScore) || 0),
-        equipment: raw.equipment && typeof raw.equipment === 'object' ? clone(raw.equipment) : null,
+        equipment,
+        equipmentKnown: raw.equipmentKnown === true
+          ? equipment !== null
+          : raw.equipmentKnown === false
+            ? false
+            : !!inferredEquipmentKnown,
         trainingMs: Math.max(0, finite(raw.trainingMs) || 0),
         capabilities: clone(ROLE_CAPABILITIES[ctype] || []),
         observedAtMs: finite(raw.observedAtMs)
@@ -745,7 +764,7 @@
         name,
         ctype: profile && profile.ctype || null,
         level: finite(profile && profile.level),
-        equipmentKnown: this._profileHasEquipment(profile),
+        equipmentKnown: this._profileEquipmentKnown(profile),
         equipmentSlots: profile && profile.equipment && typeof profile.equipment === 'object'
           ? Object.keys(profile.equipment).length
           : 0,
