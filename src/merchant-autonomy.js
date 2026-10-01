@@ -249,6 +249,17 @@
       }
     }
 
+    _isOnCooldown(skillId) {
+      for (const candidate of this._roots()) {
+        try {
+          if (candidate && typeof candidate.is_on_cooldown === 'function') {
+            return candidate.is_on_cooldown(skillId) === true;
+          }
+        } catch (_) {}
+      }
+      return false;
+    }
+
     _conditionActive(skillId) {
       const character = this._rawCharacter();
       const conditions = character && character.s || {};
@@ -1195,8 +1206,7 @@
           };
         }
 
-        const readiness = this._skillReady(kind);
-        if (!readiness) continue;
+        if (this._isOnCooldown(kind)) continue;
         const zones = this._gatherZones(kind);
         if (!zones.length) continue;
         const zone = zones[0];
@@ -1218,6 +1228,8 @@
           }
           continue;
         }
+        const readiness = this._skillReady(kind);
+        if (!readiness) continue;
         return {
           kind: 'GATHER',
           gatherKind: kind,
