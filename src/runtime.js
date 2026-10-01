@@ -316,6 +316,10 @@
           + '/character/' + encodeURIComponent(name)
           + '/in/' + encodeURIComponent(String(server.region))
           + '/' + encodeURIComponent(String(server.identifier)) + '/';
+
+        // Final durable gear snapshot before the page leaves this character.
+        try { if (this.accountStrategy) this.accountStrategy.persistLocalProfile(); } catch (_) {}
+        try { if (this.hostState) this.hostState.flushFinalBestEffort(); } catch (_) {}
         view.location.assign(url);
         return {
           accepted: true,
@@ -368,7 +372,11 @@
           };
         },
         getPartyState: () => this.party.snapshot(),
-        disconnectLocal: () => dispatchH24CharacterDisconnect(),
+        disconnectLocal: () => {
+          try { if (this.accountStrategy) this.accountStrategy.persistLocalProfile(); } catch (_) {}
+          try { if (this.hostState) this.hostState.flushFinalBestEffort(); } catch (_) {}
+          return dispatchH24CharacterDisconnect();
+        },
         navigateCharacterLocal: (desiredName, reason, options) => navigateH25BrowserCharacter(desiredName, options),
         leavePartyLocal: () => dispatchH19CrossWindowPartyAction('leave_party', []),
         requestPartyJoinLocal: leaderName => dispatchH19CrossWindowPartyAction('send_party_request', [leaderName]),
@@ -424,6 +432,10 @@
           return this.stop(reason);
         }
       });
+      this.hostState = new ns.HostPersistentStateClient({
+        root: this.root,
+        logger: this.logger
+      });
       this.lifecycle = new ns.CharacterLifecycleController({
         root: this.root,
         logger: this.logger,
@@ -446,8 +458,10 @@
         party: this.party,
         crossWindow: this.lifecycleTransport,
         gear: this.gear,
-        storage: this.storage
+        storage: this.storage,
+        hostState: this.hostState
       });
+      this.farmIntelligence.strategy = this.accountStrategy;
       this.encounters = new ns.EncounterController({
         root: this.root,
         logger: this.logger,
@@ -719,6 +733,15 @@
         start: context => this.lifecycle.start(context),
         stop: reason => this.lifecycle.stop(reason),
         status: () => this.lifecycle.status()
+      });
+
+      this.modules.register({
+        id: 'host-state',
+        title: 'Local SSD Account State',
+        version: '0.31.0',
+        start: context => this.hostState.start(context),
+        stop: reason => this.hostState.stop(reason),
+        status: () => this.hostState.status()
       });
 
       this.modules.register({
@@ -5850,6 +5873,7 @@
         lifecycleTransport: this.lifecycleTransport.status(),
         lifecycle: this.lifecycle.status(),
         accountStrategy: this.accountStrategy.status(),
+        hostState: this.hostState.status(),
         encounters: this.encounters.status(),
         marketIntelligence: this.marketIntelligence.status(),
         merchantStand: this.merchantStand.status(),
@@ -5896,6 +5920,7 @@
         lifecycleTransport: this.lifecycleTransport.status(),
         lifecycle: this.lifecycle.status(),
         accountStrategy: this.accountStrategy.status(),
+        hostState: this.hostState.status(),
         encounters: this.encounters.status(),
         marketIntelligence: this.marketIntelligence.status(),
         merchantStand: this.merchantStand.status(),
@@ -5950,6 +5975,10 @@
         && typeof this.lifecycleTransport.freshPeer === 'function'
         && typeof this.lifecycleTransport.requestRuntimeState === 'function', this.lifecycleTransport.status());
       push('character-lifecycle-controller', !!this.lifecycle.status() && typeof this.lifecycle.plan === 'function' && typeof this.lifecycle.queueStart === 'function' && typeof this.lifecycle.queueRespawn === 'function', this.lifecycle.status());
+      push('host-state-ssd', !!this.hostState.status()
+        && this.hostState.status().storageContract
+        && this.hostState.status().storageContract.defaultRoot === 'D:/ALBot/state'
+        && typeof this.hostState.flushFinal === 'function', this.hostState.status());
       push('account-strategy-controller', !!this.accountStrategy.status() && typeof this.accountStrategy.optimizeTask === 'function' && typeof this.accountStrategy.progressionPlan === 'function', this.accountStrategy.status());
       push('encounter-controller', !!this.encounters.status()
         && this.encounters.status().policies
@@ -6073,6 +6102,11 @@
 
     prepareHotReload(reason = 'HOT_RELOAD') {
       if (this._destroyed) return;
+      // Capture the outgoing character before any timers, transports or page
+      // state are torn down. keepalive/beacon makes the local SSD write survive
+      // the hot-reload/navigation boundary on a best-effort basis.
+      try { if (this.accountStrategy) this.accountStrategy.persistLocalProfile(); } catch (_) {}
+      try { if (this.hostState) this.hostState.flushFinalBestEffort(); } catch (_) {}
       this.running = false;
       try { this.liveTests.cancel(reason); } catch (_) {}
       try { if (this.lifecycleTransport) this.lifecycleTransport.destroy(reason); } catch (_) {}
