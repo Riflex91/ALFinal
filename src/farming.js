@@ -95,6 +95,7 @@
         aoeConfirmed: 0,
         aoeRejected: 0,
         aoeUnknown: 0,
+        aoeReadinessBlocks: 0,
         maxPackObserved: 0
       };
     }
@@ -392,6 +393,49 @@
       return null;
     }
 
+    _aoeDiagnostics(character, pack, capacity) {
+      const ctype = String(character && character.ctype || '').toLowerCase();
+      return this.supportedAoeSkills(ctype).map(skillId => {
+        const definition = this.game && typeof this.game.skillDefinition === 'function'
+          ? this.game.skillDefinition(skillId)
+          : null;
+        const readiness = this._skillReady(skillId);
+        const range = definition ? this._effectiveSkillRange(definition, character) : null;
+        const inRange = definition && Array.isArray(pack)
+          ? this._targetsInSkillRange(pack, definition, character)
+          : [];
+        const minimumTargets = skillId === '5shot' ? 4
+          : skillId === '3shot' ? 2
+            : skillId === 'fanofknives' ? 3
+              : skillId === 'cburst' ? 2
+                : (skillId === 'cleave' || skillId === 'stomp' ? 3 : 1);
+        const hardCap = skillId === '5shot' ? 5
+          : skillId === '3shot' ? 3
+            : skillId === 'fanofknives' ? (finite(definition && definition.maxTargets) || 5)
+              : capacity;
+        const targetCount = Math.min(inRange.length, Math.max(0, Math.min(capacity || 0, hardCap || capacity || 0)));
+        const blocked = !definition
+          || !readiness
+          || readiness.allowed !== true
+          || targetCount < minimumTargets;
+        if (blocked) this.metrics.aoeReadinessBlocks += 1;
+        return {
+          skillId,
+          definitionAvailable: !!definition,
+          requiredLevel: definition && definition.level != null ? definition.level : null,
+          mpCost: definition && definition.mp != null ? definition.mp : null,
+          readinessAllowed: readiness ? readiness.allowed === true : false,
+          readinessReasons: readiness && Array.isArray(readiness.reasons) ? readiness.reasons.slice() : ['SKILL_UNAVAILABLE'],
+          range,
+          targetsInRange: inRange.length,
+          usableTargetCount: targetCount,
+          minimumTargets,
+          capacity,
+          blocked
+        };
+      });
+    }
+
     plan() {
       this.metrics.plans += 1;
       const game = this.game && typeof this.game.snapshot === 'function' ? this.game.snapshot() : null;
@@ -513,6 +557,7 @@
           hpRatio,
           capacity,
           aggregateAttack,
+          aoeDiagnostics: this._aoeDiagnostics(character, pack, capacity),
           pack
         });
       }
