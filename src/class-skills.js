@@ -41,11 +41,10 @@
     }),
     mage: Object.freeze({
       h6: Object.freeze(['entangle', 'arcane_needle', 'burst']),
+      h7: Object.freeze(['energize', 'reflection']),
       h8: Object.freeze(['cburst']),
       passive: Object.freeze([]),
       excluded: Object.freeze({
-        energize: 'PARTY_SUPPORT_REQUIRES_AMOUNT_POLICY',
-        reflection: 'PARTY_SUPPORT_REQUIRES_TARGET_POLICY',
         blink: 'MOVEMENT_OWNERSHIP_H4',
         magiport: 'REMOTE_PLAYER_MOVEMENT_REQUIRES_EXPLICIT_INTENT',
         light: 'PVP_ANTI_STEALTH_CONTEXT_ONLY',
@@ -62,10 +61,10 @@
     }),
     rogue: Object.freeze({
       h6: Object.freeze(['invis', 'pcoat', 'mentalburst', 'quickstab', 'quickpunch']),
+      h7: Object.freeze(['rspeed']),
       h8: Object.freeze(['fanofknives']),
       passive: Object.freeze(['stack']),
       excluded: Object.freeze({
-        rspeed: 'PARTY_SUPPORT_REQUIRES_TARGET_POLICY',
         pickpocket: 'PLAYER_PVP_THEFT',
         shadowstrike: 'RANDOM_REMOTE_ENEMY_TARGET'
       })
