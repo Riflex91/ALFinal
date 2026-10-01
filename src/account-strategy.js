@@ -199,19 +199,20 @@
       const normalized = cleanText(name || '', 120);
       if (!normalized) return null;
 
-      const inMemory = this.gearRegistry.get(normalized);
-      if (inMemory) return clone(inMemory);
-
+      const inMemory = this.gearRegistry.get(normalized) || null;
       const key = this._profileCacheEntryKey(normalized);
       const direct = key ? this._storageRead(key, null) : null;
       const legacy = this._cachedProfiles();
-      const localCached = this._betterProfile(
+      const stored = this._betterProfile(
         direct && typeof direct === 'object' && !Array.isArray(direct) ? direct : null,
         legacy[normalized] && typeof legacy[normalized] === 'object' && !Array.isArray(legacy[normalized]) ? legacy[normalized] : null
       );
+      const localCached = this._betterProfile(inMemory, stored);
       if (localCached) {
         this.gearRegistry.set(normalized, clone(localCached));
-        this.gearRegistrySource.set(normalized, 'BOT_SHARED_CACHE');
+        if (!inMemory || (stored && this._profileHasEquipment(stored) && !this._profileHasEquipment(inMemory))) {
+          this.gearRegistrySource.set(normalized, 'BOT_SHARED_CACHE');
+        }
         return clone(localCached);
       }
 
@@ -348,7 +349,7 @@
           property: row.property == null ? (row.p == null ? null : clone(row.p)) : clone(row.property)
         };
       }
-      return out;
+      return Object.keys(out).length ? out : null;
     }
 
     localProfile() {
@@ -357,6 +358,7 @@
       const character = snapshot && snapshot.character;
       if (!character || !character.name) return null;
       const ctype = cleanText(character.ctype || '', 40).toLowerCase();
+      const equipment = this._localEquipment(character);
       return {
         schemaVersion: 1,
         name: cleanText(character.name, 120),
@@ -377,7 +379,8 @@
         map: cleanText(character.map || '', 120) || null,
         gold: finite(character.gold),
         gearScore: this._localGearScore(character),
-        equipment: this._localEquipment(character),
+        equipment,
+        equipmentKnown: this._profileHasEquipment({ equipment }),
         trainingMs: Math.max(0, Math.floor(this.trainingMs)),
         capabilities: clone(ROLE_CAPABILITIES[ctype] || []),
         observedAtMs: this.now()
@@ -415,6 +418,7 @@
         gold: finite(row.gold),
         gearScore: 0,
         equipment: null,
+        equipmentKnown: false,
         trainingMs: 0,
         capabilities: clone(ROLE_CAPABILITIES[ctype] || []),
         observedAtMs: null,
@@ -439,7 +443,7 @@
         if (!fallback) continue;
         const cachedRaw = this._cachedProfile(fallback.name);
         const cached = cachedRaw && this._normalizeProfile(cachedRaw);
-        byName.set(fallback.name, cached ? {
+        const selected = cached ? {
           ...fallback,
           ...cached,
           online: false,
@@ -447,7 +451,12 @@
           peerFresh: false,
           local: false,
           cached: true
-        } : fallback);
+        } : fallback;
+        byName.set(fallback.name, selected);
+        if (!cached && !this.gearRegistry.has(fallback.name)) {
+          this.gearRegistry.set(fallback.name, clone(fallback));
+          this.gearRegistrySource.set(fallback.name, 'ACCOUNT_ROSTER');
+        }
       }
 
       let peers = [];
@@ -488,6 +497,9 @@
     _normalizeProfile(raw) {
       if (!raw || !raw.name) return null;
       const ctype = cleanText(raw.ctype || '', 40).toLowerCase();
+      const rawEquipment = raw.equipment && typeof raw.equipment === 'object' ? clone(raw.equipment) : null;
+      const equipmentKnown = this._profileHasEquipment({ equipment: rawEquipment });
+      const equipment = equipmentKnown ? rawEquipment : null;
       return {
         schemaVersion: 1,
         name: cleanText(raw.name, 120),
@@ -509,7 +521,8 @@
         map: cleanText(raw.map || '', 120) || null,
         gold: finite(raw.gold),
         gearScore: Math.max(0, finite(raw.gearScore) || 0),
-        equipment: raw.equipment && typeof raw.equipment === 'object' ? clone(raw.equipment) : null,
+        equipment,
+        equipmentKnown,
         trainingMs: Math.max(0, finite(raw.trainingMs) || 0),
         capabilities: clone(ROLE_CAPABILITIES[ctype] || []),
         observedAtMs: finite(raw.observedAtMs)
@@ -747,7 +760,7 @@
         level: finite(profile && profile.level),
         equipmentKnown: this._profileHasEquipment(profile),
         equipmentSlots: profile && profile.equipment && typeof profile.equipment === 'object'
-          ? Object.keys(profile.equipment).length
+          ? Object.values(profile.equipment).filter(item => item && item.name).length
           : 0,
         observedAtMs: finite(profile && profile.observedAtMs),
         cachedAtMs: finite(profile && profile.cachedAtMs),
