@@ -21,8 +21,8 @@ function makePartyContext(options = {}) {
     level: 70,
     hp: options.localHp == null ? 1000 : options.localHp,
     max_hp: 1000,
-    mp: 1200,
-    max_mp: 1200,
+    mp: options.localMp == null ? 1200 : options.localMp,
+    max_mp: options.localMaxMp == null ? 1200 : options.localMaxMp,
     attack: 150,
     range: 120,
     speed: 60,
@@ -34,7 +34,7 @@ function makePartyContext(options = {}) {
     rip: false,
     target: null,
     party: 'OwnedParty',
-    s: {}
+    s: options.localConditions ? JSON.parse(JSON.stringify(options.localConditions)) : {}
   };
   const partner = {
     id: 'TankWarrior',
@@ -45,8 +45,8 @@ function makePartyContext(options = {}) {
     level: 70,
     hp: options.partnerHp == null ? 1000 : options.partnerHp,
     max_hp: 1000,
-    mp: 800,
-    max_mp: 800,
+    mp: options.partnerMp == null ? 800 : options.partnerMp,
+    max_mp: options.partnerMaxMp == null ? 800 : options.partnerMaxMp,
     attack: 130,
     range: 40,
     map: 'main',
@@ -55,7 +55,8 @@ function makePartyContext(options = {}) {
     visible: true,
     rip: options.partnerRip === true,
     target: options.partnerTarget === undefined ? 'm1' : options.partnerTarget,
-    party: 'OwnedParty'
+    party: 'OwnedParty',
+    s: options.partnerConditions ? JSON.parse(JSON.stringify(options.partnerConditions)) : {}
   };
   const monster = {
     id: 'm1',
@@ -81,6 +82,9 @@ function makePartyContext(options = {}) {
     revive: { class: ['priest'], mp: 500, cooldown: 200, range: 240, target: true },
     huntersmark: { class: ['ranger'], mp: 240, cooldown: 10000, range_multiplier: 3, target: true, hostile: true },
     supershot: { class: ['ranger'], mp: 400, cooldown: 30000, range_multiplier: 3, damage_multiplier: 1.5, target: true, hostile: true },
+    energize: { class: ['mage'], level: 20, cooldown: 4000, range: 320, condition: 'energized', target: 'player' },
+    reflection: { class: ['mage'], level: 60, mp: 540, cooldown: 30000, range: 320, condition: 'reflection', target: 'player' },
+    rspeed: { class: ['rogue'], level: 40, mp: 320, cooldown: 100, range: 320, condition: 'rspeed', target: 'player' },
     taunt: { class: ['warrior'], mp: 40, cooldown: 3000, range: 200, target: true, hostile: true },
     attack: {}
   };
@@ -172,8 +176,8 @@ function makePartyContext(options = {}) {
       if (target === partner) party[partner.name].hp = target.hp;
       return Promise.resolve({ success: true, response: 'data', place: 'heal', target: target.name, heal: 300 });
     },
-    use_skill: (skill, target) => {
-      calls.skills.push({ skill, target: target && target.id ? target.id : target });
+    use_skill: (skill, target, extra) => {
+      calls.skills.push({ skill, target: target && target.id ? target.id : target, extra });
       cooldowns.set(skill, Date.now() + 100);
       if (options.throwSupport === skill) throw new Error('NETWORK_SYNC_UNKNOWN');
       if (options.rejectSupport === skill) return Promise.reject(new Error('NETWORK_UNCERTAIN'));
@@ -192,6 +196,17 @@ function makePartyContext(options = {}) {
       }
       if (skill === 'huntersmark') monster.s = { marked: true };
       if (skill === 'supershot') monster.hp = Math.max(0, monster.hp - 150);
+      if (skill === 'energize') {
+        const amount = Math.max(0, Number(extra) || 0);
+        partner.mp = Math.min(partner.max_mp, partner.mp + amount);
+        party[partner.name].mp = partner.mp;
+        partner.s = { ...(partner.s || {}), energized: { ms: 1000 } };
+      }
+      if (skill === 'reflection') partner.s = { ...(partner.s || {}), reflection: { ms: 10000 } };
+      if (skill === 'rspeed') {
+        const receiver = String(target && target.id ? target.id : target) === local.name ? local : partner;
+        receiver.s = { ...(receiver.s || {}), rspeed: { ms: 60000 } };
+      }
       return Promise.resolve({ success: true, response: 'data', place: skill, target: target && target.id ? target.id : target });
     },
     addEventListener() {},
@@ -402,4 +417,62 @@ test('H7 UI includes party coordination surface and one-click workflow', () => {
   assert.match(ui, /H7 Party/);
   assert.match(ui, /Focus Target/);
   assert.match(ui, /Test starten/);
+});
+
+
+test('H32 mage safely energizes a low-MP owned party member with a bounded transfer', async t => {
+  const { ctx, calls } = makePartyContext({
+    localClass: 'mage',
+    localMp: 1000,
+    localMaxMp: 1200,
+    partnerMp: 100,
+    partnerMaxMp: 800
+  });
+  vm.runInNewContext(bundle, ctx);
+  t.after(async () => { try { await ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {} });
+  await ctx.ALBot.start();
+  await sleep(450);
+
+  const rows = calls.skills.filter(row => row.skill === 'energize');
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].target, 'TankWarrior');
+  assert.ok(rows[0].extra >= 1 && rows[0].extra <= 200);
+  assert.ok(ctx.ALBot.party.status().metrics.energizesDispatched >= 1);
+});
+
+test('H32 mage uses reflection on an engaged owned tank when no mana rescue is needed', async t => {
+  const { ctx, calls } = makePartyContext({
+    localClass: 'mage',
+    localMp: 1200,
+    localMaxMp: 1200,
+    partnerMp: 800,
+    partnerMaxMp: 800,
+    partnerTarget: 'm1'
+  });
+  vm.runInNewContext(bundle, ctx);
+  t.after(async () => { try { await ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {} });
+  await ctx.ALBot.start();
+  await sleep(450);
+
+  const rows = calls.skills.filter(row => row.skill === 'reflection');
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].target, 'TankWarrior');
+  assert.ok(ctx.ALBot.party.status().metrics.reflectionsDispatched >= 1);
+});
+
+test('H32 rogue applies rspeed only through live player readiness and condition gating', async t => {
+  const { ctx, calls } = makePartyContext({
+    localClass: 'rogue',
+    localMp: 1000,
+    localMaxMp: 1200
+  });
+  vm.runInNewContext(bundle, ctx);
+  t.after(async () => { try { await ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {} });
+  await ctx.ALBot.start();
+  await sleep(450);
+
+  const rows = calls.skills.filter(row => row.skill === 'rspeed');
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].target, 'TankWarrior');
+  assert.ok(ctx.ALBot.party.status().metrics.speedBuffsDispatched >= 1);
 });
