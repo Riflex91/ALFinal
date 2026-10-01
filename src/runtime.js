@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.56-h26';
+      this.version = options.version || '0.26.57-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
