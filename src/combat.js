@@ -73,6 +73,7 @@
       this.pendingAttack = null;
       this.targetConfirmDeadlineMs = null;
       this.orbitDirectionByCharacter = new Map();
+      this.damageObservations = new Map();
       this.metrics = {
         sessions: 0,
         targetsAcquired: 0,
@@ -94,7 +95,8 @@
         kiteGroupTetherBlocks: 0,
         kiteGroupSoftTetherBlocks: 0,
         attackTargetRaceRecoveries: 0,
-        attackRangeRecoveries: 0
+        attackRangeRecoveries: 0,
+        damageObservations: 0
       };
     }
 
@@ -510,6 +512,53 @@
       }).catch(() => {});
     }
 
+    _recordDamageObservation(mtype, damage, source = 'unknown') {
+      const key = cleanText(mtype || '', 120);
+      const value = finite(damage);
+      if (!key || value == null || value <= 0) return false;
+      const prior = this.damageObservations.get(key) || {
+        mtype: key,
+        samples: 0,
+        totalDamage: 0,
+        minDamage: null,
+        maxDamage: null,
+        emaDamage: null,
+        lastSource: null,
+        observedAtMs: null
+      };
+      prior.samples += 1;
+      prior.totalDamage += value;
+      prior.minDamage = prior.minDamage == null ? value : Math.min(prior.minDamage, value);
+      prior.maxDamage = prior.maxDamage == null ? value : Math.max(prior.maxDamage, value);
+      prior.emaDamage = prior.emaDamage == null ? value : prior.emaDamage * 0.75 + value * 0.25;
+      prior.lastSource = cleanText(source || 'unknown', 80) || 'unknown';
+      prior.observedAtMs = Date.now();
+      this.damageObservations.set(key, prior);
+      if (this.damageObservations.size > 64) {
+        const oldest = [...this.damageObservations.values()]
+          .sort((a, b) => Number(a.observedAtMs || 0) - Number(b.observedAtMs || 0))[0];
+        if (oldest) this.damageObservations.delete(oldest.mtype);
+      }
+      this.metrics.damageObservations += 1;
+      return true;
+    }
+
+    damageProfile(mtype) {
+      const key = cleanText(mtype || '', 120);
+      const row = key ? this.damageObservations.get(key) : null;
+      if (!row) return null;
+      return {
+        mtype: row.mtype,
+        samples: row.samples,
+        averageDamage: row.samples > 0 ? row.totalDamage / row.samples : null,
+        emaDamage: row.emaDamage,
+        minDamage: row.minDamage,
+        maxDamage: row.maxDamage,
+        lastSource: row.lastSource,
+        observedAtMs: row.observedAtMs
+      };
+    }
+
     _serverAttackEvidence(pending) {
       if (!pending || pending.commandSettlement !== 'RESOLVED') return null;
       const response = pending.commandResponse;
@@ -597,6 +646,7 @@
       if (serverEvidence) {
         this.metrics.attacksConfirmed += 1;
         this.session.counters.attacksConfirmed += 1;
+        this._recordDamageObservation(pending.targetType, serverEvidence.damage, serverEvidence.source);
         if (serverEvidence.lethal) {
           this.metrics.killsObserved += 1;
           this.session.counters.killsObserved += 1;
@@ -641,6 +691,7 @@
       if (pending.baselineHp != null && target.hp != null && target.hp < pending.baselineHp) {
         this.metrics.attacksConfirmed += 1;
         this.session.counters.attacksConfirmed += 1;
+        this._recordDamageObservation(pending.targetType, pending.baselineHp - target.hp, 'target-hp-delta');
         this.pendingAttack = null;
         this.session.state = 'ENGAGED';
         this.session.lastDecision = {
@@ -688,6 +739,7 @@
       this.pendingAttack = {
         attackId: dispatch.id,
         targetId: String(target.id),
+        targetType: cleanText(target.mtype || target.name || '', 120) || null,
         baselineHp: finite(target.hp),
         dispatchedAt: new Date().toISOString(),
         dispatchedAtMs: this.now(),
@@ -1157,6 +1209,10 @@
         pendingAttack: clone(this.pendingAttack),
         config: clone(this.config),
         metrics: clone(this.metrics),
+        damageProfiles: [...this.damageObservations.values()]
+          .sort((a, b) => Number(b.observedAtMs || 0) - Number(a.observedAtMs || 0))
+          .slice(0, 20)
+          .map(row => this.damageProfile(row.mtype)),
         safeCandidates: this.moduleActive && this.game ? this.safeCandidates().slice(0, 5) : []
       };
     }

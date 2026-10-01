@@ -5,9 +5,9 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
-const source = ['src/core.js', 'src/scheduler.js', 'src/game-adapter.js', 'src/knowledge.js', 'src/action-boundary.js', 'src/movement.js', 'src/class-skills.js', 'src/resource-topoff.js', 'src/party.js', 'src/party-logistics.js', 'src/cross-window-lifecycle.js', 'src/lifecycle-recovery.js', 'src/account-strategy.js', 'src/encounters.js', 'src/full-autonomy.js', 'src/farming.js', 'src/combat.js', 'src/farm-intelligence.js', 'src/inventory.js', 'src/merchant.js', 'src/bank.js', 'src/trade.js', 'src/gear.js', 'src/gear-progression.js', 'src/upgrade.js', 'src/exchange-craft.js', 'src/economy.js', 'src/market-intelligence.js', 'src/telemetry.js', 'src/live-test.js', 'src/safe-auto-updater.js', 'src/autonomous-observer.js', 'src/known-recovery.js', 'src/windows-bridge.js', 'src/runtime.js', 'src/ui.js', 'src/ui-advanced.js', 'src/entry.js'];
-const runtimeVersion = '0.26.41-h26';
-const packageVersion = '0.26.41';
+const source = ['src/core.js', 'src/scheduler.js', 'src/game-adapter.js', 'src/knowledge.js', 'src/action-boundary.js', 'src/movement.js', 'src/class-skills.js', 'src/resource-topoff.js', 'src/party.js', 'src/party-logistics.js', 'src/cross-window-lifecycle.js', 'src/lifecycle-recovery.js', 'src/host-state.js', 'src/account-strategy.js', 'src/encounters.js', 'src/full-autonomy.js', 'src/farming.js', 'src/combat.js', 'src/farm-intelligence.js', 'src/inventory.js', 'src/merchant.js', 'src/bank.js', 'src/trade.js', 'src/gear.js', 'src/gear-progression.js', 'src/upgrade.js', 'src/exchange-craft.js', 'src/economy.js', 'src/market-intelligence.js', 'src/telemetry.js', 'src/live-test.js', 'src/safe-auto-updater.js', 'src/autonomous-observer.js', 'src/known-recovery.js', 'src/windows-bridge.js', 'src/runtime.js', 'src/ui.js', 'src/ui-advanced.js', 'src/entry.js'];
+const runtimeVersion = '0.26.48-h26';
+const packageVersion = '0.26.48';
 const bootstrapPath = path.join(root, 'bootstrap/al-bot-bootstrap.js');
 const bootstrapSource = fs.readFileSync(bootstrapPath, 'utf8');
 const bootstrapVersionMatch = bootstrapSource.match(/const BOOTSTRAP_VERSION = '([^']+)'/);

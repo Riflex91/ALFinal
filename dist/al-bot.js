@@ -1,4 +1,4 @@
-/* AL Bot 0.26.41-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.48-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -1264,6 +1264,14 @@
           hpRatio: hp != null && maxHp != null && maxHp > 0 ? hp / maxHp : null,
           mp,
           maxMp,
+          attack: finite((live && live.attack) != null ? live.attack : partyRow.attack),
+          armor: finite((live && live.armor) != null ? live.armor : partyRow.armor),
+          resistance: finite((live && live.resistance) != null ? live.resistance : partyRow.resistance),
+          frequency: finite((live && live.frequency) != null ? live.frequency : partyRow.frequency),
+          speed: finite((live && live.speed) != null ? live.speed : partyRow.speed),
+          range: finite((live && live.range) != null ? live.range : partyRow.range),
+          damageType: cleanText((live && (live.damage_type || live.damageType))
+            || partyRow.damage_type || partyRow.damageType || '', 60).toLowerCase() || null,
           rip: safeBoolean((live && live.rip) || partyRow.rip || (live && live.dead)),
           targetId: ((live && live.target) != null ? live.target : partyRow.target) == null
             ? null
@@ -8121,6 +8129,7 @@
         browserSwapsConfirmed: 0,
         browserSwapSessionRecoveries: 0,
         browserSwapRecoveryBlocks: 0,
+        browserSwapTargetAlreadyOnlineRecoveries: 0,
         lateOutcomeRecoveries: 0,
         rotationCapabilityBlocks: 0,
         stalePendingDiscarded: 0,
@@ -9806,7 +9815,43 @@
       }
 
       if (current.response && (current.response.failed === true || current.response.success === false)) {
-        const reason = current.response.reason || 'H19_SERVER_REJECTED';
+        const reason = cleanText(current.response.reason || 'H19_SERVER_REJECTED', 300);
+
+        // A browser-rotation target can become online between the coordinator's
+        // validation and the remote navigation handler. That is live evidence
+        // that the desired state advanced, not an unknown mutation. Reconcile
+        // this exact race and immediately re-plan instead of permanently
+        // disabling Full Autonomy.
+        if (current.kind === 'BROWSER_SWAP'
+            && reason.includes('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_ALREADY_ONLINE')) {
+          const roster = this._roster();
+          const desiredOnline = !!(roster && roster.onlineStateAvailable === true
+            && this._onlineSet(roster).has(String(current.desiredName || '')));
+          if (desiredOnline) {
+            this.currentAction = null;
+            this._removeStorage('pending');
+            this.metrics.actionsRejected += 1;
+            this.metrics.browserSwapTargetAlreadyOnlineRecoveries += 1;
+            if (current.automatic === true) this.autonomyEnabled = true;
+            this.lastAction = {
+              at: nowIso(),
+              type: 'BROWSER_SWAP_TARGET_ALREADY_ONLINE_RECONCILED',
+              reason: 'H31_BROWSER_SWAP_TARGET_ALREADY_ONLINE_RECONCILED',
+              serverReason: reason,
+              targetName: current.targetName || null,
+              desiredName: current.desiredName || null,
+              autonomyStopped: false
+            };
+            return {
+              state: 'IDLE',
+              reason: 'H31_BROWSER_SWAP_TARGET_ALREADY_ONLINE_RECONCILED',
+              targetName: current.targetName || null,
+              desiredName: current.desiredName || null,
+              autonomyStopped: false
+            };
+          }
+        }
+
         this.currentAction = null;
         this._removeStorage('pending');
         this.metrics.actionsRejected += 1;
@@ -9814,10 +9859,10 @@
         this.lastAction = {
           at: nowIso(),
           type: current.kind + '_REJECTED',
-          reason: cleanText(reason, 300),
+          reason,
           autonomyStopped: current.automatic === true
         };
-        return { state: 'REJECTED', reason: cleanText(reason, 300), autonomyStopped: current.automatic === true };
+        return { state: 'REJECTED', reason, autonomyStopped: current.automatic === true };
       }
 
       if (current.settlement === 'REJECTED') {
@@ -9983,6 +10028,301 @@
     return Number.isFinite(number) ? number : null;
   }
 
+  class HostPersistentStateClient {
+    constructor(options = {}) {
+      this.root = options.root || root;
+      this.logger = options.logger || null;
+      this.endpoint = cleanText(options.endpoint || 'http://127.0.0.1:17391/v1/state/account', 300);
+      this.moduleActive = false;
+      this.scope = null;
+      this.profilesByName = new Map();
+      this.wealthRow = null;
+      this.pendingProfiles = new Map();
+      this.pendingWealth = null;
+      this.lastRefreshAt = null;
+      this.lastFlushAt = null;
+      this.lastError = null;
+      this.backoffUntilMs = 0;
+      this.config = {
+        refreshMs: Math.max(2000, Math.min(60000, Number(options.refreshMs) || 5000)),
+        flushMs: Math.max(2000, Math.min(60000, Number(options.flushMs) || 5000)),
+        requestTimeoutMs: Math.max(500, Math.min(10000, Number(options.requestTimeoutMs) || 2500)),
+        maxProfiles: Math.max(4, Math.min(64, Math.floor(Number(options.maxProfiles) || 32)))
+      };
+      this.metrics = {
+        refreshes: 0,
+        flushes: 0,
+        finalFlushes: 0,
+        beaconFlushes: 0,
+        profilesLoaded: 0,
+        profilesQueued: 0,
+        profilesPersisted: 0,
+        failures: 0
+      };
+    }
+
+    async start(context = {}) {
+      this.moduleActive = true;
+      this.scope = context.scope || null;
+
+      // Load SSD state before account-strategy starts. This is the durable
+      // source for offline gear snapshots; browser storage is only fallback.
+      await this.refresh({ force: true });
+
+      if (this.scope && typeof this.scope.interval === 'function') {
+        this.scope.interval('host-state-refresh', () => { this.refresh().catch(() => {}); }, this.config.refreshMs, { immediate: false });
+        this.scope.interval('host-state-flush', () => { this.flush().catch(() => {}); }, this.config.flushMs, { immediate: false });
+        const unloadTarget = this.root && typeof this.root.addEventListener === 'function' ? this.root : null;
+        if (unloadTarget && typeof this.scope.event === 'function') {
+          this.scope.event('host-state-pagehide', unloadTarget, 'pagehide', () => { this.flushFinalBestEffort(); });
+          this.scope.event('host-state-beforeunload', unloadTarget, 'beforeunload', () => { this.flushFinalBestEffort(); });
+        }
+      }
+      return this.status();
+    }
+
+    async stop() {
+      // account-strategy is registered after this module and therefore stops
+      // first during normal runtime shutdown, queuing the final local snapshot.
+      await this.flush({ force: true, keepalive: true });
+      this.moduleActive = false;
+      this.scope = null;
+      return this.status();
+    }
+
+    _fetch() {
+      return this.root && typeof this.root.fetch === 'function' ? this.root.fetch.bind(this.root) : null;
+    }
+
+    async _request(url, options = {}) {
+      const fetchFn = this._fetch();
+      if (!fetchFn) throw new Error('HOST_STATE_FETCH_UNAVAILABLE');
+      const AbortCtor = this.root && this.root.AbortController;
+      if (typeof AbortCtor !== 'function') return fetchFn(url, options);
+      const controller = new AbortCtor();
+      const timer = this.root && typeof this.root.setTimeout === 'function'
+        ? this.root.setTimeout(() => { try { controller.abort(); } catch (_) {} }, this.config.requestTimeoutMs)
+        : null;
+      try {
+        return await fetchFn(url, { ...options, signal: controller.signal });
+      } finally {
+        if (timer != null && this.root && typeof this.root.clearTimeout === 'function') {
+          try { this.root.clearTimeout(timer); } catch (_) {}
+        }
+      }
+    }
+
+    _recordError(error) {
+      this.metrics.failures += 1;
+      this.lastError = {
+        at: new Date().toISOString(),
+        reason: cleanText(error && error.message || error || 'HOST_STATE_FAILED', 240)
+      };
+      this.backoffUntilMs = Date.now() + 15000;
+      return this.lastError;
+    }
+
+    _mergeProfile(profile) {
+      if (!profile || !profile.name || typeof profile !== 'object') return false;
+      const name = cleanText(profile.name, 120);
+      if (!name) return false;
+      const incomingStamp = finite(profile.observedAtMs) || finite(profile.cachedAtMs) || 0;
+      const current = this.profilesByName.get(name);
+      const currentStamp = finite(current && current.observedAtMs) || finite(current && current.cachedAtMs) || 0;
+      if (!current || incomingStamp >= currentStamp) this.profilesByName.set(name, clone(profile));
+      return true;
+    }
+
+    async refresh(options = {}) {
+      if (Date.now() < this.backoffUntilMs && options.force !== true) return { accepted: false, reason: 'HOST_STATE_BACKOFF' };
+      if (!this._fetch()) return { accepted: false, reason: 'HOST_STATE_FETCH_UNAVAILABLE' };
+      try {
+        const response = await this._request(this.endpoint, {
+          method: 'GET',
+          cache: 'no-store',
+          credentials: 'omit'
+        });
+        if (!response || response.ok !== true) throw new Error('HOST_STATE_HTTP_' + String(response && response.status || 'FAILED'));
+        const payload = await response.json();
+        const profiles = Array.isArray(payload && payload.profiles) ? payload.profiles.slice(0, this.config.maxProfiles) : [];
+        let loaded = 0;
+        for (const profile of profiles) if (this._mergeProfile(profile)) loaded += 1;
+        if (payload && payload.wealth && typeof payload.wealth === 'object') this.wealthRow = clone(payload.wealth);
+        this.metrics.refreshes += 1;
+        this.metrics.profilesLoaded += loaded;
+        this.lastRefreshAt = new Date().toISOString();
+        this.lastError = null;
+        this.backoffUntilMs = 0;
+        return { accepted: true, profiles: loaded, wealth: !!this.wealthRow };
+      } catch (error) {
+        const row = this._recordError(error);
+        return { accepted: false, reason: row.reason };
+      }
+    }
+
+    profile(name) {
+      const key = cleanText(name || '', 120);
+      if (!key) return null;
+      return clone(this.profilesByName.get(key) || null);
+    }
+
+    profiles() {
+      return [...this.profilesByName.values()]
+        .map(clone)
+        .sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+    }
+
+    persistProfile(profile) {
+      if (!profile || !profile.name || typeof profile !== 'object') return false;
+      const row = clone(profile);
+      row.name = cleanText(row.name, 120);
+      if (!row.name) return false;
+      this._mergeProfile(row);
+      this.pendingProfiles.set(row.name, row);
+      this.metrics.profilesQueued += 1;
+      return true;
+    }
+
+    wealth() {
+      return clone(this.wealthRow);
+    }
+
+    persistWealth(wealth) {
+      if (!wealth || typeof wealth !== 'object') return false;
+      this.wealthRow = clone(wealth);
+      this.pendingWealth = clone(wealth);
+      return true;
+    }
+
+    _pendingPayload() {
+      const profileNames = [...this.pendingProfiles.keys()];
+      const profiles = profileNames.map(name => clone(this.pendingProfiles.get(name))).filter(Boolean);
+      const wealth = clone(this.pendingWealth);
+      return {
+        profileNames,
+        profiles,
+        wealth,
+        body: JSON.stringify({ schemaVersion: 1, profiles, wealth })
+      };
+    }
+
+    async flush(options = {}) {
+      if (!this.pendingProfiles.size && !this.pendingWealth) return { accepted: false, reason: 'HOST_STATE_NOTHING_TO_FLUSH' };
+      if (Date.now() < this.backoffUntilMs && options.force !== true) return { accepted: false, reason: 'HOST_STATE_BACKOFF' };
+      if (!this._fetch()) return { accepted: false, reason: 'HOST_STATE_FETCH_UNAVAILABLE' };
+
+      const { profileNames, profiles, wealth, body } = this._pendingPayload();
+      try {
+        const response = await this._request(this.endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+          body,
+          cache: 'no-store',
+          credentials: 'omit',
+          keepalive: options.keepalive === true
+        });
+        if (!response || response.ok !== true) throw new Error('HOST_STATE_HTTP_' + String(response && response.status || 'FAILED'));
+        const result = await response.json().catch(() => ({}));
+        for (const name of profileNames) {
+          const current = this.pendingProfiles.get(name);
+          if (current && profiles.some(row => row && row.name === name
+              && JSON.stringify(row) === JSON.stringify(current))) this.pendingProfiles.delete(name);
+        }
+        if (wealth && this.pendingWealth && JSON.stringify(wealth) === JSON.stringify(this.pendingWealth)) this.pendingWealth = null;
+        this.metrics.flushes += 1;
+        if (options.final === true) this.metrics.finalFlushes += 1;
+        this.metrics.profilesPersisted += Number(result && result.profilesWritten) || profiles.length;
+        this.lastFlushAt = new Date().toISOString();
+        this.lastError = null;
+        this.backoffUntilMs = 0;
+        return { accepted: true, profiles: profiles.length, wealth: !!wealth };
+      } catch (error) {
+        const row = this._recordError(error);
+        return { accepted: false, reason: row.reason };
+      }
+    }
+
+    async flushFinal() {
+      return this.flush({ force: true, keepalive: true, final: true });
+    }
+
+    flushFinalBestEffort() {
+      if (!this.pendingProfiles.size && !this.pendingWealth) return false;
+      const payload = this._pendingPayload();
+      const navigatorRef = this.root && this.root.navigator;
+      try {
+        if (navigatorRef && typeof navigatorRef.sendBeacon === 'function') {
+          const blobCtor = this.root && this.root.Blob;
+          const body = typeof blobCtor === 'function'
+            ? new blobCtor([payload.body], { type: 'text/plain;charset=UTF-8' })
+            : payload.body;
+          if (navigatorRef.sendBeacon(this.endpoint, body) === true) {
+            this.metrics.beaconFlushes += 1;
+            return true;
+          }
+        }
+      } catch (_) {}
+      const fetchFn = this._fetch();
+      if (!fetchFn) return false;
+      try {
+        Promise.resolve(fetchFn(this.endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+          body: payload.body,
+          cache: 'no-store',
+          credentials: 'omit',
+          keepalive: true
+        })).catch(() => {});
+        this.metrics.beaconFlushes += 1;
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    status() {
+      return {
+        schemaVersion: 1,
+        moduleActive: this.moduleActive,
+        endpoint: this.endpoint,
+        cacheProfiles: this.profilesByName.size,
+        pendingProfiles: this.pendingProfiles.size,
+        pendingWealth: !!this.pendingWealth,
+        lastRefreshAt: this.lastRefreshAt,
+        lastFlushAt: this.lastFlushAt,
+        lastError: clone(this.lastError),
+        backoffUntilMs: this.backoffUntilMs,
+        metrics: clone(this.metrics),
+        storageContract: {
+          hostOnly: true,
+          defaultRoot: 'D:/ALBot/state',
+          accountProfiles: 'D:/ALBot/state/account-profiles',
+          wealth: 'D:/ALBot/state/account-wealth.json',
+          browserStorageFallback: true,
+          gameplayActionAuthority: false
+        }
+      };
+    }
+  }
+
+  ns.HostPersistentStateClient = HostPersistentStateClient;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+
+(function (root) {
+  'use strict';
+
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns) throw new Error('ALBOT_INTERNALS_MISSING');
+
+  const clone = ns.helpers.clone;
+  const cleanText = ns.helpers.cleanText;
+
+  function finite(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
   function clamp(value, min = 0, max = 1) {
     return Math.max(min, Math.min(max, Number(value) || 0));
   }
@@ -10066,6 +10406,7 @@
       this.crossWindow = options.crossWindow || null;
       this.gear = options.gear || null;
       this.storage = options.storage || null;
+      this.hostState = options.hostState || null;
       this.now = typeof options.now === 'function' ? options.now : () => Date.now();
       this.moduleActive = false;
       this.scope = null;
@@ -10093,6 +10434,7 @@
     }
 
     stop() {
+      try { this.persistLocalProfile(); } catch (_) {}
       this.moduleActive = false;
       this.scope = null;
       this.heartbeat = null;
@@ -10144,6 +10486,14 @@
     _cachedProfile(name) {
       const normalized = cleanText(name || '', 120);
       if (!normalized) return null;
+
+      try {
+        const hosted = this.hostState && typeof this.hostState.profile === 'function'
+          ? this.hostState.profile(normalized)
+          : null;
+        if (hosted && typeof hosted === 'object' && !Array.isArray(hosted)) return hosted;
+      } catch (_) {}
+
       const key = this._profileCacheEntryKey(normalized);
       const direct = key ? this._storageRead(key, null) : null;
       if (direct && typeof direct === 'object' && !Array.isArray(direct)) return direct;
@@ -10159,13 +10509,26 @@
       if (!normalized.equipment && finite(normalized.gold) == null) return false;
       const key = this._profileCacheEntryKey(normalized.name);
       if (!key) return false;
-      return this._storageWrite(key, {
+      const row = {
         ...clone(normalized),
         cachedAtMs: this.now()
-      });
+      };
+      try {
+        if (this.hostState && typeof this.hostState.persistProfile === 'function') {
+          this.hostState.persistProfile(row);
+        }
+      } catch (_) {}
+      return this._storageWrite(key, row);
     }
 
     _cachedBankGold() {
+      try {
+        const hosted = this.hostState && typeof this.hostState.wealth === 'function'
+          ? this.hostState.wealth()
+          : null;
+        const hostedValue = finite(hosted && hosted.bankGold);
+        if (hostedValue != null) return Math.max(0, hostedValue);
+      } catch (_) {}
       const row = this._storageRead(this.wealthCacheKey, null);
       const value = finite(row && row.bankGold);
       return value == null ? null : Math.max(0, value);
@@ -10174,11 +10537,17 @@
     _rememberBankGold(bankGold) {
       const value = finite(bankGold);
       if (value == null || value < 0) return false;
-      return this._storageWrite(this.wealthCacheKey, {
+      const row = {
         schemaVersion: 1,
         bankGold: value,
         observedAtMs: this.now()
-      });
+      };
+      try {
+        if (this.hostState && typeof this.hostState.persistWealth === 'function') {
+          this.hostState.persistWealth(row);
+        }
+      } catch (_) {}
+      return this._storageWrite(this.wealthCacheKey, row);
     }
 
     recordTraining(active) {
@@ -13500,6 +13869,7 @@
       this.pendingAttack = null;
       this.targetConfirmDeadlineMs = null;
       this.orbitDirectionByCharacter = new Map();
+      this.damageObservations = new Map();
       this.metrics = {
         sessions: 0,
         targetsAcquired: 0,
@@ -13521,7 +13891,8 @@
         kiteGroupTetherBlocks: 0,
         kiteGroupSoftTetherBlocks: 0,
         attackTargetRaceRecoveries: 0,
-        attackRangeRecoveries: 0
+        attackRangeRecoveries: 0,
+        damageObservations: 0
       };
     }
 
@@ -13937,6 +14308,53 @@
       }).catch(() => {});
     }
 
+    _recordDamageObservation(mtype, damage, source = 'unknown') {
+      const key = cleanText(mtype || '', 120);
+      const value = finite(damage);
+      if (!key || value == null || value <= 0) return false;
+      const prior = this.damageObservations.get(key) || {
+        mtype: key,
+        samples: 0,
+        totalDamage: 0,
+        minDamage: null,
+        maxDamage: null,
+        emaDamage: null,
+        lastSource: null,
+        observedAtMs: null
+      };
+      prior.samples += 1;
+      prior.totalDamage += value;
+      prior.minDamage = prior.minDamage == null ? value : Math.min(prior.minDamage, value);
+      prior.maxDamage = prior.maxDamage == null ? value : Math.max(prior.maxDamage, value);
+      prior.emaDamage = prior.emaDamage == null ? value : prior.emaDamage * 0.75 + value * 0.25;
+      prior.lastSource = cleanText(source || 'unknown', 80) || 'unknown';
+      prior.observedAtMs = Date.now();
+      this.damageObservations.set(key, prior);
+      if (this.damageObservations.size > 64) {
+        const oldest = [...this.damageObservations.values()]
+          .sort((a, b) => Number(a.observedAtMs || 0) - Number(b.observedAtMs || 0))[0];
+        if (oldest) this.damageObservations.delete(oldest.mtype);
+      }
+      this.metrics.damageObservations += 1;
+      return true;
+    }
+
+    damageProfile(mtype) {
+      const key = cleanText(mtype || '', 120);
+      const row = key ? this.damageObservations.get(key) : null;
+      if (!row) return null;
+      return {
+        mtype: row.mtype,
+        samples: row.samples,
+        averageDamage: row.samples > 0 ? row.totalDamage / row.samples : null,
+        emaDamage: row.emaDamage,
+        minDamage: row.minDamage,
+        maxDamage: row.maxDamage,
+        lastSource: row.lastSource,
+        observedAtMs: row.observedAtMs
+      };
+    }
+
     _serverAttackEvidence(pending) {
       if (!pending || pending.commandSettlement !== 'RESOLVED') return null;
       const response = pending.commandResponse;
@@ -14024,6 +14442,7 @@
       if (serverEvidence) {
         this.metrics.attacksConfirmed += 1;
         this.session.counters.attacksConfirmed += 1;
+        this._recordDamageObservation(pending.targetType, serverEvidence.damage, serverEvidence.source);
         if (serverEvidence.lethal) {
           this.metrics.killsObserved += 1;
           this.session.counters.killsObserved += 1;
@@ -14068,6 +14487,7 @@
       if (pending.baselineHp != null && target.hp != null && target.hp < pending.baselineHp) {
         this.metrics.attacksConfirmed += 1;
         this.session.counters.attacksConfirmed += 1;
+        this._recordDamageObservation(pending.targetType, pending.baselineHp - target.hp, 'target-hp-delta');
         this.pendingAttack = null;
         this.session.state = 'ENGAGED';
         this.session.lastDecision = {
@@ -14115,6 +14535,7 @@
       this.pendingAttack = {
         attackId: dispatch.id,
         targetId: String(target.id),
+        targetType: cleanText(target.mtype || target.name || '', 120) || null,
         baselineHp: finite(target.hp),
         dispatchedAt: new Date().toISOString(),
         dispatchedAtMs: this.now(),
@@ -14584,6 +15005,10 @@
         pendingAttack: clone(this.pendingAttack),
         config: clone(this.config),
         metrics: clone(this.metrics),
+        damageProfiles: [...this.damageObservations.values()]
+          .sort((a, b) => Number(b.observedAtMs || 0) - Number(a.observedAtMs || 0))
+          .slice(0, 20)
+          .map(row => this.damageProfile(row.mtype)),
         safeCandidates: this.moduleActive && this.game ? this.safeCandidates().slice(0, 5) : []
       };
     }
@@ -14647,6 +15072,7 @@
       this.farming = options.farming;
       this.movement = options.movement;
       this.party = options.party || null;
+      this.strategy = options.strategy || null;
       this.now = typeof options.now === 'function' ? options.now : () => Date.now();
 
       this.config = {
@@ -14714,7 +15140,11 @@
         groupLeaderRecoveries: 0,
         groupCrossMapRegroups: 0,
         transientMovementRecoveries: 0,
-        combatUnknownSuspensions: 0
+        combatUnknownSuspensions: 0,
+        damageLimitedBlocks: 0,
+        groupDpsPlans: 0,
+        groupSafetyBlocks: 0,
+        observedDamagePlans: 0
       };
     }
 
@@ -14858,10 +15288,37 @@
       return names;
     }
 
+    _groupTankEnvelope(character) {
+      const group = this._groupPlanningProfiles(character);
+      const profiles = group.enabled && group.complete ? group.profiles : [character];
+      const candidates = profiles.filter(Boolean);
+      const explicitTank = candidates.find(profile => {
+        const ctype = cleanText(profile && profile.ctype || '', 60).toLowerCase();
+        return ctype === 'warrior' || ctype === 'paladin';
+      }) || null;
+      const tank = explicitTank || candidates
+        .slice()
+        .sort((a, b) => (finite(b && b.maxHp) || 0) - (finite(a && a.maxHp) || 0))[0] || character;
+      const maxHp = Math.max(1, finite(tank && tank.maxHp) || finite(character && character.maxHp) || 1);
+      const healerPresent = candidates.some(profile => cleanText(profile && profile.ctype || '', 60).toLowerCase() === 'priest');
+      return {
+        groupEnabled: group.enabled,
+        groupComplete: group.complete,
+        tankName: cleanText(tank && tank.name || character && character.name || '', 120) || null,
+        tankClass: cleanText(tank && tank.ctype || character && character.ctype || '', 60) || null,
+        tankMaxHp: maxHp,
+        healerPresent,
+        maxSingleAttack: Math.max(20, maxHp * (healerPresent ? 0.10 : 0.08)),
+        incomingBudget: maxHp * (healerPresent ? 0.60 : 0.40)
+      };
+    }
+
     _safeVisible(character) {
       if (!this.combat || typeof this.combat.safeCandidates !== 'function') return [];
+      const envelope = this._groupTankEnvelope(character);
       return this.combat.safeCandidates({
         maxAcquireDistance: this.config.visibleAcquireDistance,
+        maxAttack: envelope.maxSingleAttack,
         maxAttackToHpRatio: 0.08,
         allowContested: false,
         allowUnknownAttack: false,
@@ -15026,7 +15483,39 @@
       const expectedHitChance = candidate.expectedHitChance == null
         ? this._expectedHitChance(character, candidate)
         : clamp(candidate.expectedHitChance);
-      const dps = attack * frequency * expectedHitChance;
+      const localTheoreticalDps = attack * frequency * expectedHitChance;
+
+      const groupPerformance = candidate && candidate.groupPerformance;
+      let dps = groupPerformance && groupPerformance.complete && finite(groupPerformance.aggregateDps) != null
+        ? Math.max(0.1, Number(groupPerformance.aggregateDps))
+        : localTheoreticalDps;
+      let dpsModel = groupPerformance && groupPerformance.complete ? 'GROUP_THEORETICAL' : 'LOCAL_THEORETICAL';
+      if (groupPerformance && groupPerformance.complete) this.metrics.groupDpsPlans += 1;
+
+      let observedDamage = null;
+      try {
+        observedDamage = this.combat && typeof this.combat.damageProfile === 'function'
+          ? this.combat.damageProfile(candidate && candidate.mtype)
+          : null;
+      } catch (_) {}
+      if (observedDamage && Number(observedDamage.samples || 0) >= 3
+          && finite(observedDamage.emaDamage) != null && Number(observedDamage.emaDamage) > 0) {
+        const observedLocalDps = Number(observedDamage.emaDamage) * frequency * expectedHitChance;
+        if (groupPerformance && groupPerformance.complete) {
+          const localName = cleanText(character && character.name || '', 120);
+          const localMember = Array.isArray(groupPerformance.members)
+            ? groupPerformance.members.find(row => row && String(row.name || '') === localName)
+            : null;
+          const localGroupDps = finite(localMember && localMember.theoreticalDps) || localTheoreticalDps;
+          dps = Math.max(0.1, dps - localGroupDps + observedLocalDps);
+          dpsModel = 'GROUP_WITH_LOCAL_OBSERVED_DAMAGE';
+        } else {
+          dps = Math.max(0.1, observedLocalDps);
+          dpsModel = 'LOCAL_OBSERVED_DAMAGE';
+        }
+        this.metrics.observedDamagePlans += 1;
+      }
+
       const hp = finite(definition.hp);
       const killSeconds = hp != null && hp > 0 ? Math.max(0.25, hp / dps) : null;
       const xp = Math.max(0, finite(definition.xp) || 0);
@@ -15048,6 +15537,10 @@
       return {
         xpPerSecond: killSeconds == null ? 0 : xp / killSeconds,
         goldPerSecond: killSeconds == null ? 0 : gold / killSeconds,
+        dps,
+        dpsModel,
+        groupSize: groupPerformance && groupPerformance.complete ? groupPerformance.members.length : 1,
+        observedDamage: observedDamage ? clone(observedDamage) : null,
         dropSignal,
         expectedHitChance,
         density,
@@ -15112,17 +15605,32 @@
       try { status = this.party && typeof this.party.status === 'function' ? this.party.status() : null; } catch (_) {}
       const party = status && status.party || null;
       const owned = party && Array.isArray(party.ownedMembers) ? party.ownedMembers : [];
+      let strategyProfiles = [];
+      try {
+        strategyProfiles = this.strategy && typeof this.strategy.profiles === 'function'
+          ? this.strategy.profiles()
+          : [];
+      } catch (_) {}
       const profiles = [];
       const missingMemberNames = [];
 
       for (const name of memberNames) {
-        const profile = String(name) === String(localName)
-          ? character
-          : owned.find(row => row && String(row.name) === String(name)) || null;
-        if (!profile) {
+        if (String(name) === String(localName)) {
+          profiles.push(character);
+          continue;
+        }
+        const live = owned.find(row => row && String(row.name) === String(name)) || null;
+        const strategic = strategyProfiles.find(row => row && String(row.name) === String(name)) || null;
+        if (!live && !strategic) {
           missingMemberNames.push(name);
           continue;
         }
+        const profile = { ...(strategic || {}), ...(live || {}) };
+        for (const key of ['attack', 'frequency', 'maxHp', 'armor', 'resistance', 'speed', 'range']) {
+          if (finite(live && live[key]) == null && finite(strategic && strategic[key]) != null) profile[key] = strategic[key];
+        }
+        if (!profile.ctype && strategic && strategic.ctype) profile.ctype = strategic.ctype;
+        if (!profile.damageType && strategic && strategic.damageType) profile.damageType = strategic.damageType;
         profiles.push(profile);
       }
 
@@ -15142,6 +15650,20 @@
       return rows.filter(row => {
         if (excluded.has(row.mtype)) return false;
         if (preferred.size && !preferred.has(row.mtype)) return false;
+
+        const definition = row && row.definition || {};
+        const mtype = cleanText(row && row.mtype || '', 120).toLowerCase();
+        // Event/boss targets are not normal FARM candidates. In particular the
+        // Snowman Full Guard mechanic reduces ordinary hits to effectively 1
+        // damage and produces terrible XP/h despite an attractive nominal XP.
+        if (mtype === 'snowman' || definition.boss === true || definition.cooperative === true) {
+          row.exclusionReason = mtype === 'snowman'
+            ? 'H9_DAMAGE_LIMITED_SNOWMAN'
+            : 'H9_ENCOUNTER_TARGET_NOT_NORMAL_FARM';
+          this.metrics.damageLimitedBlocks += 1;
+          return false;
+        }
+
         const expectedHitChance = this._expectedHitChance(character, row);
         row.expectedHitChance = expectedHitChance;
         if (expectedHitChance < this.config.minExpectedHitChance) return false;
@@ -15161,6 +15683,67 @@
           row.groupHitChance.minimum = row.groupHitChance.members.length
             ? Math.min(...row.groupHitChance.members.map(member => member.expectedHitChance))
             : null;
+
+          const performanceMembers = groupProfiles.profiles.map(profile => {
+            const attack = finite(profile && profile.attack);
+            const frequency = finite(profile && profile.frequency);
+            const hitChance = this._expectedHitChance(profile, row);
+            return {
+              name: cleanText(profile && profile.name || '', 120) || null,
+              ctype: cleanText(profile && profile.ctype || '', 60) || null,
+              attack,
+              frequency,
+              expectedHitChance: hitChance,
+              theoreticalDps: attack != null && frequency != null && attack > 0 && frequency > 0
+                ? attack * frequency * hitChance
+                : null
+            };
+          });
+          const performanceComplete = groupProfiles.complete
+            && performanceMembers.length === groupProfiles.memberNames.length
+            && performanceMembers.every(member => finite(member.theoreticalDps) != null);
+          row.groupPerformance = {
+            complete: performanceComplete,
+            aggregateDps: performanceComplete
+              ? performanceMembers.reduce((sum, member) => sum + Number(member.theoreticalDps), 0)
+              : null,
+            members: performanceMembers,
+            missingMemberNames: groupProfiles.missingMemberNames.slice()
+          };
+
+          if (performanceComplete) {
+            const tankEnvelope = this._groupTankEnvelope(character);
+            const definition = row.definition || {};
+            const monsterHp = finite(definition.hp);
+            const monsterAttack = finite(definition.attack);
+            const monsterFrequency = Math.max(0.1, finite(definition.frequency) || 1);
+            const killSeconds = monsterHp != null && monsterHp > 0 && row.groupPerformance.aggregateDps > 0
+              ? monsterHp / row.groupPerformance.aggregateDps
+              : null;
+            const expectedIncoming = killSeconds != null && monsterAttack != null
+              ? monsterAttack * monsterFrequency * killSeconds
+              : null;
+            row.groupSafety = {
+              ...tankEnvelope,
+              killSeconds,
+              monsterAttack,
+              monsterFrequency,
+              expectedIncoming,
+              safe: monsterAttack == null
+                ? false
+                : monsterAttack <= tankEnvelope.maxSingleAttack
+                  && expectedIncoming != null
+                  && expectedIncoming <= tankEnvelope.incomingBudget
+            };
+            // A complete three-character combat model may elect stronger mobs,
+            // but only if the tank/survivability envelope says the group can
+            // finish the kill before expected incoming damage consumes its
+            // conservative budget.
+            if (!row.groupSafety.safe) {
+              this.metrics.groupSafetyBlocks += 1;
+              return false;
+            }
+          }
 
           // H9 is the group-level planner while H5 enforces the same threshold
           // per character. Never elect a farm target that known followers would
@@ -29030,7 +29613,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.41-h26';
+      this.version = options.version || '0.26.48-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -29341,6 +29924,10 @@
           + '/character/' + encodeURIComponent(name)
           + '/in/' + encodeURIComponent(String(server.region))
           + '/' + encodeURIComponent(String(server.identifier)) + '/';
+
+        // Final durable gear snapshot before the page leaves this character.
+        try { if (this.accountStrategy) this.accountStrategy.persistLocalProfile(); } catch (_) {}
+        try { if (this.hostState) this.hostState.flushFinalBestEffort(); } catch (_) {}
         view.location.assign(url);
         return {
           accepted: true,
@@ -29393,7 +29980,11 @@
           };
         },
         getPartyState: () => this.party.snapshot(),
-        disconnectLocal: () => dispatchH24CharacterDisconnect(),
+        disconnectLocal: () => {
+          try { if (this.accountStrategy) this.accountStrategy.persistLocalProfile(); } catch (_) {}
+          try { if (this.hostState) this.hostState.flushFinalBestEffort(); } catch (_) {}
+          return dispatchH24CharacterDisconnect();
+        },
         navigateCharacterLocal: (desiredName, reason, options) => navigateH25BrowserCharacter(desiredName, options),
         leavePartyLocal: () => dispatchH19CrossWindowPartyAction('leave_party', []),
         requestPartyJoinLocal: leaderName => dispatchH19CrossWindowPartyAction('send_party_request', [leaderName]),
@@ -29449,6 +30040,10 @@
           return this.stop(reason);
         }
       });
+      this.hostState = new ns.HostPersistentStateClient({
+        root: this.root,
+        logger: this.logger
+      });
       this.lifecycle = new ns.CharacterLifecycleController({
         root: this.root,
         logger: this.logger,
@@ -29471,8 +30066,10 @@
         party: this.party,
         crossWindow: this.lifecycleTransport,
         gear: this.gear,
-        storage: this.storage
+        storage: this.storage,
+        hostState: this.hostState
       });
+      this.farmIntelligence.strategy = this.accountStrategy;
       this.encounters = new ns.EncounterController({
         root: this.root,
         logger: this.logger,
@@ -29744,6 +30341,15 @@
         start: context => this.lifecycle.start(context),
         stop: reason => this.lifecycle.stop(reason),
         status: () => this.lifecycle.status()
+      });
+
+      this.modules.register({
+        id: 'host-state',
+        title: 'Local SSD Account State',
+        version: '0.31.0',
+        start: context => this.hostState.start(context),
+        stop: reason => this.hostState.stop(reason),
+        status: () => this.hostState.status()
       });
 
       this.modules.register({
@@ -34875,6 +35481,7 @@
         lifecycleTransport: this.lifecycleTransport.status(),
         lifecycle: this.lifecycle.status(),
         accountStrategy: this.accountStrategy.status(),
+        hostState: this.hostState.status(),
         encounters: this.encounters.status(),
         marketIntelligence: this.marketIntelligence.status(),
         merchantStand: this.merchantStand.status(),
@@ -34921,6 +35528,7 @@
         lifecycleTransport: this.lifecycleTransport.status(),
         lifecycle: this.lifecycle.status(),
         accountStrategy: this.accountStrategy.status(),
+        hostState: this.hostState.status(),
         encounters: this.encounters.status(),
         marketIntelligence: this.marketIntelligence.status(),
         merchantStand: this.merchantStand.status(),
@@ -34975,6 +35583,10 @@
         && typeof this.lifecycleTransport.freshPeer === 'function'
         && typeof this.lifecycleTransport.requestRuntimeState === 'function', this.lifecycleTransport.status());
       push('character-lifecycle-controller', !!this.lifecycle.status() && typeof this.lifecycle.plan === 'function' && typeof this.lifecycle.queueStart === 'function' && typeof this.lifecycle.queueRespawn === 'function', this.lifecycle.status());
+      push('host-state-ssd', !!this.hostState.status()
+        && this.hostState.status().storageContract
+        && this.hostState.status().storageContract.defaultRoot === 'D:/ALBot/state'
+        && typeof this.hostState.flushFinal === 'function', this.hostState.status());
       push('account-strategy-controller', !!this.accountStrategy.status() && typeof this.accountStrategy.optimizeTask === 'function' && typeof this.accountStrategy.progressionPlan === 'function', this.accountStrategy.status());
       push('encounter-controller', !!this.encounters.status()
         && this.encounters.status().policies
@@ -35098,6 +35710,11 @@
 
     prepareHotReload(reason = 'HOT_RELOAD') {
       if (this._destroyed) return;
+      // Capture the outgoing character before any timers, transports or page
+      // state are torn down. keepalive/beacon makes the local SSD write survive
+      // the hot-reload/navigation boundary on a best-effort basis.
+      try { if (this.accountStrategy) this.accountStrategy.persistLocalProfile(); } catch (_) {}
+      try { if (this.hostState) this.hostState.flushFinalBestEffort(); } catch (_) {}
       this.running = false;
       try { this.liveTests.cancel(reason); } catch (_) {}
       try { if (this.lifecycleTransport) this.lifecycleTransport.destroy(reason); } catch (_) {}
@@ -37150,7 +37767,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.41-h26',
+    version: '0.26.48-h26',
     bootCount,
     replacedPrevious: !!previous
   });
