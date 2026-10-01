@@ -12,7 +12,7 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 function skillDefs() {
   return {
     charge: { class: ['warrior'], mp: 0, cooldown: 40000, condition: 'charging' },
-    taunt: { class: ['warrior'], mp: 40, cooldown: 3000, range: 200, target: true, hostile: true },
+    taunt: { name: 'Taunt', skin: 'skill_taunt', explanation: 'Draws a monster toward you.', class: ['warrior'], mp: 40, cooldown: 3000, range: 200, target: true, hostile: true },
     hardshell: { class: ['warrior'], level: 60, mp: 480, cooldown: 16000, condition: 'hardshell' },
     warcry: { class: ['warrior'], level: 70, mp: 320, cooldown: 60000, range: 600, condition: 'warcry' },
     cleave: { class: ['warrior'], level: 52, wtype: ['axe', 'scythe'], mp: 720, range: 160, cooldown: 1200, hostile: true },
@@ -254,12 +254,43 @@ test('H6 exposes class skill API, module and recommended live suite', async t =>
   assert.equal(ctx.ALBot.version, '0.26.53-h26');
   assert.equal(typeof ctx.ALBot.classSkills.status, 'function');
   assert.equal(typeof ctx.ALBot.classSkills.preview, 'function');
+  assert.equal(typeof ctx.ALBot.classSkills.catalog, 'function');
+  assert.equal(typeof ctx.ALBot.classSkills.setEnabled, 'function');
+  assert.equal(typeof ctx.ALBot.classSkills.enabled, 'function');
   assert.equal(ctx.ALBot.liveTests.status().recommendedId, 'h19-remote-recovery');
 
   const module = ctx.ALBot.modules.list().find(row => row.id === 'class-skills');
   assert.equal(module.state, 'ACTIVE');
   assert.equal(module.resources, 0);
   assert.ok(ctx.ALBot.scheduler.status().totalResources > 0);
+});
+
+test('Skills catalog uses live class metadata and disabled H6 skills cannot dispatch', async t => {
+  const { ctx, calls } = await startController({
+    ctype: 'warrior', level: 28, mp: 300, maxMp: 300, range: 100, targetX: 50
+  });
+  t.after(async () => { try { ctx.ALBot.combat.stop('TEST_CLEANUP'); } catch (_) {} try { await ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {} });
+
+  const catalog = ctx.ALBot.classSkills.catalog('warrior');
+  const taunt = catalog.find(row => row.id === 'taunt');
+  assert.ok(taunt);
+  assert.equal(taunt.definition.name, 'Taunt');
+  assert.equal(taunt.definition.skin, 'skill_taunt');
+  assert.equal(taunt.definition.explanation, 'Draws a monster toward you.');
+  assert.equal(taunt.definition.range, 200);
+  assert.equal(taunt.definition.mp, 40);
+  assert.equal(taunt.enabled, true);
+
+  assert.equal(ctx.ALBot.classSkills.preview('m1').skillId, 'taunt');
+  const changed = ctx.ALBot.classSkills.setEnabled('taunt', false, 'warrior');
+  assert.equal(changed.accepted, true);
+  assert.equal(ctx.ALBot.classSkills.enabled('taunt', 'warrior'), false);
+  assert.equal(ctx.ALBot.classSkills.preview('m1'), null);
+
+  assert.equal(ctx.ALBot.combat.start({ owner: 'skills-disabled-h6', maxAttack: 20, minMpRatio: 0 }).accepted, true);
+  await sleep(500);
+  assert.equal(calls.skills.some(row => row.skill === 'taunt'), false);
+  assert.ok(ctx.ALBot.classSkills.status().metrics.disabledSkips >= 1);
 });
 
 test('Game Adapter skill readiness honors class, level, MP, cooldown and range', async t => {
@@ -529,26 +560,49 @@ test('H32 consumable and equipment-gated skills fail closed before dispatch', as
   assert.equal(paladin.ctx.ALBot.__runtime.game.skillReadiness('smash', 'm1').allowed, true);
 });
 
-test('H32 Mage Mana Burst is a kill-secure action instead of an unconditional mana dump', async t => {
-  const tooHealthy = await startController({
-    ctype: 'mage', level: 80, mp: 800, maxMp: 800,
-    targetHp: 500, attack: 100, targetX: 50
-  });
-  const killable = await startController({
+test('H32 Mage Mana Burst skips weak farm kills and only secures high-value long fights', async t => {
+  const weakKillable = await startController({
     ctype: 'mage', level: 80, mp: 800, maxMp: 800,
     targetHp: 400, attack: 100, targetX: 50
   });
+  const tooHealthy = await startController({
+    ctype: 'mage', level: 80, mp: 3000, maxMp: 3000,
+    targetHp: 1800, attack: 250, targetX: 50
+  });
+  const highValueKillable = await startController({
+    ctype: 'mage', level: 80, mp: 3000, maxMp: 3000,
+    targetHp: 1400, attack: 250, targetX: 50
+  });
   t.after(async () => {
-    for (const env of [tooHealthy, killable]) {
+    for (const env of [weakKillable, tooHealthy, highValueKillable]) {
       try { await env.ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {}
     }
   });
 
+  assert.equal(weakKillable.ctx.ALBot.classSkills.preview('m1'), null);
   assert.equal(tooHealthy.ctx.ALBot.classSkills.preview('m1'), null);
-  const preview = killable.ctx.ALBot.classSkills.preview('m1');
+  const preview = highValueKillable.ctx.ALBot.classSkills.preview('m1');
   assert.ok(preview);
   assert.equal(preview.skillId, 'burst');
-  assert.equal(preview.reason, 'MAGE_BURST_KILL_SECURE');
+  assert.equal(preview.reason, 'MAGE_BURST_HIGH_VALUE_KILL_SECURE');
+});
+
+test('H32 resource topoff excludes situational party support and disabled skills from passive MP reserve', async t => {
+  const { ctx } = await startController({
+    ctype: 'mage', level: 80, mp: 1350, maxMp: 1350,
+    targetHp: 400, attack: 100, targetX: 50
+  });
+  t.after(async () => { try { await ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {} });
+
+  const first = ctx.ALBot.__runtime.resourceTopoff._skillReserve(ctx.ALBot.__runtime.game.snapshot().character);
+  assert.equal(first.skills.some(row => row.id === 'reflection'), false);
+  assert.equal(first.maxSkillCost, 360);
+  assert.ok(first.requiredRatio < 0.5);
+
+  assert.equal(ctx.ALBot.classSkills.setEnabled('entangle', false, 'mage').accepted, true);
+  const second = ctx.ALBot.__runtime.resourceTopoff._skillReserve(ctx.ALBot.__runtime.game.snapshot().character);
+  assert.equal(second.skills.some(row => row.id === 'entangle'), false);
+  assert.equal(second.maxSkillCost, 160);
 });
 
 test('H32 known skill immunity is rejected without suspending the combat session skills', async t => {
