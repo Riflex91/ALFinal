@@ -752,6 +752,36 @@ test('H17 runtime, API, UI, build and generated bundle are wired without direct 
 });
 
 
+test('H17 audits an unmounted bank once before idle and suppresses immediate remount ping-pong', () => {
+  const f = fixture({
+    map: 'main',
+    bankState: 'NEEDS_BANK',
+    bankRows: [],
+    bankPacks: []
+  });
+
+  const first = f.economy.plan();
+  assert.equal(first.state, 'READY');
+  assert.equal(first.selected.kind, 'BANK_MOUNT');
+  assert.equal(first.selected.purpose, 'ACCOUNT_BANK_AUDIT');
+  assert.equal(first.selected.maintenance, true);
+
+  f.character.map = 'bank';
+  f.plans.bank.state = 'READY';
+  f.plans.bank.reason = 'H12_BANK_READY';
+  const mounted = f.economy.plan();
+  assert.equal(mounted.bankExitRequired, true);
+  assert.equal(mounted.selected.kind, 'BANK_EXIT');
+  assert.ok(f.economy.status().lastBankAuditAtMs != null);
+
+  f.character.map = 'main';
+  f.plans.bank.state = 'NEEDS_BANK';
+  f.plans.bank.reason = 'H12_BANK_NOT_MOUNTED';
+  const immediate = f.economy.plan();
+  assert.equal(immediate.state, 'IDLE');
+  assert.equal(immediate.proposals.some(row => row.kind === 'BANK_MOUNT'), false);
+});
+
 test('H17 performs safe bank maintenance at normal inventory pressure', () => {
   const f = fixture({
     pressure: 'NORMAL',
