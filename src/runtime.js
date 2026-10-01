@@ -49,8 +49,12 @@
         root: this.root,
         logger: this.logger,
         game: this.game,
-        actions: this.actions
+        actions: this.actions,
+        storage: this.storage
       });
+      if (this.game && typeof this.game.setSkillSelectionResolver === 'function') {
+        this.game.setSkillSelectionResolver((skillId, context) => this.classSkills.isSkillEnabled(skillId, context));
+      }
       this.resourceTopoff = new ns.ResourceTopoffController({
         root: this.root,
         logger: this.logger,
