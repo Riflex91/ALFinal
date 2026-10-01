@@ -472,7 +472,8 @@ test('H32 rogue applies rspeed only through live player readiness and condition 
   await sleep(450);
 
   const rows = calls.skills.filter(row => row.skill === 'rspeed');
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0].target, 'TankWarrior');
-  assert.ok(ctx.ALBot.party.status().metrics.speedBuffsDispatched >= 1);
+  assert.equal(rows.length, 2);
+  assert.deepEqual(new Set(rows.map(row => row.target)), new Set(['TankWarrior', 'LocalRanger']));
+  assert.equal(new Set(rows.map(row => row.target)).size, rows.length);
+  assert.ok(ctx.ALBot.party.status().metrics.speedBuffsDispatched >= 2);
 });
