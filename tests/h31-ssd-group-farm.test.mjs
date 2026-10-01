@@ -328,7 +328,7 @@ function lifecycleController(desiredOnline) {
 
 test('H31 lifecycle reconciles target-already-online browser race only with matching live truth', () => {
   const recovered = lifecycleController(true);
-  const result = recovered.tick();
+  const result = recovered._observeCurrent();
   assert.equal(result.state, 'IDLE');
   assert.equal(result.reason, 'H31_BROWSER_SWAP_TARGET_ALREADY_ONLINE_RECONCILED');
   assert.equal(recovered.status().autonomyEnabled, true);
@@ -336,7 +336,7 @@ test('H31 lifecycle reconciles target-already-online browser race only with matc
   assert.equal(recovered.status().metrics.browserSwapTargetAlreadyOnlineRecoveries, 1);
 
   const rejected = lifecycleController(false);
-  const negative = rejected.tick();
+  const negative = rejected._observeCurrent();
   assert.equal(negative.state, 'REJECTED');
   assert.equal(negative.autonomyStopped, true);
   assert.equal(rejected.status().autonomyEnabled, false);
