@@ -297,6 +297,15 @@
     }
 
     _skillReady(id) {
+      if (this.classSkills && typeof this.classSkills.isSkillEnabled === 'function'
+          && this.classSkills.isSkillEnabled(id) !== true) {
+        return {
+          available: true,
+          allowed: false,
+          skillId: id,
+          reasons: ['SKILL_DISABLED_BY_USER']
+        };
+      }
       return this.game && typeof this.game.skillReadiness === 'function'
         ? this.game.skillReadiness(id, null)
         : null;
