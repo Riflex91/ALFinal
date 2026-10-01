@@ -30,6 +30,7 @@
       this.config = {
         refreshMs: Math.max(2000, Math.min(60000, Number(options.refreshMs) || 5000)),
         flushMs: Math.max(2000, Math.min(60000, Number(options.flushMs) || 5000)),
+        requestTimeoutMs: Math.max(500, Math.min(10000, Number(options.requestTimeoutMs) || 2500)),
         maxProfiles: Math.max(4, Math.min(64, Math.floor(Number(options.maxProfiles) || 32)))
       };
       this.metrics = {
@@ -77,6 +78,24 @@
       return this.root && typeof this.root.fetch === 'function' ? this.root.fetch.bind(this.root) : null;
     }
 
+    async _request(url, options = {}) {
+      const fetchFn = this._fetch();
+      if (!fetchFn) throw new Error('HOST_STATE_FETCH_UNAVAILABLE');
+      const AbortCtor = this.root && this.root.AbortController;
+      if (typeof AbortCtor !== 'function') return fetchFn(url, options);
+      const controller = new AbortCtor();
+      const timer = this.root && typeof this.root.setTimeout === 'function'
+        ? this.root.setTimeout(() => { try { controller.abort(); } catch (_) {} }, this.config.requestTimeoutMs)
+        : null;
+      try {
+        return await fetchFn(url, { ...options, signal: controller.signal });
+      } finally {
+        if (timer != null && this.root && typeof this.root.clearTimeout === 'function') {
+          try { this.root.clearTimeout(timer); } catch (_) {}
+        }
+      }
+    }
+
     _recordError(error) {
       this.metrics.failures += 1;
       this.lastError = {
@@ -100,10 +119,9 @@
 
     async refresh(options = {}) {
       if (Date.now() < this.backoffUntilMs && options.force !== true) return { accepted: false, reason: 'HOST_STATE_BACKOFF' };
-      const fetchFn = this._fetch();
-      if (!fetchFn) return { accepted: false, reason: 'HOST_STATE_FETCH_UNAVAILABLE' };
+      if (!this._fetch()) return { accepted: false, reason: 'HOST_STATE_FETCH_UNAVAILABLE' };
       try {
-        const response = await fetchFn(this.endpoint, {
+        const response = await this._request(this.endpoint, {
           method: 'GET',
           cache: 'no-store',
           credentials: 'omit'
@@ -175,12 +193,11 @@
     async flush(options = {}) {
       if (!this.pendingProfiles.size && !this.pendingWealth) return { accepted: false, reason: 'HOST_STATE_NOTHING_TO_FLUSH' };
       if (Date.now() < this.backoffUntilMs && options.force !== true) return { accepted: false, reason: 'HOST_STATE_BACKOFF' };
-      const fetchFn = this._fetch();
-      if (!fetchFn) return { accepted: false, reason: 'HOST_STATE_FETCH_UNAVAILABLE' };
+      if (!this._fetch()) return { accepted: false, reason: 'HOST_STATE_FETCH_UNAVAILABLE' };
 
       const { profileNames, profiles, wealth, body } = this._pendingPayload();
       try {
-        const response = await fetchFn(this.endpoint, {
+        const response = await this._request(this.endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
           body,
