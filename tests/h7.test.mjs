@@ -460,6 +460,26 @@ test('H32 mage uses reflection on an engaged owned tank when no mana rescue is n
   assert.ok(ctx.ALBot.party.status().metrics.reflectionsDispatched >= 1);
 });
 
+test('Skills selection prevents disabled H7 party support from dispatching', async t => {
+  const { ctx, calls } = makePartyContext({
+    localClass: 'mage',
+    localMp: 1200,
+    localMaxMp: 1200,
+    partnerMp: 800,
+    partnerMaxMp: 800,
+    partnerTarget: 'm1'
+  });
+  vm.runInNewContext(bundle, ctx);
+  t.after(async () => { try { await ctx.ALBot.stop('TEST_CLEANUP'); } catch (_) {} });
+
+  assert.equal(ctx.ALBot.classSkills.setEnabled('reflection', false, 'mage').accepted, true);
+  await ctx.ALBot.start();
+  await sleep(450);
+
+  assert.equal(calls.skills.some(row => row.skill === 'reflection'), false);
+  assert.equal(ctx.ALBot.classSkills.enabled('reflection', 'mage'), false);
+});
+
 test('H32 rogue applies rspeed only through live player readiness and condition gating', async t => {
   const { ctx, calls } = makePartyContext({
     localClass: 'rogue',
