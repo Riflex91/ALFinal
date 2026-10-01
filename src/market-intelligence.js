@@ -332,6 +332,7 @@
       this.movement = options.movement || null;
       this.economy = options.economy || null;
       this.partyLogistics = options.partyLogistics || null;
+      this.merchantAutonomy = options.merchantAutonomy || null;
       this.canAct = typeof options.canAct === 'function' ? options.canAct : () => true;
       this.moduleActive = false;
       this.scope = null;
@@ -442,6 +443,8 @@
     }
 
     _busy() {
+      const merchantWork = this.merchantAutonomy && this.merchantAutonomy.status ? this.merchantAutonomy.status() : null;
+      if (merchantWork && merchantWork.exclusive === true) return 'MERCHANT_AUTONOMY_ACTIVE';
       const combat = this.combat && this.combat.status ? this.combat.status() : null;
       if (combat && combat.active) return 'COMBAT_ACTIVE';
       const movement = this.movement && this.movement.status ? this.movement.status() : null;
