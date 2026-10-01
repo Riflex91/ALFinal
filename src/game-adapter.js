@@ -21,6 +21,7 @@
       this.root = options.root || root;
       this.logger = options.logger || null;
       this.lastSnapshot = null;
+      this.skillSelectionResolver = null;
     }
 
     _roots() {
@@ -68,6 +69,26 @@
 
     _character() {
       return this._read('character');
+    }
+
+    setSkillSelectionResolver(resolver) {
+      this.skillSelectionResolver = typeof resolver === 'function' ? resolver : null;
+      return !!this.skillSelectionResolver;
+    }
+
+    skillUserEnabled(skillId) {
+      const id = cleanText(skillId || '', 120);
+      if (!id || !this.skillSelectionResolver) return true;
+      const character = this._character();
+      const context = {
+        name: character && character.name ? cleanText(character.name, 120) : null,
+        ctype: character && character.ctype ? cleanText(character.ctype, 60).toLowerCase() : null
+      };
+      try {
+        return this.skillSelectionResolver(id, context) !== false;
+      } catch (_) {
+        return false;
+      }
     }
 
     _entitySources() {
@@ -1015,6 +1036,8 @@
       return {
         id,
         name: raw.name == null ? id : cleanText(raw.name, 160),
+        skin: raw.skin == null ? null : cleanText(raw.skin, 160),
+        description: raw.explanation == null ? null : cleanText(raw.explanation, 600),
         classes: classesRaw.map(value => cleanText(value, 60).toLowerCase()).filter(Boolean),
         level: finite(raw.level),
         mp: finite(raw.mp),
@@ -1051,6 +1074,22 @@
       };
     }
 
+    classSkillCatalog(ctype = null) {
+      const character = this._character();
+      const key = cleanText(ctype || character && character.ctype || '', 60).toLowerCase();
+      if (!key) return [];
+      const G = this._gameData();
+      const skills = G && G.skills && typeof G.skills === 'object' ? G.skills : {};
+      return Object.keys(skills)
+        .map(id => this.skillDefinition(id))
+        .filter(definition => definition && Array.isArray(definition.classes) && definition.classes.includes(key))
+        .sort((a, b) => {
+          const al = a.level == null ? 0 : Number(a.level);
+          const bl = b.level == null ? 0 : Number(b.level);
+          return al - bl || String(a.name || a.id).localeCompare(String(b.name || b.id));
+        });
+    }
+
     skillReadiness(skillId, targetId = null, options = {}) {
       const definition = this.skillDefinition(skillId);
       const character = this._character();
@@ -1066,13 +1105,16 @@
           cooldownSource: null,
           canUse: null,
           inRange: targetId == null ? true : null,
-          activeCondition: false
+          activeCondition: false,
+          userEnabled: false
         };
       }
 
       const reasons = [];
       const c = normalized.character;
       const G = this._gameData();
+      const userEnabled = this.skillUserEnabled(definition.id);
+      if (!userEnabled) reasons.push('SKILL_DISABLED_BY_USER');
       if (definition.classes.length && !definition.classes.includes(String(c.ctype || '').toLowerCase())) {
         reasons.push('SKILL_CLASS_MISMATCH');
       }
@@ -1225,7 +1267,8 @@
         cooldownSource,
         canUse,
         inRange,
-        activeCondition
+        activeCondition,
+        userEnabled
       };
     }
 
