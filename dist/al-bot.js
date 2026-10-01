@@ -1,4 +1,4 @@
-/* AL Bot 0.26.47-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.48-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -10046,6 +10046,7 @@
       this.config = {
         refreshMs: Math.max(2000, Math.min(60000, Number(options.refreshMs) || 5000)),
         flushMs: Math.max(2000, Math.min(60000, Number(options.flushMs) || 5000)),
+        requestTimeoutMs: Math.max(500, Math.min(10000, Number(options.requestTimeoutMs) || 2500)),
         maxProfiles: Math.max(4, Math.min(64, Math.floor(Number(options.maxProfiles) || 32)))
       };
       this.metrics = {
@@ -10093,6 +10094,24 @@
       return this.root && typeof this.root.fetch === 'function' ? this.root.fetch.bind(this.root) : null;
     }
 
+    async _request(url, options = {}) {
+      const fetchFn = this._fetch();
+      if (!fetchFn) throw new Error('HOST_STATE_FETCH_UNAVAILABLE');
+      const AbortCtor = this.root && this.root.AbortController;
+      if (typeof AbortCtor !== 'function') return fetchFn(url, options);
+      const controller = new AbortCtor();
+      const timer = this.root && typeof this.root.setTimeout === 'function'
+        ? this.root.setTimeout(() => { try { controller.abort(); } catch (_) {} }, this.config.requestTimeoutMs)
+        : null;
+      try {
+        return await fetchFn(url, { ...options, signal: controller.signal });
+      } finally {
+        if (timer != null && this.root && typeof this.root.clearTimeout === 'function') {
+          try { this.root.clearTimeout(timer); } catch (_) {}
+        }
+      }
+    }
+
     _recordError(error) {
       this.metrics.failures += 1;
       this.lastError = {
@@ -10116,10 +10135,9 @@
 
     async refresh(options = {}) {
       if (Date.now() < this.backoffUntilMs && options.force !== true) return { accepted: false, reason: 'HOST_STATE_BACKOFF' };
-      const fetchFn = this._fetch();
-      if (!fetchFn) return { accepted: false, reason: 'HOST_STATE_FETCH_UNAVAILABLE' };
+      if (!this._fetch()) return { accepted: false, reason: 'HOST_STATE_FETCH_UNAVAILABLE' };
       try {
-        const response = await fetchFn(this.endpoint, {
+        const response = await this._request(this.endpoint, {
           method: 'GET',
           cache: 'no-store',
           credentials: 'omit'
@@ -10191,12 +10209,11 @@
     async flush(options = {}) {
       if (!this.pendingProfiles.size && !this.pendingWealth) return { accepted: false, reason: 'HOST_STATE_NOTHING_TO_FLUSH' };
       if (Date.now() < this.backoffUntilMs && options.force !== true) return { accepted: false, reason: 'HOST_STATE_BACKOFF' };
-      const fetchFn = this._fetch();
-      if (!fetchFn) return { accepted: false, reason: 'HOST_STATE_FETCH_UNAVAILABLE' };
+      if (!this._fetch()) return { accepted: false, reason: 'HOST_STATE_FETCH_UNAVAILABLE' };
 
       const { profileNames, profiles, wealth, body } = this._pendingPayload();
       try {
-        const response = await fetchFn(this.endpoint, {
+        const response = await this._request(this.endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
           body,
@@ -15126,6 +15143,7 @@
         combatUnknownSuspensions: 0,
         damageLimitedBlocks: 0,
         groupDpsPlans: 0,
+        groupSafetyBlocks: 0,
         observedDamagePlans: 0
       };
     }
@@ -15270,10 +15288,37 @@
       return names;
     }
 
+    _groupTankEnvelope(character) {
+      const group = this._groupPlanningProfiles(character);
+      const profiles = group.enabled && group.complete ? group.profiles : [character];
+      const candidates = profiles.filter(Boolean);
+      const explicitTank = candidates.find(profile => {
+        const ctype = cleanText(profile && profile.ctype || '', 60).toLowerCase();
+        return ctype === 'warrior' || ctype === 'paladin';
+      }) || null;
+      const tank = explicitTank || candidates
+        .slice()
+        .sort((a, b) => (finite(b && b.maxHp) || 0) - (finite(a && a.maxHp) || 0))[0] || character;
+      const maxHp = Math.max(1, finite(tank && tank.maxHp) || finite(character && character.maxHp) || 1);
+      const healerPresent = candidates.some(profile => cleanText(profile && profile.ctype || '', 60).toLowerCase() === 'priest');
+      return {
+        groupEnabled: group.enabled,
+        groupComplete: group.complete,
+        tankName: cleanText(tank && tank.name || character && character.name || '', 120) || null,
+        tankClass: cleanText(tank && tank.ctype || character && character.ctype || '', 60) || null,
+        tankMaxHp: maxHp,
+        healerPresent,
+        maxSingleAttack: Math.max(20, maxHp * (healerPresent ? 0.10 : 0.08)),
+        incomingBudget: maxHp * (healerPresent ? 0.60 : 0.40)
+      };
+    }
+
     _safeVisible(character) {
       if (!this.combat || typeof this.combat.safeCandidates !== 'function') return [];
+      const envelope = this._groupTankEnvelope(character);
       return this.combat.safeCandidates({
         maxAcquireDistance: this.config.visibleAcquireDistance,
+        maxAttack: envelope.maxSingleAttack,
         maxAttackToHpRatio: 0.08,
         allowContested: false,
         allowUnknownAttack: false,
@@ -15665,6 +15710,40 @@
             members: performanceMembers,
             missingMemberNames: groupProfiles.missingMemberNames.slice()
           };
+
+          if (performanceComplete) {
+            const tankEnvelope = this._groupTankEnvelope(character);
+            const definition = row.definition || {};
+            const monsterHp = finite(definition.hp);
+            const monsterAttack = finite(definition.attack);
+            const monsterFrequency = Math.max(0.1, finite(definition.frequency) || 1);
+            const killSeconds = monsterHp != null && monsterHp > 0 && row.groupPerformance.aggregateDps > 0
+              ? monsterHp / row.groupPerformance.aggregateDps
+              : null;
+            const expectedIncoming = killSeconds != null && monsterAttack != null
+              ? monsterAttack * monsterFrequency * killSeconds
+              : null;
+            row.groupSafety = {
+              ...tankEnvelope,
+              killSeconds,
+              monsterAttack,
+              monsterFrequency,
+              expectedIncoming,
+              safe: monsterAttack == null
+                ? false
+                : monsterAttack <= tankEnvelope.maxSingleAttack
+                  && expectedIncoming != null
+                  && expectedIncoming <= tankEnvelope.incomingBudget
+            };
+            // A complete three-character combat model may elect stronger mobs,
+            // but only if the tank/survivability envelope says the group can
+            // finish the kill before expected incoming damage consumes its
+            // conservative budget.
+            if (!row.groupSafety.safe) {
+              this.metrics.groupSafetyBlocks += 1;
+              return false;
+            }
+          }
 
           // H9 is the group-level planner while H5 enforces the same threshold
           // per character. Never elect a farm target that known followers would
@@ -29534,7 +29613,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.47-h26';
+      this.version = options.version || '0.26.48-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -37688,7 +37767,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.47-h26',
+    version: '0.26.48-h26',
     bootCount,
     replacedPrevious: !!previous
   });
