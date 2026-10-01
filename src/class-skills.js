@@ -11,7 +11,7 @@
   const CLASS_SKILLS = Object.freeze({
     warrior: Object.freeze(['hardshell', 'charge', 'taunt', 'warcry']),
     ranger: Object.freeze(['huntersmark', 'poisonarrow', 'piercingshot', 'supershot']),
-    mage: Object.freeze(['entangle', 'arcane_needle', 'burst']),
+    mage: Object.freeze(['entangle', 'arcane_needle']),
     priest: Object.freeze(['phaseout', 'curse', 'darkblessing']),
     rogue: Object.freeze(['invis', 'pcoat', 'mentalburst', 'quickstab', 'quickpunch']),
     paladin: Object.freeze(['selfheal', 'shield_slam', 'purify', 'smash'])
@@ -40,11 +40,12 @@
       })
     }),
     mage: Object.freeze({
-      h6: Object.freeze(['entangle', 'arcane_needle', 'burst']),
+      h6: Object.freeze(['entangle', 'arcane_needle']),
       h7: Object.freeze(['energize', 'reflection']),
       h8: Object.freeze(['cburst']),
       passive: Object.freeze([]),
       excluded: Object.freeze({
+        burst: 'FULL_MANA_DUMP_RESERVED_FOR_EXPLICIT_ENCOUNTER_POLICY',
         blink: 'MOVEMENT_OWNERSHIP_H4',
         magiport: 'REMOTE_PLAYER_MOVEMENT_REQUIRES_EXPLICIT_INTENT',
         light: 'PVP_ANTI_STEALTH_CONTEXT_ONLY',
@@ -408,32 +409,11 @@
           if (needle) return needle;
         }
 
-        // Mana Burst consumes the current mana pool. Use it as a bounded
-        // finisher only when the live MP-derived pure damage should kill the
-        // target; never dump all mana merely because a fight is long.
-        const burstDefinition = this.game && typeof this.game.skillDefinition === 'function'
-          ? this.game.skillDefinition('burst')
-          : null;
-        const burstRatio = finite(burstDefinition && burstDefinition.ratio) != null
-          ? finite(burstDefinition.ratio)
-          : finite(burstDefinition && burstDefinition.damageMultiplier);
-        const currentMp = finite(character.mp);
-        const estimatedBurstDamage = currentMp != null && burstRatio != null ? currentMp * burstRatio : null;
-        if (targetHp != null && estimatedBurstDamage != null
-            && targetHp > Math.max(80, attack * 0.90)
-            && targetHp <= estimatedBurstDamage
-            && mpRatio != null && mpRatio >= 0.45) {
-          const burst = this._skillCandidate('burst', target, game, {
-            kind: 'damage',
-            reason: 'MAGE_BURST_KILL_SECURE',
-            recastMs: 5500,
-            utility: 220,
-            mpReserveRatio: 0
-          });
-          if (burst) return burst;
-        } else if (targetHp != null && estimatedBurstDamage != null && targetHp < attack * 0.90) {
-          this.metrics.overkillSkips += 1;
-        }
+        // Mana Burst intentionally consumes the current mana pool. It is not
+        // part of routine farming: normal combat falls back to bounded skills
+        // and basic attacks so the Mage keeps operational MP for movement,
+        // support and AoE. Burst is reserved for a future explicit encounter
+        // policy that can justify draining the resource pool.
       }
 
       if (ctype === 'priest') {
