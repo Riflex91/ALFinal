@@ -79,6 +79,7 @@
       this.cooldownUntilMs = null;
       this.rejectionBackoff = new Map();
       this.materialBankMisses = new Map();
+      this.bankDiscoveryCompleted = false;
 
       this.config = {
         tickMs: Math.max(250, Math.min(5000, Number(options.tickMs) || 1000)),
@@ -107,6 +108,7 @@
         sessionBudgetBlocks: 0,
         materialBankMisses: 0,
         materialBankMountSkips: 0,
+        bankDiscoveryMounts: 0,
         byKind: {}
       };
     }
@@ -122,6 +124,7 @@
       this.cooldownUntilMs = null;
       this.rejectionBackoff.clear();
       this.materialBankMisses.clear();
+      this.bankDiscoveryCompleted = false;
       if (this.scope && typeof this.scope.interval === 'function') {
         this.scope.interval('economy-tick', () => this.tick(), this.config.tickMs, { immediate: true });
       }
@@ -418,6 +421,7 @@
       const merchantPlan = this._callPlan(this.merchant);
       const bankPlan = this._callPlan(this.bank);
       const tradePlan = this._callPlan(this.trade);
+      if (bankPlan && bankPlan.state === 'READY') this.bankDiscoveryCompleted = true;
       const gearPlan = this._callPlan(this.gear);
       const upgradePlan = this._callPlan(this.upgrade);
       const exchangePlan = this._callPlan(this.exchangeCraft);
@@ -701,6 +705,23 @@
         else if (npc) proposals.push(npc);
       }
 
+      // Fail-safe discovery pass: if Economy has no other safe work and the
+      // bank has not been observed during this bot run, mount it once. Without
+      // this pass H17 can remain permanently IDLE while bank-only gear,
+      // mutation materials or sellable inventory are invisible.
+      if (!proposals.length
+          && bankPlan && bankPlan.state === 'NEEDS_BANK'
+          && this.bankDiscoveryCompleted !== true) {
+        const discovery = this._proposal('BANK_MOUNT', 'bank', {
+          key: 'account-discovery',
+          purpose: 'ACCOUNT_BANK_DISCOVERY',
+          maintenance: true,
+          discovery: true,
+          risk: 0
+        });
+        if (discovery) proposals.push(discovery);
+      }
+
       proposals.sort((a, b) =>
         Number(b.priority || 0) - Number(a.priority || 0)
         || Number(a.risk || 0) - Number(b.risk || 0)
@@ -823,6 +844,8 @@
       if (result.accepted !== true) return clone(result);
 
       if (proposal.kind === 'BANK_MOUNT' && result.alreadyMounted === true) {
+        this.bankDiscoveryCompleted = true;
+        if (proposal.discovery === true) this.metrics.bankDiscoveryMounts += 1;
         this.actionsThisSession += 1;
         this.metrics.actionsQueued += 1;
         this.metrics.actionsConfirmed += 1;
@@ -884,6 +907,10 @@
       if (outcome === 'CONFIRMED' && current && ['BANK_DEPOSIT', 'BANK_WITHDRAW'].includes(String(current.kind || ''))) {
         const changedName = cleanText(current.proposal && current.proposal.itemName || '', 160);
         if (changedName) this.materialBankMisses.delete(changedName);
+      }
+      if (outcome === 'CONFIRMED' && current && String(current.kind || '') === 'BANK_MOUNT') {
+        this.bankDiscoveryCompleted = true;
+        if (current.proposal && current.proposal.discovery === true) this.metrics.bankDiscoveryMounts += 1;
       }
       if (outcome === 'CONFIRMED') this.metrics.actionsConfirmed += 1;
       else if (outcome === 'REJECTED') this.metrics.actionsRejected += 1;
@@ -1009,6 +1036,7 @@
         cooldownUntilMs: this.cooldownUntilMs,
         rejectionBackoff: Array.from(this.rejectionBackoff.entries()).map(([proposalId, untilMs]) => ({ proposalId, untilMs })),
         materialBankMisses: Array.from(this.materialBankMisses.entries()).map(([needKey, details]) => ({ needKey, ...clone(details) })),
+        bankDiscoveryCompleted: this.bankDiscoveryCompleted,
         lastPlan: clone(this.lastPlan),
         lastAction: clone(this.lastAction),
         futureGearPolicy: this.gearProgression && typeof this.gearProgression.status === 'function'
