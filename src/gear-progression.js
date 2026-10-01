@@ -373,7 +373,10 @@
 
     _profileEquipment(profile) {
       if (!profile || !profile.equipment || typeof profile.equipment !== 'object') return null;
-      return profile.equipment;
+      if (profile.equipmentKnown === false) return null;
+      return Object.values(profile.equipment).some(item => item && item.name)
+        ? profile.equipment
+        : null;
     }
 
     _classProfile(ctype) {
