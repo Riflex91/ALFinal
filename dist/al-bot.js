@@ -1,4 +1,4 @@
-/* AL Bot 0.26.42-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.43-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -10285,6 +10285,7 @@
       this.crossWindow = options.crossWindow || null;
       this.gear = options.gear || null;
       this.storage = options.storage || null;
+      this.hostState = options.hostState || null;
       this.now = typeof options.now === 'function' ? options.now : () => Date.now();
       this.moduleActive = false;
       this.scope = null;
@@ -10312,6 +10313,7 @@
     }
 
     stop() {
+      try { this.persistLocalProfile(); } catch (_) {}
       this.moduleActive = false;
       this.scope = null;
       this.heartbeat = null;
@@ -10363,6 +10365,14 @@
     _cachedProfile(name) {
       const normalized = cleanText(name || '', 120);
       if (!normalized) return null;
+
+      try {
+        const hosted = this.hostState && typeof this.hostState.profile === 'function'
+          ? this.hostState.profile(normalized)
+          : null;
+        if (hosted && typeof hosted === 'object' && !Array.isArray(hosted)) return hosted;
+      } catch (_) {}
+
       const key = this._profileCacheEntryKey(normalized);
       const direct = key ? this._storageRead(key, null) : null;
       if (direct && typeof direct === 'object' && !Array.isArray(direct)) return direct;
@@ -10378,13 +10388,26 @@
       if (!normalized.equipment && finite(normalized.gold) == null) return false;
       const key = this._profileCacheEntryKey(normalized.name);
       if (!key) return false;
-      return this._storageWrite(key, {
+      const row = {
         ...clone(normalized),
         cachedAtMs: this.now()
-      });
+      };
+      try {
+        if (this.hostState && typeof this.hostState.persistProfile === 'function') {
+          this.hostState.persistProfile(row);
+        }
+      } catch (_) {}
+      return this._storageWrite(key, row);
     }
 
     _cachedBankGold() {
+      try {
+        const hosted = this.hostState && typeof this.hostState.wealth === 'function'
+          ? this.hostState.wealth()
+          : null;
+        const hostedValue = finite(hosted && hosted.bankGold);
+        if (hostedValue != null) return Math.max(0, hostedValue);
+      } catch (_) {}
       const row = this._storageRead(this.wealthCacheKey, null);
       const value = finite(row && row.bankGold);
       return value == null ? null : Math.max(0, value);
@@ -10393,11 +10416,17 @@
     _rememberBankGold(bankGold) {
       const value = finite(bankGold);
       if (value == null || value < 0) return false;
-      return this._storageWrite(this.wealthCacheKey, {
+      const row = {
         schemaVersion: 1,
         bankGold: value,
         observedAtMs: this.now()
-      });
+      };
+      try {
+        if (this.hostState && typeof this.hostState.persistWealth === 'function') {
+          this.hostState.persistWealth(row);
+        }
+      } catch (_) {}
+      return this._storageWrite(this.wealthCacheKey, row);
     }
 
     recordTraining(active) {
@@ -29249,7 +29278,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.42-h26';
+      this.version = options.version || '0.26.43-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -37369,7 +37398,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.42-h26',
+    version: '0.26.43-h26',
     bootCount,
     replacedPrevious: !!previous
   });
