@@ -1,4 +1,4 @@
-/* AL Bot 0.26.54-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.55-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -30342,7 +30342,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.54-h26';
+      this.version = options.version || '0.26.55-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -38532,6 +38532,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
 (function (root) {
   'use strict';
+  void 'ALBOT_RELEASE_REFRESH_20261001';
   const ns = root.__ALBOT_INTERNALS__;
   if (!ns || !ns.ALBotRuntime) throw new Error('ALBOT_RUNTIME_MISSING');
   const cleanText = ns.helpers && ns.helpers.cleanText ? ns.helpers.cleanText : (value => String(value == null ? '' : value));
@@ -38607,7 +38608,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.54-h26',
+    version: '0.26.55-h26',
     bootCount,
     replacedPrevious: !!previous
   });
