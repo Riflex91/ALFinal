@@ -142,6 +142,7 @@
         browserSwapsConfirmed: 0,
         browserSwapSessionRecoveries: 0,
         browserSwapRecoveryBlocks: 0,
+        browserSwapTargetAlreadyOnlineRecoveries: 0,
         lateOutcomeRecoveries: 0,
         rotationCapabilityBlocks: 0,
         stalePendingDiscarded: 0,
@@ -1827,7 +1828,43 @@
       }
 
       if (current.response && (current.response.failed === true || current.response.success === false)) {
-        const reason = current.response.reason || 'H19_SERVER_REJECTED';
+        const reason = cleanText(current.response.reason || 'H19_SERVER_REJECTED', 300);
+
+        // A browser-rotation target can become online between the coordinator's
+        // validation and the remote navigation handler. That is live evidence
+        // that the desired state advanced, not an unknown mutation. Reconcile
+        // this exact race and immediately re-plan instead of permanently
+        // disabling Full Autonomy.
+        if (current.kind === 'BROWSER_SWAP'
+            && reason.includes('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_ALREADY_ONLINE')) {
+          const roster = this._roster();
+          const desiredOnline = !!(roster && roster.onlineStateAvailable === true
+            && this._onlineSet(roster).has(String(current.desiredName || '')));
+          if (desiredOnline) {
+            this.currentAction = null;
+            this._removeStorage('pending');
+            this.metrics.actionsRejected += 1;
+            this.metrics.browserSwapTargetAlreadyOnlineRecoveries += 1;
+            if (current.automatic === true) this.autonomyEnabled = true;
+            this.lastAction = {
+              at: nowIso(),
+              type: 'BROWSER_SWAP_TARGET_ALREADY_ONLINE_RECONCILED',
+              reason: 'H31_BROWSER_SWAP_TARGET_ALREADY_ONLINE_RECONCILED',
+              serverReason: reason,
+              targetName: current.targetName || null,
+              desiredName: current.desiredName || null,
+              autonomyStopped: false
+            };
+            return {
+              state: 'IDLE',
+              reason: 'H31_BROWSER_SWAP_TARGET_ALREADY_ONLINE_RECONCILED',
+              targetName: current.targetName || null,
+              desiredName: current.desiredName || null,
+              autonomyStopped: false
+            };
+          }
+        }
+
         this.currentAction = null;
         this._removeStorage('pending');
         this.metrics.actionsRejected += 1;
@@ -1835,10 +1872,10 @@
         this.lastAction = {
           at: nowIso(),
           type: current.kind + '_REJECTED',
-          reason: cleanText(reason, 300),
+          reason,
           autonomyStopped: current.automatic === true
         };
-        return { state: 'REJECTED', reason: cleanText(reason, 300), autonomyStopped: current.automatic === true };
+        return { state: 'REJECTED', reason, autonomyStopped: current.automatic === true };
       }
 
       if (current.settlement === 'REJECTED') {
