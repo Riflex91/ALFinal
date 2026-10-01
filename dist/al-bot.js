@@ -1,4 +1,4 @@
-/* AL Bot 0.26.55-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.56-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -2982,6 +2982,10 @@
     open_stand: Object.freeze({ publicName: 'open_stand', family: 'merchant-stand' }),
     close_stand: Object.freeze({ publicName: 'close_stand', family: 'merchant-stand' }),
     trade: Object.freeze({ publicName: 'trade', family: 'merchant-stand' }),
+    wishlist: Object.freeze({ publicName: 'wishlist', family: 'merchant-stand' }),
+    join_giveaway: Object.freeze({ publicName: 'join_giveaway', family: 'merchant-market' }),
+    get_secondhands: Object.freeze({ publicName: 'get_secondhands', family: 'merchant-market' }),
+    buy_secondhand: Object.freeze({ publicName: 'buy_secondhand', family: 'merchant-market' }),
     equip: Object.freeze({ publicName: 'equip', family: 'gear' }),
     unequip: Object.freeze({ publicName: 'unequip', family: 'gear' }),
     upgrade: Object.freeze({ publicName: 'upgrade', family: 'upgrade-compound' }),
@@ -4001,14 +4005,15 @@
   const clone = ns.helpers.clone;
   const cleanText = ns.helpers.cleanText;
 
-  const SUPPORTED_CLASSES = Object.freeze(['warrior', 'ranger', 'mage', 'priest', 'rogue', 'paladin']);
+  const SUPPORTED_CLASSES = Object.freeze(['warrior', 'ranger', 'mage', 'priest', 'rogue', 'paladin', 'merchant']);
   const CLASS_SKILLS = Object.freeze({
     warrior: Object.freeze(['hardshell', 'charge', 'taunt', 'warcry']),
     ranger: Object.freeze(['huntersmark', 'poisonarrow', 'piercingshot', 'supershot']),
     mage: Object.freeze(['entangle', 'arcane_needle', 'burst']),
     priest: Object.freeze(['phaseout', 'curse', 'darkblessing']),
     rogue: Object.freeze(['invis', 'pcoat', 'mentalburst', 'quickstab', 'quickpunch']),
-    paladin: Object.freeze(['selfheal', 'shield_slam', 'purify', 'smash'])
+    paladin: Object.freeze(['selfheal', 'shield_slam', 'purify', 'smash']),
+    merchant: Object.freeze(['fishing', 'mining', 'mluck', 'mcourage', 'mfrenzy', 'massproduction', 'massproductionpp', 'massexchange', 'massexchangepp'])
   });
 
   // Complete class-skill ownership map. A skill missing from the H6 rotation is
@@ -4073,6 +4078,16 @@
         guardians_oath: 'DAMAGE_TRANSFER_REQUIRES_SURVIVABILITY_MODEL',
         beacon_of_resolve: 'GROUP_BUFF_REQUIRES_ENCOUNTER_POLICY',
         paladin_aura: 'MULTI_STATE_AURA_REQUIRES_GROUP_POLICY'
+      })
+    }),
+    merchant: Object.freeze({
+      merchant: Object.freeze([
+        'fishing', 'mining', 'mluck', 'mcourage', 'mfrenzy',
+        'massproduction', 'massproductionpp', 'massexchange', 'massexchangepp'
+      ]),
+      passive: Object.freeze([]),
+      excluded: Object.freeze({
+        throw: 'DESTRUCTIVE_ITEM_THROW_REQUIRES_EXPLICIT_INTENT'
       })
     })
   });
@@ -4223,7 +4238,7 @@
       const id = cleanText(skillId || '', 120);
       const policy = CLASS_SKILL_POLICY[key] || null;
       if (!policy || !id) return null;
-      for (const owner of ['h6', 'h7', 'h8', 'passive']) {
+      for (const owner of ['h6', 'h7', 'h8', 'merchant', 'passive']) {
         if (Array.isArray(policy[owner]) && policy[owner].includes(id)) return owner.toUpperCase();
       }
       if (policy.excluded && Object.prototype.hasOwnProperty.call(policy.excluded, id)) return 'EXCLUDED';
@@ -4232,7 +4247,7 @@
 
     _defaultSkillEnabled(ctype, skillId) {
       const owner = this._policySkillOwner(ctype, skillId);
-      return owner === 'H6' || owner === 'H7' || owner === 'H8';
+      return owner === 'H6' || owner === 'H7' || owner === 'H8' || owner === 'MERCHANT';
     }
 
     skillCatalog(ctype) {
@@ -17845,6 +17860,7 @@
       this.logger = options.logger || null;
       this.game = options.game || null;
       this.actions = options.actions || null;
+      this.classSkills = options.classSkills || null;
       this.roster = options.roster || null;
       this.movement = options.movement || null;
       this.inventory = options.inventory || null;
@@ -18294,6 +18310,10 @@
 
     _dispatchMluck(target) {
       if (!target || !target.name) return { accepted: false, reason: 'H11_MLUCK_TARGET_UNAVAILABLE' };
+      if (this.classSkills && typeof this.classSkills.isSkillEnabled === 'function'
+          && this.classSkills.isSkillEnabled('mluck', 'merchant') !== true) {
+        return { accepted: false, reason: 'H11_MLUCK_DISABLED_BY_SKILL_POLICY' };
+      }
       const claim = this._claimTarget(target.name, 'MLUCK');
       if (!claim.ok) return { accepted: false, reason: claim.reason };
       const condition = this.game && typeof this.game.playerCondition === 'function'
@@ -18426,13 +18446,15 @@
             delivery: clone(this.delivery)
           };
         } else {
-          const needsMluck = visibleFarmers.filter(row => {
+          const mluckEnabled = !this.classSkills || typeof this.classSkills.isSkillEnabled !== 'function'
+            || this.classSkills.isSkillEnabled('mluck', 'merchant') === true;
+          const needsMluck = mluckEnabled ? visibleFarmers.filter(row => {
             const condition = this.game && typeof this.game.playerCondition === 'function'
               ? this.game.playerCondition(row.name, 'mluck')
               : null;
             return !(condition && condition.active
               && (condition.remainingMs == null || condition.remainingMs > this.config.mluckRefreshMs));
-          });
+          }) : [];
           if (needsMluck.length) {
             needsMluck.sort((a, b) => {
               const ad = a.distance == null ? Number.POSITIVE_INFINITY : a.distance;
@@ -30342,7 +30364,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.55-h26';
+      this.version = options.version || '0.26.56-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -38608,7 +38630,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.55-h26',
+    version: '0.26.56-h26',
     bootCount,
     replacedPrevious: !!previous
   });
