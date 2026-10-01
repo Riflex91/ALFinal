@@ -77,6 +77,9 @@
         healsDispatched: 0,
         partyHealsDispatched: 0,
         revivesDispatched: 0,
+        energizesDispatched: 0,
+        reflectionsDispatched: 0,
+        speedBuffsDispatched: 0,
         supportConfirmed: 0,
         supportRejected: 0,
         supportUnknown: 0,
@@ -280,39 +283,106 @@
     _chooseSupport(snapshot) {
       if (!snapshot || !snapshot.coordinationEnabled) return null;
       const local = snapshot.ownedMembers.find(member => member.local);
-      if (!local || String(local.ctype || '').toLowerCase() !== 'priest') return null;
+      if (!local) return null;
       if (this.supportSuspended || this.pendingSupport || this.now() < this.supportBackoffUntil) return null;
 
-      const downed = snapshot.ownedMembers
-        .filter(member => !member.local && member.rip && member.visible)
-        .sort((a, b) => String(a.name).localeCompare(String(b.name)));
-      if (downed.length) {
-        const target = downed[0];
-        const readiness = this._supportReadiness('revive', target, true);
-        if (readiness && readiness.allowed) {
-          return { kind: 'revive', action: 'use_skill', args: ['revive', target.name], target, readiness };
+      const ctype = String(local.ctype || '').toLowerCase();
+
+      if (ctype === 'priest') {
+        const downed = snapshot.ownedMembers
+          .filter(member => !member.local && member.rip && member.visible)
+          .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+        if (downed.length) {
+          const target = downed[0];
+          const readiness = this._supportReadiness('revive', target, true);
+          if (readiness && readiness.allowed) {
+            return { kind: 'revive', action: 'use_skill', args: ['revive', target.name], target, readiness };
+          }
+        }
+
+        const injured = snapshot.ownedMembers
+          .filter(member => !member.rip && member.visible && member.hpRatio != null && member.hpRatio < 0.999)
+          .sort((a, b) => a.hpRatio - b.hpRatio);
+        const partyHealTargets = injured.filter(member => member.hpRatio <= this.config.partyHealHpRatio);
+        if (partyHealTargets.length >= this.config.partyHealMinMembers) {
+          const readiness = this.game.skillReadiness('partyheal');
+          if (readiness && readiness.allowed) {
+            return { kind: 'partyheal', action: 'use_skill', args: ['partyheal'], target: null, readiness };
+          }
+        }
+
+        const target = injured.find(member => member.hpRatio <= this.config.healHpRatio);
+        if (target) {
+          const readiness = this._supportReadiness('heal', target, false);
+          if (readiness && readiness.allowed && this.actions.available('heal')) {
+            const raw = this.game.playerReference(target.name);
+            if (raw) return { kind: 'heal', action: 'heal', args: [raw], target, readiness };
+          }
+        }
+        return null;
+      }
+
+      if (ctype === 'mage') {
+        const localMp = finite(local.mp);
+        const localMaxMp = finite(local.maxMp);
+        const reserve = localMaxMp != null ? Math.ceil(localMaxMp * 0.45) : null;
+        const transferable = localMp != null && reserve != null ? Math.max(0, localMp - reserve) : 0;
+
+        if (transferable > 0) {
+          const energyTarget = snapshot.ownedMembers
+            .filter(member => !member.local && !member.rip && member.visible
+              && finite(member.mp) != null && finite(member.maxMp) != null && finite(member.maxMp) > 0
+              && finite(member.mp) / finite(member.maxMp) < 0.35)
+            .sort((a, b) => (finite(a.mp) / finite(a.maxMp)) - (finite(b.mp) / finite(b.maxMp)))[0] || null;
+          if (energyTarget) {
+            const readiness = this._supportReadiness('energize', energyTarget, false);
+            const amount = Math.min(200, Math.max(1, Math.floor(transferable)));
+            if (readiness && readiness.allowed && readiness.activeCondition !== true && amount > 0) {
+              return {
+                kind: 'energize',
+                action: 'use_skill',
+                args: ['energize', energyTarget.name, amount],
+                target: energyTarget,
+                amount,
+                readiness
+              };
+            }
+          }
+        }
+
+        if (localMp != null && localMaxMp != null && localMaxMp > 0 && localMp / localMaxMp >= 0.65) {
+          const tank = snapshot.ownedMembers
+            .filter(member => !member.local && !member.rip && member.visible
+              && member.role === 'TANK' && member.targetId)
+            .sort((a, b) => (a.hpRatio == null ? 1 : a.hpRatio) - (b.hpRatio == null ? 1 : b.hpRatio))[0] || null;
+          if (tank) {
+            const readiness = this._supportReadiness('reflection', tank, false);
+            if (readiness && readiness.allowed && readiness.activeCondition !== true) {
+              return { kind: 'reflection', action: 'use_skill', args: ['reflection', tank.name], target: tank, readiness };
+            }
+          }
+        }
+        return null;
+      }
+
+      if (ctype === 'rogue') {
+        const localMp = finite(local.mp);
+        const localMaxMp = finite(local.maxMp);
+        if (localMp == null || localMaxMp == null || localMaxMp <= 0 || localMp / localMaxMp < 0.60) return null;
+        const targets = snapshot.ownedMembers
+          .filter(member => !member.rip && member.visible)
+          .sort((a, b) => {
+            if (a.local !== b.local) return a.local ? 1 : -1;
+            return String(a.name).localeCompare(String(b.name));
+          });
+        for (const target of targets) {
+          const readiness = this._supportReadiness('rspeed', target, false);
+          if (readiness && readiness.allowed && readiness.activeCondition !== true) {
+            return { kind: 'rspeed', action: 'use_skill', args: ['rspeed', target.name], target, readiness };
+          }
         }
       }
 
-      const injured = snapshot.ownedMembers
-        .filter(member => !member.rip && member.visible && member.hpRatio != null && member.hpRatio < 0.999)
-        .sort((a, b) => a.hpRatio - b.hpRatio);
-      const partyHealTargets = injured.filter(member => member.hpRatio <= this.config.partyHealHpRatio);
-      if (partyHealTargets.length >= this.config.partyHealMinMembers) {
-        const readiness = this.game.skillReadiness('partyheal');
-        if (readiness && readiness.allowed) {
-          return { kind: 'partyheal', action: 'use_skill', args: ['partyheal'], target: null, readiness };
-        }
-      }
-
-      const target = injured.find(member => member.hpRatio <= this.config.healHpRatio);
-      if (target) {
-        const readiness = this._supportReadiness('heal', target, false);
-        if (readiness && readiness.allowed && this.actions.available('heal')) {
-          const raw = this.game.playerReference(target.name);
-          if (raw) return { kind: 'heal', action: 'heal', args: [raw], target, readiness };
-        }
-      }
       return null;
     }
 
@@ -391,6 +461,9 @@
           if (decision.kind === 'heal') this.metrics.healsDispatched += 1;
           if (decision.kind === 'partyheal') this.metrics.partyHealsDispatched += 1;
           if (decision.kind === 'revive') this.metrics.revivesDispatched += 1;
+          if (decision.kind === 'energize') this.metrics.energizesDispatched += 1;
+          if (decision.kind === 'reflection') this.metrics.reflectionsDispatched += 1;
+          if (decision.kind === 'rspeed') this.metrics.speedBuffsDispatched += 1;
 
           const pending = {
             id: dispatch.id,
@@ -415,6 +488,9 @@
       if (decision.kind === 'heal') this.metrics.healsDispatched += 1;
       if (decision.kind === 'partyheal') this.metrics.partyHealsDispatched += 1;
       if (decision.kind === 'revive') this.metrics.revivesDispatched += 1;
+      if (decision.kind === 'energize') this.metrics.energizesDispatched += 1;
+      if (decision.kind === 'reflection') this.metrics.reflectionsDispatched += 1;
+      if (decision.kind === 'rspeed') this.metrics.speedBuffsDispatched += 1;
 
       const pending = {
         id: dispatch.id,
@@ -477,7 +553,7 @@
       const localClass = snapshot && snapshot.ownedMembers && snapshot.ownedMembers.find(member => member.local);
       const partyBuffSkills = [];
       if (localClass && this.game && typeof this.game.skillDefinition === 'function') {
-        const candidates = ['warcry', 'darkblessing', 'partyheal'];
+        const candidates = ['warcry', 'darkblessing', 'partyheal', 'energize', 'reflection', 'rspeed'];
         for (const id of candidates) {
           const definition = this.game.skillDefinition(id);
           if (definition && definition.classes.includes(String(localClass.ctype || '').toLowerCase()) && (definition.party || definition.multi || id !== 'partyheal')) {
