@@ -259,6 +259,14 @@
           hpRatio: hp != null && maxHp != null && maxHp > 0 ? hp / maxHp : null,
           mp,
           maxMp,
+          attack: finite((live && live.attack) != null ? live.attack : partyRow.attack),
+          armor: finite((live && live.armor) != null ? live.armor : partyRow.armor),
+          resistance: finite((live && live.resistance) != null ? live.resistance : partyRow.resistance),
+          frequency: finite((live && live.frequency) != null ? live.frequency : partyRow.frequency),
+          speed: finite((live && live.speed) != null ? live.speed : partyRow.speed),
+          range: finite((live && live.range) != null ? live.range : partyRow.range),
+          damageType: cleanText((live && (live.damage_type || live.damageType))
+            || partyRow.damage_type || partyRow.damageType || '', 60).toLowerCase() || null,
           rip: safeBoolean((live && live.rip) || partyRow.rip || (live && live.dead)),
           targetId: ((live && live.target) != null ? live.target : partyRow.target) == null
             ? null
