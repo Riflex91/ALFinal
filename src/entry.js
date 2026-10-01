@@ -76,7 +76,7 @@
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.55-h26',
+    version: '0.26.57-h26',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -272,6 +272,14 @@
       tick: () => runtime.merchantStand.tick(),
       configure: options => runtime.merchantStand.configure(options || {}),
       reset: reason => runtime.merchantStand.resetSafety(reason || 'API_MERCHANT_STAND_RESET')
+    },
+
+    merchantAutonomy: {
+      status: () => runtime.merchantAutonomy.status(),
+      plan: options => runtime.merchantAutonomy.plan(options || {}),
+      tick: options => runtime.merchantAutonomy.tick(options || {}),
+      configure: options => runtime.merchantAutonomy.configure(options || {}),
+      reset: reason => runtime.merchantAutonomy.resetSafety(reason || 'API_MERCHANT_AUTONOMY_RESET')
     },
 
     telemetry: {

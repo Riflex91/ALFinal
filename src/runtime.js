@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.55-h26';
+      this.version = options.version || '0.26.57-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -112,6 +112,7 @@
         logger: this.logger,
         game: this.game,
         actions: this.actions,
+        classSkills: this.classSkills,
         roster: this.roster,
         movement: this.movement,
         inventory: this.inventory
@@ -524,6 +525,27 @@
         partyLogistics: this.partyLogistics,
         canAct: action => this.actionAllowed(action)
       });
+      this.merchantAutonomy = new ns.MerchantAutonomyController({
+        root: this.root,
+        logger: this.logger,
+        game: this.game,
+        actions: this.actions,
+        movement: this.movement,
+        inventory: this.inventory,
+        classSkills: this.classSkills,
+        merchant: this.merchant,
+        trade: this.trade,
+        economy: this.economy,
+        exchangeCraft: this.exchangeCraft,
+        partyLogistics: this.partyLogistics,
+        merchantStand: this.merchantStand,
+        market: this.marketIntelligence,
+        gearProgression: this.gearProgression,
+        storage: this.storage,
+        canAct: action => this.actionAllowed(action)
+      });
+      this.merchant.merchantAutonomy = this.merchantAutonomy;
+      this.merchantStand.merchantAutonomy = this.merchantAutonomy;
       this.telemetry = new ns.HostTelemetryClient({
         root: this.root,
         logger: this.logger,
@@ -780,6 +802,15 @@
         start: context => this.merchantStand.start(context),
         stop: reason => this.merchantStand.stop(reason),
         status: () => this.merchantStand.status()
+      });
+
+      this.modules.register({
+        id: 'merchant-autonomy',
+        title: 'Merchant Gathering & Market Work',
+        version: '0.33.0',
+        start: context => this.merchantAutonomy.start(context),
+        stop: reason => this.merchantAutonomy.stop(reason),
+        status: () => this.merchantAutonomy.status()
       });
 
       this.modules.register({
@@ -5879,6 +5910,7 @@
         encounters: this.encounters.status(),
         marketIntelligence: this.marketIntelligence.status(),
         merchantStand: this.merchantStand.status(),
+        merchantAutonomy: this.merchantAutonomy.status(),
         telemetry: this.telemetry.status(),
         windowsBridge: this.bridge && typeof this.bridge.status === 'function' ? this.bridge.status() : null,
         fullAutonomy: this.fullAutonomy.status(),
