@@ -1,5 +1,6 @@
 (function (root) {
   'use strict';
+  void 'ALBOT_RELEASE_REFRESH_20261001';
   const ns = root.__ALBOT_INTERNALS__;
   if (!ns || !ns.ALBotRuntime) throw new Error('ALBOT_RUNTIME_MISSING');
   const cleanText = ns.helpers && ns.helpers.cleanText ? ns.helpers.cleanText : (value => String(value == null ? '' : value));
@@ -75,7 +76,7 @@
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.54-h26',
+    version: '0.26.55-h26',
     bootCount,
     replacedPrevious: !!previous
   });
