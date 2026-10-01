@@ -1,4 +1,4 @@
-/* AL Bot 0.26.52-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.53-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -30133,7 +30133,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.52-h26';
+      this.version = options.version || '0.26.53-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -38259,18 +38259,43 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
   }
 
   const sharedHost = resolveSharedHost(root);
+
+  // Every Adventure Land character runner can share the same top-level page.
+  // Hot-reload ownership must therefore be runner-local: otherwise the next
+  // character to load mistakes another character's runtime for its predecessor
+  // and tears it down. Keep per-runner state on the shared host via a WeakMap.
+  // The legacy singleton remains a discovery/compatibility pointer only.
+  let sharedRegistry = null;
   let sharedState = null;
   try {
-    sharedState = sharedHost.__ALBOT_SHARED_RUNTIME__ && typeof sharedHost.__ALBOT_SHARED_RUNTIME__ === 'object'
-      ? sharedHost.__ALBOT_SHARED_RUNTIME__
-      : null;
-  } catch (_) {}
+    const existingRegistry = sharedHost.__ALBOT_SHARED_RUNTIME_REGISTRY__;
+    if (existingRegistry
+        && typeof existingRegistry.get === 'function'
+        && typeof existingRegistry.set === 'function') {
+      sharedRegistry = existingRegistry;
+    } else {
+      sharedRegistry = new WeakMap();
+      sharedHost.__ALBOT_SHARED_RUNTIME_REGISTRY__ = sharedRegistry;
+    }
+
+    sharedState = sharedRegistry.get(root) || null;
+    if (!sharedState) {
+      const legacy = sharedHost.__ALBOT_SHARED_RUNTIME__;
+      if (legacy
+          && typeof legacy === 'object'
+          && legacy.runnerRoot === root) {
+        sharedState = legacy;
+      }
+    }
+  } catch (_) {
+    sharedRegistry = null;
+    sharedState = null;
+  }
 
   const localPrevious = root.ALBot && root.ALBot.__runtime || null;
   const previous = localPrevious || sharedState && sharedState.runtime || null;
   const previousBootCount = Number(sharedState && sharedState.bootCount)
     || Number(previous && previous.bootCount)
-    || Number(sharedHost && sharedHost.__ALBOT_BOOT_COUNT__)
     || Number(root.__ALBOT_BOOT_COUNT__)
     || 0;
 
@@ -38283,11 +38308,10 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const bootCount = previousBootCount + 1;
   root.__ALBOT_BOOT_COUNT__ = bootCount;
-  try { sharedHost.__ALBOT_BOOT_COUNT__ = bootCount; } catch (_) {}
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.52-h26',
+    version: '0.26.53-h26',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -38743,12 +38767,18 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   root.ALBot = api;
   try {
-    sharedHost.__ALBOT_SHARED_RUNTIME__ = {
+    const runnerState = {
       runtime,
       bootCount,
       runnerRoot: root,
       loadedAt: runtime.loadedAt
     };
+    if (sharedRegistry && typeof sharedRegistry.set === 'function') {
+      sharedRegistry.set(root, runnerState);
+    }
+    // Compatibility/discovery pointer: it may identify the most recently loaded
+    // runner, but must never grant hot-reload ownership over another runner.
+    sharedHost.__ALBOT_SHARED_RUNTIME__ = runnerState;
   } catch (_) {}
 
   runtime.logger.info('AL Bot H23 geladen', {
