@@ -1006,6 +1006,12 @@
       const raw = G && G.skills && G.skills[id];
       if (!raw || typeof raw !== 'object') return null;
       const classesRaw = Array.isArray(raw.class) ? raw.class : (raw.class ? [raw.class] : []);
+      const weaponTypesRaw = Array.isArray(raw.wtype) ? raw.wtype : (raw.wtype ? [raw.wtype] : []);
+      const requirements = raw.requirements && typeof raw.requirements === 'object'
+        ? Object.fromEntries(Object.entries(raw.requirements)
+          .map(([key, value]) => [cleanText(key, 60).toLowerCase(), finite(value)])
+          .filter(([, value]) => value != null))
+        : {};
       return {
         id,
         name: raw.name == null ? id : cleanText(raw.name, 160),
@@ -1013,18 +1019,34 @@
         level: finite(raw.level),
         mp: finite(raw.mp),
         cooldown: finite(raw.cooldown),
+        cooldownMultiplier: finite(raw.cooldown_multiplier),
+        reuseCooldown: finite(raw.reuse_cooldown),
         range: finite(raw.range),
         rangeMultiplier: finite(raw.range_multiplier),
         rangeBonus: finite(raw.range_bonus),
         damageMultiplier: finite(raw.damage_multiplier),
         maxTargets: finite(raw.max_targets),
         share: raw.share == null ? null : cleanText(raw.share, 120),
-        target: raw.target == null ? null : safeBoolean(raw.target),
+        target: raw.target == null ? null : (raw.target === true || typeof raw.target === 'string'),
+        targetType: typeof raw.target === 'string' ? cleanText(raw.target, 60).toLowerCase() : (raw.target === true ? 'entity' : null),
         multi: safeBoolean(raw.multi),
         list: safeBoolean(raw.list),
         party: safeBoolean(raw.party),
         heal: safeBoolean(raw.heal),
-        hostile: safeBoolean(raw.hostile)
+        hostile: safeBoolean(raw.hostile),
+        useRange: safeBoolean(raw.use_range),
+        fixedRange: safeBoolean(raw.fixed_range),
+        monsters: raw.monsters == null ? null : safeBoolean(raw.monsters),
+        noSelf: safeBoolean(raw.no_self),
+        toggle: safeBoolean(raw.toggle),
+        aura: safeBoolean(raw.aura),
+        condition: raw.condition == null ? null : cleanText(raw.condition, 120),
+        exclusiveCondition: raw.exclusive_condition == null ? null : cleanText(raw.exclusive_condition, 120),
+        consume: raw.consume == null ? null : cleanText(raw.consume, 160),
+        weaponTypes: weaponTypesRaw.map(value => cleanText(value, 80).toLowerCase()).filter(Boolean),
+        offhandType: raw.offhand_type == null ? null : cleanText(raw.offhand_type, 80).toLowerCase(),
+        slotRequirements: Array.isArray(raw.slot) ? clone(raw.slot) : [],
+        requirements
       };
     }
 
@@ -1040,6 +1062,7 @@
           definition,
           reasons: ['SKILL_OR_CHARACTER_UNAVAILABLE'],
           cooldown: null,
+          cooldownSource: null,
           canUse: null,
           inRange: targetId == null ? true : null,
           activeCondition: false
@@ -1048,15 +1071,79 @@
 
       const reasons = [];
       const c = normalized.character;
+      const G = this._gameData();
       if (definition.classes.length && !definition.classes.includes(String(c.ctype || '').toLowerCase())) {
         reasons.push('SKILL_CLASS_MISMATCH');
       }
       if (definition.level != null && c.level != null && c.level < definition.level) reasons.push('SKILL_LEVEL_TOO_LOW');
       if (definition.mp != null && c.mp != null && c.mp < definition.mp) reasons.push('SKILL_MP_TOO_LOW');
 
+      for (const [stat, required] of Object.entries(definition.requirements || {})) {
+        const observed = finite(character && character[stat]);
+        if (observed == null || observed < required) {
+          reasons.push('SKILL_REQUIREMENT_' + String(stat).toUpperCase() + '_TOO_LOW');
+        }
+      }
+
+      const rawSlots = character.slots && typeof character.slots === 'object' ? character.slots : {};
+      const itemDefinition = slot => {
+        const equipped = rawSlots[slot];
+        const name = equipped && equipped.name;
+        return name && G && G.items && G.items[name] || null;
+      };
+      const equippedWeaponTypes = ['mainhand', 'offhand']
+        .map(itemDefinition)
+        .filter(Boolean)
+        .flatMap(item => Array.isArray(item.wtype) ? item.wtype : (item.wtype ? [item.wtype] : []))
+        .map(value => cleanText(value, 80).toLowerCase())
+        .filter(Boolean);
+      if (definition.weaponTypes.length
+          && !definition.weaponTypes.some(type => equippedWeaponTypes.includes(type))) {
+        reasons.push('SKILL_WEAPON_TYPE_MISMATCH');
+      }
+
+      if (definition.offhandType) {
+        const offhand = itemDefinition('offhand');
+        const offhandKinds = offhand
+          ? [offhand.type, ...(Array.isArray(offhand.wtype) ? offhand.wtype : (offhand.wtype ? [offhand.wtype] : []))]
+            .map(value => cleanText(value, 80).toLowerCase()).filter(Boolean)
+          : [];
+        if (!offhandKinds.includes(definition.offhandType)) reasons.push('SKILL_OFFHAND_TYPE_MISMATCH');
+      }
+
+      if (Array.isArray(definition.slotRequirements) && definition.slotRequirements.length) {
+        const slotOk = definition.slotRequirements.every(requirement => {
+          if (!Array.isArray(requirement) || requirement.length < 2) return false;
+          const slot = cleanText(requirement[0], 80);
+          const item = cleanText(requirement[1], 160);
+          return !!(slot && item && rawSlots[slot] && String(rawSlots[slot].name || '') === item);
+        });
+        if (!slotOk) reasons.push('SKILL_SLOT_REQUIREMENT_MISSING');
+      }
+
+      if (definition.consume) {
+        const inventory = Array.isArray(character.items) ? character.items : [];
+        const available = inventory.some(item => item && String(item.name || '') === definition.consume
+          && Math.max(1, finite(item.q) || 1) > 0);
+        if (!available) reasons.push('SKILL_CONSUMABLE_MISSING');
+      }
+
       const cooldownFn = this._resolveFunction('is_on_cooldown');
       let cooldown = null;
-      try { if (cooldownFn) cooldown = cooldownFn.fn.call(cooldownFn.owner, definition.id) === true; } catch (_) {}
+      let cooldownSource = null;
+      try {
+        if (cooldownFn) {
+          if (cooldownFn.fn.call(cooldownFn.owner, definition.id) === true) {
+            cooldown = true;
+            cooldownSource = definition.id;
+          } else if (definition.share && cooldownFn.fn.call(cooldownFn.owner, definition.share) === true) {
+            cooldown = true;
+            cooldownSource = definition.share;
+          } else {
+            cooldown = false;
+          }
+        }
+      } catch (_) {}
       if (cooldown === true) reasons.push('SKILL_COOLDOWN');
 
       const canUseFn = this._resolveFunction('can_use');
@@ -1064,15 +1151,30 @@
       try { if (canUseFn) canUse = canUseFn.fn.call(canUseFn.owner, definition.id) === true; } catch (_) {}
       if (canUse === false) reasons.push('SKILL_CAN_USE_FALSE');
 
+      let rawTarget = null;
       let inRange = targetId == null;
       if (targetId != null) {
-        const rawTarget = options.allowDeadTarget === true
-          ? this.playerReference(targetId, { allowDead: true })
-          : this.entityReference(targetId);
+        if (definition.targetType === 'player') {
+          rawTarget = this.playerReference(targetId, { allowDead: options.allowDeadTarget === true });
+        } else {
+          rawTarget = options.allowDeadTarget === true
+            ? (this.playerReference(targetId, { allowDead: true }) || this.entityReference(targetId))
+            : this.entityReference(targetId);
+        }
         if (!rawTarget) {
           inRange = false;
           reasons.push('SKILL_TARGET_UNAVAILABLE');
         } else {
+          const targetIsPlayer = rawTarget === character
+            || rawTarget.type === 'character'
+            || rawTarget.player === true
+            || rawTarget.ctype != null;
+          if (definition.targetType === 'player' && !targetIsPlayer) reasons.push('SKILL_PLAYER_TARGET_REQUIRED');
+          if (definition.monsters === false && !targetIsPlayer) reasons.push('SKILL_MONSTER_TARGET_FORBIDDEN');
+          if (definition.noSelf && (String(rawTarget.name || rawTarget.id || '') === String(character.name || character.id || ''))) {
+            reasons.push('SKILL_SELF_TARGET_FORBIDDEN');
+          }
+
           const inRangeFn = this._resolveFunction('is_in_range');
           let observed = null;
           try { if (inRangeFn) observed = inRangeFn.fn.call(inRangeFn.owner, rawTarget, definition.id) === true; } catch (_) {}
@@ -1086,7 +1188,7 @@
             }
             observed = cp.x != null && cp.y != null && tp.x != null && tp.y != null && allowedRange != null
               ? Math.hypot(cp.x - tp.x, cp.y - tp.y) <= allowedRange
-              : false;
+              : !definition.useRange;
           }
           inRange = observed;
           if (!inRange) reasons.push('SKILL_OUT_OF_RANGE');
@@ -1094,9 +1196,20 @@
       }
 
       let activeCondition = false;
-      try {
-        activeCondition = !!(character.s && character.s[definition.id]);
-      } catch (_) {}
+      const conditionId = definition.condition;
+      if (conditionId) {
+        try {
+          const holder = rawTarget && definition.target ? rawTarget : character;
+          activeCondition = !!(holder && holder.s && holder.s[conditionId]);
+        } catch (_) {}
+      }
+      if (definition.exclusiveCondition) {
+        try {
+          if (character.s && character.s[definition.exclusiveCondition]) {
+            reasons.push('SKILL_EXCLUSIVE_CONDITION_ACTIVE');
+          }
+        } catch (_) {}
+      }
 
       return {
         available: true,
@@ -1105,6 +1218,7 @@
         definition,
         reasons,
         cooldown,
+        cooldownSource,
         canUse,
         inRange,
         activeCondition
