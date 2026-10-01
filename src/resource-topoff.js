@@ -216,6 +216,8 @@
       const rows = [];
       let maxCost = 0;
       for (const id of ids) {
+        if (this.classSkills && typeof this.classSkills.isSkillEnabled === 'function'
+            && this.classSkills.isSkillEnabled(id) === false) continue;
         let definition = null;
         try { definition = this.game && this.game.skillDefinition ? this.game.skillDefinition(id) : null; } catch (_) {}
         if (!definition) continue;
