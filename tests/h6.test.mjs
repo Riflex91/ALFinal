@@ -11,20 +11,41 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function skillDefs() {
   return {
-    charge: { class: ['warrior'], level: 1, mp: 0, cooldown: 40000 },
-    taunt: { class: ['warrior'], level: 1, mp: 40, cooldown: 3000, range: 200 },
-    hardshell: { class: ['warrior'], level: 60, mp: 480, cooldown: 16000 },
-    warcry: { class: ['warrior'], level: 70, mp: 320, cooldown: 60000, range: 600 },
-    huntersmark: { class: ['ranger'], level: 1, mp: 240, cooldown: 10000, range_multiplier: 1 },
-    supershot: { class: ['ranger'], level: 1, mp: 400, cooldown: 30000, range_multiplier: 1 },
-    burst: { class: ['mage'], level: 1, mp: 0, cooldown: 6000, range_multiplier: 1 },
-    curse: { class: ['priest'], level: 1, mp: 400, cooldown: 5000, range: 200 },
-    darkblessing: { class: ['priest'], level: 70, mp: 900, cooldown: 60000, range: 600 },
-    invis: { class: ['rogue'], level: 1, mp: 120, cooldown: 12000 },
-    mentalburst: { class: ['rogue'], level: 1, mp: 180, cooldown: 900, range_multiplier: 1 },
-    quickpunch: { class: ['rogue'], level: 1, mp: 240, cooldown: 250, range_multiplier: 1 },
-    selfheal: { class: ['paladin'], level: 1, mp: 20, cooldown: 1200 },
-    smash: { class: ['paladin'], level: 10, mp: 380, cooldown: 320, range_multiplier: 1 },
+    charge: { class: ['warrior'], mp: 0, cooldown: 40000, condition: 'charging' },
+    taunt: { class: ['warrior'], mp: 40, cooldown: 3000, range: 200, target: true, hostile: true },
+    hardshell: { class: ['warrior'], level: 60, mp: 480, cooldown: 16000, condition: 'hardshell' },
+    warcry: { class: ['warrior'], level: 70, mp: 320, cooldown: 60000, range: 600, condition: 'warcry' },
+
+    huntersmark: { class: ['ranger'], mp: 240, cooldown: 10000, range_multiplier: 3, range_bonus: 20, target: true, condition: 'marked', hostile: true, use_range: true },
+    poisonarrow: { class: ['ranger'], wtype: ['bow', 'crossbow'], mp: 360, cooldown: 300, consume: 'poison', target: true, condition: 'poisoned', hostile: true, use_range: true },
+    piercingshot: { class: ['ranger'], level: 72, wtype: ['bow', 'crossbow'], mp: 64, share: 'attack', target: true, hostile: true, use_range: true, damage_multiplier: 0.75 },
+    supershot: { class: ['ranger'], wtype: ['bow', 'crossbow'], mp: 400, cooldown: 30000, range_multiplier: 3, range_bonus: 20, target: true, hostile: true, use_range: true, damage_multiplier: 1.5 },
+    '3shot': { class: ['ranger'], level: 60, wtype: ['bow', 'crossbow'], mp: 200, share: 'attack', multi: true, use_range: true, damage_multiplier: 0.7 },
+    '5shot': { class: ['ranger'], level: 75, wtype: ['bow', 'crossbow'], mp: 320, share: 'attack', multi: true, use_range: true, damage_multiplier: 0.5 },
+
+    burst: { class: ['mage'], mp: 0, cooldown: 6000, ratio: 0.555, target: true, hostile: true, use_range: true },
+    cburst: { class: ['mage'], level: 75, mp: 80, cooldown: 240, ratio: 0.5, list: true, hostile: true, use_range: true },
+    entangle: { class: ['mage'], level: 72, mp: 360, range: 480, cooldown: 40000, consume: 'essenceofnature', target: true, monsters: true, condition: 'tangled', hostile: true },
+    arcane_needle: { class: ['mage'], level: 90, wtype: ['wand'], mp: 160, share: 'attack', target: true, hostile: true, use_range: true, damage_multiplier: 0.75 },
+
+    heal: { class: ['priest'], share: 'attack', target: true, heal: true, use_range: true },
+    partyheal: { class: ['priest'], mp: 400, cooldown: 200, party: true, multi: true, heal: true },
+    revive: { class: ['priest'], mp: 500, cooldown: 200, range: 240, consume: 'essenceoflife', target: 'player' },
+    phaseout: { class: ['priest'], level: 64, mp: 200, cooldown: 4000, consume: 'shadowstone', condition: 'phasedout' },
+    curse: { class: ['priest'], mp: 400, cooldown: 5000, range: 200, target: true, condition: 'cursed', hostile: true },
+    darkblessing: { class: ['priest'], level: 70, mp: 900, cooldown: 60000, range: 600, condition: 'darkblessing' },
+
+    invis: { class: ['rogue'], reuse_cooldown: 12000 },
+    pcoat: { class: ['rogue'], mp: 600, cooldown: 50000, consume: 'poison', condition: 'poisonous' },
+    mentalburst: { class: ['rogue'], mp: 180, cooldown: 900, range_multiplier: 1.2, range_bonus: 32, requirements: { int: 64 }, target: true, hostile: true, use_range: true, damage_multiplier: 0.6 },
+    quickpunch: { class: ['rogue'], wtype: 'fist', mp: 240, cooldown: 250, target: true, hostile: true, use_range: true, damage_multiplier: 0.25 },
+    quickstab: { class: ['rogue'], wtype: 'dagger', mp: 320, cooldown: 250, share: 'quickpunch', target: true, hostile: true, use_range: true, damage_multiplier: 0.36 },
+    fanofknives: { class: ['rogue'], level: 65, slot: [['belt', 'knifebelt']], mp: 180, range: 160, multi: true, max_targets: 5, share: 'attack', hostile: true, damage_multiplier: 0.85 },
+
+    selfheal: { class: ['paladin'], mp: 20, cooldown: 1200, heal: true },
+    shield_slam: { class: ['paladin'], level: 60, offhand_type: 'shield', mp: 2000, cooldown: 600, target: true, hostile: true, use_range: true, damage_multiplier: 3 },
+    purify: { class: ['paladin'], level: 60, mp: 360, cooldown: 24000, range: 480, target: true, hostile: true },
+    smash: { class: ['paladin'], level: 10, wtype: 'mace', mp: 380, cooldown: 320, target: true, hostile: true, use_range: true, damage_multiplier: 0.36 },
     attack: {}
   };
 }
@@ -42,6 +63,10 @@ function makeContext(options = {}) {
     mp: options.mp == null ? 2000 : options.mp,
     max_mp: options.maxMp == null ? 2000 : options.maxMp,
     attack: options.attack == null ? 100 : options.attack,
+    str: options.str == null ? 80 : options.str,
+    int: options.int == null ? 80 : options.int,
+    dex: options.dex == null ? 80 : options.dex,
+    vit: options.vit == null ? 80 : options.vit,
     map: 'main',
     real_x: 0,
     real_y: 0,
@@ -51,7 +76,9 @@ function makeContext(options = {}) {
     moving: false,
     rip: false,
     target: null,
-    s: {}
+    s: {},
+    slots: options.slots ? JSON.parse(JSON.stringify(options.slots)) : {},
+    items: options.items ? JSON.parse(JSON.stringify(options.items)) : []
   };
   const monster = {
     id: 'm1',
@@ -72,7 +99,25 @@ function makeContext(options = {}) {
     s: {}
   };
 
-  const G = { monsters: { goo: {} }, maps: { main: {} }, items: {}, skills: skillDefs() };
+  const G = {
+    monsters: { goo: { armor: options.targetArmor || 0, resistance: options.targetResistance || 0 } },
+    maps: { main: {} },
+    items: {
+      bow: { type: 'weapon', wtype: 'bow' },
+      crossbow: { type: 'weapon', wtype: 'crossbow' },
+      wand: { type: 'weapon', wtype: 'wand' },
+      fist: { type: 'weapon', wtype: 'fist' },
+      dagger: { type: 'weapon', wtype: 'dagger' },
+      mace: { type: 'weapon', wtype: 'mace' },
+      shield: { type: 'shield', wtype: 'shield' },
+      knifebelt: { type: 'belt' },
+      poison: { type: 'material' },
+      shadowstone: { type: 'material' },
+      essenceofnature: { type: 'material' },
+      essenceoflife: { type: 'material' }
+    },
+    skills: skillDefs()
+  };
   const ctx = {
     console,
     setInterval, clearInterval, setTimeout, clearTimeout,
@@ -254,7 +299,7 @@ test('Warrior uses charge at distance then taunt without same-skill spam', async
 test('Ranger, Mage, Priest, Rogue and Paladin choose class-specific safe skills', async t => {
   const scenarios = [
     { ctype: 'ranger', expected: 'huntersmark', targetHp: 1000, attack: 100, mp: 2000, maxMp: 2000 },
-    { ctype: 'mage', expected: 'burst', targetHp: 500, attack: 100, mp: 800, maxMp: 800 },
+    { ctype: 'mage', expected: 'burst', targetHp: 400, attack: 100, mp: 800, maxMp: 800 },
     { ctype: 'priest', expected: 'curse', targetHp: 1000, attack: 100, mp: 1000, maxMp: 1000, level: 60 },
     { ctype: 'rogue', expected: 'mentalburst', targetHp: 500, attack: 100, mp: 1000, maxMp: 1000 },
     { ctype: 'paladin', expected: 'selfheal', targetHp: 500, attack: 100, hp: 600, maxHp: 1000, mp: 1000, maxMp: 1000 }
