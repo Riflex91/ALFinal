@@ -1,4 +1,4 @@
-/* AL Bot 0.26.54-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.55-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -4132,6 +4132,7 @@
       this.logger = options.logger || null;
       this.game = options.game;
       this.actions = options.actions;
+      this.storage = options.storage || null;
       this.now = typeof options.now === 'function' ? options.now : () => Date.now();
       this.config = {
         minGlobalIntervalMs: Math.max(150, Math.min(2000, Number(options.minGlobalIntervalMs) || 350)),
@@ -4172,7 +4173,8 @@
         activeConditionSkips: 0,
         requirementSkips: 0,
         equipmentSkips: 0,
-        consumableSkips: 0
+        consumableSkips: 0,
+        disabledSkips: 0
       };
     }
 
@@ -4223,6 +4225,198 @@
       });
     }
 
+    _currentCharacterIdentity(context = null) {
+      const supplied = context && typeof context === 'object' ? context : {};
+      let snapshot = null;
+      try { snapshot = this.game && typeof this.game.snapshot === 'function' ? this.game.snapshot() : null; } catch (_) {}
+      const character = snapshot && snapshot.character || {};
+      const name = cleanText(supplied.name || character.name || '', 120) || null;
+      const ctype = cleanText(supplied.ctype || character.ctype || '', 60).toLowerCase() || null;
+      return { name, ctype, level: finite(character.level), range: finite(character.range) };
+    }
+
+    _selectionKey(name) {
+      const value = cleanText(name || '', 120);
+      return value ? 'albot:skills:v1:' + encodeURIComponent(value) : null;
+    }
+
+    _readSelection(name) {
+      const key = this._selectionKey(name);
+      if (!key || !this.storage) return { disabledSkills: [] };
+      let raw = null;
+      try {
+        if (typeof this.storage.getShared === 'function') raw = this.storage.getShared(key);
+        if (raw == null && typeof this.storage.get === 'function') raw = this.storage.get(key);
+      } catch (_) {}
+      if (!raw) return { disabledSkills: [] };
+      try {
+        const parsed = JSON.parse(raw);
+        const disabledSkills = parsed && Array.isArray(parsed.disabledSkills)
+          ? [...new Set(parsed.disabledSkills.map(value => cleanText(value, 120)).filter(Boolean))].sort()
+          : [];
+        return {
+          schemaVersion: 1,
+          characterName: name,
+          ctype: parsed && parsed.ctype ? cleanText(parsed.ctype, 60).toLowerCase() : null,
+          disabledSkills
+        };
+      } catch (_) {
+        return { disabledSkills: [] };
+      }
+    }
+
+    _writeSelection(identity, disabledSkills) {
+      if (!identity || !identity.name || !this.storage) return false;
+      const key = this._selectionKey(identity.name);
+      const payload = JSON.stringify({
+        schemaVersion: 1,
+        characterName: identity.name,
+        ctype: identity.ctype || null,
+        disabledSkills: [...new Set((disabledSkills || []).map(value => cleanText(value, 120)).filter(Boolean))].sort(),
+        updatedAt: new Date().toISOString()
+      });
+      let stored = false;
+      try {
+        if (typeof this.storage.setShared === 'function') stored = this.storage.setShared(key, payload) === true;
+      } catch (_) {}
+      if (!stored) {
+        try { if (typeof this.storage.set === 'function') stored = this.storage.set(key, payload) === true; } catch (_) {}
+      }
+      return stored;
+    }
+
+    isSkillEnabled(skillId, context = null) {
+      const id = cleanText(skillId || '', 120);
+      if (!id) return false;
+      const identity = this._currentCharacterIdentity(context);
+      if (!identity.name) return true;
+      const selection = this._readSelection(identity.name);
+      return !selection.disabledSkills.includes(id);
+    }
+
+    setSkillEnabled(skillId, enabled) {
+      const id = cleanText(skillId || '', 120);
+      if (!id) return { accepted: false, reason: 'SKILL_ID_REQUIRED' };
+      const identity = this._currentCharacterIdentity();
+      if (!identity.name || !identity.ctype) return { accepted: false, reason: 'CHARACTER_UNAVAILABLE' };
+      const catalog = this.game && typeof this.game.classSkillCatalog === 'function'
+        ? this.game.classSkillCatalog(identity.ctype)
+        : [];
+      if (!catalog.some(row => row && row.id === id)) {
+        return { accepted: false, reason: 'SKILL_NOT_IN_CURRENT_CLASS', skillId: id };
+      }
+      const selection = this._readSelection(identity.name);
+      const disabled = new Set(selection.disabledSkills || []);
+      if (enabled === false) disabled.add(id);
+      else disabled.delete(id);
+      const stored = this._writeSelection(identity, [...disabled]);
+      return {
+        accepted: stored,
+        reason: stored ? 'SKILL_SELECTION_UPDATED' : 'SKILL_SELECTION_STORAGE_UNAVAILABLE',
+        skillId: id,
+        enabled: enabled !== false,
+        characterName: identity.name
+      };
+    }
+
+    setAllSkillsEnabled(enabled) {
+      const identity = this._currentCharacterIdentity();
+      if (!identity.name || !identity.ctype) return { accepted: false, reason: 'CHARACTER_UNAVAILABLE' };
+      const catalog = this.game && typeof this.game.classSkillCatalog === 'function'
+        ? this.game.classSkillCatalog(identity.ctype)
+        : [];
+      const disabled = enabled === false ? catalog.map(row => row.id) : [];
+      const stored = this._writeSelection(identity, disabled);
+      return {
+        accepted: stored,
+        reason: stored ? 'SKILL_SELECTION_UPDATED' : 'SKILL_SELECTION_STORAGE_UNAVAILABLE',
+        enabled: enabled !== false,
+        characterName: identity.name,
+        affected: catalog.length
+      };
+    }
+
+    _policyForSkill(ctype, skillId) {
+      const key = cleanText(ctype || '', 60).toLowerCase();
+      const id = cleanText(skillId || '', 120);
+      if (key === 'merchant' && id === 'mluck') {
+        return { automated: true, owner: 'H11 Merchant', excludedReason: null, passive: false };
+      }
+      const policy = CLASS_SKILL_POLICY[key] || null;
+      if (!policy) return { automated: false, owner: null, excludedReason: null, passive: false };
+      for (const owner of ['h6', 'h7', 'h8']) {
+        if (Array.isArray(policy[owner]) && policy[owner].includes(id)) {
+          return { automated: true, owner: owner.toUpperCase(), excludedReason: null, passive: false };
+        }
+      }
+      if (Array.isArray(policy.passive) && policy.passive.includes(id)) {
+        return { automated: false, owner: 'passiv', excludedReason: null, passive: true };
+      }
+      const excludedReason = policy.excluded && policy.excluded[id] || null;
+      return { automated: false, owner: null, excludedReason, passive: false };
+    }
+
+    _effectiveRange(definition, identity) {
+      const direct = finite(definition && definition.range);
+      if (direct != null) return direct;
+      const base = finite(identity && identity.range);
+      const multiplier = finite(definition && definition.rangeMultiplier);
+      const bonus = finite(definition && definition.rangeBonus);
+      if (base == null || !(definition && (definition.useRange || multiplier != null || bonus != null))) return null;
+      return base * (multiplier == null ? 1 : multiplier) + (bonus == null ? 0 : bonus);
+    }
+
+    _mpLabel(definition) {
+      if (!definition) return '-';
+      if (definition.id === 'burst') return 'gesamter aktueller MP-Pool';
+      if (definition.id === 'cburst') {
+        const base = finite(definition.mp);
+        return (base == null ? '0' : String(base)) + ' + zugewiesenes Mana';
+      }
+      if (definition.id === 'energize') return 'übertragener Mana-Betrag';
+      const cost = finite(definition.mp);
+      return cost == null ? '0' : String(cost);
+    }
+
+    selectionCatalog() {
+      const identity = this._currentCharacterIdentity();
+      if (!identity.name || !identity.ctype) {
+        return { schemaVersion: 1, available: false, character: null, disabledSkills: [], skills: [] };
+      }
+      const definitions = this.game && typeof this.game.classSkillCatalog === 'function'
+        ? this.game.classSkillCatalog(identity.ctype)
+        : [];
+      const selection = this._readSelection(identity.name);
+      const disabled = new Set(selection.disabledSkills || []);
+      const skills = definitions.map(definition => {
+        const policy = this._policyForSkill(identity.ctype, definition.id);
+        return {
+          id: definition.id,
+          name: definition.name || definition.id,
+          skin: definition.skin || null,
+          description: definition.description || null,
+          level: definition.level,
+          unlocked: definition.level == null || identity.level == null || identity.level >= definition.level,
+          enabled: !disabled.has(definition.id),
+          mp: definition.mp,
+          mpLabel: this._mpLabel(definition),
+          range: this._effectiveRange(definition, identity),
+          cooldown: definition.cooldown,
+          automated: policy.automated,
+          automationOwner: policy.owner,
+          excludedReason: policy.excludedReason,
+          passive: policy.passive
+        };
+      });
+      return {
+        schemaVersion: 1,
+        available: true,
+        character: clone(identity),
+        disabledSkills: [...disabled].sort(),
+        skills
+      };
+    }
+
     _suppressionKey(skillId, targetId) {
       return String(skillId) + ':' + (targetId == null ? '*' : String(targetId));
     }
@@ -4251,6 +4445,10 @@
 
     _skillCandidate(skillId, target, game, options = {}) {
       const targetId = options.targeted === false ? null : (target && target.id);
+      if (!this.isSkillEnabled(skillId)) {
+        this.metrics.disabledSkips += 1;
+        return null;
+      }
       if (this._isSuppressed(skillId, targetId)) {
         this.metrics.spamSkips += 1;
         return null;
@@ -4843,6 +5041,7 @@
         skillPolicy: ctype && CLASS_SKILL_POLICY[String(ctype).toLowerCase()]
           ? clone(CLASS_SKILL_POLICY[String(ctype).toLowerCase()])
           : null,
+        skillSelection: this.selectionCatalog(),
         sessionId: this.sessionId,
         suspended: !!(this.sessionId && this.suspendedSessionId === this.sessionId),
         suspendedReason: this.suspendedReason,
@@ -5078,6 +5277,8 @@
       const rows = [];
       let maxCost = 0;
       for (const id of ids) {
+        if (this.classSkills && typeof this.classSkills.isSkillEnabled === 'function'
+            && this.classSkills.isSkillEnabled(id) === false) continue;
         let definition = null;
         try { definition = this.game && this.game.skillDefinition ? this.game.skillDefinition(id) : null; } catch (_) {}
         if (!definition) continue;
@@ -30176,7 +30377,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.54-h26';
+      this.version = options.version || '0.26.55-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -30220,8 +30421,12 @@
         root: this.root,
         logger: this.logger,
         game: this.game,
-        actions: this.actions
+        actions: this.actions,
+        storage: this.storage
       });
+      if (this.game && typeof this.game.setSkillSelectionResolver === 'function') {
+        this.game.setSkillSelectionResolver((skillId, context) => this.classSkills.isSkillEnabled(skillId, context));
+      }
       this.resourceTopoff = new ns.ResourceTopoffController({
         root: this.root,
         logger: this.logger,
@@ -38354,7 +38559,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.54-h26',
+    version: '0.26.55-h26',
     bootCount,
     replacedPrevious: !!previous
   });
