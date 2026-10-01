@@ -7,14 +7,15 @@
   const clone = ns.helpers.clone;
   const cleanText = ns.helpers.cleanText;
 
-  const SUPPORTED_CLASSES = Object.freeze(['warrior', 'ranger', 'mage', 'priest', 'rogue', 'paladin']);
+  const SUPPORTED_CLASSES = Object.freeze(['warrior', 'ranger', 'mage', 'priest', 'rogue', 'paladin', 'merchant']);
   const CLASS_SKILLS = Object.freeze({
     warrior: Object.freeze(['hardshell', 'charge', 'taunt', 'warcry']),
     ranger: Object.freeze(['huntersmark', 'poisonarrow', 'piercingshot', 'supershot']),
     mage: Object.freeze(['entangle', 'arcane_needle', 'burst']),
     priest: Object.freeze(['phaseout', 'curse', 'darkblessing']),
     rogue: Object.freeze(['invis', 'pcoat', 'mentalburst', 'quickstab', 'quickpunch']),
-    paladin: Object.freeze(['selfheal', 'shield_slam', 'purify', 'smash'])
+    paladin: Object.freeze(['selfheal', 'shield_slam', 'purify', 'smash']),
+    merchant: Object.freeze(['fishing', 'mining', 'mluck', 'mcourage', 'mfrenzy', 'massproduction', 'massproductionpp', 'massexchange', 'massexchangepp'])
   });
 
   // Complete class-skill ownership map. A skill missing from the H6 rotation is
@@ -79,6 +80,16 @@
         guardians_oath: 'DAMAGE_TRANSFER_REQUIRES_SURVIVABILITY_MODEL',
         beacon_of_resolve: 'GROUP_BUFF_REQUIRES_ENCOUNTER_POLICY',
         paladin_aura: 'MULTI_STATE_AURA_REQUIRES_GROUP_POLICY'
+      })
+    }),
+    merchant: Object.freeze({
+      merchant: Object.freeze([
+        'fishing', 'mining', 'mluck', 'mcourage', 'mfrenzy',
+        'massproduction', 'massproductionpp', 'massexchange', 'massexchangepp'
+      ]),
+      passive: Object.freeze([]),
+      excluded: Object.freeze({
+        throw: 'DESTRUCTIVE_ITEM_THROW_REQUIRES_EXPLICIT_INTENT'
       })
     })
   });
@@ -229,7 +240,7 @@
       const id = cleanText(skillId || '', 120);
       const policy = CLASS_SKILL_POLICY[key] || null;
       if (!policy || !id) return null;
-      for (const owner of ['h6', 'h7', 'h8', 'passive']) {
+      for (const owner of ['h6', 'h7', 'h8', 'merchant', 'passive']) {
         if (Array.isArray(policy[owner]) && policy[owner].includes(id)) return owner.toUpperCase();
       }
       if (policy.excluded && Object.prototype.hasOwnProperty.call(policy.excluded, id)) return 'EXCLUDED';
@@ -238,7 +249,7 @@
 
     _defaultSkillEnabled(ctype, skillId) {
       const owner = this._policySkillOwner(ctype, skillId);
-      return owner === 'H6' || owner === 'H7' || owner === 'H8';
+      return owner === 'H6' || owner === 'H7' || owner === 'H8' || owner === 'MERCHANT';
     }
 
     skillCatalog(ctype) {
