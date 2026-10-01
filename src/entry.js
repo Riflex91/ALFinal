@@ -188,6 +188,9 @@
       status: () => runtime.classSkills.status(),
       supported: ctype => runtime.classSkills.supportedSkills(ctype),
       live: ctype => runtime.classSkills.liveSkillSummary(ctype),
+      catalog: ctype => runtime.classSkills.skillCatalog(ctype),
+      enabled: (skillId, ctype) => runtime.classSkills.isSkillEnabled(skillId, ctype),
+      setEnabled: (skillId, enabled, ctype) => runtime.classSkills.setSkillEnabled(skillId, enabled, ctype),
       preview: targetId => runtime.classSkills.preview(targetId)
     },
 
