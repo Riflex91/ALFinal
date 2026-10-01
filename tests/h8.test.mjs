@@ -109,7 +109,10 @@ function makeFixture(options = {}) {
     status: () => ({ party: partySnapshot }),
     preferredTargetId: () => options.partyFocus || null
   };
-  const classSkills = { status: () => ({ pending: options.h6Pending ? { skillId: 'x' } : null }) };
+  const classSkills = {
+    status: () => ({ pending: options.h6Pending ? { skillId: 'x' } : null }),
+    isSkillEnabled: id => !(options.disabledByPolicy || []).includes(id)
+  };
 
   const ctx = {
     console,
@@ -139,6 +142,15 @@ test('H8 ranger plans a bounded four-target pack and prefers 5shot', () => {
   assert.equal(plan.aoe.packSize, 4);
   assert.deepEqual(Array.from(plan.aoe.args[1]), ['m1', 'm2', 'm3', 'm4']);
   assert.ok(plan.aggregateAttack <= 220);
+});
+
+test('Skills selection gates H8 AoE and falls back to the next enabled skill', () => {
+  const f = makeFixture({ ctype: 'ranger', disabledByPolicy: ['5shot'] });
+  assert.equal(f.controller.startSession().accepted, true);
+  const plan = f.controller.plan();
+  assert.equal(plan.state, 'AOE_READY');
+  assert.equal(plan.aoe.skillId, '3shot');
+  assert.equal(plan.aoe.packSize, 3);
 });
 
 test('H8 reduces to single target below pull health threshold and retreats at hard threshold', () => {
