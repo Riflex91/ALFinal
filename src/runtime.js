@@ -49,7 +49,8 @@
         root: this.root,
         logger: this.logger,
         game: this.game,
-        actions: this.actions
+        actions: this.actions,
+        storage: this.storage
       });
       this.resourceTopoff = new ns.ResourceTopoffController({
         root: this.root,
@@ -75,7 +76,8 @@
         logger: this.logger,
         game: this.game,
         actions: this.actions,
-        roster: this.roster
+        roster: this.roster,
+        classSkills: this.classSkills
       });
       this.farming = new ns.AdaptiveFarmingController({
         root: this.root,
