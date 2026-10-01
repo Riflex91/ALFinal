@@ -4,6 +4,7 @@ import http from 'node:http';
 import { pathToFileURL } from 'node:url';
 
 const DEFAULT_ROOT = process.env.ALBOT_TELEMETRY_ROOT || 'D:/ALBot/telemetry';
+const DEFAULT_STATE_ROOT = process.env.ALBOT_STATE_ROOT || 'D:/ALBot/state';
 const DEFAULT_HOST = process.env.ALBOT_TELEMETRY_HOST || '127.0.0.1';
 const DEFAULT_PORT = Math.max(1, Math.min(65535, Number(process.env.ALBOT_TELEMETRY_PORT) || 17391));
 const RAW_RETENTION_DAYS = Math.max(1, Number(process.env.ALBOT_TELEMETRY_RAW_DAYS) || 30);
@@ -127,8 +128,97 @@ export class TelemetryStore {
   }
 }
 
+export class PersistentStateStore {
+  constructor(options = {}) {
+    this.root = path.resolve(options.stateRoot || DEFAULT_STATE_ROOT);
+    this.profileRoot = path.join(this.root, 'account-profiles');
+    this.wealthPath = path.join(this.root, 'account-wealth.json');
+    ensureDir(this.profileRoot);
+  }
+
+  _profilePath(name) {
+    return path.join(this.profileRoot, safeName(name) + '.json');
+  }
+
+  _readJson(target) {
+    try {
+      if (!fs.existsSync(target) || !within(this.root, target)) return null;
+      const parsed = JSON.parse(fs.readFileSync(target, 'utf8'));
+      return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  _writeJsonAtomic(target, value) {
+    if (!within(this.root, target)) throw new Error('STATE_PATH_OUTSIDE_ROOT');
+    ensureDir(path.dirname(target));
+    const tmp = target + '.tmp-' + process.pid + '-' + Date.now();
+    fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n', 'utf8');
+    fs.renameSync(tmp, target);
+  }
+
+  readProfiles() {
+    if (!fs.existsSync(this.profileRoot)) return [];
+    const rows = [];
+    for (const name of fs.readdirSync(this.profileRoot)) {
+      if (!name.endsWith('.json')) continue;
+      const row = this._readJson(path.join(this.profileRoot, name));
+      if (row && row.name) rows.push(row);
+    }
+    return rows.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  }
+
+  writeProfile(profile) {
+    if (!profile || typeof profile !== 'object' || !profile.name) return false;
+    const row = JSON.parse(JSON.stringify(profile));
+    row.name = safeName(row.name);
+    this._writeJsonAtomic(this._profilePath(row.name), row);
+    return true;
+  }
+
+  readWealth() {
+    return this._readJson(this.wealthPath);
+  }
+
+  writeWealth(wealth) {
+    if (!wealth || typeof wealth !== 'object') return false;
+    this._writeJsonAtomic(this.wealthPath, JSON.parse(JSON.stringify(wealth)));
+    return true;
+  }
+
+  readAccount() {
+    return {
+      schemaVersion: 1,
+      root: this.root,
+      profiles: this.readProfiles(),
+      wealth: this.readWealth()
+    };
+  }
+
+  writeAccount(payload = {}) {
+    const profiles = Array.isArray(payload.profiles) ? payload.profiles.slice(0, 64) : [];
+    let profilesWritten = 0;
+    for (const row of profiles) if (this.writeProfile(row)) profilesWritten += 1;
+    const wealthWritten = payload.wealth && typeof payload.wealth === 'object'
+      ? this.writeWealth(payload.wealth)
+      : false;
+    return { profilesWritten, wealthWritten };
+  }
+
+  status() {
+    return {
+      schemaVersion: 1,
+      root: this.root,
+      profiles: this.readProfiles().length,
+      wealthAvailable: !!this.readWealth()
+    };
+  }
+}
+
 export function createTelemetryServer(options = {}) {
   const store = options.store || new TelemetryStore(options);
+  const stateStore = options.stateStore || new PersistentStateStore(options);
   const host = options.host || DEFAULT_HOST;
   const port = Number(options.port) || DEFAULT_PORT;
   const allowOrigin = origin => !origin || origin === 'https://adventure.land' || origin === 'https://www.adventure.land'
@@ -148,9 +238,20 @@ export function createTelemetryServer(options = {}) {
     }
     if (req.method === 'GET' && req.url === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ ok: true, store: store.status() }));
+      return res.end(JSON.stringify({ ok: true, store: store.status(), stateStore: stateStore.status() }));
     }
-    if (req.method !== 'POST' || req.url !== '/v1/telemetry') {
+    if (req.method === 'GET' && req.url === '/v1/state/account') {
+      if (!allowOrigin(origin)) {
+        res.writeHead(403);
+        return res.end('origin blocked');
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify(stateStore.readAccount()));
+    }
+
+    const telemetryWrite = req.method === 'POST' && req.url === '/v1/telemetry';
+    const stateWrite = req.method === 'POST' && req.url === '/v1/state/account';
+    if (!telemetryWrite && !stateWrite) {
       res.writeHead(404);
       return res.end('not found');
     }
@@ -175,6 +276,11 @@ export function createTelemetryServer(options = {}) {
       if (res.writableEnded) return;
       try {
         const payload = JSON.parse(body || '{}');
+        if (stateWrite) {
+          const written = stateStore.writeAccount(payload);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ ok: true, ...written, state: stateStore.status() }));
+        }
         const records = Array.isArray(payload.records) ? payload.records : [];
         let accepted = 0;
         for (const row of records.slice(0, 100)) if (store.ingest(row)) accepted += 1;
@@ -203,7 +309,7 @@ export function createTelemetryServer(options = {}) {
     await new Promise(resolve => server.close(() => resolve()));
   };
 
-  return { server, store, host, port, close };
+  return { server, store, stateStore, host, port, close };
 }
 
 async function main() {
@@ -212,6 +318,7 @@ async function main() {
   app.server.listen(app.port, app.host, () => {
     console.log('[AL Bot telemetry] listening on http://' + app.host + ':' + app.port);
     console.log('[AL Bot telemetry] storage root: ' + app.store.root);
+    console.log('[AL Bot state] storage root: ' + app.stateStore.root);
   });
   const shutdown = async signal => {
     console.log('[AL Bot telemetry] ' + signal + ' - flushing and stopping');
