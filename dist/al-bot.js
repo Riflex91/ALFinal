@@ -1,4 +1,4 @@
-/* AL Bot 0.26.53-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.54-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -2020,6 +2020,10 @@
       return {
         id,
         name: raw.name == null ? id : cleanText(raw.name, 160),
+        skin: raw.skin == null ? null : cleanText(raw.skin, 160),
+        explanation: raw.explanation == null
+          ? (raw.description == null ? null : cleanText(raw.description, 1200))
+          : cleanText(raw.explanation, 1200),
         classes: classesRaw.map(value => cleanText(value, 60).toLowerCase()).filter(Boolean),
         level: finite(raw.level),
         mp: finite(raw.mp),
@@ -2054,6 +2058,18 @@
         slotRequirements: Array.isArray(raw.slot) ? clone(raw.slot) : [],
         requirements
       };
+    }
+
+    classSkillDefinitions(ctype) {
+      const key = cleanText(ctype || '', 60).toLowerCase();
+      if (!key) return [];
+      const G = this._gameData();
+      const skills = G && G.skills && typeof G.skills === 'object' ? G.skills : {};
+      return Object.keys(skills)
+        .map(id => this.skillDefinition(id))
+        .filter(definition => definition && definition.classes.includes(key))
+        .sort((a, b) => String(a.name || a.id).localeCompare(String(b.name || b.id))
+          || String(a.id).localeCompare(String(b.id)));
     }
 
     skillReadiness(skillId, targetId = null, options = {}) {
@@ -4089,6 +4105,9 @@
       this.logger = options.logger || null;
       this.game = options.game;
       this.actions = options.actions;
+      this.storage = options.storage || null;
+      this.preferenceKey = cleanText(options.preferenceKey || 'albot:class-skills:selection:v1', 200);
+      this.skillPreferences = this._loadSkillPreferences();
       this.now = typeof options.now === 'function' ? options.now : () => Date.now();
       this.config = {
         minGlobalIntervalMs: Math.max(150, Math.min(2000, Number(options.minGlobalIntervalMs) || 350)),
@@ -4129,7 +4148,8 @@
         activeConditionSkips: 0,
         requirementSkips: 0,
         equipmentSkips: 0,
-        consumableSkips: 0
+        consumableSkips: 0,
+        disabledSkips: 0
       };
     }
 
@@ -4166,18 +4186,134 @@
       return this.status();
     }
 
+    _loadSkillPreferences() {
+      if (!this.storage || !this.preferenceKey) return {};
+      let raw = null;
+      try {
+        raw = typeof this.storage.getShared === 'function' ? this.storage.getShared(this.preferenceKey) : null;
+        if (raw == null && typeof this.storage.get === 'function') raw = this.storage.get(this.preferenceKey);
+        if (!raw) return {};
+        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? clone(parsed) : {};
+      } catch (_) {
+        return {};
+      }
+    }
+
+    _writeSkillPreferences() {
+      if (!this.storage || !this.preferenceKey) return false;
+      const raw = JSON.stringify(this.skillPreferences || {});
+      try {
+        if (typeof this.storage.setShared === 'function' && this.storage.setShared(this.preferenceKey, raw) !== false) return true;
+      } catch (_) {}
+      try {
+        return typeof this.storage.set === 'function' ? this.storage.set(this.preferenceKey, raw) !== false : false;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    _currentClass() {
+      const game = this.game && typeof this.game.snapshot === 'function' ? this.game.snapshot() : null;
+      return cleanText(game && game.character && game.character.ctype || '', 60).toLowerCase();
+    }
+
+    _policySkillOwner(ctype, skillId) {
+      const key = cleanText(ctype || '', 60).toLowerCase();
+      const id = cleanText(skillId || '', 120);
+      const policy = CLASS_SKILL_POLICY[key] || null;
+      if (!policy || !id) return null;
+      for (const owner of ['h6', 'h7', 'h8', 'passive']) {
+        if (Array.isArray(policy[owner]) && policy[owner].includes(id)) return owner.toUpperCase();
+      }
+      if (policy.excluded && Object.prototype.hasOwnProperty.call(policy.excluded, id)) return 'EXCLUDED';
+      return null;
+    }
+
+    _defaultSkillEnabled(ctype, skillId) {
+      const owner = this._policySkillOwner(ctype, skillId);
+      return owner === 'H6' || owner === 'H7' || owner === 'H8';
+    }
+
+    skillCatalog(ctype) {
+      const key = cleanText(ctype || this._currentClass(), 60).toLowerCase();
+      if (!key) return [];
+      let definitions = [];
+      try {
+        definitions = this.game && typeof this.game.classSkillDefinitions === 'function'
+          ? this.game.classSkillDefinitions(key)
+          : [];
+      } catch (_) {
+        definitions = [];
+      }
+      if (!Array.isArray(definitions) || !definitions.length) {
+        const policy = CLASS_SKILL_POLICY[key] || {};
+        const ids = [...new Set([
+          ...(policy.h6 || []),
+          ...(policy.h7 || []),
+          ...(policy.h8 || []),
+          ...(policy.passive || []),
+          ...Object.keys(policy.excluded || {})
+        ])];
+        definitions = ids.map(id => {
+          try { return this.game && typeof this.game.skillDefinition === 'function' ? this.game.skillDefinition(id) : null; }
+          catch (_) { return null; }
+        }).filter(Boolean);
+      }
+      return definitions.map(definition => {
+        const id = definition && definition.id;
+        const owner = this._policySkillOwner(key, id);
+        return {
+          id,
+          available: !!definition,
+          enabled: this.isSkillEnabled(id, key),
+          combatOwned: owner === 'H6' || owner === 'H7' || owner === 'H8',
+          owner,
+          definition: clone(definition)
+        };
+      }).filter(row => row.id);
+    }
+
     supportedSkills(ctype) {
       const key = cleanText(ctype || '', 60).toLowerCase();
       return (CLASS_SKILLS[key] || []).slice();
     }
 
     liveSkillSummary(ctype) {
-      return this.supportedSkills(ctype).map(id => {
-        const definition = this.game && typeof this.game.skillDefinition === 'function'
-          ? this.game.skillDefinition(id)
-          : null;
-        return { id, available: !!definition, definition };
-      });
+      return this.skillCatalog(ctype);
+    }
+
+    isSkillEnabled(skillId, ctype = null) {
+      const key = cleanText(ctype || this._currentClass(), 60).toLowerCase();
+      const id = cleanText(skillId || '', 120);
+      if (!key || !id) return false;
+      const classPreferences = this.skillPreferences && this.skillPreferences[key];
+      if (classPreferences && Object.prototype.hasOwnProperty.call(classPreferences, id)) {
+        return classPreferences[id] === true;
+      }
+      return this._defaultSkillEnabled(key, id);
+    }
+
+    setSkillEnabled(skillId, enabled, ctype = null) {
+      const key = cleanText(ctype || this._currentClass(), 60).toLowerCase();
+      const id = cleanText(skillId || '', 120);
+      if (!key || !id) return { accepted: false, reason: 'SKILL_SELECTION_INVALID' };
+      const catalog = this.skillCatalog(key);
+      if (catalog.length && !catalog.some(row => String(row.id) === id)) {
+        return { accepted: false, reason: 'SKILL_NOT_AVAILABLE_FOR_CLASS', ctype: key, skillId: id };
+      }
+      if (!this.skillPreferences || typeof this.skillPreferences !== 'object') this.skillPreferences = {};
+      if (!this.skillPreferences[key] || typeof this.skillPreferences[key] !== 'object') this.skillPreferences[key] = {};
+      this.skillPreferences[key][id] = enabled === true;
+      const persisted = this._writeSkillPreferences();
+      return { accepted: true, ctype: key, skillId: id, enabled: enabled === true, persisted };
+    }
+
+    reserveSkills(ctype = null) {
+      const key = cleanText(ctype || this._currentClass(), 60).toLowerCase();
+      const policy = CLASS_SKILL_POLICY[key] || {};
+      return [...new Set([...(policy.h6 || []), ...(policy.h8 || [])])]
+        .filter(id => this.isSkillEnabled(id, key));
     }
 
     _suppressionKey(skillId, targetId) {
@@ -4208,6 +4344,11 @@
 
     _skillCandidate(skillId, target, game, options = {}) {
       const targetId = options.targeted === false ? null : (target && target.id);
+      const ctype = cleanText(game && game.character && game.character.ctype || '', 60).toLowerCase();
+      if (!this.isSkillEnabled(skillId, ctype)) {
+        this.metrics.disabledSkips += 1;
+        return null;
+      }
       if (this._isSuppressed(skillId, targetId)) {
         this.metrics.spamSkips += 1;
         return null;
@@ -4386,9 +4527,10 @@
           if (needle) return needle;
         }
 
-        // Mana Burst consumes the current mana pool. Use it as a bounded
-        // finisher only when the live MP-derived pure damage should kill the
-        // target; never dump all mana merely because a fight is long.
+        // Mana Burst is a high-cost finisher, not a normal farm rotation.
+        // Require a genuinely long/high-HP kill, a healthy MP pool and a live
+        // MP-derived lethal estimate before accepting the full-mana opportunity
+        // cost. Weak farm mobs are intentionally left to regular attacks.
         const burstDefinition = this.game && typeof this.game.skillDefinition === 'function'
           ? this.game.skillDefinition('burst')
           : null;
@@ -4397,16 +4539,21 @@
           : finite(burstDefinition && burstDefinition.damageMultiplier);
         const currentMp = finite(character.mp);
         const estimatedBurstDamage = currentMp != null && burstRatio != null ? currentMp * burstRatio : null;
-        if (targetHp != null && estimatedBurstDamage != null
-            && targetHp > Math.max(80, attack * 0.90)
+        const normalHitsToKill = targetHp != null ? Math.ceil(targetHp / attack) : null;
+        const highValueTarget = targetHp != null
+          && targetHp >= Math.max(1200, attack * 4)
+          && normalHitsToKill != null
+          && normalHitsToKill >= 4;
+        if (highValueTarget
+            && estimatedBurstDamage != null
             && targetHp <= estimatedBurstDamage
-            && mpRatio != null && mpRatio >= 0.45) {
+            && mpRatio != null && mpRatio >= 0.75) {
           const burst = this._skillCandidate('burst', target, game, {
             kind: 'damage',
-            reason: 'MAGE_BURST_KILL_SECURE',
+            reason: 'MAGE_BURST_HIGH_VALUE_KILL_SECURE',
             recastMs: 5500,
             utility: 220,
-            mpReserveRatio: 0
+            mpReserveRatio: 0.25
           });
           if (burst) return burst;
         } else if (targetHp != null && estimatedBurstDamage != null && targetHp < attack * 0.90) {
@@ -4791,12 +4938,15 @@
       const game = this.game && typeof this.game.snapshot === 'function' ? this.game.snapshot() : null;
       const ctype = game && game.character && game.character.ctype || null;
       return {
-        schemaVersion: 1,
+        schemaVersion: 2,
         active: this.active,
         supportedClasses: SUPPORTED_CLASSES.slice(),
         currentClass: ctype,
         supportedSkills: this.supportedSkills(ctype),
         liveSkills: this.liveSkillSummary(ctype),
+        enabledCombatSkills: ctype ? this.skillCatalog(ctype).filter(row => row.combatOwned && row.enabled).map(row => row.id) : [],
+        disabledCombatSkills: ctype ? this.skillCatalog(ctype).filter(row => row.combatOwned && !row.enabled).map(row => row.id) : [],
+        preferenceKey: this.preferenceKey,
         skillPolicy: ctype && CLASS_SKILL_POLICY[String(ctype).toLowerCase()]
           ? clone(CLASS_SKILL_POLICY[String(ctype).toLowerCase()])
           : null,
@@ -5031,7 +5181,12 @@
     _skillReserve(character) {
       const ctype = cleanText(character && character.ctype || '', 60).toLowerCase();
       const maxMp = Math.max(0, finite(character && character.maxMp) || 0);
-      const ids = RELEVANT_SKILLS[ctype] || [];
+      const fallbackIds = RELEVANT_SKILLS[ctype] || [];
+      const ids = this.classSkills && typeof this.classSkills.reserveSkills === 'function'
+        ? this.classSkills.reserveSkills(ctype)
+        : fallbackIds.filter(id => !this.classSkills
+          || typeof this.classSkills.isSkillEnabled !== 'function'
+          || this.classSkills.isSkillEnabled(id, ctype) === true);
       const rows = [];
       let maxCost = 0;
       for (const id of ids) {
@@ -5343,6 +5498,7 @@
       this.game = options.game;
       this.actions = options.actions;
       this.roster = options.roster;
+      this.classSkills = options.classSkills || null;
       this.now = typeof options.now === 'function' ? options.now : () => Date.now();
       this.config = {
         tickMs: Math.max(100, Math.min(2000, Number(options.tickMs) || 250)),
@@ -5580,6 +5736,8 @@
     }
 
     _supportReadiness(skillId, member, allowDead = false) {
+      if (this.classSkills && typeof this.classSkills.isSkillEnabled === 'function'
+          && this.classSkills.isSkillEnabled(skillId) !== true) return null;
       if (!this.game || typeof this.game.skillReadiness !== 'function') return null;
       return this.game.skillReadiness(skillId, member && member.name || null, { allowDeadTarget: allowDead });
     }
@@ -5609,7 +5767,7 @@
           .sort((a, b) => a.hpRatio - b.hpRatio);
         const partyHealTargets = injured.filter(member => member.hpRatio <= this.config.partyHealHpRatio);
         if (partyHealTargets.length >= this.config.partyHealMinMembers) {
-          const readiness = this.game.skillReadiness('partyheal');
+          const readiness = this._supportReadiness('partyheal', null, false);
           if (readiness && readiness.allowed) {
             return { kind: 'partyheal', action: 'use_skill', args: ['partyheal'], target: null, readiness };
           }
@@ -10893,19 +11051,20 @@
       const normalized = cleanText(name || '', 120);
       if (!normalized) return null;
 
-      const inMemory = this.gearRegistry.get(normalized);
-      if (inMemory) return clone(inMemory);
-
+      const inMemory = this.gearRegistry.get(normalized) || null;
       const key = this._profileCacheEntryKey(normalized);
       const direct = key ? this._storageRead(key, null) : null;
       const legacy = this._cachedProfiles();
-      const localCached = this._betterProfile(
+      const stored = this._betterProfile(
         direct && typeof direct === 'object' && !Array.isArray(direct) ? direct : null,
         legacy[normalized] && typeof legacy[normalized] === 'object' && !Array.isArray(legacy[normalized]) ? legacy[normalized] : null
       );
+      const localCached = this._betterProfile(inMemory, stored);
       if (localCached) {
         this.gearRegistry.set(normalized, clone(localCached));
-        this.gearRegistrySource.set(normalized, 'BOT_SHARED_CACHE');
+        if (!inMemory || (stored && this._profileHasEquipment(stored) && !this._profileHasEquipment(inMemory))) {
+          this.gearRegistrySource.set(normalized, 'BOT_SHARED_CACHE');
+        }
         return clone(localCached);
       }
 
@@ -11042,7 +11201,7 @@
           property: row.property == null ? (row.p == null ? null : clone(row.p)) : clone(row.property)
         };
       }
-      return out;
+      return Object.keys(out).length ? out : null;
     }
 
     localProfile() {
@@ -11051,6 +11210,7 @@
       const character = snapshot && snapshot.character;
       if (!character || !character.name) return null;
       const ctype = cleanText(character.ctype || '', 40).toLowerCase();
+      const equipment = this._localEquipment(character);
       return {
         schemaVersion: 1,
         name: cleanText(character.name, 120),
@@ -11071,7 +11231,8 @@
         map: cleanText(character.map || '', 120) || null,
         gold: finite(character.gold),
         gearScore: this._localGearScore(character),
-        equipment: this._localEquipment(character),
+        equipment,
+        equipmentKnown: this._profileHasEquipment({ equipment }),
         trainingMs: Math.max(0, Math.floor(this.trainingMs)),
         capabilities: clone(ROLE_CAPABILITIES[ctype] || []),
         observedAtMs: this.now()
@@ -11109,6 +11270,7 @@
         gold: finite(row.gold),
         gearScore: 0,
         equipment: null,
+        equipmentKnown: false,
         trainingMs: 0,
         capabilities: clone(ROLE_CAPABILITIES[ctype] || []),
         observedAtMs: null,
@@ -11133,7 +11295,7 @@
         if (!fallback) continue;
         const cachedRaw = this._cachedProfile(fallback.name);
         const cached = cachedRaw && this._normalizeProfile(cachedRaw);
-        byName.set(fallback.name, cached ? {
+        const selected = cached ? {
           ...fallback,
           ...cached,
           online: false,
@@ -11141,7 +11303,12 @@
           peerFresh: false,
           local: false,
           cached: true
-        } : fallback);
+        } : fallback;
+        byName.set(fallback.name, selected);
+        if (!cached && !this.gearRegistry.has(fallback.name)) {
+          this.gearRegistry.set(fallback.name, clone(fallback));
+          this.gearRegistrySource.set(fallback.name, 'ACCOUNT_ROSTER');
+        }
       }
 
       let peers = [];
@@ -11182,6 +11349,9 @@
     _normalizeProfile(raw) {
       if (!raw || !raw.name) return null;
       const ctype = cleanText(raw.ctype || '', 40).toLowerCase();
+      const rawEquipment = raw.equipment && typeof raw.equipment === 'object' ? clone(raw.equipment) : null;
+      const equipmentKnown = this._profileHasEquipment({ equipment: rawEquipment });
+      const equipment = equipmentKnown ? rawEquipment : null;
       return {
         schemaVersion: 1,
         name: cleanText(raw.name, 120),
@@ -11203,7 +11373,8 @@
         map: cleanText(raw.map || '', 120) || null,
         gold: finite(raw.gold),
         gearScore: Math.max(0, finite(raw.gearScore) || 0),
-        equipment: raw.equipment && typeof raw.equipment === 'object' ? clone(raw.equipment) : null,
+        equipment,
+        equipmentKnown,
         trainingMs: Math.max(0, finite(raw.trainingMs) || 0),
         capabilities: clone(ROLE_CAPABILITIES[ctype] || []),
         observedAtMs: finite(raw.observedAtMs)
@@ -11441,7 +11612,7 @@
         level: finite(profile && profile.level),
         equipmentKnown: this._profileHasEquipment(profile),
         equipmentSlots: profile && profile.equipment && typeof profile.equipment === 'object'
-          ? Object.keys(profile.equipment).length
+          ? Object.values(profile.equipment).filter(item => item && item.name).length
           : 0,
         observedAtMs: finite(profile && profile.observedAtMs),
         cachedAtMs: finite(profile && profile.cachedAtMs),
@@ -13864,6 +14035,15 @@
     }
 
     _skillReady(id) {
+      if (this.classSkills && typeof this.classSkills.isSkillEnabled === 'function'
+          && this.classSkills.isSkillEnabled(id) !== true) {
+        return {
+          available: true,
+          allowed: false,
+          skillId: id,
+          reasons: ['SKILL_DISABLED_BY_USER']
+        };
+      }
       return this.game && typeof this.game.skillReadiness === 'function'
         ? this.game.skillReadiness(id, null)
         : null;
@@ -21460,7 +21640,10 @@
 
     _profileEquipment(profile) {
       if (!profile || !profile.equipment || typeof profile.equipment !== 'object') return null;
-      return profile.equipment;
+      if (profile.equipmentKnown === false) return null;
+      return Object.values(profile.equipment).some(item => item && item.name)
+        ? profile.equipment
+        : null;
     }
 
     _classProfile(ctype) {
@@ -24688,6 +24871,7 @@
       this.cooldownUntilMs = null;
       this.rejectionBackoff = new Map();
       this.materialBankMisses = new Map();
+      this.lastBankAuditAtMs = null;
 
       this.config = {
         tickMs: Math.max(250, Math.min(5000, Number(options.tickMs) || 1000)),
@@ -24697,6 +24881,7 @@
         maxActionsPerSession: Math.max(1, Math.min(100, Math.floor(Number(options.maxActionsPerSession) || 12))),
         minMarketPremiumRatio: Math.max(1, Math.min(10, finite(options.minMarketPremiumRatio) == null ? 1 : finite(options.minMarketPremiumRatio))),
         materialBankKnowledgeTtlMs: Math.max(30000, Math.min(900000, Number(options.materialBankKnowledgeTtlMs) || 120000)),
+        bankAuditIntervalMs: Math.max(60000, Math.min(1800000, Number(options.bankAuditIntervalMs) || 300000)),
         priorities: { ...DEFAULT_PRIORITIES, ...(options.priorities || {}) },
         allowKinds: { ...DEFAULT_KINDS, ...(options.allowKinds || {}) }
       };
@@ -24716,6 +24901,7 @@
         sessionBudgetBlocks: 0,
         materialBankMisses: 0,
         materialBankMountSkips: 0,
+        bankAuditsPlanned: 0,
         byKind: {}
       };
     }
@@ -25026,6 +25212,8 @@
 
       const merchantPlan = this._callPlan(this.merchant);
       const bankPlan = this._callPlan(this.bank);
+      const nowMs = Date.now();
+      if (bankPlan && bankPlan.state === 'READY') this.lastBankAuditAtMs = nowMs;
       const tradePlan = this._callPlan(this.trade);
       const gearPlan = this._callPlan(this.gear);
       const upgradePlan = this._callPlan(this.upgrade);
@@ -25308,6 +25496,25 @@
         const npc = this._npcSellProposal(sellRow);
         if (market) proposals.push(market);
         else if (npc) proposals.push(npc);
+      }
+
+      // If the Merchant has no visible economy work and the bank is not mounted,
+      // perform a bounded account-bank audit. This discovers bank-side gear and
+      // material work that cannot be planned from an unmounted bank, while the TTL
+      // prevents Full Autonomy from bouncing between main and bank forever.
+      const bankAuditDue = bankPlan && bankPlan.state === 'NEEDS_BANK'
+        && (this.lastBankAuditAtMs == null || nowMs - this.lastBankAuditAtMs >= this.config.bankAuditIntervalMs);
+      if (!proposals.length && bankAuditDue) {
+        const audit = this._proposal('BANK_MOUNT', 'bank', {
+          key: 'account-bank-audit',
+          purpose: 'ACCOUNT_BANK_AUDIT',
+          maintenance: true,
+          risk: 0
+        });
+        if (audit) {
+          proposals.push(audit);
+          this.metrics.bankAuditsPlanned += 1;
+        }
       }
 
       proposals.sort((a, b) =>
@@ -25618,6 +25825,8 @@
         cooldownUntilMs: this.cooldownUntilMs,
         rejectionBackoff: Array.from(this.rejectionBackoff.entries()).map(([proposalId, untilMs]) => ({ proposalId, untilMs })),
         materialBankMisses: Array.from(this.materialBankMisses.entries()).map(([needKey, details]) => ({ needKey, ...clone(details) })),
+        lastBankAuditAtMs: this.lastBankAuditAtMs,
+        nextBankAuditAtMs: this.lastBankAuditAtMs == null ? null : this.lastBankAuditAtMs + this.config.bankAuditIntervalMs,
         lastPlan: clone(this.lastPlan),
         lastAction: clone(this.lastAction),
         futureGearPolicy: this.gearProgression && typeof this.gearProgression.status === 'function'
@@ -30133,7 +30342,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.53-h26';
+      this.version = options.version || '0.26.54-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -30177,7 +30386,8 @@
         root: this.root,
         logger: this.logger,
         game: this.game,
-        actions: this.actions
+        actions: this.actions,
+        storage: this.storage
       });
       this.resourceTopoff = new ns.ResourceTopoffController({
         root: this.root,
@@ -30203,7 +30413,8 @@
         logger: this.logger,
         game: this.game,
         actions: this.actions,
-        roster: this.roster
+        roster: this.roster,
+        classSkills: this.classSkills
       });
       this.farming = new ns.AdaptiveFarmingController({
         root: this.root,
@@ -36351,17 +36562,18 @@
 #albot-control-center.albot-minimized .albot-tabs,#albot-control-center.albot-minimized .albot-body,#albot-control-center.albot-minimized .albot-footer{display:none}
 .albot-head{display:flex;align-items:center;gap:8px;padding:10px 12px;background:#0b1220;border-bottom:1px solid #374151;cursor:move;user-select:none;flex:none}.albot-title{font-weight:800;font-size:15px;flex:1}.albot-state{font-size:11px;padding:3px 7px;border-radius:999px;background:#374151}.albot-window-btn{background:#374151;color:#fff;border:0;border-radius:7px;padding:6px 9px;font-weight:800;cursor:pointer;line-height:1}.albot-window-btn:hover{background:#4b5563}.albot-stop{background:#b91c1c;color:#fff;border:0;border-radius:8px;padding:8px 14px;font-weight:800;cursor:pointer}.albot-stop:hover{background:#dc2626}
 .albot-tabs{display:flex;gap:2px;padding:6px;background:#0f172a;border-bottom:1px solid #374151;overflow:auto;flex:none}.albot-tab{background:#1f2937;color:#d1d5db;border:0;border-radius:6px;padding:6px 9px;cursor:pointer;white-space:nowrap}.albot-tab.active{background:#4b5563;color:white}
-.albot-body{padding:10px;overflow:auto;flex:1;min-height:0}.albot-panel{display:none}.albot-panel.active{display:block}.albot-card{background:#1f2937;border:1px solid #374151;border-radius:8px;padding:8px;margin-bottom:8px}.albot-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}.albot-k{color:#9ca3af}.albot-v{font-weight:700;word-break:break-word}.albot-row{display:flex;gap:6px;align-items:center;margin:6px 0}.albot-row>*{min-width:0}.albot-row input,.albot-row select{flex:1;background:#111827;color:#e5e7eb;border:1px solid #4b5563;border-radius:6px;padding:6px}.albot-btn{background:#374151;color:#fff;border:0;border-radius:6px;padding:6px 9px;cursor:pointer}.albot-btn:hover{background:#4b5563}.albot-btn:disabled{opacity:.45;cursor:not-allowed}.albot-btn.warn{background:#92400e}.albot-btn.danger{background:#991b1b}.albot-stop-warning{margin-bottom:8px;padding:10px;border:1px solid #ef4444;border-radius:8px;background:#451a1a;color:#fecaca;font-weight:700}.albot-goal{border-left:3px solid #6b7280;padding-left:8px;margin:8px 0}.albot-goal-head{display:flex;align-items:center;gap:8px}.albot-goal-title{flex:1;min-width:0}.albot-goal-delete{width:22px;height:22px;padding:0;border:1px solid #ef4444;border-radius:50%;background:#7f1d1d;color:#fff;font-weight:900;line-height:18px;cursor:pointer;flex:none}.albot-goal-delete:hover{background:#dc2626}.albot-small{font-size:11px;color:#9ca3af}.albot-log{white-space:pre-wrap;background:#030712;border-radius:6px;padding:8px;max-height:250px;overflow:auto;font-family:Consolas,monospace}.albot-ok{color:#86efac}.albot-bad{color:#fca5a5}.albot-muted{color:#9ca3af}.albot-priority-grid{display:grid;grid-template-columns:1fr 120px;gap:6px;align-items:center}.albot-footer{display:flex;gap:6px;padding:8px 10px;border-top:1px solid #374151;background:#0b1220;flex:none}
+.albot-body{padding:10px;overflow:auto;flex:1;min-height:0}.albot-panel{display:none}.albot-panel.active{display:block}.albot-card{background:#1f2937;border:1px solid #374151;border-radius:8px;padding:8px;margin-bottom:8px}.albot-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}.albot-skill-list{display:grid;gap:8px;margin-top:8px}.albot-skill-card{display:grid;grid-template-columns:44px minmax(0,1fr) auto;gap:10px;align-items:start;padding:9px;background:#111827;border:1px solid #374151;border-radius:8px}.albot-skill-icon{width:40px;height:40px;display:flex;align-items:center;justify-content:center;overflow:hidden;border-radius:6px}.albot-skill-icon-fallback{width:40px;height:40px;display:flex;align-items:center;justify-content:center;background:#374151;border:1px solid #4b5563;border-radius:6px;font-size:18px;font-weight:800}.albot-skill-name{font-weight:800;font-size:13px}.albot-skill-meta{margin-top:3px;color:#9ca3af;line-height:1.45}.albot-skill-toggle{width:18px;height:18px;margin:2px 0 0 0;accent-color:#22c55e}.albot-k{color:#9ca3af}.albot-v{font-weight:700;word-break:break-word}.albot-row{display:flex;gap:6px;align-items:center;margin:6px 0}.albot-row>*{min-width:0}.albot-row input,.albot-row select{flex:1;background:#111827;color:#e5e7eb;border:1px solid #4b5563;border-radius:6px;padding:6px}.albot-btn{background:#374151;color:#fff;border:0;border-radius:6px;padding:6px 9px;cursor:pointer}.albot-btn:hover{background:#4b5563}.albot-btn:disabled{opacity:.45;cursor:not-allowed}.albot-btn.warn{background:#92400e}.albot-btn.danger{background:#991b1b}.albot-stop-warning{margin-bottom:8px;padding:10px;border:1px solid #ef4444;border-radius:8px;background:#451a1a;color:#fecaca;font-weight:700}.albot-goal{border-left:3px solid #6b7280;padding-left:8px;margin:8px 0}.albot-goal-head{display:flex;align-items:center;gap:8px}.albot-goal-title{flex:1;min-width:0}.albot-goal-delete{width:22px;height:22px;padding:0;border:1px solid #ef4444;border-radius:50%;background:#7f1d1d;color:#fff;font-weight:900;line-height:18px;cursor:pointer;flex:none}.albot-goal-delete:hover{background:#dc2626}.albot-small{font-size:11px;color:#9ca3af}.albot-log{white-space:pre-wrap;background:#030712;border-radius:6px;padding:8px;max-height:250px;overflow:auto;font-family:Consolas,monospace}.albot-ok{color:#86efac}.albot-bad{color:#fca5a5}.albot-muted{color:#9ca3af}.albot-priority-grid{display:grid;grid-template-columns:1fr 120px;gap:6px;align-items:center}.albot-footer{display:flex;gap:6px;padding:8px 10px;border-top:1px solid #374151;background:#0b1220;flex:none}
 </style>
 <div class="albot-head" id="albot-drag-handle"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-minimize" class="albot-window-btn" title="Fenster minimieren" aria-label="Fenster minimieren">—</button><button id="albot-emergency" class="albot-stop">STOP</button></div>
 <div class="albot-tabs">
-<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="merchant">Merchant</button><button class="albot-tab" data-tab="bank">Bank</button><button class="albot-tab" data-tab="trade">Handel</button><button class="albot-tab" data-tab="gear">Gear</button><button class="albot-tab" data-tab="upgrade">Upgrade & Compound</button><button class="albot-tab" data-tab="exchange-craft">Exchange & Craft</button><button class="albot-tab" data-tab="economy">Economy</button><button class="albot-tab" data-tab="lifecycle">Lifecycle</button><button class="albot-tab" data-tab="full-autonomy">Full Live</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
+<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="skills">Skills</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="merchant">Merchant</button><button class="albot-tab" data-tab="bank">Bank</button><button class="albot-tab" data-tab="trade">Handel</button><button class="albot-tab" data-tab="gear">Gear</button><button class="albot-tab" data-tab="upgrade">Upgrade & Compound</button><button class="albot-tab" data-tab="exchange-craft">Exchange & Craft</button><button class="albot-tab" data-tab="economy">Economy</button><button class="albot-tab" data-tab="lifecycle">Lifecycle</button><button class="albot-tab" data-tab="full-autonomy">Full Live</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
 </div>
 <div class="albot-body">
 <section id="albot-panel-overview" class="albot-panel active"></section>
 <section id="albot-panel-priorities" class="albot-panel"></section>
 <section id="albot-panel-navigation" class="albot-panel"></section>
 <section id="albot-panel-combat" class="albot-panel"></section>
+<section id="albot-panel-skills" class="albot-panel"></section>
 <section id="albot-panel-party" class="albot-panel"></section>
 <section id="albot-panel-farming" class="albot-panel"></section>
 <section id="albot-panel-farm-intelligence" class="albot-panel"></section>
@@ -36512,6 +36724,7 @@
         const focused = panel && this.doc && this.doc.activeElement && panel.contains(this.doc.activeElement);
         if (!focused) this.renderCombat(status);
       }
+      if (this.activeTab === 'skills') this.renderSkills(status);
       if (this.activeTab === 'party') this.renderParty(status);
       if (this.activeTab === 'inventory') this.renderInventory(status);
       if (this.activeTab === 'merchant') this.renderMerchant(status);
@@ -36538,6 +36751,7 @@
       this.renderPriorities(status);
       this.renderNavigation(status);
       this.renderCombat(status);
+      this.renderSkills(status);
       this.renderParty(status);
       this.renderFarming(status);
       this.renderFarmIntelligence(status);
@@ -36684,6 +36898,88 @@
       };
       panel.querySelector('#albot-nav-safe-capture').onclick = () => run(() => this.runtime.movement.captureSafePoint('GUI'));
       panel.querySelector('#albot-nav-safe-return').onclick = () => run(() => this.runtime.movement.safeReturn({ owner: 'gui-h4-safe-return' }));
+    }
+
+    _skillIconHtml(definition) {
+      const def = definition || {};
+      const skin = def.skin == null ? '' : String(def.skin);
+      if (skin) {
+        for (const candidate of [this.uiRoot, this.root]) {
+          try {
+            if (!candidate || typeof candidate.item_container !== 'function') continue;
+            const html = candidate.item_container({ skin, size: 40, bcolor: 'black', draggable: false });
+            if (typeof html === 'string' && html.trim()) return html;
+          } catch (_) {}
+        }
+      }
+      const label = String(def.name || def.id || '?').trim().slice(0, 1).toUpperCase() || '?';
+      return '<div class="albot-skill-icon-fallback">' + esc(label) + '</div>';
+    }
+
+    _skillRangeLabel(definition, status) {
+      const def = definition || {};
+      const direct = Number(def.range);
+      if (Number.isFinite(direct)) return String(Math.round(direct * 100) / 100);
+      const base = Number(status && status.game && status.game.character && status.game.character.range);
+      const multiplier = Number(def.rangeMultiplier);
+      const bonus = Number(def.rangeBonus);
+      if (Number.isFinite(base) && (def.useRange === true || Number.isFinite(multiplier) || Number.isFinite(bonus))) {
+        const value = base * (Number.isFinite(multiplier) ? multiplier : 1) + (Number.isFinite(bonus) ? bonus : 0);
+        return String(Math.round(value * 100) / 100);
+      }
+      return '–';
+    }
+
+    renderSkills(status) {
+      const panel = this.host.querySelector('#albot-panel-skills');
+      if (!panel) return;
+      const classSkills = status.classSkills || {};
+      const ctype = String(classSkills.currentClass || status.game && status.game.character && status.game.character.ctype || '').toLowerCase();
+      const rows = Array.isArray(classSkills.liveSkills) ? classSkills.liveSkills : [];
+      if (!ctype) {
+        panel.innerHTML = '<div class="albot-card"><b>Skills</b><div class="albot-small" style="margin-top:6px">Keine laufende Klasse erkannt.</div></div>';
+        return;
+      }
+
+      const cards = rows.map(row => {
+        const def = row && row.definition || {};
+        const name = def.name || row.id || 'Unbekannter Skill';
+        const description = def.explanation || 'Keine Skillbeschreibung in den Live-Spieldaten verfügbar.';
+        const range = this._skillRangeLabel(def, status);
+        const mp = Number(def.mp);
+        const mana = Number.isFinite(mp) ? String(Math.round(mp * 100) / 100) : '–';
+        return '<div class="albot-skill-card">'
+          + '<div class="albot-skill-icon">' + this._skillIconHtml(def) + '</div>'
+          + '<div><div class="albot-skill-name">' + esc(name) + '</div>'
+          + '<div class="albot-skill-meta"><i>' + esc(description) + '<br>Range: ' + esc(range) + ' · Mana: ' + esc(mana) + '</i></div></div>'
+          + '<input class="albot-skill-toggle" type="checkbox" data-skill-id="' + esc(row.id) + '" '
+          + (row.enabled ? 'checked ' : '') + 'aria-label="' + esc(name) + ' aktivieren">'
+          + '</div>';
+      }).join('');
+
+      panel.innerHTML = '<div class="albot-card"><b>Skills · ' + esc(ctype) + '</b>'
+        + '<div class="albot-small" style="margin-top:4px">Nur aktivierte Skills dürfen von den Combat-Pfaden des Bots verwendet werden. Die Auswahl wird klassenweise gespeichert.</div>'
+        + '<div class="albot-skill-list">' + (cards || '<div class="albot-small">Keine Skills für diese Klasse in den Live-Spieldaten gefunden.</div>') + '</div>'
+        + '<div class="albot-small" style="margin-top:8px">Hinweis: Die Checkbox erteilt die Erlaubnis. Skills ohne sicheren automatischen Combat-Pfad werden dadurch nicht zwangsläufig ausgelöst.</div>'
+        + '</div>';
+
+      panel.querySelectorAll('.albot-skill-toggle').forEach(input => {
+        input.onchange = () => {
+          const skillId = input.getAttribute('data-skill-id');
+          let result = null;
+          try { result = this.runtime.classSkills.setSkillEnabled(skillId, input.checked, ctype); }
+          catch (error) { result = { accepted: false, reason: String(error && error.message || error) }; }
+          if (!result || result.accepted !== true) {
+            input.checked = !input.checked;
+            if (this.runtime.logger) this.runtime.logger.warn('Skill-Auswahl konnte nicht gespeichert werden', {
+              skillId,
+              ctype,
+              reason: result && result.reason || 'UNKNOWN'
+            });
+          }
+          this.renderSkills(this.runtime.status());
+        };
+      });
     }
 
     renderCombat(status) {
@@ -38311,7 +38607,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.53-h26',
+    version: '0.26.54-h26',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -38424,6 +38720,9 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
       status: () => runtime.classSkills.status(),
       supported: ctype => runtime.classSkills.supportedSkills(ctype),
       live: ctype => runtime.classSkills.liveSkillSummary(ctype),
+      catalog: ctype => runtime.classSkills.skillCatalog(ctype),
+      enabled: (skillId, ctype) => runtime.classSkills.isSkillEnabled(skillId, ctype),
+      setEnabled: (skillId, enabled, ctype) => runtime.classSkills.setSkillEnabled(skillId, enabled, ctype),
       preview: targetId => runtime.classSkills.preview(targetId)
     },
 
