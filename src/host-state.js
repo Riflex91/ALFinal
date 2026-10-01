@@ -35,6 +35,8 @@
       this.metrics = {
         refreshes: 0,
         flushes: 0,
+        finalFlushes: 0,
+        beaconFlushes: 0,
         profilesLoaded: 0,
         profilesQueued: 0,
         profilesPersisted: 0,
@@ -42,22 +44,32 @@
       };
     }
 
-    start(context = {}) {
+    async start(context = {}) {
       this.moduleActive = true;
       this.scope = context.scope || null;
+
+      // Load SSD state before account-strategy starts. This is the durable
+      // source for offline gear snapshots; browser storage is only fallback.
+      await this.refresh({ force: true });
+
       if (this.scope && typeof this.scope.interval === 'function') {
-        this.scope.interval('host-state-refresh', () => { this.refresh().catch(() => {}); }, this.config.refreshMs, { immediate: true });
+        this.scope.interval('host-state-refresh', () => { this.refresh().catch(() => {}); }, this.config.refreshMs, { immediate: false });
         this.scope.interval('host-state-flush', () => { this.flush().catch(() => {}); }, this.config.flushMs, { immediate: false });
-      } else {
-        this.refresh().catch(() => {});
+        const unloadTarget = this.root && typeof this.root.addEventListener === 'function' ? this.root : null;
+        if (unloadTarget && typeof this.scope.event === 'function') {
+          this.scope.event('host-state-pagehide', unloadTarget, 'pagehide', () => { this.flushFinalBestEffort(); });
+          this.scope.event('host-state-beforeunload', unloadTarget, 'beforeunload', () => { this.flushFinalBestEffort(); });
+        }
       }
       return this.status();
     }
 
-    stop() {
+    async stop() {
+      // account-strategy is registered after this module and therefore stops
+      // first during normal runtime shutdown, queuing the final local snapshot.
+      await this.flush({ force: true, keepalive: true });
       this.moduleActive = false;
       this.scope = null;
-      this.flush().catch(() => {});
       return this.status();
     }
 
@@ -86,11 +98,8 @@
       return true;
     }
 
-    async refresh() {
-      if (!this.moduleActive && !this.scope) {
-        // Explicit/manual refresh is still allowed before module start.
-      }
-      if (Date.now() < this.backoffUntilMs) return { accepted: false, reason: 'HOST_STATE_BACKOFF' };
+    async refresh(options = {}) {
+      if (Date.now() < this.backoffUntilMs && options.force !== true) return { accepted: false, reason: 'HOST_STATE_BACKOFF' };
       const fetchFn = this._fetch();
       if (!fetchFn) return { accepted: false, reason: 'HOST_STATE_FETCH_UNAVAILABLE' };
       try {
@@ -151,22 +160,33 @@
       return true;
     }
 
-    async flush() {
-      if (!this.pendingProfiles.size && !this.pendingWealth) return { accepted: false, reason: 'HOST_STATE_NOTHING_TO_FLUSH' };
-      if (Date.now() < this.backoffUntilMs) return { accepted: false, reason: 'HOST_STATE_BACKOFF' };
-      const fetchFn = this._fetch();
-      if (!fetchFn) return { accepted: false, reason: 'HOST_STATE_FETCH_UNAVAILABLE' };
-
+    _pendingPayload() {
       const profileNames = [...this.pendingProfiles.keys()];
       const profiles = profileNames.map(name => clone(this.pendingProfiles.get(name))).filter(Boolean);
       const wealth = clone(this.pendingWealth);
+      return {
+        profileNames,
+        profiles,
+        wealth,
+        body: JSON.stringify({ schemaVersion: 1, profiles, wealth })
+      };
+    }
+
+    async flush(options = {}) {
+      if (!this.pendingProfiles.size && !this.pendingWealth) return { accepted: false, reason: 'HOST_STATE_NOTHING_TO_FLUSH' };
+      if (Date.now() < this.backoffUntilMs && options.force !== true) return { accepted: false, reason: 'HOST_STATE_BACKOFF' };
+      const fetchFn = this._fetch();
+      if (!fetchFn) return { accepted: false, reason: 'HOST_STATE_FETCH_UNAVAILABLE' };
+
+      const { profileNames, profiles, wealth, body } = this._pendingPayload();
       try {
         const response = await fetchFn(this.endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
-          body: JSON.stringify({ schemaVersion: 1, profiles, wealth }),
+          body,
           cache: 'no-store',
-          credentials: 'omit'
+          credentials: 'omit',
+          keepalive: options.keepalive === true
         });
         if (!response || response.ok !== true) throw new Error('HOST_STATE_HTTP_' + String(response && response.status || 'FAILED'));
         const result = await response.json().catch(() => ({}));
@@ -177,6 +197,7 @@
         }
         if (wealth && this.pendingWealth && JSON.stringify(wealth) === JSON.stringify(this.pendingWealth)) this.pendingWealth = null;
         this.metrics.flushes += 1;
+        if (options.final === true) this.metrics.finalFlushes += 1;
         this.metrics.profilesPersisted += Number(result && result.profilesWritten) || profiles.length;
         this.lastFlushAt = new Date().toISOString();
         this.lastError = null;
@@ -185,6 +206,44 @@
       } catch (error) {
         const row = this._recordError(error);
         return { accepted: false, reason: row.reason };
+      }
+    }
+
+    async flushFinal() {
+      return this.flush({ force: true, keepalive: true, final: true });
+    }
+
+    flushFinalBestEffort() {
+      if (!this.pendingProfiles.size && !this.pendingWealth) return false;
+      const payload = this._pendingPayload();
+      const navigatorRef = this.root && this.root.navigator;
+      try {
+        if (navigatorRef && typeof navigatorRef.sendBeacon === 'function') {
+          const blobCtor = this.root && this.root.Blob;
+          const body = typeof blobCtor === 'function'
+            ? new blobCtor([payload.body], { type: 'text/plain;charset=UTF-8' })
+            : payload.body;
+          if (navigatorRef.sendBeacon(this.endpoint, body) === true) {
+            this.metrics.beaconFlushes += 1;
+            return true;
+          }
+        }
+      } catch (_) {}
+      const fetchFn = this._fetch();
+      if (!fetchFn) return false;
+      try {
+        Promise.resolve(fetchFn(this.endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+          body: payload.body,
+          cache: 'no-store',
+          credentials: 'omit',
+          keepalive: true
+        })).catch(() => {});
+        this.metrics.beaconFlushes += 1;
+        return true;
+      } catch (_) {
+        return false;
       }
     }
 
