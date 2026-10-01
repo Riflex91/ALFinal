@@ -337,8 +337,10 @@ test('H33 creates a safe own wishlist when Merrit needs a qualifying listing', a
 });
 
 test('H33 Fishing uses the live zone and confirmed use_skill result', async () => {
+  const cooldowns = [];
   const f = fixture({
     enabledSkills: ['fishing'],
+    cooldowns,
     ponty: false,
     stand: false,
     rodEquipped: true
@@ -351,6 +353,7 @@ test('H33 Fishing uses the live zone and confirmed use_skill result', async () =
   const step = f.controller.tick({ backgroundAllowed: true });
   assert.equal(step.state, 'DISPATCHED');
   assert.deepEqual(f.state.dispatches.at(-1), { name: 'use_skill', args: ['fishing'] });
+  cooldowns.push('fishing');
   await Promise.resolve();
   f.controller.tick({ backgroundAllowed: true });
   const status = f.controller.status();
