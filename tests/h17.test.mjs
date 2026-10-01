@@ -263,6 +263,46 @@ test('H17 is observe-only until autonomy is explicitly enabled', () => {
   assert.equal(f.economy.status().autonomyEnabled, false);
 });
 
+test('H33 performs one bank discovery mount before declaring an otherwise idle Merchant idle', () => {
+  const f = fixture({
+    map: 'main',
+    bankState: 'NEEDS_BANK',
+    bankRows: [],
+    bankPacks: []
+  });
+
+  const firstPlan = f.economy.plan();
+  assert.equal(firstPlan.state, 'READY');
+  assert.equal(firstPlan.selected.kind, 'BANK_MOUNT');
+  assert.equal(firstPlan.selected.purpose, 'ACCOUNT_BANK_DISCOVERY');
+  assert.equal(firstPlan.selected.discovery, true);
+  assert.equal(f.economy.status().bankDiscoveryCompleted, false);
+
+  assert.equal(f.economy.startAutonomy({ maxActions: 3 }).accepted, true);
+  const queued = f.economy.tick();
+  assert.equal(queued.state, 'QUEUED');
+  assert.deepEqual(f.calls[0], { module: 'bank', kind: 'MOUNT' });
+
+  f.character.map = 'bank';
+  f.plans.bank.state = 'READY';
+  f.plans.bank.reason = 'H12_BANK_READY';
+  f.settle('bank', 'BANK_MOUNTED');
+  const confirmed = f.economy.tick();
+  assert.equal(confirmed.state, 'CONFIRMED');
+  assert.equal(f.economy.status().bankDiscoveryCompleted, true);
+  assert.equal(f.economy.status().metrics.bankDiscoveryMounts, 1);
+
+  // Once this bot run has observed the bank, going back to main with no
+  // actionable economy work must not create a discovery loop.
+  f.character.map = 'main';
+  f.plans.bank.state = 'NEEDS_BANK';
+  f.plans.bank.reason = 'H12_BANK_NOT_MOUNTED';
+  const after = f.economy.plan();
+  assert.equal(after.state, 'IDLE');
+  assert.equal(after.reason, 'H17_NO_SAFE_ECONOMY_ACTION');
+  assert.equal(after.proposals.some(row => row.kind === 'BANK_MOUNT' && row.discovery === true), false);
+});
+
 test('H17 exits an idle mounted bank instead of handing Full Autonomy a stranded Merchant', () => {
   const f = fixture({
     map: 'bank',
