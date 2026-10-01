@@ -337,7 +337,7 @@ test('Warrior uses charge at distance then taunt without same-skill spam', async
 test('Ranger, Mage, Priest, Rogue and Paladin choose class-specific safe skills', async t => {
   const scenarios = [
     { ctype: 'ranger', expected: 'huntersmark', targetHp: 1000, attack: 100, mp: 2000, maxMp: 2000 },
-    { ctype: 'mage', expected: 'burst', targetHp: 400, attack: 100, mp: 800, maxMp: 800 },
+    { ctype: 'mage', expected: 'arcane_needle', level: 90, targetHp: 1000, targetResistance: 300, attack: 100, mp: 800, maxMp: 800, slots: { mainhand: { name: 'wand' } } },
     { ctype: 'priest', expected: 'curse', targetHp: 1000, attack: 100, mp: 1000, maxMp: 1000, level: 60 },
     { ctype: 'rogue', expected: 'mentalburst', targetHp: 500, attack: 100, mp: 1000, maxMp: 1000 },
     { ctype: 'paladin', expected: 'selfheal', targetHp: 500, attack: 100, hp: 600, maxHp: 1000, mp: 1000, maxMp: 1000 }
