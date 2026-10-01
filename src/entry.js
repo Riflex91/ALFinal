@@ -274,6 +274,14 @@
       reset: reason => runtime.merchantStand.resetSafety(reason || 'API_MERCHANT_STAND_RESET')
     },
 
+    merchantAutonomy: {
+      status: () => runtime.merchantAutonomy.status(),
+      plan: options => runtime.merchantAutonomy.plan(options || {}),
+      tick: options => runtime.merchantAutonomy.tick(options || {}),
+      configure: options => runtime.merchantAutonomy.configure(options || {}),
+      reset: reason => runtime.merchantAutonomy.resetSafety(reason || 'API_MERCHANT_AUTONOMY_RESET')
+    },
+
     telemetry: {
       status: () => runtime.telemetry.status(),
       configure: options => runtime.telemetry.configure(options || {}),
