@@ -944,7 +944,7 @@
       const game = this.game && typeof this.game.snapshot === 'function' ? this.game.snapshot() : null;
       const ctype = game && game.character && game.character.ctype || null;
       return {
-        schemaVersion: 1,
+        schemaVersion: 2,
         active: this.active,
         supportedClasses: SUPPORTED_CLASSES.slice(),
         currentClass: ctype,
