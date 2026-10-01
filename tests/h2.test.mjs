@@ -189,7 +189,7 @@ test('latched emergency stop is explicit in the main control center', () => {
 });
 
 
-test('hot reload is shared across separate same-origin runner contexts', async t => {
+test('hot reload ownership is isolated across separate same-origin character runners', async t => {
   const sharedHost = { document: {} };
 
   const first = runtimeContext();
@@ -203,26 +203,34 @@ test('hot reload is shared across separate same-origin runner contexts', async t
   vm.runInNewContext(bundle, first);
   await first.ALBot.start();
 
-  const previousRuntime = first.ALBot.__runtime;
-  const expectedResources = previousRuntime.status().scheduler.totalResources;
+  const firstRuntime = first.ALBot.__runtime;
+  const expectedResources = firstRuntime.status().scheduler.totalResources;
   assert.ok(expectedResources > 0);
   assert.equal(first.ALBot.status().bootCount, 1);
+  assert.equal(first.ALBot.status().replacedPrevious, false);
 
+  // Live regression: a second Adventure Land character shares the same top-level
+  // host but owns a different runner. Loading its bundle must not treat the first
+  // character runtime as a hot-reload predecessor.
   second = runtimeContext();
   second.parent = sharedHost;
   vm.runInNewContext(bundle, second);
 
-  assert.equal(second.ALBot.status().bootCount, 2);
-  assert.equal(second.ALBot.status().replacedPrevious, true);
+  assert.equal(second.ALBot.status().bootCount, 1);
+  assert.equal(second.ALBot.status().replacedPrevious, false);
   assert.equal(second.ALBot.status().running, false);
   assert.equal(second.ALBot.scheduler.status().totalResources, 0);
 
-  const oldStatus = previousRuntime.status();
-  assert.equal(oldStatus.running, false);
-  assert.equal(oldStatus.scheduler.totalResources, 0);
-  assert.ok(oldStatus.modules.every(row => row.state === 'STOPPED'));
+  const firstAfterSecondLoad = firstRuntime.status();
+  assert.equal(firstAfterSecondLoad.running, true);
+  assert.equal(firstAfterSecondLoad.scheduler.totalResources, expectedResources);
+  assert.ok(firstAfterSecondLoad.modules.some(row => row.state === 'ACTIVE'));
 
   await second.ALBot.start();
+  assert.equal(second.ALBot.status().running, true);
   assert.equal(second.ALBot.scheduler.status().totalResources, expectedResources);
-  await second.ALBot.stop('DONE');
+
+  const firstWhileSecondRuns = firstRuntime.status();
+  assert.equal(firstWhileSecondRuns.running, true);
+  assert.equal(firstWhileSecondRuns.scheduler.totalResources, expectedResources);
 });
