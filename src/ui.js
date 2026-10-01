@@ -88,17 +88,18 @@
 #albot-control-center.albot-minimized .albot-tabs,#albot-control-center.albot-minimized .albot-body,#albot-control-center.albot-minimized .albot-footer{display:none}
 .albot-head{display:flex;align-items:center;gap:8px;padding:10px 12px;background:#0b1220;border-bottom:1px solid #374151;cursor:move;user-select:none;flex:none}.albot-title{font-weight:800;font-size:15px;flex:1}.albot-state{font-size:11px;padding:3px 7px;border-radius:999px;background:#374151}.albot-window-btn{background:#374151;color:#fff;border:0;border-radius:7px;padding:6px 9px;font-weight:800;cursor:pointer;line-height:1}.albot-window-btn:hover{background:#4b5563}.albot-stop{background:#b91c1c;color:#fff;border:0;border-radius:8px;padding:8px 14px;font-weight:800;cursor:pointer}.albot-stop:hover{background:#dc2626}
 .albot-tabs{display:flex;gap:2px;padding:6px;background:#0f172a;border-bottom:1px solid #374151;overflow:auto;flex:none}.albot-tab{background:#1f2937;color:#d1d5db;border:0;border-radius:6px;padding:6px 9px;cursor:pointer;white-space:nowrap}.albot-tab.active{background:#4b5563;color:white}
-.albot-body{padding:10px;overflow:auto;flex:1;min-height:0}.albot-panel{display:none}.albot-panel.active{display:block}.albot-card{background:#1f2937;border:1px solid #374151;border-radius:8px;padding:8px;margin-bottom:8px}.albot-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}.albot-k{color:#9ca3af}.albot-v{font-weight:700;word-break:break-word}.albot-row{display:flex;gap:6px;align-items:center;margin:6px 0}.albot-row>*{min-width:0}.albot-row input,.albot-row select{flex:1;background:#111827;color:#e5e7eb;border:1px solid #4b5563;border-radius:6px;padding:6px}.albot-btn{background:#374151;color:#fff;border:0;border-radius:6px;padding:6px 9px;cursor:pointer}.albot-btn:hover{background:#4b5563}.albot-btn:disabled{opacity:.45;cursor:not-allowed}.albot-btn.warn{background:#92400e}.albot-btn.danger{background:#991b1b}.albot-stop-warning{margin-bottom:8px;padding:10px;border:1px solid #ef4444;border-radius:8px;background:#451a1a;color:#fecaca;font-weight:700}.albot-goal{border-left:3px solid #6b7280;padding-left:8px;margin:8px 0}.albot-goal-head{display:flex;align-items:center;gap:8px}.albot-goal-title{flex:1;min-width:0}.albot-goal-delete{width:22px;height:22px;padding:0;border:1px solid #ef4444;border-radius:50%;background:#7f1d1d;color:#fff;font-weight:900;line-height:18px;cursor:pointer;flex:none}.albot-goal-delete:hover{background:#dc2626}.albot-small{font-size:11px;color:#9ca3af}.albot-log{white-space:pre-wrap;background:#030712;border-radius:6px;padding:8px;max-height:250px;overflow:auto;font-family:Consolas,monospace}.albot-ok{color:#86efac}.albot-bad{color:#fca5a5}.albot-muted{color:#9ca3af}.albot-priority-grid{display:grid;grid-template-columns:1fr 120px;gap:6px;align-items:center}.albot-footer{display:flex;gap:6px;padding:8px 10px;border-top:1px solid #374151;background:#0b1220;flex:none}
+.albot-body{padding:10px;overflow:auto;flex:1;min-height:0}.albot-panel{display:none}.albot-panel.active{display:block}.albot-card{background:#1f2937;border:1px solid #374151;border-radius:8px;padding:8px;margin-bottom:8px}.albot-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}.albot-skill-list{display:grid;gap:8px;margin-top:8px}.albot-skill-card{display:grid;grid-template-columns:44px minmax(0,1fr) auto;gap:10px;align-items:start;padding:9px;background:#111827;border:1px solid #374151;border-radius:8px}.albot-skill-icon{width:40px;height:40px;display:flex;align-items:center;justify-content:center;overflow:hidden;border-radius:6px}.albot-skill-icon-fallback{width:40px;height:40px;display:flex;align-items:center;justify-content:center;background:#374151;border:1px solid #4b5563;border-radius:6px;font-size:18px;font-weight:800}.albot-skill-name{font-weight:800;font-size:13px}.albot-skill-meta{margin-top:3px;color:#9ca3af;line-height:1.45}.albot-skill-toggle{width:18px;height:18px;margin:2px 0 0 0;accent-color:#22c55e}.albot-k{color:#9ca3af}.albot-v{font-weight:700;word-break:break-word}.albot-row{display:flex;gap:6px;align-items:center;margin:6px 0}.albot-row>*{min-width:0}.albot-row input,.albot-row select{flex:1;background:#111827;color:#e5e7eb;border:1px solid #4b5563;border-radius:6px;padding:6px}.albot-btn{background:#374151;color:#fff;border:0;border-radius:6px;padding:6px 9px;cursor:pointer}.albot-btn:hover{background:#4b5563}.albot-btn:disabled{opacity:.45;cursor:not-allowed}.albot-btn.warn{background:#92400e}.albot-btn.danger{background:#991b1b}.albot-stop-warning{margin-bottom:8px;padding:10px;border:1px solid #ef4444;border-radius:8px;background:#451a1a;color:#fecaca;font-weight:700}.albot-goal{border-left:3px solid #6b7280;padding-left:8px;margin:8px 0}.albot-goal-head{display:flex;align-items:center;gap:8px}.albot-goal-title{flex:1;min-width:0}.albot-goal-delete{width:22px;height:22px;padding:0;border:1px solid #ef4444;border-radius:50%;background:#7f1d1d;color:#fff;font-weight:900;line-height:18px;cursor:pointer;flex:none}.albot-goal-delete:hover{background:#dc2626}.albot-small{font-size:11px;color:#9ca3af}.albot-log{white-space:pre-wrap;background:#030712;border-radius:6px;padding:8px;max-height:250px;overflow:auto;font-family:Consolas,monospace}.albot-ok{color:#86efac}.albot-bad{color:#fca5a5}.albot-muted{color:#9ca3af}.albot-priority-grid{display:grid;grid-template-columns:1fr 120px;gap:6px;align-items:center}.albot-footer{display:flex;gap:6px;padding:8px 10px;border-top:1px solid #374151;background:#0b1220;flex:none}
 </style>
 <div class="albot-head" id="albot-drag-handle"><div class="albot-title">AL BOT</div><span id="albot-state" class="albot-state">STOPPED</span><button id="albot-minimize" class="albot-window-btn" title="Fenster minimieren" aria-label="Fenster minimieren">—</button><button id="albot-emergency" class="albot-stop">STOP</button></div>
 <div class="albot-tabs">
-<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="merchant">Merchant</button><button class="albot-tab" data-tab="bank">Bank</button><button class="albot-tab" data-tab="trade">Handel</button><button class="albot-tab" data-tab="gear">Gear</button><button class="albot-tab" data-tab="upgrade">Upgrade & Compound</button><button class="albot-tab" data-tab="exchange-craft">Exchange & Craft</button><button class="albot-tab" data-tab="economy">Economy</button><button class="albot-tab" data-tab="lifecycle">Lifecycle</button><button class="albot-tab" data-tab="full-autonomy">Full Live</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
+<button class="albot-tab active" data-tab="overview">Übersicht</button><button class="albot-tab" data-tab="priorities">Prioritäten</button><button class="albot-tab" data-tab="navigation">Bewegung</button><button class="albot-tab" data-tab="combat">Combat</button><button class="albot-tab" data-tab="skills">Skills</button><button class="albot-tab" data-tab="party">Party</button><button class="albot-tab" data-tab="farming">Farming</button><button class="albot-tab" data-tab="farm-intelligence">Farm Intelligence</button><button class="albot-tab" data-tab="inventory">Loot & Inventar</button><button class="albot-tab" data-tab="merchant">Merchant</button><button class="albot-tab" data-tab="bank">Bank</button><button class="albot-tab" data-tab="trade">Handel</button><button class="albot-tab" data-tab="gear">Gear</button><button class="albot-tab" data-tab="upgrade">Upgrade & Compound</button><button class="albot-tab" data-tab="exchange-craft">Exchange & Craft</button><button class="albot-tab" data-tab="economy">Economy</button><button class="albot-tab" data-tab="lifecycle">Lifecycle</button><button class="albot-tab" data-tab="full-autonomy">Full Live</button><button class="albot-tab" data-tab="live-test">Live-Test</button><button class="albot-tab" data-tab="knowledge">Knowledge</button><button class="albot-tab" data-tab="logs">Logs</button><button class="albot-tab" data-tab="dev">Entwicklung</button>
 </div>
 <div class="albot-body">
 <section id="albot-panel-overview" class="albot-panel active"></section>
 <section id="albot-panel-priorities" class="albot-panel"></section>
 <section id="albot-panel-navigation" class="albot-panel"></section>
 <section id="albot-panel-combat" class="albot-panel"></section>
+<section id="albot-panel-skills" class="albot-panel"></section>
 <section id="albot-panel-party" class="albot-panel"></section>
 <section id="albot-panel-farming" class="albot-panel"></section>
 <section id="albot-panel-farm-intelligence" class="albot-panel"></section>
@@ -249,6 +250,7 @@
         const focused = panel && this.doc && this.doc.activeElement && panel.contains(this.doc.activeElement);
         if (!focused) this.renderCombat(status);
       }
+      if (this.activeTab === 'skills') this.renderSkills(status);
       if (this.activeTab === 'party') this.renderParty(status);
       if (this.activeTab === 'inventory') this.renderInventory(status);
       if (this.activeTab === 'merchant') this.renderMerchant(status);
@@ -275,6 +277,7 @@
       this.renderPriorities(status);
       this.renderNavigation(status);
       this.renderCombat(status);
+      this.renderSkills(status);
       this.renderParty(status);
       this.renderFarming(status);
       this.renderFarmIntelligence(status);
@@ -421,6 +424,88 @@
       };
       panel.querySelector('#albot-nav-safe-capture').onclick = () => run(() => this.runtime.movement.captureSafePoint('GUI'));
       panel.querySelector('#albot-nav-safe-return').onclick = () => run(() => this.runtime.movement.safeReturn({ owner: 'gui-h4-safe-return' }));
+    }
+
+    _skillIconHtml(definition) {
+      const def = definition || {};
+      const skin = def.skin == null ? '' : String(def.skin);
+      if (skin) {
+        for (const candidate of [this.uiRoot, this.root]) {
+          try {
+            if (!candidate || typeof candidate.item_container !== 'function') continue;
+            const html = candidate.item_container({ skin, size: 40, bcolor: 'black', draggable: false });
+            if (typeof html === 'string' && html.trim()) return html;
+          } catch (_) {}
+        }
+      }
+      const label = String(def.name || def.id || '?').trim().slice(0, 1).toUpperCase() || '?';
+      return '<div class="albot-skill-icon-fallback">' + esc(label) + '</div>';
+    }
+
+    _skillRangeLabel(definition, status) {
+      const def = definition || {};
+      const direct = Number(def.range);
+      if (Number.isFinite(direct)) return String(Math.round(direct * 100) / 100);
+      const base = Number(status && status.game && status.game.character && status.game.character.range);
+      const multiplier = Number(def.rangeMultiplier);
+      const bonus = Number(def.rangeBonus);
+      if (Number.isFinite(base) && (def.useRange === true || Number.isFinite(multiplier) || Number.isFinite(bonus))) {
+        const value = base * (Number.isFinite(multiplier) ? multiplier : 1) + (Number.isFinite(bonus) ? bonus : 0);
+        return String(Math.round(value * 100) / 100);
+      }
+      return '–';
+    }
+
+    renderSkills(status) {
+      const panel = this.host.querySelector('#albot-panel-skills');
+      if (!panel) return;
+      const classSkills = status.classSkills || {};
+      const ctype = String(classSkills.currentClass || status.game && status.game.character && status.game.character.ctype || '').toLowerCase();
+      const rows = Array.isArray(classSkills.liveSkills) ? classSkills.liveSkills : [];
+      if (!ctype) {
+        panel.innerHTML = '<div class="albot-card"><b>Skills</b><div class="albot-small" style="margin-top:6px">Keine laufende Klasse erkannt.</div></div>';
+        return;
+      }
+
+      const cards = rows.map(row => {
+        const def = row && row.definition || {};
+        const name = def.name || row.id || 'Unbekannter Skill';
+        const description = def.explanation || 'Keine Skillbeschreibung in den Live-Spieldaten verfügbar.';
+        const range = this._skillRangeLabel(def, status);
+        const mp = Number(def.mp);
+        const mana = Number.isFinite(mp) ? String(Math.round(mp * 100) / 100) : '–';
+        return '<div class="albot-skill-card">'
+          + '<div class="albot-skill-icon">' + this._skillIconHtml(def) + '</div>'
+          + '<div><div class="albot-skill-name">' + esc(name) + '</div>'
+          + '<div class="albot-skill-meta"><i>' + esc(description) + '<br>Range: ' + esc(range) + ' · Mana: ' + esc(mana) + '</i></div></div>'
+          + '<input class="albot-skill-toggle" type="checkbox" data-skill-id="' + esc(row.id) + '" '
+          + (row.enabled ? 'checked ' : '') + 'aria-label="' + esc(name) + ' aktivieren">'
+          + '</div>';
+      }).join('');
+
+      panel.innerHTML = '<div class="albot-card"><b>Skills · ' + esc(ctype) + '</b>'
+        + '<div class="albot-small" style="margin-top:4px">Nur aktivierte Skills dürfen von den Combat-Pfaden des Bots verwendet werden. Die Auswahl wird klassenweise gespeichert.</div>'
+        + '<div class="albot-skill-list">' + (cards || '<div class="albot-small">Keine Skills für diese Klasse in den Live-Spieldaten gefunden.</div>') + '</div>'
+        + '<div class="albot-small" style="margin-top:8px">Hinweis: Die Checkbox erteilt die Erlaubnis. Skills ohne sicheren automatischen Combat-Pfad werden dadurch nicht zwangsläufig ausgelöst.</div>'
+        + '</div>';
+
+      panel.querySelectorAll('.albot-skill-toggle').forEach(input => {
+        input.onchange = () => {
+          const skillId = input.getAttribute('data-skill-id');
+          let result = null;
+          try { result = this.runtime.classSkills.setSkillEnabled(skillId, input.checked, ctype); }
+          catch (error) { result = { accepted: false, reason: String(error && error.message || error) }; }
+          if (!result || result.accepted !== true) {
+            input.checked = !input.checked;
+            if (this.runtime.logger) this.runtime.logger.warn('Skill-Auswahl konnte nicht gespeichert werden', {
+              skillId,
+              ctype,
+              reason: result && result.reason || 'UNKNOWN'
+            });
+          }
+          this.renderSkills(this.runtime.status());
+        };
+      });
     }
 
     renderCombat(status) {
