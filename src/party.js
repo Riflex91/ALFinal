@@ -372,7 +372,7 @@
         if (generation !== this.supportGeneration) return;
         if (!this.pendingSupport || this.pendingSupport.id !== pending.id) return;
         const reason = errorReason(error, 'PARTY_SUPPORT_PROMISE_REJECTED');
-        const known = /cooldown|no_mp|too_far|range|not_found|cant_use|cannot_use|level|disabled/i.test(reason);
+        const known = /cooldown|no_mp|too_far|range|not_found|cant_use|cannot_use|level|requirements|weapon|slot|consume|immune|disabled/i.test(reason);
         this._settleSupport(pending, known ? 'REJECTED' : 'UNKNOWN', error);
       }).catch(() => {});
     }
