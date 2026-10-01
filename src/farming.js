@@ -593,7 +593,7 @@
       const value = String(reason || '').toLowerCase();
       if (!value) return false;
       if (value.includes('disconnect') || value.includes('timeout') || value.includes('network')) return false;
-      return ['cooldown', 'no_mp', 'mp', 'too_far', 'range', 'not_found', 'cant_use', 'cannot_use', 'level', 'weapon', 'requirements', 'disabled', 'stunned', 'slot'].some(token => value.includes(token));
+      return ['cooldown', 'no_mp', 'mp', 'too_far', 'range', 'not_found', 'cant_use', 'cannot_use', 'level', 'weapon', 'requirements', 'disabled', 'stunned', 'slot', 'consume', 'immune'].some(token => value.includes(token));
     }
 
     _settle(pending, state, response) {
