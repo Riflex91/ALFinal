@@ -6020,7 +6020,7 @@
       push('account-strategy-controller', !!this.accountStrategy.status() && typeof this.accountStrategy.optimizeTask === 'function' && typeof this.accountStrategy.progressionPlan === 'function', this.accountStrategy.status());
       push('encounter-controller', !!this.encounters.status()
         && this.encounters.status().policies
-        && this.encounters.status().policies.allNewBossesAndEventsEnabledByDefault === true
+        && this.encounters.status().policies.allNewBossesAndEventsEnabledByDefault === false
         && typeof this.encounters.catalog === 'function'
         && typeof this.encounters.setEnabled === 'function', this.encounters.status());
       push('market-intelligence', !!this.marketIntelligence.status()

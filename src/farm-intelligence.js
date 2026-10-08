@@ -731,6 +731,14 @@
             missingMemberNames: groupProfiles.missingMemberNames.slice()
           };
 
+          // Never downgrade an incomplete party DPS model to local estimates:
+          // that can select a lethal mob and send the entire group toward it.
+          // This is a hard selection gate, including material-farm priorities.
+          if (!performanceComplete) {
+            row.groupSafety = { safe: false, reason: 'H9_GROUP_DPS_INCOMPLETE' };
+            this.metrics.groupSafetyBlocks += 1;
+            return false;
+          }
           if (performanceComplete) {
             const tankEnvelope = this._groupTankEnvelope(character);
             const definition = row.definition || {};

@@ -837,6 +837,44 @@
 
       const now = Date.now();
 
+      // Merchant Work must close an active stand *and observe live closure*
+      // before any other owner begins a new travel-capable activity. H12 also
+      // has its own fail-closed closure path, but exchanges, production and
+      // logistics need the shared handoff barrier.
+      const localCharacter = this.runtime.game && typeof this.runtime.game.snapshot === 'function'
+        ? this.runtime.game.snapshot() : null;
+      const rawMerchant = localCharacter && localCharacter.character || null;
+      const standOpen = rawMerchant && (rawMerchant.stand === true
+        || rawMerchant.stand && rawMerchant.stand !== false
+        || rawMerchant.p && rawMerchant.p.stand);
+      if (standOpen && work && workStatus && workStatus.autoManage
+          && typeof work.closeStandForWork === 'function'
+          && !economyStatus.currentAction && !logisticsStatus.currentAction
+          && !(standStatus && standStatus.pending)) {
+        let expectedWork = null;
+        try { expectedWork = typeof work.plan === 'function'
+          ? work.plan({ backgroundAllowed: true }) : null; } catch (_) {}
+        let expectedEconomy = null;
+        try { expectedEconomy = typeof economy.plan === 'function' ? economy.plan() : null; } catch (_) {}
+        let expectedLogistics = null;
+        try { expectedLogistics = typeof logistics.plan === 'function' ? logistics.plan() : null; } catch (_) {}
+        const upcomingWork = expectedWork && expectedWork.state === 'READY'
+          && expectedWork.selected
+          && ['TRAVEL', 'CLOSE_STAND'].includes(expectedWork.selected.kind);
+        const upcomingEconomy = expectedEconomy && expectedEconomy.state === 'READY'
+          && expectedEconomy.selected && expectedEconomy.selected.kind !== 'BANK_DEPOSIT';
+        const upcomingLogistics = expectedLogistics && expectedLogistics.state === 'READY';
+        if (upcomingWork || upcomingEconomy || upcomingLogistics) {
+          const step = work.closeStandForWork();
+          const after = work.status();
+          if (after.suspendedReason) return { ok: false, reason: after.suspendedReason };
+          if (!step || !['DISPATCHED', 'PENDING', 'CONFIRMED'].includes(String(step.state))) {
+            return { ok: false, reason: step && step.reason || 'FULL_AUTONOMY_STAND_CLOSE_FAILED' };
+          }
+          return { ok: true, merchant: true, owner: 'merchant-autonomy', plan: clone(step) };
+        }
+      }
+
       // Finish an already-dispatched stand mutation before handing ownership away.
       if (standStatus && standStatus.autoManage && standStatus.pending) {
         const owner = currentOwner();

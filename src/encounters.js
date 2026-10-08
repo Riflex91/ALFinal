@@ -42,7 +42,8 @@
       this.absentEventTargets = new Map();
       this.announcements = new Map();
       this.knownEvents = new Map();
-      this.disabled = { boss: new Set(), event: new Set() };
+      // Opt-in only: newly discovered encounters never preempt FARM.
+      this.enabled = { boss: new Set(), event: new Set() };
       this.config = {
         tickMs: Math.max(250, Math.min(5000, Number(options.tickMs) || 750)),
         eventTtlMs: Math.max(60000, Math.min(21600000, Number(options.eventTtlMs) || 1800000)),
@@ -75,9 +76,14 @@
         const raw = this.storage.get(this._prefKey());
         if (!raw) return;
         const value = JSON.parse(raw);
-        for (const kind of ['boss', 'event']) {
-          const rows = Array.isArray(value && value.disabled && value.disabled[kind]) ? value.disabled[kind] : [];
-          this.disabled[kind] = new Set(rows.map(x => cleanText(x, 160)).filter(Boolean));
+        // v1 persisted *opt-outs* while encounters defaulted on. They cannot
+        // prove an explicit opt-in. Fail closed on migration; users can opt in
+        // again via setEnabled()/setAll() on v2.
+        if (value && Number(value.schemaVersion) >= 2) {
+          for (const kind of ['boss', 'event']) {
+            const rows = Array.isArray(value.enabled && value.enabled[kind]) ? value.enabled[kind] : [];
+            this.enabled[kind] = new Set(rows.map(x => cleanText(x, 160)).filter(Boolean));
+          }
         }
         const known = value && value.knownEvents && typeof value.knownEvents === 'object' ? value.knownEvents : {};
         for (const [id, row] of Object.entries(known)) this.knownEvents.set(id, clone(row));
@@ -89,10 +95,10 @@
       const knownEvents = {};
       for (const [id, row] of this.knownEvents.entries()) knownEvents[id] = clone(row);
       this.storage.set(this._prefKey(), JSON.stringify({
-        schemaVersion: 1,
-        disabled: {
-          boss: [...this.disabled.boss].sort(),
-          event: [...this.disabled.event].sort()
+        schemaVersion: 2,
+        enabled: {
+          boss: [...this.enabled.boss].sort(),
+          event: [...this.enabled.event].sort()
         },
         knownEvents
       }));
@@ -242,7 +248,7 @@
           kind: 'boss',
           id: String(id),
           name: cleanText(raw.name || id, 160) || String(id),
-          enabled: !this.disabled.boss.has(String(id)),
+          enabled: this.enabled.boss.has(String(id)),
           active: !!seen,
           visible: !!seen,
           map: seen && seen.map || null,
@@ -419,7 +425,7 @@
           kind: 'event',
           id,
           name: cleanText(raw.name || id, 160) || id,
-          enabled: !this.disabled.event.has(id),
+          enabled: this.enabled.event.has(id),
           active: raw.active === true,
           live: raw.live === true,
           map: raw.map || null,
@@ -441,29 +447,30 @@
     }
 
     catalog() {
-      return { schemaVersion: 1, bosses: this._bossCatalog(), events: this._eventCatalog(), defaultEnabled: true };
+      return { schemaVersion: 2, bosses: this._bossCatalog(), events: this._eventCatalog(), defaultEnabled: false };
     }
 
     setEnabled(kind, id, enabled) {
       const key = String(kind || '').toLowerCase();
       const name = cleanText(id, 160);
       if (!['boss', 'event'].includes(key) || !name) return { accepted: false, reason: 'ENCOUNTER_PREFERENCE_INVALID' };
-      if (enabled === false) this.disabled[key].add(name);
-      else this.disabled[key].delete(name);
+      if (enabled === true) this.enabled[key].add(name);
+      else this.enabled[key].delete(name);
       if (key === 'event') this.absentEventTargets.delete(name);
       this._persistPreferences();
-      return { accepted: true, kind: key, id: name, enabled: !this.disabled[key].has(name) };
+      return { accepted: true, kind: key, id: name, enabled: this.enabled[key].has(name) };
     }
 
     setAll(kind, enabled) {
       const key = String(kind || '').toLowerCase();
       if (!['boss', 'event'].includes(key)) return { accepted: false, reason: 'ENCOUNTER_KIND_INVALID' };
       const rows = key === 'boss' ? this._bossCatalog() : this._eventCatalog();
-      if (enabled === false) for (const row of rows) this.disabled[key].add(row.id);
-      else this.disabled[key].clear();
+      // Bulk opt-in covers only currently known IDs, not future discoveries.
+      this.enabled[key].clear();
+      if (enabled === true) for (const row of rows) this.enabled[key].add(row.id);
       if (key === 'event') this.absentEventTargets.clear();
       this._persistPreferences();
-      return { accepted: true, kind: key, enabled: enabled !== false, count: rows.length };
+      return { accepted: true, kind: key, enabled: enabled === true, count: rows.length };
     }
 
     preferredTask() {
@@ -986,7 +993,8 @@
         catalog: this.catalog(),
         metrics: clone(this.metrics),
         policies: {
-          allNewBossesAndEventsEnabledByDefault: true,
+          allNewBossesAndEventsEnabledByDefault: false,
+          explicitEncounterOptInRequired: true,
           liveStateBeatsPersistedKnowledge: true,
           unknownSuspendsWithoutBlindRetry: true
         }
