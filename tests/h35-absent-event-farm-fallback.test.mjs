@@ -34,6 +34,7 @@ function create(options = {}) {
     },
     combat: { safeCandidates: () => options.safeCandidates || [] }
   });
+  controller.setEnabled('event', 'slenderman', true);
   return { root, controller, character, setVisible: monsters => { visible = monsters; } };
 }
 
