@@ -135,3 +135,28 @@ test('Full Autonomy leaves encounter ownership and starts FARM for a waiting EVE
   assert.equal(full.started.farming, true);
   assert.equal(full.started.encounters, false);
 });
+
+test('three independent combat characters all release an absent shared event', () => {
+  for (const [name, ctype] of [
+    ['My_Warrior', 'warrior'],
+    ['My_Ranger1', 'ranger'],
+    ['My_Priest', 'priest']
+  ]) {
+    const { controller } = create({
+      character: { name, ctype, map: 'cave', x: 0, y: 0 }
+    });
+    assert.equal(controller.preferredTask().taskType, 'EVENT', name);
+    const observation = controller.absentEventTargets.get('slenderman');
+    assert.ok(observation, name);
+    observation.arrivedAtMs -= controller.config.absentTargetWaitMs + 1;
+    assert.equal(controller.preferredTask(), null, name + ' should return to FARM priority');
+    assert.equal(controller.plan({ taskType: 'EVENT' }).state, 'WAITING', name);
+  }
+});
+
+test('missing local coordinates are not misread as arrival at event coordinate zero', () => {
+  const character = { name: 'My_Warrior', ctype: 'warrior', map: 'cave', x: null, y: null };
+  const { controller } = create({ character });
+  assert.equal(controller.preferredTask().taskType, 'EVENT');
+  assert.equal(controller.absentEventTargets.has('slenderman'), false);
+});
