@@ -863,6 +863,25 @@
         return { ready: false, waiting: true, reason: 'H16_WAITING_FOR_ARRIVAL_EVIDENCE' };
       }
       if (!request.destination) return this._suspend(request.kind, 'H16_DESTINATION_UNAVAILABLE');
+      // A live, stationary character already at the exact NPC destination
+      // needs no new smart_move just because H16 queued another exchange.
+      // Unknown coordinates or active movements must NOT bypass arrival checks.
+      let character = null;
+      try {
+        const snapshot = this._snapshot();
+        character = snapshot && snapshot.character || null;
+      } catch (_) {}
+      const destination = request.destination;
+      const validPoint = character && character.x != null && character.y != null
+        && destination.x != null && destination.y != null
+        && finite(character.x) != null && finite(character.y) != null
+        && finite(destination.x) != null && finite(destination.y) != null;
+      if (validPoint && character.moving !== true
+          && String(character.map || '') === String(destination.map || '')
+          && Math.hypot(Number(character.x) - Number(destination.x),
+            Number(character.y) - Number(destination.y)) <= 12) {
+        return { ready: true, reason: 'H16_LIVE_ALREADY_AT_DESTINATION' };
+      }
       if (!this.movement || typeof this.movement.smartMove !== 'function') {
         return this._suspend(request.kind, 'H16_MOVEMENT_UNAVAILABLE');
       }
