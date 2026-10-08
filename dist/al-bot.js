@@ -1,4 +1,4 @@
-/* AL Bot 0.26.61-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.62-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -10977,6 +10977,9 @@
       this.trainingMs = 0;
       this.lastTrainingTickMs = null;
       this.lastProfiles = [];
+      this.lastProfilesAtMs = null;
+      this.lastPeerRegistryAtMs = null;
+      this.profileWrites = new Map();
       this.gearRegistry = new Map();
       this.gearRegistrySource = new Map();
       this.lastProgression = null;
@@ -10986,7 +10989,10 @@
       this.config = {
         targetCorridor: clamp(options.targetCorridor == null ? 0.08 : options.targetCorridor, 0, 0.5),
         maxProfileAgeMs: Math.max(1500, Math.min(30000, Number(options.maxProfileAgeMs) || 9000)),
-        maxCandidates: Math.max(4, Math.min(32, Math.floor(Number(options.maxCandidates) || 16)))
+        maxCandidates: Math.max(4, Math.min(32, Math.floor(Number(options.maxCandidates) || 16))),
+        // Profile views are advisory; lifecycle/action gates still read live data.
+        profileReadCacheMs: options.now ? 0 : Math.max(100, Math.min(1000, Number(options.profileReadCacheMs) || 250)),
+        profilePersistIntervalMs: Math.max(1000, Math.min(60000, Number(options.profilePersistIntervalMs) || 10000))
       };
     }
 
@@ -11122,21 +11128,40 @@
       this.gearRegistry.set(normalized.name, clone(row));
       this.gearRegistrySource.set(normalized.name, cleanText(source || 'BOT_NATIVE', 80) || 'BOT_NATIVE');
 
-      // Persist in the bot's own shared browser storage so a Merchant reload
-      // keeps the last cross-character gear snapshot without any external host.
+      // Do not serialise, write and queue an identical gear/gold snapshot on
+      // every read of profiles(). In the live Merchant this caused hundreds of
+      // thousands of redundant host queue operations in minutes.
+      const fingerprint = JSON.stringify({
+        ctype: row.ctype, level: row.level, gold: row.gold, map: row.map,
+        gearRole: row.gearRole, gearScore: row.gearScore, rip: row.rip,
+        equipment: row.equipment
+      });
+      const previous = this.profileWrites.get(normalized.name);
+      const changed = !previous || previous.fingerprint !== fingerprint;
+      const now = this.now();
+      if (!changed && now - Number(previous.atMs || 0) < this.config.profilePersistIntervalMs) {
+        return true;
+      }
+      // Store before optional mirroring so missing/unreachable SSD host cannot
+      // cause per-tick JSON writes. The bot-native cache remains authoritative.
       const written = this._storageWrite(key, row);
-
-      // Optional mirror only; never authoritative over bot-native state.
-      try {
-        if (this.hostState && typeof this.hostState.persistProfile === 'function') {
-          this.hostState.persistProfile(row);
-        }
-      } catch (_) {}
+      if (written) {
+        this.profileWrites.set(normalized.name, { fingerprint, atMs: now });
+        try {
+          if (this.hostState && typeof this.hostState.persistProfile === 'function') {
+            this.hostState.persistProfile(row);
+          }
+        } catch (_) {}
+      }
       return written;
     }
 
     _ingestCrossWindowRegistry() {
       if (!this.crossWindow || typeof this.crossWindow.status !== 'function') return 0;
+      const now = this.now();
+      if (this.lastPeerRegistryAtMs != null && now >= this.lastPeerRegistryAtMs
+          && now - this.lastPeerRegistryAtMs < 1000) return 0;
+      this.lastPeerRegistryAtMs = now;
       let state = null;
       try { state = this.crossWindow.status(); } catch (_) { return 0; }
       const freshNames = new Set((state && Array.isArray(state.freshPeers) ? state.freshPeers : [])
@@ -11302,6 +11327,13 @@
     }
 
     profiles() {
+      const now = this.now();
+      // Cached output is for planning only, never command authorization. The
+      // cross-window lifecycle validates live peer freshness independently.
+      if (this.lastProfilesAtMs != null && now >= this.lastProfilesAtMs
+          && now - this.lastProfilesAtMs < this.config.profileReadCacheMs) {
+        return clone(this.lastProfiles);
+      }
       // V3-style account registry: consume all peer gear snapshots transported
       // by H19, not only peers that are still fresh at this exact tick.
       this._ingestCrossWindowRegistry();
@@ -11365,6 +11397,7 @@
         online: online.has(String(row.name))
       })).sort((a, b) => a.name.localeCompare(b.name));
       this.lastProfiles = clone(rows);
+      this.lastProfilesAtMs = now;
       return clone(rows);
     }
 
@@ -25974,6 +26007,25 @@ class MerchantProductionPlanner {
         return { ready: false, waiting: true, reason: 'H16_WAITING_FOR_ARRIVAL_EVIDENCE' };
       }
       if (!request.destination) return this._suspend(request.kind, 'H16_DESTINATION_UNAVAILABLE');
+      // A live, stationary character already at the exact NPC destination
+      // needs no new smart_move just because H16 queued another exchange.
+      // Unknown coordinates or active movements must NOT bypass arrival checks.
+      let character = null;
+      try {
+        const snapshot = this._snapshot();
+        character = snapshot && snapshot.character || null;
+      } catch (_) {}
+      const destination = request.destination;
+      const validPoint = character && character.x != null && character.y != null
+        && destination.x != null && destination.y != null
+        && finite(character.x) != null && finite(character.y) != null
+        && finite(destination.x) != null && finite(destination.y) != null;
+      if (validPoint && character.moving !== true
+          && String(character.map || '') === String(destination.map || '')
+          && Math.hypot(Number(character.x) - Number(destination.x),
+            Number(character.y) - Number(destination.y)) <= 12) {
+        return { ready: true, reason: 'H16_LIVE_ALREADY_AT_DESTINATION' };
+      }
       if (!this.movement || typeof this.movement.smartMove !== 'function') {
         return this._suspend(request.kind, 'H16_MOVEMENT_UNAVAILABLE');
       }
@@ -33608,7 +33660,7 @@ class MerchantProductionPlanner {
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.61-h26';
+      this.version = options.version || '0.26.62-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -41909,7 +41961,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.61-h26',
+    version: '0.26.62-h26',
     bootCount,
     replacedPrevious: !!previous
   });
