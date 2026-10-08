@@ -288,3 +288,24 @@ test('H22 bootstrap reports safe updater download failures instead of claiming a
   assert.equal(result.updated, false);
   assert.equal(result.reason, 'UPDATE_BUNDLE_SHA256_MISMATCH');
 });
+
+test('H22 bootstrap supports the previous updates.cycle API without overriding a running bot', async () => {
+  const { context, api } = loadBootstrap();
+  let cycles = 0;
+  const current = {
+    version: '0.22.4-h22',
+    updates: {
+      cycle: async () => {
+        cycles += 1;
+        return { accepted: false, reason: 'UPDATE_DISABLED' };
+      }
+    }
+  };
+  context.ALBot = current;
+  const result = await api.start();
+  assert.equal(result.accepted, false);
+  assert.equal(result.reason, 'UPDATE_DISABLED');
+  assert.equal(result.updated, false);
+  assert.equal(cycles, 1);
+  assert.equal(context.ALBot, current);
+});
