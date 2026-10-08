@@ -234,15 +234,49 @@
     return { ok: false, reason: last };
   }
 
-  async function start() {
-    if (root && root.ALBot) {
+  async function refreshRunningRuntime() {
+    const oldApi = root && root.ALBot;
+    const updater = oldApi && (oldApi.updater || oldApi.updates);
+    const localVersion = clean(oldApi && oldApi.version || '', 80) || null;
+
+    // Hot reload is owned by H22: it checks the official stable manifest,
+    // verifies the pinned bundle and coordinates all online characters.
+    // Never execute a bundle directly over an active gameplay runtime.
+    const tick = updater && (typeof updater.tick === 'function'
+      ? updater.tick : typeof updater.cycle === 'function' ? updater.cycle : null);
+    if (!tick) {
       return {
-        accepted: true,
+        accepted: false,
         alreadyRunning: true,
-        reason: 'BOOTSTRAP_RUNTIME_ALREADY_PRESENT',
-        activeRelease: activeRelease()
+        checked: false,
+        updated: false,
+        version: localVersion,
+        reason: 'BOOTSTRAP_SAFE_UPDATER_UNAVAILABLE'
       };
     }
+
+    const result = await tick.call(updater);
+    const check = result && result.check || result;
+    const apply = result && result.apply || null;
+    const updated = !!(apply && apply.applied === true);
+    const failure = result && result.accepted === false
+      ? result.reason
+      : check && check.accepted === false ? check.reason : null;
+    const currentVersion = clean(root && root.ALBot && root.ALBot.version || localVersion, 80) || null;
+    return {
+      accepted: !failure,
+      alreadyRunning: true,
+      checked: true,
+      updated,
+      version: currentVersion,
+      reason: clean(failure || apply && apply.reason
+        || (updated ? 'BOOTSTRAP_UPDATED_VIA_SAFE_UPDATER' : 'BOOTSTRAP_UPDATE_CHECKED'), 240),
+      updaterResult: clone(result)
+    };
+  }
+
+  async function startOnce() {
+    if (root && root.ALBot) return refreshRunningRuntime();
 
     const rawManifest = await fetchJson(MANIFEST_URL);
     const checked = validateManifest(rawManifest);
@@ -265,6 +299,15 @@
     };
   }
 
+  // An Adventure Land slot may be evaluated again while its first load or
+  // an H22 update is still pending. Coalesce callers instead of racing them.
+  let startInFlight = null;
+  function start() {
+    if (startInFlight) return startInFlight;
+    startInFlight = startOnce().finally(() => { startInFlight = null; });
+    return startInFlight;
+  }
+
   const api = Object.freeze({
     product: PRODUCT,
     version: BOOTSTRAP_VERSION,
@@ -282,7 +325,7 @@
   });
 
   root.__ALBOT_BOOTSTRAP__ = api;
-  if (!root.ALBot && root.__ALBOT_BOOTSTRAP_AUTOSTART__ !== false) {
+  if (root.__ALBOT_BOOTSTRAP_AUTOSTART__ !== false) {
     root.__ALBOT_BOOTSTRAP_READY__ = start().catch(error => {
       try { if (root && typeof root.game_log === 'function') root.game_log('AL Bot Bootstrap: ' + String(error && error.message || error), '#ff6b6b'); } catch (_) {}
       throw error;

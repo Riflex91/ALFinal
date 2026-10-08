@@ -192,17 +192,99 @@ test('H22 bootstrap first start creates ALBot and starts the runtime without a p
   assert.equal(api.activeRelease().bundleUrl, manifest.bundleUrl);
 });
 
-test('H22 bootstrap does not independently check for updates once ALBot already exists', async () => {
+test('H22 bootstrap delegates existing runtime refresh to Safe Auto Updater', async () => {
   let fetches = 0;
+  let ticks = 0;
   const { context, api } = loadBootstrap({
-    fetch: async () => {
-      fetches += 1;
-      throw new Error('MUST_NOT_FETCH');
-    }
+    fetch: async () => { fetches += 1; throw new Error('BOOTSTRAP_MUST_NOT_FETCH'); }
   });
-  context.ALBot = { version: '0.22.4-h22' };
+  context.ALBot = {
+    version: '0.22.4-h22',
+    updater: {
+      tick: async () => {
+        ticks += 1;
+        return {
+          check: { accepted: true, updateAvailable: true },
+          apply: { applied: false, reason: 'UPDATE_EVENT_OR_BOSS_ACTIVE' }
+        };
+      }
+    }
+  };
   const result = await api.start();
+  assert.equal(result.accepted, true);
   assert.equal(result.alreadyRunning, true);
-  assert.equal(result.reason, 'BOOTSTRAP_RUNTIME_ALREADY_PRESENT');
-  assert.equal(fetches, 0);
+  assert.equal(result.checked, true);
+  assert.equal(result.updated, false);
+  assert.equal(result.version, '0.22.4-h22');
+  assert.equal(result.reason, 'UPDATE_EVENT_OR_BOSS_ACTIVE');
+  assert.equal(ticks, 1);
+  assert.equal(fetches, 0, 'only the H22 updater may fetch over an existing runtime');
+});
+
+test('H22 bootstrap checks an already-running bot on code-slot evaluation', async () => {
+  const { context } = loadBootstrap();
+  let ticks = 0;
+  context.ALBot = {
+    version: '0.22.4-h22',
+    updater: {
+      tick: async () => {
+        ticks += 1;
+        context.ALBot.version = '0.22.5-h22';
+        return {
+          check: { accepted: true, updateAvailable: true },
+          apply: { applied: true }
+        };
+      }
+    }
+  };
+  context.__ALBOT_BOOTSTRAP_AUTOSTART__ = undefined;
+  vm.runInNewContext(source, context, { filename: 'al-bot-bootstrap.js' });
+  const result = await context.__ALBOT_BOOTSTRAP_READY__;
+  assert.equal(ticks, 1);
+  assert.equal(result.updated, true);
+  assert.equal(result.version, '0.22.5-h22');
+});
+
+test('H22 bootstrap does not replace a running bot when safe updater is unavailable', async () => {
+  const { context, api } = loadBootstrap();
+  const existing = { version: '0.22.4-h22' };
+  context.ALBot = existing;
+  const result = await api.start();
+  assert.equal(result.accepted, false);
+  assert.equal(result.checked, false);
+  assert.equal(result.reason, 'BOOTSTRAP_SAFE_UPDATER_UNAVAILABLE');
+  assert.equal(context.ALBot, existing);
+});
+
+test('H22 bootstrap coalesces concurrent starts instead of racing refreshes', async () => {
+  const { context, api } = loadBootstrap();
+  let finish;
+  let ticks = 0;
+  const operation = new Promise(resolve => { finish = resolve; });
+  context.ALBot = {
+    version: '0.22.4-h22',
+    updater: { tick: () => { ticks += 1; return operation; } }
+  };
+  const a = api.start();
+  const b = api.start();
+  assert.equal(a, b);
+  assert.equal(ticks, 1);
+  finish({ accepted: true, updateAvailable: false });
+  const result = await a;
+  assert.equal(result.updated, false);
+  assert.equal(ticks, 1);
+  await api.start();
+  assert.equal(ticks, 2, 'later evaluations may check for newly published releases');
+});
+
+test('H22 bootstrap reports safe updater download failures instead of claiming an update', async () => {
+  const { context, api } = loadBootstrap();
+  context.ALBot = {
+    version: '0.22.4-h22',
+    updater: { tick: async () => ({ accepted: false, reason: 'UPDATE_BUNDLE_SHA256_MISMATCH' }) }
+  };
+  const result = await api.start();
+  assert.equal(result.accepted, false);
+  assert.equal(result.updated, false);
+  assert.equal(result.reason, 'UPDATE_BUNDLE_SHA256_MISMATCH');
 });
