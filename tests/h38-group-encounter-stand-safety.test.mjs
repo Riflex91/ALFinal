@@ -38,7 +38,7 @@ test('H38 incomplete group DPS rejects even attractive material farming targets 
   const C=root.__ALBOT_INTERNALS__.FarmIntelligenceController;
   const c=Object.create(C.prototype);
   c.session={groupMemberNames:['Priest','Warrior','Ranger'],preferredTypes:[],excludedTypes:[]};
-  c._groupPlanningProfiles=()=>({enabled:true,complete:true,memberNames:['Priest','Warrior','Ranger'],profiles:[
+  c._groupPlanningProfiles=()=>({enabled:true,complete:true,memberNames:['Priest','Warrior','Ranger'],missingMemberNames:[],profiles:[
     {name:'Priest',ctype:'priest',attack:300,frequency:1,maxHp:1200},
     {name:'Warrior',ctype:'warrior',attack:500,frequency:1,maxHp:3000},
     {name:'Ranger',ctype:'ranger',attack:null,frequency:1,maxHp:1500}
@@ -50,7 +50,7 @@ test('H38 incomplete group DPS rejects even attractive material farming targets 
   assert.equal(c._filteredCandidates(candidates,{name:'Warrior',attack:500}).length,0);
   assert.equal(c.metrics.groupSafetyBlocks,1);
   assert.equal(candidates[0].groupSafety.reason,'H9_GROUP_DPS_INCOMPLETE');
-  c._groupPlanningProfiles=()=>({enabled:true,complete:true,memberNames:['Priest','Warrior','Ranger'],profiles:[
+  c._groupPlanningProfiles=()=>({enabled:true,complete:true,memberNames:['Priest','Warrior','Ranger'],missingMemberNames:[],profiles:[
     {name:'Priest',ctype:'priest',attack:300,frequency:1,maxHp:1200},
     {name:'Warrior',ctype:'warrior',attack:500,frequency:1,maxHp:3000},
     {name:'Ranger',ctype:'ranger',attack:450,frequency:1,maxHp:1500}
@@ -87,7 +87,7 @@ test('H38 merchant handoff dispatches close once and confirms only against live 
   assert.equal(c.closeStandForWork().state,'DISPATCHED');
   assert.equal(c.closeStandForWork().state,'PENDING');
   assert.equal(dispatches,1);
-  assert.equal(c._observePending().state,undefined);
+  assert.equal(c._observePending().state,'PENDING');
   open=false;
   assert.equal(c._observePending().state,'CONFIRMED');
   assert.equal(c.pending,null);
