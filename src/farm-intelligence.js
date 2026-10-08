@@ -721,7 +721,11 @@
           });
           const performanceComplete = groupProfiles.complete
             && performanceMembers.length === groupProfiles.memberNames.length
-            && performanceMembers.every(member => finite(member.theoreticalDps) != null);
+            && performanceMembers.every(member => finite(member.theoreticalDps) != null)
+            // Survivability estimates are unsafe without a confirmed HP
+            // envelope for each expected farmer, especially the tank.
+            && groupProfiles.profiles.every(member => finite(member && member.maxHp) != null
+              && Number(member.maxHp) > 0);
           row.groupPerformance = {
             complete: performanceComplete,
             aggregateDps: performanceComplete

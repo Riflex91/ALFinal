@@ -859,10 +859,16 @@
         const upcomingWork = expectedWork && expectedWork.state === 'READY'
           && expectedWork.selected
           && ['TRAVEL', 'CLOSE_STAND'].includes(expectedWork.selected.kind);
+        // Merrit/urgent stand work intentionally needs an open stand until
+        // handoff and must not be preempted by a lower-priority economy plan.
+        const keepForegroundStand = expectedWork && expectedWork.state === 'READY'
+          && expectedWork.selected
+          && ['MERRIT', 'SAFETY'].includes(String(expectedWork.selected.priorityClass || ''))
+          && !upcomingWork;
         const upcomingEconomy = expectedEconomy && expectedEconomy.state === 'READY'
           && expectedEconomy.selected && expectedEconomy.selected.kind !== 'BANK_DEPOSIT';
         const upcomingLogistics = expectedLogistics && expectedLogistics.state === 'READY';
-        if (upcomingWork || upcomingEconomy || upcomingLogistics) {
+        if (!keepForegroundStand && (upcomingWork || upcomingEconomy || upcomingLogistics)) {
           const step = work.closeStandForWork();
           const after = work.status();
           if (after.suspendedReason) return { ok: false, reason: after.suspendedReason };
