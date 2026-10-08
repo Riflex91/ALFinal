@@ -74,8 +74,8 @@ test('H22 committed release manifest is valid before promotion and matches the c
   const manifest = JSON.parse(fs.readFileSync(new URL('../release/al-bot-release.json', import.meta.url), 'utf8'));
   const dist = fs.readFileSync(new URL('../dist/al-bot.js', import.meta.url), 'utf8');
   const checked = api.validateManifest(manifest);
-  const candidateVersion = '0.26.59-h26';
-  const candidatePackageVersion = '0.26.59';
+  const candidateVersion = '0.26.60-h26';
+  const candidatePackageVersion = '0.26.60';
 
   assert.equal(checked.ok, true);
   assert.equal(manifest.minBootstrapVersion, '1.0.0');
@@ -84,7 +84,7 @@ test('H22 committed release manifest is valid before promotion and matches the c
     manifest.bundleUrl,
     'https://raw.githubusercontent.com/Riflex91/ALFinal/' + manifest.commitSha + '/dist/al-bot.js'
   );
-  assert.match(dist, /^\/\* AL Bot 0\.26\.59-h26 \| generated file \| do not edit dist directly \*\//);
+  assert.match(dist, /^\/\* AL Bot 0\.26\.60-h26 \| generated file \| do not edit dist directly \*\//);
 
   if (manifest.version === candidateVersion) {
     assert.equal(manifest.packageVersion, candidatePackageVersion);
@@ -93,8 +93,8 @@ test('H22 committed release manifest is valid before promotion and matches the c
   } else {
     // During candidate CI the stable pointer intentionally remains on the last
     // verified release. Only the known previous stable release is accepted.
-    assert.equal(manifest.version, '0.26.58-h26');
-    assert.equal(manifest.packageVersion, '0.26.58');
+    assert.equal(manifest.version, '0.26.59-h26');
+    assert.equal(manifest.packageVersion, '0.26.59');
   }
 });
 
@@ -192,17 +192,120 @@ test('H22 bootstrap first start creates ALBot and starts the runtime without a p
   assert.equal(api.activeRelease().bundleUrl, manifest.bundleUrl);
 });
 
-test('H22 bootstrap does not independently check for updates once ALBot already exists', async () => {
+test('H22 bootstrap delegates existing runtime refresh to Safe Auto Updater', async () => {
   let fetches = 0;
+  let ticks = 0;
   const { context, api } = loadBootstrap({
-    fetch: async () => {
-      fetches += 1;
-      throw new Error('MUST_NOT_FETCH');
-    }
+    fetch: async () => { fetches += 1; throw new Error('BOOTSTRAP_MUST_NOT_FETCH'); }
   });
-  context.ALBot = { version: '0.22.4-h22' };
+  context.ALBot = {
+    version: '0.22.4-h22',
+    updater: {
+      tick: async () => {
+        ticks += 1;
+        return {
+          check: { accepted: true, updateAvailable: true },
+          apply: { applied: false, reason: 'UPDATE_EVENT_OR_BOSS_ACTIVE' }
+        };
+      }
+    }
+  };
   const result = await api.start();
+  assert.equal(result.accepted, true);
   assert.equal(result.alreadyRunning, true);
-  assert.equal(result.reason, 'BOOTSTRAP_RUNTIME_ALREADY_PRESENT');
-  assert.equal(fetches, 0);
+  assert.equal(result.checked, true);
+  assert.equal(result.updated, false);
+  assert.equal(result.version, '0.22.4-h22');
+  assert.equal(result.reason, 'UPDATE_EVENT_OR_BOSS_ACTIVE');
+  assert.equal(ticks, 1);
+  assert.equal(fetches, 0, 'only the H22 updater may fetch over an existing runtime');
+});
+
+test('H22 bootstrap checks an already-running bot on code-slot evaluation', async () => {
+  const { context } = loadBootstrap();
+  let ticks = 0;
+  context.ALBot = {
+    version: '0.22.4-h22',
+    updater: {
+      tick: async () => {
+        ticks += 1;
+        context.ALBot.version = '0.22.5-h22';
+        return {
+          check: { accepted: true, updateAvailable: true },
+          apply: { applied: true }
+        };
+      }
+    }
+  };
+  context.__ALBOT_BOOTSTRAP_AUTOSTART__ = undefined;
+  vm.runInNewContext(source, context, { filename: 'al-bot-bootstrap.js' });
+  const result = await context.__ALBOT_BOOTSTRAP_READY__;
+  assert.equal(ticks, 1);
+  assert.equal(result.updated, true);
+  assert.equal(result.version, '0.22.5-h22');
+});
+
+test('H22 bootstrap does not replace a running bot when safe updater is unavailable', async () => {
+  const { context, api } = loadBootstrap();
+  const existing = { version: '0.22.4-h22' };
+  context.ALBot = existing;
+  const result = await api.start();
+  assert.equal(result.accepted, false);
+  assert.equal(result.checked, false);
+  assert.equal(result.reason, 'BOOTSTRAP_SAFE_UPDATER_UNAVAILABLE');
+  assert.equal(context.ALBot, existing);
+});
+
+test('H22 bootstrap coalesces concurrent starts instead of racing refreshes', async () => {
+  const { context, api } = loadBootstrap();
+  let finish;
+  let ticks = 0;
+  const operation = new Promise(resolve => { finish = resolve; });
+  context.ALBot = {
+    version: '0.22.4-h22',
+    updater: { tick: () => { ticks += 1; return operation; } }
+  };
+  const a = api.start();
+  const b = api.start();
+  assert.equal(a, b);
+  assert.equal(ticks, 1);
+  finish({ accepted: true, updateAvailable: false });
+  const result = await a;
+  assert.equal(result.updated, false);
+  assert.equal(ticks, 1);
+  await api.start();
+  assert.equal(ticks, 2, 'later evaluations may check for newly published releases');
+});
+
+test('H22 bootstrap reports safe updater download failures instead of claiming an update', async () => {
+  const { context, api } = loadBootstrap();
+  context.ALBot = {
+    version: '0.22.4-h22',
+    updater: { tick: async () => ({ accepted: false, reason: 'UPDATE_BUNDLE_SHA256_MISMATCH' }) }
+  };
+  const result = await api.start();
+  assert.equal(result.accepted, false);
+  assert.equal(result.updated, false);
+  assert.equal(result.reason, 'UPDATE_BUNDLE_SHA256_MISMATCH');
+});
+
+test('H22 bootstrap supports the previous updates.cycle API without overriding a running bot', async () => {
+  const { context, api } = loadBootstrap();
+  let cycles = 0;
+  const current = {
+    version: '0.22.4-h22',
+    updates: {
+      cycle: async () => {
+        cycles += 1;
+        return { accepted: false, reason: 'UPDATE_DISABLED' };
+      }
+    }
+  };
+  context.ALBot = current;
+  const result = await api.start();
+  assert.equal(result.accepted, false);
+  assert.equal(result.reason, 'UPDATE_DISABLED');
+  assert.equal(result.updated, false);
+  assert.equal(cycles, 1);
+  assert.equal(context.ALBot, current);
 });
