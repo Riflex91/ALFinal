@@ -729,7 +729,7 @@ test('H17 runtime, API, UI, build and generated bundle are wired without direct 
   assert.match(runtime, /new ns\.EconomyController/);
   assert.match(runtime, /id: 'economy'/);
   assert.match(runtime, /id: 'h17-economy-autonomy'/);
-  assert.match(runtime, /options\.version \|\| '0\.26\.61-h26'/);
+  assert.match(runtime, /options\.version \|\| '0\.26\.63-h26'/);
   assert.match(runtime, /trade\.movementUnknown/);
   assert.match(runtime, /inventory\.lootUnknown/);
   assert.match(runtime, /status\.pendingLoot/);
@@ -738,17 +738,17 @@ test('H17 runtime, API, UI, build and generated bundle are wired without direct 
   assert.match(source, /type\.includes\('BLOCKED'\)/);
   assert.match(source, /if \(observed\.state !== 'IDLE'\) return observed/);
   assert.match(source, /beginAutonomySession\('H17_ECONOMY_AUTONOMY_START'\)/);
-  assert.match(entry, /0\.26\.61-h26/);
+  assert.match(entry, /0\.26\.63-h26/);
   assert.match(entry, /runtime\.economy\.startAutonomy/);
   assert.match(entry, /Object\.freeze\(api\.economy\)/);
   assert.match(ui, /data-tab="economy"/);
   assert.match(ui, /H17 Economy Autonomy/);
   assert.match(build, /src\/economy\.js/);
-  assert.match(build, /const runtimeVersion = '0\.26\.61-h26'/);
-  assert.match(dist, /AL Bot 0\.26\.61-h26/);
+  assert.match(build, /const runtimeVersion = '0\.26\.63-h26'/);
+  assert.match(dist, /AL Bot 0\.26\.63-h26/);
   assert.match(dist, /class EconomyController/);
   assert.doesNotMatch(source, /actions\.dispatch/);
-  assert.equal(pkg.version, '0.26.61');
+  assert.equal(pkg.version, '0.26.63');
 });
 
 
@@ -806,4 +806,19 @@ test('H17 normal-pressure bank maintenance queues the existing safe H12 mount pa
   const tick = f.economy.tick();
   assert.equal(tick.state, 'QUEUED');
   assert.deepEqual(f.calls[0], { module: 'bank', kind: 'MOUNT' });
+});
+
+test('H17 no longer proposes exchanges or crafts after the child attempt cap', () => {
+  const f = fixture({
+    exchanges: [{ safe: true, itemName: 'anniversarygift', inventorySlot: 4, requiredQuantity: 1, valueAtRisk: 10 }],
+    crafts: [{ safe: true, itemName: 'rod', cost: 10, inputValueAtRisk: 20 }]
+  });
+  f.statuses.exchangeCraft.attemptsThisSession = 12;
+  f.statuses.exchangeCraft.config = { maxAttemptsPerSession: 12 };
+  const exhausted = f.economy.plan();
+  assert.equal(exhausted.proposals.some(row => row.kind === 'EXCHANGE' || row.kind === 'CRAFT'), false);
+  f.statuses.exchangeCraft.attemptsThisSession = 11;
+  const available = f.economy.plan();
+  assert.equal(available.proposals.some(row => row.kind === 'EXCHANGE'), true);
+  assert.equal(available.proposals.some(row => row.kind === 'CRAFT'), true);
 });

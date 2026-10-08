@@ -1,4 +1,4 @@
-/* AL Bot 0.26.61-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.63-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -10977,6 +10977,9 @@
       this.trainingMs = 0;
       this.lastTrainingTickMs = null;
       this.lastProfiles = [];
+      this.lastProfilesAtMs = null;
+      this.lastPeerRegistryAtMs = null;
+      this.profileWrites = new Map();
       this.gearRegistry = new Map();
       this.gearRegistrySource = new Map();
       this.lastProgression = null;
@@ -10986,7 +10989,10 @@
       this.config = {
         targetCorridor: clamp(options.targetCorridor == null ? 0.08 : options.targetCorridor, 0, 0.5),
         maxProfileAgeMs: Math.max(1500, Math.min(30000, Number(options.maxProfileAgeMs) || 9000)),
-        maxCandidates: Math.max(4, Math.min(32, Math.floor(Number(options.maxCandidates) || 16)))
+        maxCandidates: Math.max(4, Math.min(32, Math.floor(Number(options.maxCandidates) || 16))),
+        // Profile views are advisory; lifecycle/action gates still read live data.
+        profileReadCacheMs: options.now ? 0 : Math.max(100, Math.min(1000, Number(options.profileReadCacheMs) || 250)),
+        profilePersistIntervalMs: Math.max(1000, Math.min(60000, Number(options.profilePersistIntervalMs) || 10000))
       };
     }
 
@@ -11122,21 +11128,40 @@
       this.gearRegistry.set(normalized.name, clone(row));
       this.gearRegistrySource.set(normalized.name, cleanText(source || 'BOT_NATIVE', 80) || 'BOT_NATIVE');
 
-      // Persist in the bot's own shared browser storage so a Merchant reload
-      // keeps the last cross-character gear snapshot without any external host.
+      // Do not serialise, write and queue an identical gear/gold snapshot on
+      // every read of profiles(). In the live Merchant this caused hundreds of
+      // thousands of redundant host queue operations in minutes.
+      const fingerprint = JSON.stringify({
+        ctype: row.ctype, level: row.level, gold: row.gold, map: row.map,
+        gearRole: row.gearRole, gearScore: row.gearScore, rip: row.rip,
+        equipment: row.equipment
+      });
+      const previous = this.profileWrites.get(normalized.name);
+      const changed = !previous || previous.fingerprint !== fingerprint;
+      const now = this.now();
+      if (!changed && now - Number(previous.atMs || 0) < this.config.profilePersistIntervalMs) {
+        return true;
+      }
+      // Store before optional mirroring so missing/unreachable SSD host cannot
+      // cause per-tick JSON writes. The bot-native cache remains authoritative.
       const written = this._storageWrite(key, row);
-
-      // Optional mirror only; never authoritative over bot-native state.
-      try {
-        if (this.hostState && typeof this.hostState.persistProfile === 'function') {
-          this.hostState.persistProfile(row);
-        }
-      } catch (_) {}
+      if (written) {
+        this.profileWrites.set(normalized.name, { fingerprint, atMs: now });
+        try {
+          if (this.hostState && typeof this.hostState.persistProfile === 'function') {
+            this.hostState.persistProfile(row);
+          }
+        } catch (_) {}
+      }
       return written;
     }
 
     _ingestCrossWindowRegistry() {
       if (!this.crossWindow || typeof this.crossWindow.status !== 'function') return 0;
+      const now = this.now();
+      if (this.lastPeerRegistryAtMs != null && now >= this.lastPeerRegistryAtMs
+          && now - this.lastPeerRegistryAtMs < 1000) return 0;
+      this.lastPeerRegistryAtMs = now;
       let state = null;
       try { state = this.crossWindow.status(); } catch (_) { return 0; }
       const freshNames = new Set((state && Array.isArray(state.freshPeers) ? state.freshPeers : [])
@@ -11302,6 +11327,13 @@
     }
 
     profiles() {
+      const now = this.now();
+      // Cached output is for planning only, never command authorization. The
+      // cross-window lifecycle validates live peer freshness independently.
+      if (this.lastProfilesAtMs != null && now >= this.lastProfilesAtMs
+          && now - this.lastProfilesAtMs < this.config.profileReadCacheMs) {
+        return clone(this.lastProfiles);
+      }
       // V3-style account registry: consume all peer gear snapshots transported
       // by H19, not only peers that are still fresh at this exact tick.
       this._ingestCrossWindowRegistry();
@@ -11365,6 +11397,7 @@
         online: online.has(String(row.name))
       })).sort((a, b) => a.name.localeCompare(b.name));
       this.lastProfiles = clone(rows);
+      this.lastProfilesAtMs = now;
       return clone(rows);
     }
 
@@ -16032,6 +16065,8 @@
       this.movement = options.movement;
       this.party = options.party || null;
       this.strategy = options.strategy || null;
+      this.storage = options.storage || null;
+      this.lastMaterialDemand = null;
       this.now = typeof options.now === 'function' ? options.now : () => Date.now();
 
       this.config = {
@@ -16510,7 +16545,44 @@
       };
     }
 
+    _materialDemand() {
+      if (!this.storage || typeof this.storage.sharedAvailable !== 'function'
+          || this.storage.sharedAvailable() !== true
+          || typeof this.storage.getShared !== 'function') return null;
+      let server = null;
+      try {
+        const windows = [this.root, this.root && this.root.parent].filter(Boolean);
+        server = windows.find(row => row.server_region && row.server_identifier) || null;
+      } catch (_) {}
+      if (!server) return null;
+      const key = 'albot:material-farm-demand:v1:'
+        + encodeURIComponent(String(server.server_region)) + ':'
+        + encodeURIComponent(String(server.server_identifier));
+      let demand = null;
+      try { demand = JSON.parse(this.storage.getShared(key) || 'null'); } catch (_) {}
+      const now = this.now();
+      if (!demand || demand.schemaVersion !== 1 || demand.source !== 'merchant-tool-crafting'
+          || !demand.merchant || !demand.material || !demand.monsterType
+          || !Number.isFinite(Number(demand.createdAtMs))
+          || !Number.isFinite(Number(demand.expiresAtMs))
+          || now < Number(demand.createdAtMs) - 5000 || now > Number(demand.expiresAtMs)) return null;
+      const definition = this.game && typeof this.game.monsterDefinition === 'function'
+        ? this.game.monsterDefinition(demand.monsterType) : null;
+      if (!definition || definition.boss === true || definition.cooperative === true
+          || !(definition.drops || []).some(row => row && String(row.item) === String(demand.material)
+            && Number(row.chance || 0) > 0)) return null;
+      return {
+        material: String(demand.material), monsterType: String(demand.monsterType),
+        quantity: Math.max(1, Number(demand.quantity) || 1),
+        expiresAtMs: Number(demand.expiresAtMs)
+      };
+    }
+
     _scoreCandidates(character, candidates) {
+      // A materials request can only *rank* already-safe FARM candidates. It
+      // never bypasses event, damage, hit-chance, group or combat safety gates.
+      const demand = this._materialDemand();
+      this.lastMaterialDemand = demand;
       const rows = candidates.map(candidate => ({ ...candidate, raw: this._rawMetrics(character, candidate) }));
       const max = name => Math.max(0.000001, ...rows.map(row => Number(row.raw[name]) || 0));
       const xpMax = max('xpPerSecond');
@@ -16539,7 +16611,8 @@
           + components.respawn * 0.08
           + components.competition * 0.06
           + components.safety * 0.10
-        )).toFixed(2));
+        ) + (demand && row.mtype === demand.monsterType ? 15 : 0)).toFixed(2));
+        row.materialDemandMatch = !!(demand && row.mtype === demand.monsterType);
       }
       rows.sort((a, b) => b.score - a.score || b.visibleSafeCount - a.visibleSafeCount || String(a.key).localeCompare(String(b.key)));
       return rows;
@@ -25974,6 +26047,25 @@ class MerchantProductionPlanner {
         return { ready: false, waiting: true, reason: 'H16_WAITING_FOR_ARRIVAL_EVIDENCE' };
       }
       if (!request.destination) return this._suspend(request.kind, 'H16_DESTINATION_UNAVAILABLE');
+      // A live, stationary character already at the exact NPC destination
+      // needs no new smart_move just because H16 queued another exchange.
+      // Unknown coordinates or active movements must NOT bypass arrival checks.
+      let character = null;
+      try {
+        const snapshot = this._snapshot();
+        character = snapshot && snapshot.character || null;
+      } catch (_) {}
+      const destination = request.destination;
+      const validPoint = character && character.x != null && character.y != null
+        && destination.x != null && destination.y != null
+        && finite(character.x) != null && finite(character.y) != null
+        && finite(destination.x) != null && finite(destination.y) != null;
+      if (validPoint && character.moving !== true
+          && String(character.map || '') === String(destination.map || '')
+          && Math.hypot(Number(character.x) - Number(destination.x),
+            Number(character.y) - Number(destination.y)) <= 12) {
+        return { ready: true, reason: 'H16_LIVE_ALREADY_AT_DESTINATION' };
+      }
       if (!this.movement || typeof this.movement.smartMove !== 'function') {
         return this._suspend(request.kind, 'H16_MOVEMENT_UNAVAILABLE');
       }
@@ -26903,7 +26995,13 @@ class MerchantProductionPlanner {
         if (proposal) proposals.push(proposal);
       }
 
-      const safeExchange = exchangePlan && (exchangePlan.exchangeCandidates || []).find(row => row && row.safe === true) || null;
+      // H16's attempt cap is terminal for this session. Do not repeatedly
+      // offer identical exchanges/crafts to H17 after the child exhausts it.
+      const exchangeStatus = children.exchangeCraft || {};
+      const exchangeBudgetAvailable = Number(exchangeStatus.attemptsThisSession || 0)
+        < Number(exchangeStatus.config && exchangeStatus.config.maxAttemptsPerSession || Infinity);
+      const safeExchange = exchangeBudgetAvailable && exchangePlan
+        && (exchangePlan.exchangeCandidates || []).find(row => row && row.safe === true) || null;
       if (safeExchange) {
         const proposal = this._proposal('EXCHANGE', 'exchangeCraft', {
           key: safeExchange.itemName + ':' + safeExchange.inventorySlot,
@@ -26915,7 +27013,8 @@ class MerchantProductionPlanner {
         if (proposal) proposals.push(proposal);
       }
 
-      const safeCraft = exchangePlan && (exchangePlan.craftCandidates || []).find(row => row && row.safe === true) || null;
+      const safeCraft = exchangeBudgetAvailable && exchangePlan
+        && (exchangePlan.craftCandidates || []).find(row => row && row.safe === true) || null;
       if (safeCraft) {
         const proposal = this._proposal('CRAFT', 'exchangeCraft', {
           key: safeCraft.itemName,
@@ -28256,6 +28355,7 @@ class MerchantProductionPlanner {
       this.lastGatherResult = null;
       this.lastWishlistAtMs = 0;
       this.lastGiveawayProbeAtMs = 0;
+      this.materialFarmRequest = null;
 
       this.config = {
         tickMs: Math.max(500, Math.min(5000, Number(options.tickMs) || 1000)),
@@ -28276,6 +28376,7 @@ class MerchantProductionPlanner {
         wishlistGoldReserve: Math.max(0, Math.floor(Number(options.wishlistGoldReserve) || 100000)),
         wishlistFallbackPrice: Math.max(1, Math.floor(Number(options.wishlistFallbackPrice) || 20)),
         wishlistCooldownMs: Math.max(10000, Math.min(3600000, Number(options.wishlistCooldownMs) || 120000)),
+        materialFarmWaitMs: Math.max(15000, Math.min(600000, Number(options.materialFarmWaitMs) || 180000)),
         giveawayProbeMs: Math.max(2000, Math.min(300000, Number(options.giveawayProbeMs) || 15000)),
         pontyProbeMs: Math.max(15000, Math.min(3600000, Number(options.pontyProbeMs) || 90000)),
         pontyMaxSpend: Math.max(10000, Math.floor(Number(options.pontyMaxSpend) || 1000000)),
@@ -28295,6 +28396,7 @@ class MerchantProductionPlanner {
         gatheringNone: 0,
         gatheringRejected: 0,
         toolAcquisitions: 0,
+        materialFarmOrders: 0,
         merchantSkills: 0,
         wishlistsCreated: 0,
         giveawaysJoined: 0,
@@ -28805,8 +28907,10 @@ class MerchantProductionPlanner {
       const G = this._gameData();
       const gold = this._gold();
       if (gold == null) return null;
+      // Do not buy missing tools via the stand before evaluating their
+      // crafting graph and possible safe farming sources.
       const wanted = [];
-      for (const tool of ['rod', 'pickaxe']) {
+      for (const tool of options.includeTools === true ? ['rod', 'pickaxe'] : []) {
         if (!this._skillEnabled(tool === 'rod' ? 'fishing' : 'mining')) continue;
         const have = this._inventoryCount(tool);
         const raw = this._rawCharacter();
@@ -29718,6 +29822,71 @@ class MerchantProductionPlanner {
       return { state: 'DISPATCHED', pending: clone(pending) };
     }
 
+    _materialFarmKey() {
+      const server = this._roots().find(row => row
+        && row.server_region && row.server_identifier);
+      if (!server) return null;
+      return 'albot:material-farm-demand:v1:'
+        + encodeURIComponent(String(server.server_region)) + ':'
+        + encodeURIComponent(String(server.server_identifier));
+    }
+
+    _requestToolMaterialFarm(tool) {
+      if (!this.storage || typeof this.storage.sharedAvailable !== 'function'
+          || this.storage.sharedAvailable() !== true
+          || typeof this.storage.setShared !== 'function'
+          || !this.exchangeCraft || typeof this.exchangeCraft.productionGraph !== 'function') return null;
+      const now = Date.now();
+      const prior = this.materialFarmRequest;
+      if (prior && prior.tool === tool) {
+        // A bounded request is not renewed indefinitely. When it expires,
+        // ordinary guarded acquisition may be tried again.
+        return now < prior.expiresAtMs
+          ? { state: 'WAITING', reason: 'MERCHANT_TOOL_MATERIAL_FARM_PENDING',
+              material: prior.material, monsterType: prior.monsterType }
+          : null;
+      }
+      let graph = null;
+      try { graph = this.exchangeCraft.productionGraph(tool, 1); } catch (_) {}
+      if (!graph || !Array.isArray(graph.steps)) return null;
+      // FARM_REQUIRED is generated by the production planner; BUY leaves can
+      // also be farmed when live game definitions prove an exact drop.
+      const requirements = graph.steps.filter(row => row && row.name !== tool
+        && Number(row.level || 0) === 0
+        && ['FARM_REQUIRED', 'BUY'].includes(String(row.kind || '')));
+      if (!requirements.length) return null;
+      const definitions = this._gameData().monsters || {};
+      const key = this._materialFarmKey();
+      if (!key) return null;
+      for (const required of requirements) {
+        for (const mtype of Object.keys(definitions)) {
+          const monster = this.game && typeof this.game.monsterDefinition === 'function'
+            ? this.game.monsterDefinition(mtype) : null;
+          if (!monster || monster.boss === true || monster.cooperative === true
+              || !(monster.drops || []).some(drop => drop && drop.item === required.name
+                && Number(drop.chance || 0) > 0)) continue;
+          const current = this._snapshot();
+          const merchant = current && current.character && current.character.name || null;
+          if (!merchant) return null;
+          const payload = {
+            schemaVersion: 1, source: 'merchant-tool-crafting',
+            merchant, tool, material: required.name,
+            quantity: Math.max(1, Number(required.quantity) || 1),
+            monsterType: mtype, createdAtMs: now,
+            expiresAtMs: now + this.config.materialFarmWaitMs
+          };
+          let written = false;
+          try { written = this.storage.setShared(key, JSON.stringify(payload)) !== false; } catch (_) {}
+          if (!written) return null;
+          this.materialFarmRequest = clone(payload);
+          this.metrics.materialFarmOrders += 1;
+          return { state: 'WAITING', reason: 'MERCHANT_TOOL_MATERIAL_FARM_PUBLISHED',
+            material: payload.material, monsterType: payload.monsterType };
+        }
+      }
+      return null;
+    }
+
     _acquireTool(task) {
       const tool = task.tool;
       if (this.exchangeCraft && typeof this.exchangeCraft.queueCraft === 'function') {
@@ -29729,6 +29898,8 @@ class MerchantProductionPlanner {
           }
         } catch (_) {}
       }
+      const farmRequest = this._requestToolMaterialFarm(tool);
+      if (farmRequest) return farmRequest;
       if (this.trade && typeof this.trade.queueAcquire === 'function') {
         try {
           const acquire = this.trade.queueAcquire(tool, 1, { maxUnitPrice: this.config.gatheringToolMaxPrice });
@@ -29738,7 +29909,7 @@ class MerchantProductionPlanner {
           }
         } catch (_) {}
       }
-      const spec = this._wishlistSpec({ merritFallback: false });
+      const spec = this._wishlistSpec({ merritFallback: false, includeTools: true });
       if (spec && spec.name === tool) {
         if (!this._standOpen()) {
           const standSlot = this._standItemSlot();
@@ -29938,6 +30109,7 @@ class MerchantProductionPlanner {
           entity: clone(this._merritEntity())
         },
         gathering: {
+          materialFarmRequest: clone(this.materialFarmRequest),
           lastAttemptAtMs: clone(this.lastGatherAttemptAtMs),
           lastResult: clone(this.lastGatherResult),
           restore: clone(this.gatherRestore)
@@ -33608,7 +33780,7 @@ class MerchantProductionPlanner {
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.61-h26';
+      this.version = options.version || '0.26.63-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -33696,6 +33868,7 @@ class MerchantProductionPlanner {
       this.farmIntelligence = new ns.FarmIntelligenceController({
         root: this.root,
         logger: this.logger,
+        storage: this.storage,
         game: this.game,
         combat: this.combat,
         farming: this.farming,
@@ -41909,7 +42082,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.61-h26',
+    version: '0.26.63-h26',
     bootCount,
     replacedPrevious: !!previous
   });

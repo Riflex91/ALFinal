@@ -649,7 +649,13 @@
         if (proposal) proposals.push(proposal);
       }
 
-      const safeExchange = exchangePlan && (exchangePlan.exchangeCandidates || []).find(row => row && row.safe === true) || null;
+      // H16's attempt cap is terminal for this session. Do not repeatedly
+      // offer identical exchanges/crafts to H17 after the child exhausts it.
+      const exchangeStatus = children.exchangeCraft || {};
+      const exchangeBudgetAvailable = Number(exchangeStatus.attemptsThisSession || 0)
+        < Number(exchangeStatus.config && exchangeStatus.config.maxAttemptsPerSession || Infinity);
+      const safeExchange = exchangeBudgetAvailable && exchangePlan
+        && (exchangePlan.exchangeCandidates || []).find(row => row && row.safe === true) || null;
       if (safeExchange) {
         const proposal = this._proposal('EXCHANGE', 'exchangeCraft', {
           key: safeExchange.itemName + ':' + safeExchange.inventorySlot,
@@ -661,7 +667,8 @@
         if (proposal) proposals.push(proposal);
       }
 
-      const safeCraft = exchangePlan && (exchangePlan.craftCandidates || []).find(row => row && row.safe === true) || null;
+      const safeCraft = exchangeBudgetAvailable && exchangePlan
+        && (exchangePlan.craftCandidates || []).find(row => row && row.safe === true) || null;
       if (safeCraft) {
         const proposal = this._proposal('CRAFT', 'exchangeCraft', {
           key: safeCraft.itemName,

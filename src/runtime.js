@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.61-h26';
+      this.version = options.version || '0.26.63-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -93,6 +93,7 @@
       this.farmIntelligence = new ns.FarmIntelligenceController({
         root: this.root,
         logger: this.logger,
+        storage: this.storage,
         game: this.game,
         combat: this.combat,
         farming: this.farming,
