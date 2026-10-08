@@ -142,6 +142,12 @@
       const level = finite(item && item.level) || 0;
       const type = cleanText(definition.type || '', 80).toLowerCase();
 
+      // A live Merchant Stand is operational equipment, not maintenance cargo.
+      // This safety invariant takes precedence even over an explicit bank rule.
+      if (name === 'stand0') {
+        return { disposition: 'KEEP', reason: 'MERCHANT_STAND_OPERATIONAL_TOOL', protected: true };
+      }
+
       const explicitProtected = [
         ['reserveNames', 'RESERVE', 'RULE_RESERVE'],
         ['keepNames', 'KEEP', 'RULE_KEEP'],

@@ -35,6 +35,7 @@
       this.suspendedReason = null;
       this.pending = null;
       this.request = null;
+      this.standClosePending = null;
       this.sequence = 0;
       this.lastPlan = null;
       this.lastAction = null;
@@ -88,6 +89,7 @@
       this.scope = null;
       this.pending = null;
       this.request = null;
+      this.standClosePending = null;
       try {
         const movement = this.movement && this.movement.status ? this.movement.status() : null;
         if (movement && movement.activeOrder && String(movement.activeOrder.owner || '') === 'bank-h12') {
@@ -101,6 +103,7 @@
     resetSafety(reason = 'H12_EXPLICIT_RESET') {
       this.pending = null;
       this.request = null;
+      this.standClosePending = null;
       this.suspendedReason = null;
       try {
         const movement = this.movement && this.movement.status ? this.movement.status() : null;
@@ -215,6 +218,9 @@
       if (!plan || plan.state !== 'READY') return [];
       return (plan.items || []).filter(row => {
         if (!row || !row.name || String(row.disposition || '').toUpperCase() !== 'BANK') return false;
+        // Defense in depth: never put the Merchant's operational stand in the bank,
+        // even if inventory classification or a persisted operator rule regresses.
+        if (String(row.name) === 'stand0') return false;
         if (row.locked === true || row.giveaway === true || row.expiresAt) return false;
         const future = row.futureGearEvaluation || null;
         const offlineGear = !!(future
@@ -530,6 +536,7 @@
       this._metric(kind, 'Unknown');
       this.pending = null;
       this.request = null;
+      this.standClosePending = null;
       this.suspendedReason = cleanText(reason || 'H12_UNKNOWN', 240) || 'H12_UNKNOWN';
       this.lastAction = { at: nowIso(), type: kind + '_UNKNOWN', reason: this.suspendedReason };
       return { state: 'SUSPENDED', reason: this.suspendedReason };
@@ -649,7 +656,57 @@
       return { accepted: true, state: 'DISPATCHED', pending: clone(pending) };
     }
 
+    _liveStandOpen() {
+      let character = null;
+      try {
+        character = this.game && typeof this.game._character === 'function'
+          ? this.game._character()
+          : this.root && (this.root.character || this.root.parent && this.root.parent.character);
+      } catch (_) {}
+      return !!(character && (character.stand === true
+        || character.stand && character.stand !== false
+        || character.p && character.p.stand));
+    }
+
+    _ensureStandClosed(request) {
+      const open = this._liveStandOpen();
+      if (this.standClosePending) {
+        if (!open) {
+          this.standClosePending = null;
+          this.lastAction = { at: nowIso(), type: 'STAND_CLOSE_CONFIRMED' };
+          return { ready: true };
+        }
+        if (Date.now() >= this.standClosePending.deadlineAtMs) {
+          return this._suspend(request.kind, 'H12_STAND_CLOSE_UNVERIFIED_TIMEOUT');
+        }
+        return { ready: false, waiting: true, reason: 'H12_WAITING_STAND_CLOSE' };
+      }
+      if (!open) return { ready: true };
+      if (!this.actions || typeof this.actions.dispatch !== 'function') {
+        return this._suspend(request.kind, 'H12_STAND_CLOSE_ACTION_UNAVAILABLE');
+      }
+      let result;
+      try { result = this.actions.dispatch('close_stand', []); }
+      catch (error) { return this._suspend(request.kind, 'H12_STAND_CLOSE_DISPATCH_UNKNOWN'); }
+      if (!result || result.state !== 'DISPATCHED') {
+        return this._suspend(request.kind, 'H12_STAND_CLOSE_DISPATCH_UNKNOWN');
+      }
+      // Only a live closed-stand observation allows bank travel. Never retry
+      // an unknown close_stand action or treat dispatch as confirmation.
+      this.standClosePending = {
+        dispatchedAt: nowIso(),
+        deadlineAtMs: Date.now() + this.config.outcomeTimeoutMs
+      };
+      if (result.value && typeof result.value.then === 'function') {
+        Promise.resolve(result.value).catch(() => {});
+      }
+      this.lastAction = { at: nowIso(), type: 'STAND_CLOSE_DISPATCHED' };
+      return { ready: false, waiting: true, reason: 'H12_WAITING_STAND_CLOSE' };
+    }
+
     _ensureBankMounted(request) {
+      const closed = this._ensureStandClosed(request);
+      if (!closed || closed.ready !== true) return closed;
       const bank = this._bankSnapshot();
       if (bank && bank.available !== false) return { ready: true, bank };
 
@@ -732,6 +789,15 @@
       }
 
       if (request.kind === 'DEPOSIT') {
+        // Re-evaluate live deposit policy immediately before the mutation.
+        // A queued request is not permission to store an item that became unsafe.
+        const stillSafe = this._safeDepositRows().some(row =>
+          Number(row.slot) === Number(request.inventorySlot)
+          && this._fingerprint(row) === request.fingerprint);
+        if (!stillSafe) {
+          this.request = null;
+          return { state: 'BLOCKED', reason: 'H12_DEPOSIT_ITEM_NOT_SAFE_OR_AVAILABLE' };
+        }
         const current = this._inventoryItem(inventory, request.inventorySlot);
         if (!current || this._fingerprint(current) !== request.fingerprint) {
           this.request = null;

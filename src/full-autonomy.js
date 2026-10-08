@@ -671,7 +671,15 @@
       const localName = String(local.name);
       const ctype = String(local.ctype || '').toLowerCase();
       const selected = new Set(plan && plan.selected ? plan.selected.memberNames : []);
-      const encounterTask = ['BOSS', 'EVENT'].includes(String(plan && plan.taskType || '').toUpperCase());
+      const requestedEncounter = ['BOSS', 'EVENT'].includes(String(plan && plan.taskType || '').toUpperCase());
+      const encounterController = this.runtime.encounters;
+      // If no safely actionable event exists for this character, run the
+      // normal FARM role instead of idling indefinitely in encounter mode.
+      const encounterPlan = requestedEncounter && ctype !== 'merchant'
+        && encounterController && typeof encounterController.plan === 'function'
+        ? encounterController.plan({ taskType: plan.taskType })
+        : null;
+      const encounterTask = requestedEncounter && (!encounterPlan || encounterPlan.state === 'READY');
       const shouldEncounter = encounterTask && ctype !== 'merchant' && selected.has(localName);
       const shouldFarm = !encounterTask && ctype !== 'merchant' && selected.has(localName);
 
