@@ -76,7 +76,7 @@
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.57-h26',
+    version: '0.26.58-h26',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -445,6 +445,8 @@
       exchanges: options => runtime.exchangeCraft.exchangeCandidates(options || {}),
       crafts: options => runtime.exchangeCraft.craftCandidates(options || {}),
       production: (itemName, quantity, options) => runtime.exchangeCraft.productionPlan(itemName, quantity, options || {}),
+      productionGraph: (itemName, quantity, options) => runtime.exchangeCraft.productionGraph(itemName, quantity, options || {}),
+      productionGear: options => runtime.exchangeCraft.productionGear(options || {}),
       best: kind => runtime.exchangeCraft.queueBest(kind),
       exchange: (inventorySlot, options) => runtime.exchangeCraft.queueExchange(inventorySlot, options || {}),
       craft: (itemName, options) => runtime.exchangeCraft.queueCraft(itemName, options || {}),

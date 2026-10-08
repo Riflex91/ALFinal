@@ -108,6 +108,13 @@
       return value && typeof value === 'object' ? value : {};
     }
 
+    // Internal read-only planning input. The planner never mutates these live G tables.
+    productionData() {
+      const G = this._gameData();
+      return { items: G.items, craft: G.craft, npcs: G.npcs, maps: G.maps,
+        classes: G.classes, quests: G.quests };
+    }
+
     _position(value) {
       if (!value) return { x: null, y: null };
       return {

@@ -39,6 +39,9 @@
       this.bank = options.bank || null;
       this.trade = options.trade || null;
       this.combat = options.combat || null;
+      this.getProductionProfiles = typeof options.getProductionProfiles === 'function'
+        ? options.getProductionProfiles : () => [];
+      this.productionPlanner = null;
       this.moduleActive = false;
       this.scope = null;
       this.pending = null;
@@ -445,6 +448,105 @@
       };
     }
 
+    _productionPlanner(options = {}) {
+      if (!ns.MerchantProductionPlanner) return null;
+      // Cost/depth limits come from ALFinal's existing policy; read-only plan
+      // options cannot silently expand a live budget.
+      const config = {
+        maxDepth: this.config.maxProductionDepth,
+        goldReserve: this.config.goldReserve,
+        maxGoldCost: this.config.maxCraftGoldCost,
+        targets: Array.isArray(options.targets) ? options.targets : [],
+        minImprovementRatio: options.minImprovementRatio
+      };
+      this.productionPlanner = new ns.MerchantProductionPlanner(config);
+      return this.productionPlanner;
+    }
+
+    _productionInput(options = {}) {
+      const snapshot = this._snapshot();
+      const inventory = this._inventory();
+      const bank = options.includeBank === false ? null : this._bankSnapshot();
+      const gameData = this.game && typeof this.game.productionData === 'function'
+        ? this.game.productionData() : {};
+      const protectedNames = new Set();
+      try {
+        const rules = this.inventory && this.inventory.status ? this.inventory.status().rules : null;
+        for (const key of ['keepNames', 'reserveNames', 'bankNames', 'exchangeNames']) {
+          for (const name of rules && rules[key] || []) protectedNames.add(String(name));
+        }
+      } catch (_) {}
+      const normalize = row => {
+        let gearReserved = false;
+        try {
+          const evaluator = this.inventory && this.inventory.gearProgression;
+          gearReserved = !!(evaluator && typeof evaluator.reservationForItem === 'function'
+            && evaluator.reservationForItem(row));
+        } catch (_) { gearReserved = true; }
+        return { ...clone(row), q: row.quantity,
+          protected: gearReserved || row.protected === true || protectedNames.has(String(row.name)) };
+      };
+      const items = [];
+      for (const row of inventory && inventory.items || []) items[Number(row.slot)] = normalize(row);
+      const rawBank = {};
+      for (const pack of bank && bank.available !== false && bank.packs || []) {
+        rawBank[pack.name] = [];
+        for (const row of pack.items || []) {
+          const source = this._bankMaterialRows(row.name, row.level).find(candidate =>
+            candidate.pack === pack.name && Number(candidate.slot) === Number(row.slot));
+          rawBank[pack.name][Number(row.slot)] = {
+            ...normalize(row), locked: row.locked === true || !source || source.withdrawable !== true
+          };
+        }
+      }
+      let profiles = [];
+      try { profiles = this.getProductionProfiles() || []; } catch (_) {}
+      const characters = (Array.isArray(profiles) ? profiles : []).map(profile => ({ ...clone(profile), gear: clone(profile.equipment) }));
+      return {
+        character: { ...clone(snapshot && snapshot.character || {}), items,
+          bank: bank && bank.available !== false ? rawBank : null },
+        gameData,
+        registry: { characters },
+        inCombat: this._combatActive(),
+        controlledBusy: !!this.pending || !!this.request || !!this.suspendedReason
+          || !snapshot || snapshot.available === false || !inventory || inventory.available === false,
+        allowQuestEvent: options.allowQuestEvent === true || this.config.allowQuestEvent,
+        recipient: options.recipient || null,
+        slot: options.slot || null,
+        bankKnowledge: options.includeBank === false ? 'EXCLUDED' : bank && bank.available !== false ? 'LIVE_BANK' : 'UNAVAILABLE'
+      };
+    }
+
+    productionGraph(itemName, quantity = 1, options = {}) {
+      const planner = this._productionPlanner(options);
+      if (!planner) return { state: 'HOLD', reason: 'PRODUCTION_PLANNER_UNAVAILABLE', actionAuthority: false, liveExecutionAllowed: false };
+      const input = this._productionInput(options);
+      const graph = planner.planTarget(itemName, quantity, input);
+      graph.bankKnowledge = input.bankKnowledge;
+      // H12 quantity reservations are fingerprint-aware. Only rows H12 can
+      // withdraw may be presented as actionable acquisition prerequisites.
+      for (const step of graph.steps || []) {
+        if (step.kind !== 'BANK_RETRIEVE') continue;
+        const source = this._bankMaterialRows(step.name, step.level).find(row =>
+          row.pack === step.pack && Number(row.slot) === Number(step.bankIndex));
+        step.withdrawable = !!source && source.withdrawable === true;
+      }
+      if (graph.nextStep && graph.nextStep.kind === 'BANK_RETRIEVE') {
+        graph.nextStep = clone((graph.steps || []).find(row => row.kind === 'BANK_RETRIEVE'
+          && row.pack === graph.nextStep.pack && row.bankIndex === graph.nextStep.bankIndex));
+      }
+      return graph;
+    }
+
+    productionGear(options = {}) {
+      const planner = this._productionPlanner(options);
+      if (!planner) return { state: 'HOLD', reason: 'PRODUCTION_PLANNER_UNAVAILABLE', actionAuthority: false, liveExecutionAllowed: false };
+      const input = this._productionInput(options);
+      const plan = planner.plan(input);
+      plan.bankKnowledge = input.bankKnowledge;
+      return plan;
+    }
+
     productionPlan(itemName, quantity = 1, options = {}) {
       this.metrics.productionPlans += 1;
       const targetName = cleanText(itemName || '', 160);
@@ -550,7 +652,8 @@
         protectedRecipes,
         totalCraftGold,
         gold: liveGold,
-        goldReserve: this.config.goldReserve
+        goldReserve: this.config.goldReserve,
+        acquisition: this.productionGraph(itemName, quantity, options)
       };
     }
 
