@@ -807,3 +807,18 @@ test('H17 normal-pressure bank maintenance queues the existing safe H12 mount pa
   assert.equal(tick.state, 'QUEUED');
   assert.deepEqual(f.calls[0], { module: 'bank', kind: 'MOUNT' });
 });
+
+test('H17 no longer proposes exchanges or crafts after the child attempt cap', () => {
+  const f = fixture({
+    exchanges: [{ safe: true, itemName: 'anniversarygift', inventorySlot: 4, requiredQuantity: 1, valueAtRisk: 10 }],
+    crafts: [{ safe: true, itemName: 'rod', cost: 10, inputValueAtRisk: 20 }]
+  });
+  f.statuses.exchangeCraft.attemptsThisSession = 12;
+  f.statuses.exchangeCraft.config = { maxAttemptsPerSession: 12 };
+  const exhausted = f.economy.plan();
+  assert.equal(exhausted.proposals.some(row => row.kind === 'EXCHANGE' || row.kind === 'CRAFT'), false);
+  f.statuses.exchangeCraft.attemptsThisSession = 11;
+  const available = f.economy.plan();
+  assert.equal(available.proposals.some(row => row.kind === 'EXCHANGE'), true);
+  assert.equal(available.proposals.some(row => row.kind === 'CRAFT'), true);
+});
