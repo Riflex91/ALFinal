@@ -202,6 +202,21 @@
       const character = snap && snap.character;
       if (!snap || !snap.available || !character) return { ok: false, reason: 'CHARACTER_UNAVAILABLE' };
       if (character.rip === true) return { ok: false, reason: 'CHARACTER_DEAD' };
+      if (String(character.ctype || '').toLowerCase() === 'merchant') {
+        // Do not dispatch movement while the live Merchant stand is open.
+        // H12/H33 close it using ActionBoundary and await live confirmation;
+        // external modules may not bypass that ownership handoff.
+        let raw = null;
+        try {
+          const windows = [this.root, this.root && this.root.parent].filter(Boolean);
+          raw = windows.map(row => row.character).find(row =>
+            row && String(row.name || '') === String(character.name || '')) || null;
+        } catch (_) {}
+        if (raw && (raw.stand === true || raw.stand && raw.stand !== false
+            || raw.p && raw.p.stand)) {
+          return { ok: false, reason: 'MOVEMENT_MERCHANT_STAND_OPEN' };
+        }
+      }
 
       let normalized;
       try { normalized = this._normalizeDestination(destination, character.map); }

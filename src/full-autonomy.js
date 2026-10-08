@@ -841,12 +841,10 @@
       // before any other owner begins a new travel-capable activity. H12 also
       // has its own fail-closed closure path, but exchanges, production and
       // logistics need the shared handoff barrier.
-      const localCharacter = this.runtime.game && typeof this.runtime.game.snapshot === 'function'
-        ? this.runtime.game.snapshot() : null;
-      const rawMerchant = localCharacter && localCharacter.character || null;
-      const standOpen = rawMerchant && (rawMerchant.stand === true
-        || rawMerchant.stand && rawMerchant.stand !== false
-        || rawMerchant.p && rawMerchant.p.stand);
+      // GameAdapter.snapshot() intentionally omits the stand flag. Read
+      // verified live character state via the Merchant controller instead.
+      const standOpen = !!(work && typeof work._standOpen === 'function'
+        && work._standOpen());
       if (standOpen && work && workStatus && workStatus.autoManage
           && typeof work.closeStandForWork === 'function'
           && !economyStatus.currentAction && !logisticsStatus.currentAction
