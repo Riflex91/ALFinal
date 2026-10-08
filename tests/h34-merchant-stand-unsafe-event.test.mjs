@@ -129,3 +129,37 @@ test('safe visible event remains actionable', () => {
     map: 'halloween', x: 12, y: 45
   }).actionable, true);
 });
+
+test('unverified stand closure fails closed without travel or retry', () => {
+  const character = { name: 'My_Merchant', ctype: 'merchant', stand: true, p: { stand: true } };
+  const root = fixture({ character });
+  load(root, 'bank.js');
+  const actions = [];
+  const moves = [];
+  const bank = new root.__ALBOT_INTERNALS__.BankController({
+    root,
+    game: {
+      _character: () => character,
+      snapshot: () => ({ available: true, character: { ctype: 'merchant', rip: false } }),
+      bankSnapshot: () => ({ available: false })
+    },
+    actions: { dispatch: name => {
+      actions.push(name);
+      return { state: 'DISPATCHED', value: Promise.resolve({ success: true }) };
+    } },
+    movement: {
+      status: () => ({ activeOrder: null }),
+      smartMove: destination => { moves.push(destination); return { accepted: true }; }
+    }
+  });
+  bank.moduleActive = true;
+  assert.equal(bank.queueMount().accepted, true);
+  bank.tick();
+  assert.equal(bank.standClosePending != null, true);
+  bank.standClosePending.deadlineAtMs = Date.now() - 1;
+  const result = bank.tick();
+  assert.equal(result.state, 'SUSPENDED');
+  assert.equal(bank.suspendedReason, 'H12_STAND_CLOSE_UNVERIFIED_TIMEOUT');
+  assert.equal(actions.length, 1);
+  assert.equal(moves.length, 0);
+});
