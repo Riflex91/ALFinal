@@ -1,4 +1,4 @@
-/* AL Bot 0.26.60-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.61-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -11706,6 +11706,9 @@
       this.lastPlan = null;
       this.lastAction = null;
       this.lastAnniversaryAttempt = null;
+      // Track arrived-but-invisible event targets across autonomy role switches.
+      // Never persist a temporary cooldown as a user event preference.
+      this.absentEventTargets = new Map();
       this.announcements = new Map();
       this.knownEvents = new Map();
       this.disabled = { boss: new Set(), event: new Set() };
@@ -11715,7 +11718,9 @@
         approachDistance: Math.max(100, Math.min(1200, Number(options.approachDistance) || 650)),
         maxAttackToHpRatio: Math.max(0.05, Math.min(0.8, Number(options.maxAttackToHpRatio) || 0.32)),
         anniversaryArrivalRadius: Math.max(20, Math.min(75, Number(options.anniversaryArrivalRadius) || 55)),
-        anniversaryRetryMs: Math.max(10000, Math.min(60000, Number(options.anniversaryRetryMs) || 12000))
+        anniversaryRetryMs: Math.max(10000, Math.min(60000, Number(options.anniversaryRetryMs) || 12000)),
+        absentTargetWaitMs: Math.max(1000, Math.min(120000, Number(options.absentTargetWaitMs) || 15000)),
+        absentTargetCooldownMs: Math.max(10000, Math.min(3600000, Number(options.absentTargetCooldownMs) || 300000))
       };
       this.metrics = {
         ticks: 0,
@@ -11725,7 +11730,8 @@
         suspensions: 0,
         anniversaryVisitsDispatched: 0,
         anniversaryVisitsConfirmed: 0,
-        anniversaryVisitsRejected: 0
+        anniversaryVisitsRejected: 0,
+        absentTargetCooldowns: 0
       };
       this._loadPreferences();
     }
@@ -12113,6 +12119,7 @@
       if (!['boss', 'event'].includes(key) || !name) return { accepted: false, reason: 'ENCOUNTER_PREFERENCE_INVALID' };
       if (enabled === false) this.disabled[key].add(name);
       else this.disabled[key].delete(name);
+      if (key === 'event') this.absentEventTargets.delete(name);
       this._persistPreferences();
       return { accepted: true, kind: key, id: name, enabled: !this.disabled[key].has(name) };
     }
@@ -12123,6 +12130,7 @@
       const rows = key === 'boss' ? this._bossCatalog() : this._eventCatalog();
       if (enabled === false) for (const row of rows) this.disabled[key].add(row.id);
       else this.disabled[key].clear();
+      if (key === 'event') this.absentEventTargets.clear();
       this._persistPreferences();
       return { accepted: true, kind: key, enabled: enabled !== false, count: rows.length };
     }
@@ -12138,6 +12146,79 @@
       const boss = catalog.bosses.find(row => row.active && row.enabled);
       if (boss) return { taskType: 'BOSS', encounter: clone(boss) };
       return null;
+    }
+
+    _absentTargetActionability(row, hasVisibleMonster) {
+      const id = cleanText(row && row.id || '', 160);
+      if (!id) return null;
+      if (hasVisibleMonster) {
+        // An actual live target ends the absence hold immediately; Combat's
+        // separate safe-candidate check still decides whether we may fight.
+        this.absentEventTargets.delete(id);
+        return null;
+      }
+
+      const signature = JSON.stringify([
+        id, row.map || null, row.x, row.y, row.round,
+        row.eventTargetId || null, row.target || null
+      ]);
+      const previous = this.absentEventTargets.get(id);
+      if (previous && previous.signature !== signature) this.absentEventTargets.delete(id);
+      const observation = this.absentEventTargets.get(id);
+      const now = Date.now();
+      if (observation && observation.retryAtMs > now) {
+        return {
+          actionable: false,
+          reason: 'ENCOUNTER_TARGET_ABSENT_COOLDOWN',
+          retryAt: new Date(observation.retryAtMs).toISOString()
+        };
+      }
+
+      const locationKnown = !!row.map && row.x != null && row.y != null
+        && finite(row.x) != null && finite(row.y) != null;
+      let character = null;
+      try {
+        const snapshot = this.game && typeof this.game.snapshot === 'function'
+          ? this.game.snapshot() : null;
+        character = snapshot && snapshot.character || null;
+      } catch (_) {}
+      const positionKnown = character && character.x != null && character.y != null
+        && finite(character.x) != null && finite(character.y) != null;
+      const atLocation = !!(locationKnown && positionKnown
+        && String(character.map || '') === String(row.map)
+        && Math.hypot(Number(character.x) - Number(row.x), Number(character.y) - Number(row.y)) <= 90);
+      if (!atLocation) {
+        // Travel to a known event location is still allowed; only a confirmed
+        // arrival with no matching monster starts the bounded waiting period.
+        if (observation) this.absentEventTargets.delete(id);
+        return null;
+      }
+
+      const arrivedAtMs = observation && !observation.retryAtMs ? observation.arrivedAtMs : now;
+      if (now - arrivedAtMs < this.config.absentTargetWaitMs) {
+        this.absentEventTargets.set(id, { signature, arrivedAtMs, retryAtMs: 0 });
+        return {
+          actionable: true,
+          reason: 'ENCOUNTER_WAITING_FOR_VISIBLE_TARGET',
+          waitRemainingMs: this.config.absentTargetWaitMs - (now - arrivedAtMs)
+        };
+      }
+
+      const retryAtMs = now + this.config.absentTargetCooldownMs;
+      this.absentEventTargets.set(id, { signature, arrivedAtMs, retryAtMs });
+      this.metrics.absentTargetCooldowns += 1;
+      this.lastAction = {
+        at: nowIso(),
+        type: 'EVENT_TARGET_ABSENT',
+        encounter: id,
+        reason: 'ENCOUNTER_TARGET_ABSENT_COOLDOWN',
+        retryAt: new Date(retryAtMs).toISOString()
+      };
+      return {
+        actionable: false,
+        reason: 'ENCOUNTER_TARGET_ABSENT_COOLDOWN',
+        retryAt: new Date(retryAtMs).toISOString()
+      };
     }
 
     _eventActionability(row) {
@@ -12158,7 +12239,12 @@
         ? this.game.visibleMonsters({ type: monsterType })
         : [];
       const hasVisibleMonster = Array.isArray(visible) && visible.length > 0;
-      const hasLocation = !!row.map && finite(row.x) != null && finite(row.y) != null;
+      const hasLocation = !!row.map && row.x != null && row.y != null
+        && finite(row.x) != null && finite(row.y) != null;
+      const missingTarget = this._absentTargetActionability(row, hasVisibleMonster);
+      if (missingTarget && missingTarget.actionable === false) {
+        return { ...missingTarget, monsterType: monsterType || null };
+      }
       // Visibility alone does not make a boss safely attackable. In particular,
       // high-damage live events must not lock Full Autonomy into a no-target
       // combat session that prevents normal farming.
@@ -12182,7 +12268,9 @@
       }
       return {
         actionable: hasVisibleMonster || hasLocation,
-        reason: hasVisibleMonster ? 'ENCOUNTER_VISIBLE_MONSTER' : (hasLocation ? 'ENCOUNTER_LOCATION_AVAILABLE' : 'ENCOUNTER_ACTIVE_NOT_ACTIONABLE'),
+        reason: hasVisibleMonster ? 'ENCOUNTER_VISIBLE_MONSTER'
+          : missingTarget ? missingTarget.reason
+            : (hasLocation ? 'ENCOUNTER_LOCATION_AVAILABLE' : 'ENCOUNTER_ACTIVE_NOT_ACTIONABLE'),
         monsterType: monsterType || null
       };
     }
@@ -12557,6 +12645,12 @@
         lastPlan: clone(this.lastPlan),
         lastAction: clone(this.lastAction),
         lastAnniversaryAttempt: clone(this.lastAnniversaryAttempt),
+        absentTargetObservations: [...this.absentEventTargets.entries()].map(([id, value]) => ({
+          eventId: id,
+          arrivedAt: value.arrivedAtMs ? new Date(value.arrivedAtMs).toISOString() : null,
+          retryAt: value.retryAtMs ? new Date(value.retryAtMs).toISOString() : null,
+          coolingDown: Number(value.retryAtMs || 0) > Date.now()
+        })),
         anniversary: this._anniversaryStatus(),
         catalog: this.catalog(),
         metrics: clone(this.metrics),
@@ -33514,7 +33608,7 @@ class MerchantProductionPlanner {
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.60-h26';
+      this.version = options.version || '0.26.61-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -41815,7 +41909,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.60-h26',
+    version: '0.26.61-h26',
     bootCount,
     replacedPrevious: !!previous
   });
