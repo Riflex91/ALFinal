@@ -93,6 +93,7 @@
       this.farmIntelligence = new ns.FarmIntelligenceController({
         root: this.root,
         logger: this.logger,
+        storage: this.storage,
         game: this.game,
         combat: this.combat,
         farming: this.farming,
