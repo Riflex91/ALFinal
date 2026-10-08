@@ -490,6 +490,27 @@
         : [];
       const hasVisibleMonster = Array.isArray(visible) && visible.length > 0;
       const hasLocation = !!row.map && finite(row.x) != null && finite(row.y) != null;
+      // Visibility alone does not make a boss safely attackable. In particular,
+      // high-damage live events must not lock Full Autonomy into a no-target
+      // combat session that prevents normal farming.
+      const local = this.game && typeof this.game.snapshot === 'function'
+        ? this.game.snapshot().character : null;
+      if (hasVisibleMonster && local && String(local.ctype || '').toLowerCase() !== 'merchant'
+          && this.combat && typeof this.combat.safeCandidates === 'function') {
+        const definition = this.game && typeof this.game.monsterDefinition === 'function'
+          ? this.game.monsterDefinition(monsterType) : null;
+        const safe = this.combat.safeCandidates({
+          monsterType,
+          maxAcquireDistance: 1200,
+          maxAttackToHpRatio: this.config.maxAttackToHpRatio,
+          allowContested: !!(definition && definition.cooperative === true),
+          partyAssist: true
+        });
+        if (!safe.length && visible.some(monster =>
+          monster.distance == null || monster.distance <= 1200)) {
+          return { actionable: false, reason: 'ENCOUNTER_VISIBLE_NO_SAFE_TARGET', monsterType };
+        }
+      }
       return {
         actionable: hasVisibleMonster || hasLocation,
         reason: hasVisibleMonster ? 'ENCOUNTER_VISIBLE_MONSTER' : (hasLocation ? 'ENCOUNTER_LOCATION_AVAILABLE' : 'ENCOUNTER_ACTIVE_NOT_ACTIONABLE'),
@@ -793,11 +814,23 @@
         return this._suspend(combatStatus.lastSession.reason || 'ENCOUNTER_COMBAT_UNKNOWN');
       }
 
-      if (plan.monsterType && plan.visible) {
-        if (!combatSession) {
-          const definition = this.game && typeof this.game.monsterDefinition === 'function'
-            ? this.game.monsterDefinition(plan.monsterType)
-            : null;
+      const definition = plan.monsterType && this.game && typeof this.game.monsterDefinition === 'function'
+        ? this.game.monsterDefinition(plan.monsterType) : null;
+      const safeTargets = plan.monsterType && this.combat && typeof this.combat.safeCandidates === 'function'
+        ? this.combat.safeCandidates({
+          monsterType: plan.monsterType,
+          maxAcquireDistance: this.config.approachDistance,
+          maxAttackToHpRatio: this.config.maxAttackToHpRatio,
+          allowContested: !!(definition && definition.cooperative === true),
+          partyAssist: true
+        }) : [];
+      if (combatSession && String(combatSession.owner || '').startsWith('encounter-h23')
+          && String(combatSession.policy && combatSession.policy.monsterType || '') !== String(plan.monsterType || '')) {
+        this.combat.stopSession('ENCOUNTER_TARGET_ROTATION');
+      }
+
+      if (plan.monsterType && plan.visible && safeTargets.length) {
+        if (!combatSession || String(combatSession.policy && combatSession.policy.monsterType || '') !== String(plan.monsterType)) {
           const started = this.combat.startSession({
             owner: 'encounter-h23:' + plan.taskType.toLowerCase(),
             monsterType: plan.monsterType,

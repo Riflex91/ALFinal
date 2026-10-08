@@ -1,4 +1,4 @@
-/* AL Bot 0.26.58-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.59-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -12159,6 +12159,27 @@
         : [];
       const hasVisibleMonster = Array.isArray(visible) && visible.length > 0;
       const hasLocation = !!row.map && finite(row.x) != null && finite(row.y) != null;
+      // Visibility alone does not make a boss safely attackable. In particular,
+      // high-damage live events must not lock Full Autonomy into a no-target
+      // combat session that prevents normal farming.
+      const local = this.game && typeof this.game.snapshot === 'function'
+        ? this.game.snapshot().character : null;
+      if (hasVisibleMonster && local && String(local.ctype || '').toLowerCase() !== 'merchant'
+          && this.combat && typeof this.combat.safeCandidates === 'function') {
+        const definition = this.game && typeof this.game.monsterDefinition === 'function'
+          ? this.game.monsterDefinition(monsterType) : null;
+        const safe = this.combat.safeCandidates({
+          monsterType,
+          maxAcquireDistance: 1200,
+          maxAttackToHpRatio: this.config.maxAttackToHpRatio,
+          allowContested: !!(definition && definition.cooperative === true),
+          partyAssist: true
+        });
+        if (!safe.length && visible.some(monster =>
+          monster.distance == null || monster.distance <= 1200)) {
+          return { actionable: false, reason: 'ENCOUNTER_VISIBLE_NO_SAFE_TARGET', monsterType };
+        }
+      }
       return {
         actionable: hasVisibleMonster || hasLocation,
         reason: hasVisibleMonster ? 'ENCOUNTER_VISIBLE_MONSTER' : (hasLocation ? 'ENCOUNTER_LOCATION_AVAILABLE' : 'ENCOUNTER_ACTIVE_NOT_ACTIONABLE'),
@@ -12462,11 +12483,23 @@
         return this._suspend(combatStatus.lastSession.reason || 'ENCOUNTER_COMBAT_UNKNOWN');
       }
 
-      if (plan.monsterType && plan.visible) {
-        if (!combatSession) {
-          const definition = this.game && typeof this.game.monsterDefinition === 'function'
-            ? this.game.monsterDefinition(plan.monsterType)
-            : null;
+      const definition = plan.monsterType && this.game && typeof this.game.monsterDefinition === 'function'
+        ? this.game.monsterDefinition(plan.monsterType) : null;
+      const safeTargets = plan.monsterType && this.combat && typeof this.combat.safeCandidates === 'function'
+        ? this.combat.safeCandidates({
+          monsterType: plan.monsterType,
+          maxAcquireDistance: this.config.approachDistance,
+          maxAttackToHpRatio: this.config.maxAttackToHpRatio,
+          allowContested: !!(definition && definition.cooperative === true),
+          partyAssist: true
+        }) : [];
+      if (combatSession && String(combatSession.owner || '').startsWith('encounter-h23')
+          && String(combatSession.policy && combatSession.policy.monsterType || '') !== String(plan.monsterType || '')) {
+        this.combat.stopSession('ENCOUNTER_TARGET_ROTATION');
+      }
+
+      if (plan.monsterType && plan.visible && safeTargets.length) {
+        if (!combatSession || String(combatSession.policy && combatSession.policy.monsterType || '') !== String(plan.monsterType)) {
           const started = this.combat.startSession({
             owner: 'encounter-h23:' + plan.taskType.toLowerCase(),
             monsterType: plan.monsterType,
@@ -13213,7 +13246,15 @@
       const localName = String(local.name);
       const ctype = String(local.ctype || '').toLowerCase();
       const selected = new Set(plan && plan.selected ? plan.selected.memberNames : []);
-      const encounterTask = ['BOSS', 'EVENT'].includes(String(plan && plan.taskType || '').toUpperCase());
+      const requestedEncounter = ['BOSS', 'EVENT'].includes(String(plan && plan.taskType || '').toUpperCase());
+      const encounterController = this.runtime.encounters;
+      // If no safely actionable event exists for this character, run the
+      // normal FARM role instead of idling indefinitely in encounter mode.
+      const encounterPlan = requestedEncounter && ctype !== 'merchant'
+        && encounterController && typeof encounterController.plan === 'function'
+        ? encounterController.plan({ taskType: plan.taskType })
+        : null;
+      const encounterTask = requestedEncounter && (!encounterPlan || encounterPlan.state === 'READY');
       const shouldEncounter = encounterTask && ctype !== 'merchant' && selected.has(localName);
       const shouldFarm = !encounterTask && ctype !== 'merchant' && selected.has(localName);
 
@@ -17644,6 +17685,12 @@
       const level = finite(item && item.level) || 0;
       const type = cleanText(definition.type || '', 80).toLowerCase();
 
+      // A live Merchant Stand is operational equipment, not maintenance cargo.
+      // This safety invariant takes precedence even over an explicit bank rule.
+      if (name === 'stand0') {
+        return { disposition: 'KEEP', reason: 'MERCHANT_STAND_OPERATIONAL_TOOL', protected: true };
+      }
+
       const explicitProtected = [
         ['reserveNames', 'RESERVE', 'RULE_RESERVE'],
         ['keepNames', 'KEEP', 'RULE_KEEP'],
@@ -18753,6 +18800,7 @@
       this.suspendedReason = null;
       this.pending = null;
       this.request = null;
+      this.standClosePending = null;
       this.sequence = 0;
       this.lastPlan = null;
       this.lastAction = null;
@@ -18806,6 +18854,7 @@
       this.scope = null;
       this.pending = null;
       this.request = null;
+      this.standClosePending = null;
       try {
         const movement = this.movement && this.movement.status ? this.movement.status() : null;
         if (movement && movement.activeOrder && String(movement.activeOrder.owner || '') === 'bank-h12') {
@@ -18819,6 +18868,7 @@
     resetSafety(reason = 'H12_EXPLICIT_RESET') {
       this.pending = null;
       this.request = null;
+      this.standClosePending = null;
       this.suspendedReason = null;
       try {
         const movement = this.movement && this.movement.status ? this.movement.status() : null;
@@ -18933,6 +18983,9 @@
       if (!plan || plan.state !== 'READY') return [];
       return (plan.items || []).filter(row => {
         if (!row || !row.name || String(row.disposition || '').toUpperCase() !== 'BANK') return false;
+        // Defense in depth: never put the Merchant's operational stand in the bank,
+        // even if inventory classification or a persisted operator rule regresses.
+        if (String(row.name) === 'stand0') return false;
         if (row.locked === true || row.giveaway === true || row.expiresAt) return false;
         const future = row.futureGearEvaluation || null;
         const offlineGear = !!(future
@@ -19248,6 +19301,7 @@
       this._metric(kind, 'Unknown');
       this.pending = null;
       this.request = null;
+      this.standClosePending = null;
       this.suspendedReason = cleanText(reason || 'H12_UNKNOWN', 240) || 'H12_UNKNOWN';
       this.lastAction = { at: nowIso(), type: kind + '_UNKNOWN', reason: this.suspendedReason };
       return { state: 'SUSPENDED', reason: this.suspendedReason };
@@ -19367,7 +19421,57 @@
       return { accepted: true, state: 'DISPATCHED', pending: clone(pending) };
     }
 
+    _liveStandOpen() {
+      let character = null;
+      try {
+        character = this.game && typeof this.game._character === 'function'
+          ? this.game._character()
+          : this.root && (this.root.character || this.root.parent && this.root.parent.character);
+      } catch (_) {}
+      return !!(character && (character.stand === true
+        || character.stand && character.stand !== false
+        || character.p && character.p.stand));
+    }
+
+    _ensureStandClosed(request) {
+      const open = this._liveStandOpen();
+      if (this.standClosePending) {
+        if (!open) {
+          this.standClosePending = null;
+          this.lastAction = { at: nowIso(), type: 'STAND_CLOSE_CONFIRMED' };
+          return { ready: true };
+        }
+        if (Date.now() >= this.standClosePending.deadlineAtMs) {
+          return this._suspend(request.kind, 'H12_STAND_CLOSE_UNVERIFIED_TIMEOUT');
+        }
+        return { ready: false, waiting: true, reason: 'H12_WAITING_STAND_CLOSE' };
+      }
+      if (!open) return { ready: true };
+      if (!this.actions || typeof this.actions.dispatch !== 'function') {
+        return this._suspend(request.kind, 'H12_STAND_CLOSE_ACTION_UNAVAILABLE');
+      }
+      let result;
+      try { result = this.actions.dispatch('close_stand', []); }
+      catch (error) { return this._suspend(request.kind, 'H12_STAND_CLOSE_DISPATCH_UNKNOWN'); }
+      if (!result || result.state !== 'DISPATCHED') {
+        return this._suspend(request.kind, 'H12_STAND_CLOSE_DISPATCH_UNKNOWN');
+      }
+      // Only a live closed-stand observation allows bank travel. Never retry
+      // an unknown close_stand action or treat dispatch as confirmation.
+      this.standClosePending = {
+        dispatchedAt: nowIso(),
+        deadlineAtMs: Date.now() + this.config.outcomeTimeoutMs
+      };
+      if (result.value && typeof result.value.then === 'function') {
+        Promise.resolve(result.value).catch(() => {});
+      }
+      this.lastAction = { at: nowIso(), type: 'STAND_CLOSE_DISPATCHED' };
+      return { ready: false, waiting: true, reason: 'H12_WAITING_STAND_CLOSE' };
+    }
+
     _ensureBankMounted(request) {
+      const closed = this._ensureStandClosed(request);
+      if (!closed || closed.ready !== true) return closed;
       const bank = this._bankSnapshot();
       if (bank && bank.available !== false) return { ready: true, bank };
 
@@ -19450,6 +19554,15 @@
       }
 
       if (request.kind === 'DEPOSIT') {
+        // Re-evaluate live deposit policy immediately before the mutation.
+        // A queued request is not permission to store an item that became unsafe.
+        const stillSafe = this._safeDepositRows().some(row =>
+          Number(row.slot) === Number(request.inventorySlot)
+          && this._fingerprint(row) === request.fingerprint);
+        if (!stillSafe) {
+          this.request = null;
+          return { state: 'BLOCKED', reason: 'H12_DEPOSIT_ITEM_NOT_SAFE_OR_AVAILABLE' };
+        }
         const current = this._inventoryItem(inventory, request.inventorySlot);
         if (!current || this._fingerprint(current) !== request.fingerprint) {
           this.request = null;
@@ -33401,7 +33514,7 @@ class MerchantProductionPlanner {
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.58-h26';
+      this.version = options.version || '0.26.59-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -41702,7 +41815,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.58-h26',
+    version: '0.26.59-h26',
     bootCount,
     replacedPrevious: !!previous
   });
