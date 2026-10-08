@@ -36,7 +36,7 @@ function context(extra = {}) {
   };
 }
 
-test('encounter catalog enables all newly discovered bosses and events by default and persists opt-out', () => {
+test('encounter catalog defaults off and saves explicit per-ID opt-ins', () => {
   const { root, storage } = context({
     G: { monsters: { bigboss: { name: 'Big Boss', boss: true }, goo: { name: 'Goo' } } },
     S: { seasonal: { live: true, map: 'main', x: 10, y: 20 } }
@@ -48,13 +48,21 @@ test('encounter catalog enables all newly discovered bosses and events by defaul
     game: { visibleMonsters: () => [], monsterDefinition: id => id === 'bigboss' ? { boss: true } : null }
   });
   let catalog = controller.catalog();
-  assert.equal(catalog.defaultEnabled, true);
-  assert.equal(catalog.bosses.find(row => row.id === 'bigboss').enabled, true);
-  assert.equal(catalog.events.find(row => row.id === 'seasonal').enabled, true);
-  assert.equal(controller.preferredTask().taskType, 'EVENT');
-  assert.equal(controller.setEnabled('event', 'seasonal', false).accepted, true);
-  catalog = controller.catalog();
+  assert.equal(catalog.defaultEnabled, false);
+  assert.equal(catalog.bosses.find(row => row.id === 'bigboss').enabled, false);
   assert.equal(catalog.events.find(row => row.id === 'seasonal').enabled, false);
+  assert.equal(controller.preferredTask(), null);
+  assert.equal(controller.setEnabled('event', 'seasonal', true).accepted, true);
+  assert.equal(controller.setEnabled('boss', 'bigboss', true).accepted, true);
+  catalog = controller.catalog();
+  assert.equal(catalog.events.find(row => row.id === 'seasonal').enabled, true);
+  assert.equal(catalog.bosses.find(row => row.id === 'bigboss').enabled, true);
+  assert.equal(controller.setEnabled('event', 'seasonal', false).enabled, false);
+  const reloaded = new Controller({
+    root, storage, game: { visibleMonsters: () => [], monsterDefinition: () => null }
+  });
+  assert.equal(reloaded.catalog().events.find(row => row.id === 'seasonal').enabled, false);
+  assert.equal(reloaded.catalog().bosses.find(row => row.id === 'bigboss').enabled, true);
 });
 
 test('Anniversary celebration without a live claimable visit does not preempt FARM', () => {
@@ -119,6 +127,7 @@ test('Anniversary live round becomes actionable only with matching visit ticket 
     root, storage,
     game: { visibleMonsters: () => [], monsterDefinition: () => null, npcLocation: () => ({ npcId: 'anniversary_baker', map: 'main', x: 64, y: -88 }) }
   });
+  controller.setEnabled('event', 'anniversary', true);
   const preferred = controller.preferredTask();
   assert.equal(preferred.taskType, 'EVENT');
   assert.equal(preferred.actionability.interaction, 'ANNIVERSARY_VISIT');
@@ -187,6 +196,7 @@ test('Anniversary visit travels to featured player and dispatches I Kiss You onl
     canAct: () => true
   });
   controller.moduleActive = true;
+  controller.setEnabled('event', 'anniversary', true);
   assert.equal(controller.startAutonomy({ owner: 'test', taskType: 'EVENT' }).accepted, true);
 
   const travelling = controller.tick();
@@ -208,7 +218,7 @@ test('Anniversary visit travels to featured player and dispatches I Kiss You onl
   assert.equal(controller.status().metrics.anniversaryVisitsConfirmed, 1);
 });
 
-test('disabled set keeps future encounter content enabled by default', () => {
+test('explicitly enabled boss does not opt in future discoveries', () => {
   const { root, storage } = context({
     G: { monsters: { boss1: { boss: true } } },
     S: {}
@@ -216,12 +226,12 @@ test('disabled set keeps future encounter content enabled by default', () => {
   vm.runInNewContext(encounterSource, root);
   const Controller = root.__ALBOT_INTERNALS__.EncounterController;
   const first = new Controller({ root, storage, game: { visibleMonsters: () => [], monsterDefinition: () => ({ boss: true }) } });
-  first.setEnabled('boss', 'boss1', false);
+  first.setEnabled('boss', 'boss1', true);
   root.G.monsters.boss2 = { boss: true };
   const second = new Controller({ root, storage, game: { visibleMonsters: () => [], monsterDefinition: () => ({ boss: true }) } });
   const catalog = second.catalog();
-  assert.equal(catalog.bosses.find(row => row.id === 'boss1').enabled, false);
-  assert.equal(catalog.bosses.find(row => row.id === 'boss2').enabled, true);
+  assert.equal(catalog.bosses.find(row => row.id === 'boss1').enabled, true);
+  assert.equal(catalog.bosses.find(row => row.id === 'boss2').enabled, false);
 });
 
 test('ALData refresh consumes the documented /trades WTS/WTB schema and drops stale owners', async () => {

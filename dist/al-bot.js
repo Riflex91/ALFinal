@@ -1,4 +1,4 @@
-/* AL Bot 0.26.63-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.64-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -3512,6 +3512,21 @@
       const character = snap && snap.character;
       if (!snap || !snap.available || !character) return { ok: false, reason: 'CHARACTER_UNAVAILABLE' };
       if (character.rip === true) return { ok: false, reason: 'CHARACTER_DEAD' };
+      if (String(character.ctype || '').toLowerCase() === 'merchant') {
+        // Do not dispatch movement while the live Merchant stand is open.
+        // H12/H33 close it using ActionBoundary and await live confirmation;
+        // external modules may not bypass that ownership handoff.
+        let raw = null;
+        try {
+          const windows = [this.root, this.root && this.root.parent].filter(Boolean);
+          raw = windows.map(row => row.character).find(row =>
+            row && String(row.name || '') === String(character.name || '')) || null;
+        } catch (_) {}
+        if (raw && (raw.stand === true || raw.stand && raw.stand !== false
+            || raw.p && raw.p.stand)) {
+          return { ok: false, reason: 'MOVEMENT_MERCHANT_STAND_OPEN' };
+        }
+      }
 
       let normalized;
       try { normalized = this._normalizeDestination(destination, character.map); }
@@ -11744,7 +11759,8 @@
       this.absentEventTargets = new Map();
       this.announcements = new Map();
       this.knownEvents = new Map();
-      this.disabled = { boss: new Set(), event: new Set() };
+      // Opt-in only: newly discovered encounters never preempt FARM.
+      this.enabled = { boss: new Set(), event: new Set() };
       this.config = {
         tickMs: Math.max(250, Math.min(5000, Number(options.tickMs) || 750)),
         eventTtlMs: Math.max(60000, Math.min(21600000, Number(options.eventTtlMs) || 1800000)),
@@ -11777,9 +11793,14 @@
         const raw = this.storage.get(this._prefKey());
         if (!raw) return;
         const value = JSON.parse(raw);
-        for (const kind of ['boss', 'event']) {
-          const rows = Array.isArray(value && value.disabled && value.disabled[kind]) ? value.disabled[kind] : [];
-          this.disabled[kind] = new Set(rows.map(x => cleanText(x, 160)).filter(Boolean));
+        // v1 persisted *opt-outs* while encounters defaulted on. They cannot
+        // prove an explicit opt-in. Fail closed on migration; users can opt in
+        // again via setEnabled()/setAll() on v2.
+        if (value && Number(value.schemaVersion) >= 2) {
+          for (const kind of ['boss', 'event']) {
+            const rows = Array.isArray(value.enabled && value.enabled[kind]) ? value.enabled[kind] : [];
+            this.enabled[kind] = new Set(rows.map(x => cleanText(x, 160)).filter(Boolean));
+          }
         }
         const known = value && value.knownEvents && typeof value.knownEvents === 'object' ? value.knownEvents : {};
         for (const [id, row] of Object.entries(known)) this.knownEvents.set(id, clone(row));
@@ -11791,10 +11812,10 @@
       const knownEvents = {};
       for (const [id, row] of this.knownEvents.entries()) knownEvents[id] = clone(row);
       this.storage.set(this._prefKey(), JSON.stringify({
-        schemaVersion: 1,
-        disabled: {
-          boss: [...this.disabled.boss].sort(),
-          event: [...this.disabled.event].sort()
+        schemaVersion: 2,
+        enabled: {
+          boss: [...this.enabled.boss].sort(),
+          event: [...this.enabled.event].sort()
         },
         knownEvents
       }));
@@ -11944,7 +11965,7 @@
           kind: 'boss',
           id: String(id),
           name: cleanText(raw.name || id, 160) || String(id),
-          enabled: !this.disabled.boss.has(String(id)),
+          enabled: this.enabled.boss.has(String(id)),
           active: !!seen,
           visible: !!seen,
           map: seen && seen.map || null,
@@ -12121,7 +12142,7 @@
           kind: 'event',
           id,
           name: cleanText(raw.name || id, 160) || id,
-          enabled: !this.disabled.event.has(id),
+          enabled: this.enabled.event.has(id),
           active: raw.active === true,
           live: raw.live === true,
           map: raw.map || null,
@@ -12143,29 +12164,30 @@
     }
 
     catalog() {
-      return { schemaVersion: 1, bosses: this._bossCatalog(), events: this._eventCatalog(), defaultEnabled: true };
+      return { schemaVersion: 2, bosses: this._bossCatalog(), events: this._eventCatalog(), defaultEnabled: false };
     }
 
     setEnabled(kind, id, enabled) {
       const key = String(kind || '').toLowerCase();
       const name = cleanText(id, 160);
       if (!['boss', 'event'].includes(key) || !name) return { accepted: false, reason: 'ENCOUNTER_PREFERENCE_INVALID' };
-      if (enabled === false) this.disabled[key].add(name);
-      else this.disabled[key].delete(name);
+      if (enabled === true) this.enabled[key].add(name);
+      else this.enabled[key].delete(name);
       if (key === 'event') this.absentEventTargets.delete(name);
       this._persistPreferences();
-      return { accepted: true, kind: key, id: name, enabled: !this.disabled[key].has(name) };
+      return { accepted: true, kind: key, id: name, enabled: this.enabled[key].has(name) };
     }
 
     setAll(kind, enabled) {
       const key = String(kind || '').toLowerCase();
       if (!['boss', 'event'].includes(key)) return { accepted: false, reason: 'ENCOUNTER_KIND_INVALID' };
       const rows = key === 'boss' ? this._bossCatalog() : this._eventCatalog();
-      if (enabled === false) for (const row of rows) this.disabled[key].add(row.id);
-      else this.disabled[key].clear();
+      // Bulk opt-in covers only currently known IDs, not future discoveries.
+      this.enabled[key].clear();
+      if (enabled === true) for (const row of rows) this.enabled[key].add(row.id);
       if (key === 'event') this.absentEventTargets.clear();
       this._persistPreferences();
-      return { accepted: true, kind: key, enabled: enabled !== false, count: rows.length };
+      return { accepted: true, kind: key, enabled: enabled === true, count: rows.length };
     }
 
     preferredTask() {
@@ -12688,7 +12710,8 @@
         catalog: this.catalog(),
         metrics: clone(this.metrics),
         policies: {
-          allNewBossesAndEventsEnabledByDefault: true,
+          allNewBossesAndEventsEnabledByDefault: false,
+          explicitEncounterOptInRequired: true,
           liveStateBeatsPersistedKnowledge: true,
           unknownSuspendsWithoutBlindRetry: true
         }
@@ -13538,6 +13561,48 @@
       };
 
       const now = Date.now();
+
+      // Merchant Work must close an active stand *and observe live closure*
+      // before any other owner begins a new travel-capable activity. H12 also
+      // has its own fail-closed closure path, but exchanges, production and
+      // logistics need the shared handoff barrier.
+      // GameAdapter.snapshot() intentionally omits the stand flag. Read
+      // verified live character state via the Merchant controller instead.
+      const standOpen = !!(work && typeof work._standOpen === 'function'
+        && work._standOpen());
+      if (standOpen && work && workStatus && workStatus.autoManage
+          && typeof work.closeStandForWork === 'function'
+          && !economyStatus.currentAction && !logisticsStatus.currentAction
+          && !(standStatus && standStatus.pending)) {
+        let expectedWork = null;
+        try { expectedWork = typeof work.plan === 'function'
+          ? work.plan({ backgroundAllowed: true }) : null; } catch (_) {}
+        let expectedEconomy = null;
+        try { expectedEconomy = typeof economy.plan === 'function' ? economy.plan() : null; } catch (_) {}
+        let expectedLogistics = null;
+        try { expectedLogistics = typeof logistics.plan === 'function' ? logistics.plan() : null; } catch (_) {}
+        const upcomingWork = expectedWork && expectedWork.state === 'READY'
+          && expectedWork.selected
+          && ['TRAVEL', 'CLOSE_STAND'].includes(expectedWork.selected.kind);
+        // Merrit/urgent stand work intentionally needs an open stand until
+        // handoff and must not be preempted by a lower-priority economy plan.
+        const keepForegroundStand = expectedWork && expectedWork.state === 'READY'
+          && expectedWork.selected
+          && ['MERRIT', 'SAFETY'].includes(String(expectedWork.selected.priorityClass || ''))
+          && !upcomingWork;
+        const upcomingEconomy = expectedEconomy && expectedEconomy.state === 'READY'
+          && expectedEconomy.selected && expectedEconomy.selected.kind !== 'BANK_DEPOSIT';
+        const upcomingLogistics = expectedLogistics && expectedLogistics.state === 'READY';
+        if (!keepForegroundStand && (upcomingWork || upcomingEconomy || upcomingLogistics)) {
+          const step = work.closeStandForWork();
+          const after = work.status();
+          if (after.suspendedReason) return { ok: false, reason: after.suspendedReason };
+          if (!step || !['DISPATCHED', 'PENDING', 'CONFIRMED'].includes(String(step.state))) {
+            return { ok: false, reason: step && step.reason || 'FULL_AUTONOMY_STAND_CLOSE_FAILED' };
+          }
+          return { ok: true, merchant: true, owner: 'merchant-autonomy', plan: clone(step) };
+        }
+      }
 
       // Finish an already-dispatched stand mutation before handing ownership away.
       if (standStatus && standStatus.autoManage && standStatus.pending) {
@@ -16733,7 +16798,11 @@
           });
           const performanceComplete = groupProfiles.complete
             && performanceMembers.length === groupProfiles.memberNames.length
-            && performanceMembers.every(member => finite(member.theoreticalDps) != null);
+            && performanceMembers.every(member => finite(member.theoreticalDps) != null)
+            // Survivability estimates are unsafe without a confirmed HP
+            // envelope for each expected farmer, especially the tank.
+            && groupProfiles.profiles.every(member => finite(member && member.maxHp) != null
+              && Number(member.maxHp) > 0);
           row.groupPerformance = {
             complete: performanceComplete,
             aggregateDps: performanceComplete
@@ -16743,6 +16812,14 @@
             missingMemberNames: groupProfiles.missingMemberNames.slice()
           };
 
+          // Never downgrade an incomplete party DPS model to local estimates:
+          // that can select a lethal mob and send the entire group toward it.
+          // This is a hard selection gate, including material-farm priorities.
+          if (!performanceComplete) {
+            row.groupSafety = { safe: false, reason: 'H9_GROUP_DPS_INCOMPLETE' };
+            this.metrics.groupSafetyBlocks += 1;
+            return false;
+          }
           if (performanceComplete) {
             const tankEnvelope = this._groupTankEnvelope(character);
             const definition = row.definition || {};
@@ -27759,6 +27836,7 @@ class MerchantProductionPlanner {
       this.listingsThisSession = 0;
       this.repricesThisSession = 0;
       this.lastRepriceAtBySlot = new Map();
+      this.autoOpenHoldUntilMs = 0;
     }
 
     start(context = {}) {
@@ -27808,8 +27886,16 @@ class MerchantProductionPlanner {
       return null;
     }
 
+    pauseAutoOpenForTravel(durationMs = 15000) {
+      const ms = Math.max(1000, Math.min(120000, Number(durationMs) || 15000));
+      this.autoOpenHoldUntilMs = Math.max(this.autoOpenHoldUntilMs, Date.now() + ms);
+      return { paused: true, untilMs: this.autoOpenHoldUntilMs };
+    }
+
     _standOpen(character) {
-      return !!(character && (character.stand === true || character.stand != null && character.stand !== false));
+      return !!(character && (character.stand === true
+        || character.stand != null && character.stand !== false
+        || character.p && character.p.stand));
     }
 
     _safeSellRows() {
@@ -27965,6 +28051,28 @@ class MerchantProductionPlanner {
       const busy = this._busy();
       if (busy) return this.lastPlan = { state: 'BLOCKED', reason: busy, selected: null };
       if (!this._standOpen(character)) {
+        if (Date.now() < this.autoOpenHoldUntilMs) {
+          return this.lastPlan = {
+            state: 'IDLE', reason: 'MERCHANT_STAND_TRAVEL_HANDOFF_HOLD', selected: null
+          };
+        }
+        // Do not reopen an empty stand between economy and traveling work.
+        // A purposeful listing or existing trade order must justify opening.
+        const listingAvailable = this._safeSellRows().some(row => {
+          const band = this.market && typeof this.market.priceBand === 'function'
+            ? this.market.priceBand(row.name, { level: Number(row.level) || 0 })
+            : null;
+          return this._actionableBand(band);
+        });
+        const tradeSlots = character.slots || {};
+        const existingOrder = Object.entries(tradeSlots).some(([slot, item]) =>
+          /^trade\d+$/.test(slot) && item && item.name
+          && Number(item.price || 0) > 0);
+        if (!listingAvailable && !existingOrder) {
+          return this.lastPlan = {
+            state: 'IDLE', reason: 'MERCHANT_STAND_NO_LISTING_NO_OPEN', selected: null
+          };
+        }
         const standSlot = this._standItemSlot();
         return this.lastPlan = standSlot == null
           ? { state: 'BLOCKED', reason: 'MERCHANT_STAND_ITEM_MISSING', selected: null }
@@ -28244,6 +28352,7 @@ class MerchantProductionPlanner {
         lastAction: clone(this.lastAction),
         listingsThisSession: this.listingsThisSession,
         repricesThisSession: this.repricesThisSession,
+        autoOpenHoldUntilMs: this.autoOpenHoldUntilMs,
         config: clone(this.config),
         policies: {
           autoManageDefaultOff: true,
@@ -28940,6 +29049,21 @@ class MerchantProductionPlanner {
     _movementStatus() {
       try { return this.movement && typeof this.movement.status === 'function' ? this.movement.status() : null; }
       catch (_) { return null; }
+    }
+
+    closeStandForWork() {
+      // Called by Full Autonomy only after foreground ownership is released.
+      // An outstanding close cannot be redispatched until live state confirms
+      // it; UNKNOWN/timeouts preserve the safety suspension.
+      if (this.pending) return { state: 'PENDING', reason: 'MERCHANT_STAND_CLOSE_PENDING' };
+      if (!this._standOpen()) return { state: 'CONFIRMED', reason: 'MERCHANT_STAND_ALREADY_CLOSED' };
+      if (!this.moduleActive || !this.autoManage || this.suspendedReason) {
+        return { state: 'BLOCKED', reason: 'MERCHANT_STAND_CLOSE_UNAVAILABLE' };
+      }
+      if (this.merchantStand && typeof this.merchantStand.pauseAutoOpenForTravel === 'function') {
+        this.merchantStand.pauseAutoOpenForTravel();
+      }
+      return this._dispatch('CLOSE_STAND', 'close_stand', [], { exclusive: true });
     }
 
     _cancelOwnedMovement(reason) {
@@ -29955,6 +30079,9 @@ class MerchantProductionPlanner {
       }
       if (task.kind === 'MERRIT_NEEDS_LISTING') return { state: 'BLOCKED', reason: task.reason };
       if (task.kind === 'CLOSE_STAND') {
+        if (this.merchantStand && typeof this.merchantStand.pauseAutoOpenForTravel === 'function') {
+          this.merchantStand.pauseAutoOpenForTravel();
+        }
         return this._dispatch('CLOSE_STAND', 'close_stand', [], {
           exclusive: task.exclusive === true,
           destination: task.destination || null
@@ -33780,7 +33907,7 @@ class MerchantProductionPlanner {
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.63-h26';
+      this.version = options.version || '0.26.64-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -39795,7 +39922,7 @@ class MerchantProductionPlanner {
       push('account-strategy-controller', !!this.accountStrategy.status() && typeof this.accountStrategy.optimizeTask === 'function' && typeof this.accountStrategy.progressionPlan === 'function', this.accountStrategy.status());
       push('encounter-controller', !!this.encounters.status()
         && this.encounters.status().policies
-        && this.encounters.status().policies.allNewBossesAndEventsEnabledByDefault === true
+        && this.encounters.status().policies.allNewBossesAndEventsEnabledByDefault === false
         && typeof this.encounters.catalog === 'function'
         && typeof this.encounters.setEnabled === 'function', this.encounters.status());
       push('market-intelligence', !!this.marketIntelligence.status()
@@ -42082,7 +42209,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.63-h26',
+    version: '0.26.64-h26',
     bootCount,
     replacedPrevious: !!previous
   });

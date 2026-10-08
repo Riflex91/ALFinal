@@ -269,9 +269,9 @@ test('H9 group leader excludes targets that known physical followers cannot safe
       goo: { id: 'goo', hp: 500, attack: 10, xp: 100, gold: 20, dropSignal: 0.2, evasion: 0 }
     },
     partyOwnedMembers: [
-      { name: 'My_Priest', ctype: 'priest', damageType: 'magical', map: 'main', x: 0, y: 0 },
-      { name: 'My_Ranger1', ctype: 'ranger', damageType: 'physical', map: 'main', x: 20, y: 0 },
-      { name: 'My_Ranger2', ctype: 'ranger', damageType: 'physical', map: 'main', x: -20, y: 0 }
+      { name: 'My_Priest', ctype: 'priest', damageType: 'magical', attack: 300, frequency: 1, maxHp: 2500, map: 'main', x: 0, y: 0 },
+      { name: 'My_Ranger1', ctype: 'ranger', damageType: 'physical', attack: 450, frequency: 1, maxHp: 2000, map: 'main', x: 20, y: 0 },
+      { name: 'My_Ranger2', ctype: 'ranger', damageType: 'physical', attack: 450, frequency: 1, maxHp: 2000, map: 'main', x: -20, y: 0 }
     ]
   });
 
@@ -594,7 +594,7 @@ test('H9 leader resumes V3-style farm travel once group recovery is inside the t
     catalog: [{ key: 'catalog:main:crab:0', map: 'main', mtype: 'crab', x: -1202.5, y: -66, count: 4 }],
     partyOwnedMembers: [
       { name: 'My_Warrior', ctype: 'warrior', damageType: 'physical', map: 'main', x: 0, y: 0 },
-      { name: 'My_Ranger1', ctype: 'ranger', damageType: 'physical', map: 'main', x: 106.6, y: 0 }
+      { name: 'My_Ranger1', ctype: 'ranger', damageType: 'physical', attack: 280, frequency: 1, maxHp: 1500, map: 'main', x: 106.6, y: 0 }
     ]
   });
   const started = f.controller.startAutonomy({
@@ -792,9 +792,9 @@ test('H9 control center and one-click live suite are wired', () => {
   assert.match(runtime, /visibleSafe\.length > 0/);
   assert.match(runtime, /h9-adaptive-decisions/);
   assert.match(runtime, /timeoutMs: 85000/);
-  assert.match(entry, /0\.26\.63-h26/);
+  assert.match(entry, /0\.26\.64-h26/);
   assert.match(entry, /farmIntelligence:/);
-  assert.match(build, /const runtimeVersion = '0\.26\.63-h26'/);
+  assert.match(build, /const runtimeVersion = '0\.26\.64-h26'/);
 });
 
 test('H9 game adapter normalizes live farm data for scoring', () => {

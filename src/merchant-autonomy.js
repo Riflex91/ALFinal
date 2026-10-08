@@ -678,6 +678,21 @@
       catch (_) { return null; }
     }
 
+    closeStandForWork() {
+      // Called by Full Autonomy only after foreground ownership is released.
+      // An outstanding close cannot be redispatched until live state confirms
+      // it; UNKNOWN/timeouts preserve the safety suspension.
+      if (this.pending) return { state: 'PENDING', reason: 'MERCHANT_STAND_CLOSE_PENDING' };
+      if (!this._standOpen()) return { state: 'CONFIRMED', reason: 'MERCHANT_STAND_ALREADY_CLOSED' };
+      if (!this.moduleActive || !this.autoManage || this.suspendedReason) {
+        return { state: 'BLOCKED', reason: 'MERCHANT_STAND_CLOSE_UNAVAILABLE' };
+      }
+      if (this.merchantStand && typeof this.merchantStand.pauseAutoOpenForTravel === 'function') {
+        this.merchantStand.pauseAutoOpenForTravel();
+      }
+      return this._dispatch('CLOSE_STAND', 'close_stand', [], { exclusive: true });
+    }
+
     _cancelOwnedMovement(reason) {
       const status = this._movementStatus();
       if (status && status.activeOrder && String(status.activeOrder.owner || '').startsWith('merchant-autonomy')) {
@@ -1691,6 +1706,9 @@
       }
       if (task.kind === 'MERRIT_NEEDS_LISTING') return { state: 'BLOCKED', reason: task.reason };
       if (task.kind === 'CLOSE_STAND') {
+        if (this.merchantStand && typeof this.merchantStand.pauseAutoOpenForTravel === 'function') {
+          this.merchantStand.pauseAutoOpenForTravel();
+        }
         return this._dispatch('CLOSE_STAND', 'close_stand', [], {
           exclusive: task.exclusive === true,
           destination: task.destination || null

@@ -354,6 +354,7 @@
       this.listingsThisSession = 0;
       this.repricesThisSession = 0;
       this.lastRepriceAtBySlot = new Map();
+      this.autoOpenHoldUntilMs = 0;
     }
 
     start(context = {}) {
@@ -403,8 +404,16 @@
       return null;
     }
 
+    pauseAutoOpenForTravel(durationMs = 15000) {
+      const ms = Math.max(1000, Math.min(120000, Number(durationMs) || 15000));
+      this.autoOpenHoldUntilMs = Math.max(this.autoOpenHoldUntilMs, Date.now() + ms);
+      return { paused: true, untilMs: this.autoOpenHoldUntilMs };
+    }
+
     _standOpen(character) {
-      return !!(character && (character.stand === true || character.stand != null && character.stand !== false));
+      return !!(character && (character.stand === true
+        || character.stand != null && character.stand !== false
+        || character.p && character.p.stand));
     }
 
     _safeSellRows() {
@@ -560,6 +569,28 @@
       const busy = this._busy();
       if (busy) return this.lastPlan = { state: 'BLOCKED', reason: busy, selected: null };
       if (!this._standOpen(character)) {
+        if (Date.now() < this.autoOpenHoldUntilMs) {
+          return this.lastPlan = {
+            state: 'IDLE', reason: 'MERCHANT_STAND_TRAVEL_HANDOFF_HOLD', selected: null
+          };
+        }
+        // Do not reopen an empty stand between economy and traveling work.
+        // A purposeful listing or existing trade order must justify opening.
+        const listingAvailable = this._safeSellRows().some(row => {
+          const band = this.market && typeof this.market.priceBand === 'function'
+            ? this.market.priceBand(row.name, { level: Number(row.level) || 0 })
+            : null;
+          return this._actionableBand(band);
+        });
+        const tradeSlots = character.slots || {};
+        const existingOrder = Object.entries(tradeSlots).some(([slot, item]) =>
+          /^trade\d+$/.test(slot) && item && item.name
+          && Number(item.price || 0) > 0);
+        if (!listingAvailable && !existingOrder) {
+          return this.lastPlan = {
+            state: 'IDLE', reason: 'MERCHANT_STAND_NO_LISTING_NO_OPEN', selected: null
+          };
+        }
         const standSlot = this._standItemSlot();
         return this.lastPlan = standSlot == null
           ? { state: 'BLOCKED', reason: 'MERCHANT_STAND_ITEM_MISSING', selected: null }
@@ -839,6 +870,7 @@
         lastAction: clone(this.lastAction),
         listingsThisSession: this.listingsThisSession,
         repricesThisSession: this.repricesThisSession,
+        autoOpenHoldUntilMs: this.autoOpenHoldUntilMs,
         config: clone(this.config),
         policies: {
           autoManageDefaultOff: true,

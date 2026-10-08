@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.63-h26';
+      this.version = options.version || '0.26.64-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -6020,7 +6020,7 @@
       push('account-strategy-controller', !!this.accountStrategy.status() && typeof this.accountStrategy.optimizeTask === 'function' && typeof this.accountStrategy.progressionPlan === 'function', this.accountStrategy.status());
       push('encounter-controller', !!this.encounters.status()
         && this.encounters.status().policies
-        && this.encounters.status().policies.allNewBossesAndEventsEnabledByDefault === true
+        && this.encounters.status().policies.allNewBossesAndEventsEnabledByDefault === false
         && typeof this.encounters.catalog === 'function'
         && typeof this.encounters.setEnabled === 'function', this.encounters.status());
       push('market-intelligence', !!this.marketIntelligence.status()
