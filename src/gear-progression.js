@@ -1208,4 +1208,6 @@
 
   ns.FutureGearEconomyEvaluator = FutureGearEconomyEvaluator;
   ns.FUTURE_GEAR_CLASS_WEIGHTS = CLASS_WEIGHTS;
+  // Share ALFinal's class/role scoring with the v3 production-planner port.
+  ns.gearPlanning = Object.freeze({ scoreItem, scoreImprovement, candidateSlots });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

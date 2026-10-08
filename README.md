@@ -21,11 +21,12 @@ AL Bot ist die finale, neu aufgebaute Adventure-Land-Bot-Codebasis. Intern darf 
 - [Projektarchitektur und Grundsätze](docs/PROJECT-CHARTER.md)
 - [Entwicklungsroadmap und Live-Test-Häppchen](docs/ROADMAP.md)
 - [Chat-Handoff / aktueller Stand](docs/CHAT-HANDOFF.md)
+- [v3-Produktionsplaner: APIs und Ausführungsgrenzen](docs/V3-PRODUCTION-PLANNER.md)
 
 ## Aktueller Stand
 
-AL Bot besitzt inzwischen die produktive H1–H22-Basis mit Combat, Party, Farming, Inventory, Merchant/Economy, Lifecycle/Recovery, Account-Strategie, Full Live, Safe Updater und autonomer Beobachtung. Laufende PRs können bereits neuere Änderungen enthalten.
+Der bisherige Stable-Stand ist `0.26.57-h26`. Er enthält Combat, Party, Farming, Inventory, Merchant/Economy, Lifecycle/Recovery, Account-Strategie, Full Autonomy, Merchant-Hintergrundarbeit, Safe Updater und autonome Beobachtung. Der hier vorbereitete Kandidat ergänzt den read-only v3-Produktionsplaner; er ist noch nicht live abgenommen oder als Stable veröffentlicht.
 
 **Wichtig:** Dieses README ist nur eine Zusammenfassung und darf niemals als alleinige Quelle für den Implementierungsstand verwendet werden. Vor einer Capability-/Gap-Analyse müssen der aktuelle Zielbranch, offene relevante PRs, scripts/build.mjs, src/runtime.js, src/entry.js, die betroffenen Controller sowie Tests/Live-Evidence geprüft werden. Verbindliche Arbeitsregeln stehen zusätzlich in AGENTS.md.
 
-Der aktuell vorbereitete Folgeblock erweitert die vorhandene Architektur um Boss-/Event-Encounter-Steuerung, read-only Market Intelligence/ALData, sicheren Merchant-Stand-Grundbetrieb und lokale Host-Telemetrie.
+Der Planer ergänzt Beschaffungsgraphen und Gear-Empfehlungen. Ein Import des vollständigen v3-Produktionscontrollers oder eine automatische Aktivierung neuer Farm-/Mutations-/Lieferketten ist damit nicht verbunden.

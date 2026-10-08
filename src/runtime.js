@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.57-h26';
+      this.version = options.version || '0.26.58-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -176,7 +176,10 @@
         inventory: this.inventory,
         bank: this.bank,
         trade: this.trade,
-        combat: this.combat
+        combat: this.combat,
+        getProductionProfiles: () => this.accountStrategy && typeof this.accountStrategy.profiles === 'function'
+          ? this.accountStrategy.profiles()
+          : []
       });
       this.economy = new ns.EconomyController({
         root: this.root,

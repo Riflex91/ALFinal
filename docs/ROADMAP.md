@@ -580,6 +580,13 @@ H15-Live-Gate ist bestanden. Nach den Evidence-Dokucommits ist nur noch der neue
 ---
 
 ## H16 – Exchange & Craft
+
+Ergänzung im Entwicklungskandidaten vom 8. Oktober 2026: Der read-only
+v3-Produktionsplaner ist über `productionGraph`, `productionGear` und das Feld
+`production().acquisition` angebunden. Rekursive Beschaffungsgraphen, Levelzutaten,
+Gearprofile und Schutz-/Mengenregeln werden berücksichtigt. Dies ist keine
+Ende-zu-Ende-Abnahme des separaten v3-Produktionscontrollers, seiner P90-Farmaufträge
+oder der Empfängerzustellung. API und Grenzen: [V3-PRODUCTION-PLANNER.md](V3-PRODUCTION-PLANNER.md).
 - Suite v5 Preflight-Diagnostik: strukturierte Reject-Zähler + Top-5-Fast-Matches vor fail-closed Abbruch
 
 **🟦 IMPLEMENTIERT · LIVE V1 FAIL-CLOSED · V2 TECHNISCH/REVIEW GRÜN · FINALER DOKU-CI OFFEN · LIVE V2 OFFEN**
