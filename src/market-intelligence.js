@@ -354,6 +354,7 @@
       this.listingsThisSession = 0;
       this.repricesThisSession = 0;
       this.lastRepriceAtBySlot = new Map();
+      this.autoOpenHoldUntilMs = 0;
     }
 
     start(context = {}) {
@@ -401,6 +402,12 @@
         } catch (_) { break; }
       }
       return null;
+    }
+
+    pauseAutoOpenForTravel(durationMs = 15000) {
+      const ms = Math.max(1000, Math.min(120000, Number(durationMs) || 15000));
+      this.autoOpenHoldUntilMs = Math.max(this.autoOpenHoldUntilMs, Date.now() + ms);
+      return { paused: true, untilMs: this.autoOpenHoldUntilMs };
     }
 
     _standOpen(character) {
@@ -562,6 +569,11 @@
       const busy = this._busy();
       if (busy) return this.lastPlan = { state: 'BLOCKED', reason: busy, selected: null };
       if (!this._standOpen(character)) {
+        if (Date.now() < this.autoOpenHoldUntilMs) {
+          return this.lastPlan = {
+            state: 'IDLE', reason: 'MERCHANT_STAND_TRAVEL_HANDOFF_HOLD', selected: null
+          };
+        }
         // Do not reopen an empty stand between economy and traveling work.
         // A purposeful listing or existing trade order must justify opening.
         const listingAvailable = this._safeSellRows().some(row => {
@@ -858,6 +870,7 @@
         lastAction: clone(this.lastAction),
         listingsThisSession: this.listingsThisSession,
         repricesThisSession: this.repricesThisSession,
+        autoOpenHoldUntilMs: this.autoOpenHoldUntilMs,
         config: clone(this.config),
         policies: {
           autoManageDefaultOff: true,

@@ -687,6 +687,9 @@
       if (!this.moduleActive || !this.autoManage || this.suspendedReason) {
         return { state: 'BLOCKED', reason: 'MERCHANT_STAND_CLOSE_UNAVAILABLE' };
       }
+      if (this.merchantStand && typeof this.merchantStand.pauseAutoOpenForTravel === 'function') {
+        this.merchantStand.pauseAutoOpenForTravel();
+      }
       return this._dispatch('CLOSE_STAND', 'close_stand', [], { exclusive: true });
     }
 
@@ -1703,6 +1706,9 @@
       }
       if (task.kind === 'MERRIT_NEEDS_LISTING') return { state: 'BLOCKED', reason: task.reason };
       if (task.kind === 'CLOSE_STAND') {
+        if (this.merchantStand && typeof this.merchantStand.pauseAutoOpenForTravel === 'function') {
+          this.merchantStand.pauseAutoOpenForTravel();
+        }
         return this._dispatch('CLOSE_STAND', 'close_stand', [], {
           exclusive: task.exclusive === true,
           destination: task.destination || null
