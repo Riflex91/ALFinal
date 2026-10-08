@@ -53,6 +53,8 @@
       this.movement = options.movement;
       this.party = options.party || null;
       this.strategy = options.strategy || null;
+      this.storage = options.storage || null;
+      this.lastMaterialDemand = null;
       this.now = typeof options.now === 'function' ? options.now : () => Date.now();
 
       this.config = {
@@ -531,7 +533,44 @@
       };
     }
 
+    _materialDemand() {
+      if (!this.storage || typeof this.storage.sharedAvailable !== 'function'
+          || this.storage.sharedAvailable() !== true
+          || typeof this.storage.getShared !== 'function') return null;
+      let server = null;
+      try {
+        const windows = [this.root, this.root && this.root.parent].filter(Boolean);
+        server = windows.find(row => row.server_region && row.server_identifier) || null;
+      } catch (_) {}
+      if (!server) return null;
+      const key = 'albot:material-farm-demand:v1:'
+        + encodeURIComponent(String(server.server_region)) + ':'
+        + encodeURIComponent(String(server.server_identifier));
+      let demand = null;
+      try { demand = JSON.parse(this.storage.getShared(key) || 'null'); } catch (_) {}
+      const now = this.now();
+      if (!demand || demand.schemaVersion !== 1 || demand.source !== 'merchant-tool-crafting'
+          || !demand.merchant || !demand.material || !demand.monsterType
+          || !Number.isFinite(Number(demand.createdAtMs))
+          || !Number.isFinite(Number(demand.expiresAtMs))
+          || now < Number(demand.createdAtMs) - 5000 || now > Number(demand.expiresAtMs)) return null;
+      const definition = this.game && typeof this.game.monsterDefinition === 'function'
+        ? this.game.monsterDefinition(demand.monsterType) : null;
+      if (!definition || definition.boss === true || definition.cooperative === true
+          || !(definition.drops || []).some(row => row && String(row.item) === String(demand.material)
+            && Number(row.chance || 0) > 0)) return null;
+      return {
+        material: String(demand.material), monsterType: String(demand.monsterType),
+        quantity: Math.max(1, Number(demand.quantity) || 1),
+        expiresAtMs: Number(demand.expiresAtMs)
+      };
+    }
+
     _scoreCandidates(character, candidates) {
+      // A materials request can only *rank* already-safe FARM candidates. It
+      // never bypasses event, damage, hit-chance, group or combat safety gates.
+      const demand = this._materialDemand();
+      this.lastMaterialDemand = demand;
       const rows = candidates.map(candidate => ({ ...candidate, raw: this._rawMetrics(character, candidate) }));
       const max = name => Math.max(0.000001, ...rows.map(row => Number(row.raw[name]) || 0));
       const xpMax = max('xpPerSecond');
@@ -560,7 +599,8 @@
           + components.respawn * 0.08
           + components.competition * 0.06
           + components.safety * 0.10
-        )).toFixed(2));
+        ) + (demand && row.mtype === demand.monsterType ? 15 : 0)).toFixed(2));
+        row.materialDemandMatch = !!(demand && row.mtype === demand.monsterType);
       }
       rows.sort((a, b) => b.score - a.score || b.visibleSafeCount - a.visibleSafeCount || String(a.key).localeCompare(String(b.key)));
       return rows;
