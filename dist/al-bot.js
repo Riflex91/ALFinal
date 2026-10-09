@@ -1,4 +1,4 @@
-/* AL Bot 0.26.65-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.66-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -13721,6 +13721,27 @@
 
       if (now - this.lastLogisticsProbeAtMs >= this.config.logisticsProbeMs && !economyNow.currentAction) {
         this.lastLogisticsProbeAtMs = now;
+        // Only H28 explicitly reserved gear may enter H18 delivery. An
+        // advisory remote snapshot never authorizes send_item by itself.
+        try {
+          const gear = this.runtime.gear;
+          const future = this.runtime.gearProgression;
+          // Never duplicate a delivery already queued or underway. H18 may
+          // be travelling across maps for longer than the 30s probe interval.
+          const deliveryStatus = logistics.status();
+          const idleDelivery = !(deliveryStatus.currentAction)
+            && !(Array.isArray(deliveryStatus.queue) && deliveryStatus.queue.length);
+          if (idleDelivery && gear && future && typeof gear.plan === 'function'
+              && typeof future.deliveryAuthorization === 'function') {
+            const proposals = gear.plan().group.proposals || [];
+            for (const candidate of proposals) {
+              const authorization = future.deliveryAuthorization(candidate.item, candidate.targetName);
+              if (!authorization || authorization.allowed !== true) continue;
+              const queued = logistics.queueGearDelivery(candidate.targetName, candidate.inventorySlot);
+              if (queued && queued.accepted === true) break;
+            }
+          }
+        } catch (_) {}
         const wasEconomyOwned = this.started.economy && economyNow.autonomyEnabled === true;
         if (wasEconomyOwned) {
           try { economy.stopAutonomy('FULL_AUTONOMY_LOGISTICS_PROBE'); } catch (_) {}
@@ -20859,6 +20880,10 @@
       this.inventory = options.inventory || null;
       this.roster = options.roster || null;
       this.combat = options.combat || null;
+      this.crossWindow = options.crossWindow || null;
+      this.autoEquipAllowed = typeof options.autoEquipAllowed === 'function'
+        ? options.autoEquipAllowed : () => false;
+      this.autoEquipLastAtMs = 0;
       this.moduleActive = false;
       this.scope = null;
       this.pending = null;
@@ -20871,7 +20896,8 @@
       this.config = {
         tickMs: Math.max(250, Math.min(5000, Number(options.tickMs) || 750)),
         outcomeTimeoutMs: Math.max(1000, Math.min(60000, Number(options.outcomeTimeoutMs) || 6000)),
-        improvementEpsilon: Math.max(0, Number(options.improvementEpsilon) || 0.01)
+        improvementEpsilon: Math.max(0, Number(options.improvementEpsilon) || 0.01),
+        autoEquipProbeMs: Math.max(3000, Math.min(60000, Number(options.autoEquipProbeMs) || 15000))
       };
       this.metrics = {
         ticks: 0,
@@ -20893,7 +20919,8 @@
         safetyBlocks: 0,
         twoHandBlocks: 0,
         combatBlocks: 0,
-        goalEvaluations: 0
+        goalEvaluations: 0,
+        autoEquipQueued: 0
       };
     }
 
@@ -20971,8 +20998,29 @@
     }
 
     _equipmentSnapshot(name = null) {
-      try { return this.game && this.game.equipmentSnapshot ? this.game.equipmentSnapshot(name) : null; }
-      catch (_) { return null; }
+      let observed = null;
+      try { observed = this.game && this.game.equipmentSnapshot ? this.game.equipmentSnapshot(name) : null; } catch (_) {}
+      if (observed && observed.available !== false) return observed;
+      // Advisory cross-window snapshot for GROUP PLANNING only. This is not
+      // remote action permission: H14 delivery revalidation requires actual
+      // visible, live target equipment before send_item.
+      if (!name || !this.crossWindow || typeof this.crossWindow.freshPeer !== 'function') return observed;
+      let peer = null;
+      try { peer = this.crossWindow.freshPeer(String(name)); } catch (_) {}
+      const p = peer && peer.profile;
+      const at = p && Number(p.observedAtMs);
+      if (!peer || !peer.running || !p || p.equipmentKnown !== true
+          || !p.equipment || typeof p.equipment !== 'object'
+          || !Number.isFinite(at) || Date.now() - at > 9000 || at > Date.now() + 5000) return observed;
+      const slots = {};
+      for (const [slot, item] of Object.entries(p.equipment)) {
+        if (!GEAR_SLOTS.includes(slot) || !item || !item.name) continue;
+        const def = this._equipmentDefinition(item.name);
+        if (!def) return observed;
+        slots[slot] = { ...clone(item), slot, definition: def };
+      }
+      return { schemaVersion: 1, available: true, source: 'FRESH_PEER_ADVISORY',
+        character: { name: String(name), ctype: p.ctype }, slots };
     }
 
     _roster() {
@@ -21674,7 +21722,10 @@
       const row = (inventory.items || []).find(item => Number(item.slot) === Number(request.inventorySlot));
       if (!row || this._fingerprint(row) !== request.candidateFingerprint) return { ok: false, reason: 'H14_DELIVERY_SOURCE_CHANGED' };
       if (row.locked || row.giveaway || row.gift || row.expiresAt) return { ok: false, reason: 'H14_DELIVERY_ITEM_NOT_TRANSFER_SAFE' };
-      const targetEquipment = this._equipmentSnapshot(request.targetName);
+      // The peer snapshot is advisory: only the live target visible to the
+      // Merchant authorizes this irreversible transfer.
+      const targetEquipment = this.game && this.game.equipmentSnapshot
+        ? this.game.equipmentSnapshot(request.targetName) : null;
       if (!targetEquipment || targetEquipment.available === false) return { ok: false, reason: 'H14_DELIVERY_TARGET_NOT_VISIBLE' };
       const current = targetEquipment.slots && targetEquipment.slots[request.targetSlot] || null;
       const currentScore = current ? this.score(current, farmer.ctype) : Number.NEGATIVE_INFINITY;
@@ -21697,7 +21748,27 @@
       }
 
       const request = this.request;
-      if (!request) return this.plan();
+      if (!request) {
+        // Empty slots are safe, high-value improvements for undergeared
+        // farmers. Never auto-replace equipped items or act during combat.
+        const now = Date.now();
+        if (now - this.autoEquipLastAtMs >= this.config.autoEquipProbeMs
+            && this.autoEquipAllowed() === true && !this._combatActive()) {
+          this.autoEquipLastAtMs = now;
+          const plan = this.plan();
+          const first = plan && plan.local && (plan.local.improvements || []).find(row =>
+            row.current == null && row.safeSwitch === true && row.bestInventory);
+          if (first) {
+            const queued = this.queueEquip(first.bestInventory.inventorySlot, first.slot);
+            if (queued && queued.accepted) {
+              this.metrics.autoEquipQueued += 1;
+              return { state: 'QUEUED', reason: 'H14_AUTO_EQUIP_EMPTY_SLOT', request: clone(queued.request) };
+            }
+          }
+          return plan;
+        }
+        return this.plan();
+      }
 
       const inventory = this._inventorySnapshot();
       if (!inventory || inventory.available === false) return { state: 'BLOCKED', reason: 'H14_INVENTORY_UNAVAILABLE' };
@@ -22190,6 +22261,8 @@
     _profileEquipment(profile) {
       if (!profile || !profile.equipment || typeof profile.equipment !== 'object') return null;
       if (profile.equipmentKnown === false) return null;
+      // An empty map is not sufficient proof that all equipment slots were
+      // inspected; retain H32's fail-closed requirement.
       return Object.values(profile.equipment).some(item => item && item.name)
         ? profile.equipment
         : null;
@@ -22764,7 +22837,10 @@
             itemCount: family === 'COMPOUND' ? 3 : 1
           });
           if (!mutationPolicy.allowed) action = 'HOLD';
-        } else if (protection.targetOnline !== true) {
+        } else if (action === 'GEAR') {
+          // Reservations are needed for H18 even when the target is online.
+          // The old offline-only condition made every online Gear delivery
+          // impossible despite complete, validated equipment evidence.
           this._rememberGearReservation(item, protection);
         }
         return {
@@ -33970,7 +34046,7 @@ class MerchantProductionPlanner {
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.65-h26';
+      this.version = options.version || '0.26.66-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -34106,7 +34182,10 @@ class MerchantProductionPlanner {
         actions: this.actions,
         inventory: this.inventory,
         roster: this.roster,
-        combat: this.combat
+        combat: this.combat,
+        crossWindow: this.lifecycleTransport,
+        autoEquipAllowed: () => this.running === true && this.fullAutonomy
+          && this.fullAutonomy.enabled === true && !this.stopLatch.status().latched
       });
       this.gearProgression = new ns.FutureGearEconomyEvaluator({
         root: this.root,
@@ -34289,10 +34368,39 @@ class MerchantProductionPlanner {
           + '/in/' + encodeURIComponent(String(server.region))
           + '/' + encodeURIComponent(String(server.identifier)) + '/';
 
+        // Carry Full Autonomy across the H25 browser swap. New runner roots
+        // have no in-memory state; H19 requires the *new* peer to re-arm before
+        // it confirms rotation. Persist one short-lived, server-scoped intent.
+        let rearmKey = null;
+        const previousAutonomy = this.fullAutonomy && typeof this.fullAutonomy.status === 'function'
+          ? this.fullAutonomy.status() : null;
+        if (previousAutonomy && previousAutonomy.enabled === true) {
+          if (!sourceName || sourceName === name || !this.storage
+              || typeof this.storage.setShared !== 'function'
+              || this.storage.sharedAvailable() !== true) {
+            throw new Error('H25_AUTONOMY_HANDOFF_UNAVAILABLE');
+          }
+          rearmKey = this._h25AutonomyHandoffKey(name, server);
+          const intended = {
+            schemaVersion: 1, source: 'H25_VALIDATED_BROWSER_SWAP',
+            sourceCharacterName: sourceName, targetCharacterName: name,
+            serverRegion: String(server.region), serverIdentifier: String(server.identifier),
+            taskType: 'FARM',
+            desiredCharacterNames: Array.isArray(previousAutonomy.desiredCharacterNames)
+              ? previousAutonomy.desiredCharacterNames.slice(0, 4) : [],
+            createdAtMs: Date.now(), expiresAtMs: Date.now() + 120000
+          };
+          if (!rearmKey || this.storage.setShared(rearmKey, JSON.stringify(intended)) !== true) {
+            throw new Error('H25_AUTONOMY_HANDOFF_WRITE_FAILED');
+          }
+        }
         // Final durable gear snapshot before the page leaves this character.
         try { if (this.accountStrategy) this.accountStrategy.persistLocalProfile(); } catch (_) {}
         try { if (this.hostState) this.hostState.flushFinalBestEffort(); } catch (_) {}
-        view.location.assign(url);
+        try { view.location.assign(url); } catch (error) {
+          if (rearmKey && typeof this.storage.removeShared === 'function') this.storage.removeShared(rearmKey);
+          throw error;
+        }
         return {
           accepted: true,
           url,
@@ -39745,6 +39853,58 @@ class MerchantProductionPlanner {
       return ns.helpers.clone(guard);
     }
 
+    _h25AutonomyHandoffKey(targetName, server) {
+      if (!targetName || !server || !server.region || !server.identifier) return null;
+      return 'albot:h25:autonomy-handoff:v1:'
+        + encodeURIComponent(String(server.region)) + ':'
+        + encodeURIComponent(String(server.identifier)) + ':'
+        + encodeURIComponent(String(targetName));
+    }
+
+    _consumeH25AutonomyHandoff() {
+      if (!this.running || !this.fullAutonomy || this.fullAutonomy.enabled === true
+          || !this.storage || typeof this.storage.getShared !== 'function'
+          || this.stopLatch.status().latched) return { accepted: false, reason: 'H25_REARM_NOT_ELIGIBLE' };
+      const snapshot = this.game && this.game.snapshot ? this.game.snapshot() : null;
+      const character = snapshot && snapshot.character;
+      const server = snapshot && snapshot.server;
+      const key = this._h25AutonomyHandoffKey(character && character.name, server);
+      if (!key) return { accepted: false, reason: 'H25_REARM_IDENTITY_UNAVAILABLE' };
+      let value = null;
+      try { value = JSON.parse(this.storage.getShared(key) || 'null'); } catch (_) {}
+      if (!value) return { accepted: false, reason: 'H25_REARM_NO_HANDOFF' };
+      const now = Date.now();
+      const names = Array.isArray(value.desiredCharacterNames)
+        ? [...new Set(value.desiredCharacterNames.map(String))].sort() : [];
+      let owned = [];
+      try {
+        const roster = this.roster && this.roster.refresh ? this.roster.refresh() : null;
+        owned = roster && Array.isArray(roster.accountCharacters)
+          ? roster.accountCharacters.map(row => String(row.name || '')) : [];
+      } catch (_) {}
+      const valid = value.schemaVersion === 1 && value.source === 'H25_VALIDATED_BROWSER_SWAP'
+        && value.targetCharacterName === String(character.name)
+        && value.sourceCharacterName && value.sourceCharacterName !== value.targetCharacterName
+        && value.serverRegion === String(server.region)
+        && value.serverIdentifier === String(server.identifier)
+        && value.taskType === 'FARM'
+        && Number.isFinite(Number(value.createdAtMs))
+        && Number.isFinite(Number(value.expiresAtMs))
+        && now >= Number(value.createdAtMs) - 5000
+        && now <= Number(value.expiresAtMs)
+        && Number(value.expiresAtMs) - Number(value.createdAtMs) <= 120000
+        && names.length === 4 && names.includes(character.name)
+        && names.every(name => owned.includes(name));
+      if (typeof this.storage.removeShared === 'function') this.storage.removeShared(key);
+      if (!valid) return { accepted: false, reason: 'H25_REARM_HANDOFF_INVALID' };
+      // Starting only arms the local controller. Party and farming mutations
+      // still require their independent live readiness/ownership gates.
+      const result = this.fullAutonomy.startAutonomy({
+        taskType: 'FARM', waitForRoster: true, desiredCharacterNames: names
+      });
+      return { accepted: !!(result && result.accepted), reason: result && result.reason || null };
+    }
+
     async start() {
       if (this._destroyed) throw new Error('ALBOT_RUNTIME_DESTROYED');
       if (this.stopLatch.status().latched) throw new Error('ALBOT_START_BLOCKED_BY_EMERGENCY_STOP');
@@ -39758,6 +39918,14 @@ class MerchantProductionPlanner {
       try { this.roster.refresh(); } catch (_) {}
 
       await this.modules.startAll(this._runtimeContext());
+      try {
+        const handoff = this._consumeH25AutonomyHandoff();
+        if (handoff && handoff.accepted) this.logger.info('H25 Full Autonomy nach Browserwechsel reaktiviert');
+      } catch (error) {
+        this.logger.warn('H25 Full Autonomy Handoff fehlgeschlagen', {
+          reason: ns.helpers.cleanText(error && error.message || error || 'H25_HANDOFF_FAILED', 200)
+        });
+      }
       this.scheduler.interval('runtime', 'module-watchdog', () => {
         this.modules.checkWatchdogs();
       }, 1000, { immediate: true });
@@ -42272,7 +42440,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.65-h26',
+    version: '0.26.66-h26',
     bootCount,
     replacedPrevious: !!previous
   });
