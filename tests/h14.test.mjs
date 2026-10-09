@@ -484,15 +484,15 @@ test('H14 runtime, API, UI, build, adapter and ActionBoundary are wired', () => 
   assert.match(runtime, /id: 'gear'/);
   assert.match(runtime, /id: 'h14-gear'/);
   assert.match(runtime, /H14_NEEDS_REVERSIBLE_COMPATIBLE_INVENTORY_GEAR/);
-  assert.match(entry, /0\.26\.66-h26/);
+  assert.match(entry, /0\.26\.67-h26/);
   assert.match(entry, /runtime\.gear\.queueBestLocal/);
   assert.match(ui, /data-tab="gear"/);
   assert.match(ui, /H14 Gear/);
   assert.match(build, /src\/gear\.js/);
-  assert.match(build, /const runtimeVersion = '0\.26\.66-h26'/);
+  assert.match(build, /const runtimeVersion = '0\.26\.67-h26'/);
   assert.match(boundary, /equip: Object\.freeze\(\{ publicName: 'equip'/);
   assert.match(boundary, /unequip: Object\.freeze\(\{ publicName: 'unequip'/);
   assert.match(adapter, /equipmentSnapshot\(name = null\)/);
   assert.match(adapter, /classEquipmentProfile\(ctype\)/);
-  assert.equal(pkg.version, '0.26.66');
+  assert.equal(pkg.version, '0.26.67');
 });
