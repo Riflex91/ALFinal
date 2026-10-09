@@ -100,15 +100,40 @@
       if (ls) { try { return ls.getItem(key); } catch (_) {} }
       return this.memory.has(key) ? this.memory.get(key) : null;
     }
+    _criticalDurabilityKey(key) {
+      const name = String(key || '');
+      return name.startsWith('albot:h19:') || name === 'albot:emergency-stop:v1';
+    }
     set(key, value) {
       const ls = this._ls();
-      if (ls) { try { ls.setItem(key, value); return true; } catch (_) {} }
+      if (ls) {
+        try {
+          ls.setItem(key, value);
+          if (this._criticalDurabilityKey(key)) return ls.getItem(key) === String(value);
+          return true;
+        } catch (_) {
+          if (this._criticalDurabilityKey(key)) return false;
+        }
+      }
+      // Historical non-safety caches may use memory. H19 and STOP
+      // must never report volatile memory fallback as persisted.
+      if (this._criticalDurabilityKey(key)) return false;
       this.memory.set(key, value); return true;
     }
     remove(key) {
       const ls = this._ls();
-      if (ls) { try { ls.removeItem(key); } catch (_) {} }
+      if (ls) {
+        try {
+          ls.removeItem(key);
+          if (this._criticalDurabilityKey(key)) return ls.getItem(key) === null;
+          return true;
+        } catch (_) {
+          if (this._criticalDurabilityKey(key)) return false;
+        }
+      }
+      if (this._criticalDurabilityKey(key)) return false;
       this.memory.delete(key);
+      return true;
     }
     sharedAvailable() {
       return !!this._sharedLs();
