@@ -1,4 +1,4 @@
-/* AL Bot 0.26.67-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.68-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -6585,6 +6585,9 @@
         // A cross-map farmer is not locally visible. Travel only for already
         // authorized GEAR requests, on a fresh owned/server-matched peer
         // position. Never allow a transfer until the *live* target is visible.
+        if (request.kind === 'GEAR' && !this._gearDeliveryRow(request.inventorySlot, request.targetName)) {
+          return { state: 'BLOCKED', reason: 'H18_GEAR_DELIVERY_NOT_AUTHORIZED', selected: null };
+        }
         const anchor = request.kind === 'GEAR' ? this._freshGearTravelAnchor(target, party) : null;
         if (!anchor) return { state: 'WAITING', reason: 'H18_TARGET_NOT_VISIBLE', selected: null };
         const advisoryDistance = this._distance(snap.character, anchor);
@@ -7765,6 +7768,11 @@
           y: row.profile.y == null || !Number.isFinite(Number(row.profile.y)) ? null : Number(row.profile.y),
           gold: Number.isFinite(Number(row.profile.gold)) ? Math.max(0, Number(row.profile.gold)) : null,
           gearScore: Number.isFinite(Number(row.profile.gearScore)) ? Math.max(0, Number(row.profile.gearScore)) : 0,
+          // Preserve an explicit known-equipment signal for H14 planning.
+          // A missing or empty peer snapshot must remain UNKNOWN (fail closed).
+          equipmentKnown: row.profile.equipmentKnown === true
+            && row.profile.equipment && typeof row.profile.equipment === 'object'
+            && Object.values(row.profile.equipment).some(item => item && item.name) || false,
           equipment: row.profile.equipment && typeof row.profile.equipment === 'object'
             ? Object.fromEntries(Object.entries(row.profile.equipment).slice(0, 20).map(([slot, item]) => {
                 const key = cleanText(slot, 40);
@@ -34095,7 +34103,7 @@ class MerchantProductionPlanner {
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.67-h26';
+      this.version = options.version || '0.26.68-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -42491,7 +42499,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.67-h26',
+    version: '0.26.68-h26',
     bootCount,
     replacedPrevious: !!previous
   });
