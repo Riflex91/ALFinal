@@ -471,6 +471,8 @@
           return this.stop(reason);
         }
       });
+      // H18 may travel toward a fresh, owned H19 peer, but transfers require live visibility.
+      this.partyLogistics.crossWindow = this.lifecycleTransport;
       this.hostState = new ns.HostPersistentStateClient({
         root: this.root,
         logger: this.logger

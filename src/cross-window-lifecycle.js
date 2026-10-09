@@ -678,6 +678,8 @@
           range: Number.isFinite(Number(row.profile.range)) ? Number(row.profile.range) : null,
           rip: row.profile.rip === true,
           map: cleanText(row.profile.map || '', 120) || null,
+          x: row.profile.x == null || !Number.isFinite(Number(row.profile.x)) ? null : Number(row.profile.x),
+          y: row.profile.y == null || !Number.isFinite(Number(row.profile.y)) ? null : Number(row.profile.y),
           gold: Number.isFinite(Number(row.profile.gold)) ? Math.max(0, Number(row.profile.gold)) : null,
           gearScore: Number.isFinite(Number(row.profile.gearScore)) ? Math.max(0, Number(row.profile.gearScore)) : 0,
           equipment: row.profile.equipment && typeof row.profile.equipment === 'object'
