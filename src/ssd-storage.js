@@ -6,7 +6,7 @@
   class HostDurableStorageClient {
     constructor(options = {}) {
       this.root = options.root || root;
-      this.endpoint = 'http://127.0.0.1:17391/v1/storage';
+      this.endpoint = 'http://127.0.0.1:17392/v1/storage';
       this.requestTimeoutMs = Math.max(500, Math.min(10000, Number(options.requestTimeoutMs) || 3500));
     }
 

@@ -96,6 +96,6 @@ test('H36 browser client uses only confirmed localhost SSD HTTP operations', asy
   assert.equal((await client.read('albot:h25:handoff')).value, 'ssd');
   await client.remove('albot:h25:handoff');
   assert.deepEqual(calls.map(row => row.method), ['POST','GET','DELETE']);
-  assert.equal(calls.every(row => row.url.startsWith('http://127.0.0.1:17391/v1/storage?')), true);
+  assert.equal(calls.every(row => row.url.startsWith('http://127.0.0.1:17392/v1/storage?')), true);
   await assert.rejects(() => client.read('outside:namespace'), /SSD_KEY_INVALID/);
 });

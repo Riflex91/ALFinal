@@ -2,7 +2,7 @@
 // running. Copies owned bot keys to SSD and verifies them; NEVER deletes data.
 (async () => {
   'use strict';
-  const prefix = 'http://127.0.0.1:17391/v1/storage?key=';
+  const prefix = 'http://127.0.0.1:17392/v1/storage?key=';
   const allowed = key => key.startsWith('albot:')
     || key === 'aio-v3-content-drift-v1'
     || key.startsWith('aio-v3-content-drift-v1:')
@@ -26,7 +26,7 @@
   }
   find(window);
   if (!store) throw new Error('ALBOT_BROWSER_STORAGE_NOT_FOUND');
-  const response = await fetch('http://127.0.0.1:17391/health',
+  const response = await fetch('http://127.0.0.1:17392/health',
     { cache: 'no-store', credentials: 'omit' });
   if (!response.ok || !(await response.json()).durableStore) {
     throw new Error('SSD_HOST_UPGRADE_REQUIRED');

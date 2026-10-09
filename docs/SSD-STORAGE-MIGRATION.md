@@ -60,3 +60,23 @@ this PID with the child process it just launched, in addition to checking
 different, already-running host is not proof of ownership and must not
 authorize an update, takeover, or success state. The PID is not a secret and
 does not grant extra API privileges.
+
+## Native Windows Bridge SSD endpoint (revised integration)
+
+The persistent browser SSD client and non-destructive backup helper now use
+`http://127.0.0.1:17392`, implemented **natively in Windows Bridge** (draft
+`Riflex91/Riflex91-Repo#995`). The native Bridge writes the same durable-kv
+file layout beneath `D:/ALBot/state/durable-kv`. It requires explicit opt-in,
+and its absence is a hard block for H25 handoffs: never fall back to browser
+localStorage or an unconfirmed write.
+
+For the transition period, the existing Node.js process on port `17391` may
+continue serving telemetry and account state. That host process is **not**
+required for the SSD API. The older proposed Node host-manager/updater PR
+`Riflex91/Riflex91-Repo#994` is superseded for SSD persistence and should
+not be merged as-is.
+
+The obsolete ALFinal Node-side storage endpoint and host release workflow are
+still present in this candidate for now, but the browser SSD client and the
+backup helper do not call them. The remaining host/telemetry release
+responsibility and full account/STOP migration require separate review.
