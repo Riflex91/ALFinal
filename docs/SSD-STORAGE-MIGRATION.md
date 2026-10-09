@@ -245,7 +245,13 @@ overwrite unresolved prior evidence, and requires a separate GET/readback
 of the exact serialized value after SSD POST. An acknowledged but
 discarded POST raises `H25_SSD_HANDOFF_PERSISTENCE_UNCONFIRMED`; an
 existing handoff raises `H25_SSD_HANDOFF_EXISTING_REQUIRES_RECONCILIATION`.
-These failures do not authorize navigation.
+These failures do not authorize navigation. After waiting for SSD
+preparation in the cross-window transport, the outgoing browser immediately
+rechecks its STOP latch, runtime, character identity, navigation/disconnect
+capabilities and target's current online state before irreversibly
+disconnecting; a change during the await blocks the swap without a blind
+retry. A failed swap can leave preserved SSD intent requiring operator
+reconciliation rather than automatic deletion.
 Before a validated handoff can re-arm Full Autonomy, the target runtime
 must verify the exact character, server, roster, expiry, and Emergency STOP
 status. It then performs the intended single-use SSD DELETE and confirms
