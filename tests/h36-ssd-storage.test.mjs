@@ -59,3 +59,84 @@ test('H36 browser client uses only confirmed localhost SSD HTTP operations', asy
   assert.equal(calls.every(row => row.url.startsWith('http://127.0.0.1:17392/v1/storage?')), true);
   await assert.rejects(() => client.read('outside:namespace'), /SSD_KEY_INVALID/);
 });
+
+function h25HandoffFixture(options = {}) {
+  // Execute the actual production class method, not a mock implementation.
+  const source = fs.readFileSync(path.resolve(here, '../src/runtime.js'), 'utf8');
+  const context = { __ALBOT_INTERNALS__: {} };
+  context.globalThis = context;
+  vm.runInNewContext(source, context, { filename: 'runtime.js' });
+  const proto = context.__ALBOT_INTERNALS__.ALBotRuntime.prototype;
+  const names = ['My_Mage', 'My_Priest', 'My_Ranger', 'My_Warrior'];
+  const now = Date.now();
+  const row = {
+    schemaVersion: 1, source: 'H25_VALIDATED_BROWSER_SWAP',
+    sourceCharacterName: 'My_Priest', targetCharacterName: 'My_Mage',
+    serverRegion: 'EU', serverIdentifier: 'I', taskType: 'FARM',
+    desiredCharacterNames: names, createdAtMs: now - 1000, expiresAtMs: now + 119000,
+    ...options.record
+  };
+  let found = true;
+  const calls = [];
+  const runtime = {
+    running: true,
+    fullAutonomy: {
+      enabled: false,
+      startAutonomy(args) { calls.push('start'); return { accepted: true, args }; }
+    },
+    stopLatch: { status: () => ({ latched: options.stopLatched === true }) },
+    game: { snapshot: () => ({
+      character: { name: 'My_Mage' }, server: { region: 'EU', identifier: 'I' }
+    }) },
+    roster: { refresh: () => ({ accountCharacters: names.map(name => ({ name })) }) },
+    _h25AutonomyHandoffKey: proto._h25AutonomyHandoffKey,
+    durableStorage: {
+      async read() {
+        calls.push('read');
+        return found ? { ok: true, found: true, value: JSON.stringify(row) }
+          : { ok: true, found: false };
+      },
+      async remove() {
+        calls.push('remove');
+        if (!options.noOpRemove) found = false;
+        return { ok: true };
+      }
+    }
+  };
+  return { proto, runtime, calls };
+}
+
+test('H36 H25 handoff refuses no-op SSD deletion and never rearms a replayable record', async () => {
+  const f = h25HandoffFixture({ noOpRemove: true });
+  const result = await f.proto._consumeH25AutonomyHandoff.call(f.runtime);
+  assert.equal(result.accepted, false);
+  assert.equal(result.reason, 'H25_REARM_HANDOFF_CLEAR_UNCONFIRMED');
+  assert.deepEqual(f.calls, ['read', 'remove', 'read']);
+});
+
+test('H36 H25 invalid handoff stays intact for operator reconciliation', async () => {
+  const f = h25HandoffFixture({ record: { schemaVersion: 2 } });
+  const result = await f.proto._consumeH25AutonomyHandoff.call(f.runtime);
+  assert.equal(result.accepted, false);
+  assert.equal(result.reason, 'H25_REARM_HANDOFF_INVALID');
+  assert.deepEqual(f.calls, ['read']);
+});
+
+test('H36 H25 handoff rearms exactly once only after confirmed SSD absence', async () => {
+  const f = h25HandoffFixture();
+  const result = await f.proto._consumeH25AutonomyHandoff.call(f.runtime);
+  assert.equal(result.accepted, true);
+  assert.deepEqual(f.calls, ['read', 'remove', 'read', 'start']);
+  const second = await f.proto._consumeH25AutonomyHandoff.call(f.runtime);
+  assert.equal(second.accepted, false);
+  assert.equal(second.reason, 'H25_REARM_NO_HANDOFF');
+  assert.deepEqual(f.calls, ['read', 'remove', 'read', 'start', 'read']);
+});
+
+test('H36 H25 emergency STOP disallows SSD handoff consumption and gameplay rearm', async () => {
+  const f = h25HandoffFixture({ stopLatched: true });
+  const result = await f.proto._consumeH25AutonomyHandoff.call(f.runtime);
+  assert.equal(result.accepted, false);
+  assert.equal(result.reason, 'H25_REARM_NOT_ELIGIBLE');
+  assert.deepEqual(f.calls, []);
+});
