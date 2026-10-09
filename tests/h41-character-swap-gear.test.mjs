@@ -138,3 +138,27 @@ test('H41 future gear evaluator preserves H32 unknown-gear guard for empty snaps
  assert.equal(g._profileEquipment({equipment:{},equipmentKnown:false}),null);
  assert.equal(g._profileEquipment({equipment:null,equipmentKnown:true}),null);
 });
+
+test('H41 remote advisory never authorizes a Merchant direct gear delivery without live target visibility',()=>{
+ const root=env();load(root,'gear.js');
+ const C=root.__ALBOT_INTERNALS__.GearController;
+ const item={name:'hpamulet',slot:4,level:0,quantity:1,locked:false,gift:false,giveaway:false};
+ const game={
+  snapshot:()=>({available:true,character:{name:'My_Merchant',ctype:'merchant'}}),
+  equipmentSnapshot:()=>({available:false,reason:'TARGET_NOT_VISIBLE'}),
+  equipmentDefinition:name=>name==='hpamulet'
+    ? {name:'hpamulet',type:'amulet',classes:[],stats:{hp:100},upgradeGrowth:{}} : null
+ };
+ const peer={running:true,profile:{
+  name:'My_Rogue',ctype:'rogue',observedAtMs:Date.now(),equipmentKnown:true,
+  equipment:{mainhand:{name:'claw',level:0}}}};
+ const controller=new C({root,game,
+  roster:{refresh:()=>({farmers:[{name:'My_Rogue',ctype:'rogue'}]})},
+  crossWindow:{freshPeer:()=>peer}});
+ const request={targetName:'My_Rogue',targetSlot:'amulet',inventorySlot:4,
+  candidateFingerprint:controller._fingerprint(item)};
+ assert.equal(controller._equipmentSnapshot('My_Rogue').source,'FRESH_PEER_ADVISORY');
+ const validation=controller._revalidateDelivery(request,{available:true,items:[item]});
+ assert.equal(validation.ok,false);
+ assert.equal(validation.reason,'H14_DELIVERY_TARGET_NOT_VISIBLE');
+});
