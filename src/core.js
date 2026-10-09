@@ -96,19 +96,53 @@
       return null;
     }
     get(key) {
+      const critical = this._criticalDurabilityKey(key);
       const ls = this._ls();
-      if (ls) { try { return ls.getItem(key); } catch (_) {} }
+      if (ls) {
+        try { return ls.getItem(key); }
+        catch (_) {
+          // A failed safety read is NEVER proof of an absent STOP/pending
+          // record. In particular, do not fall back to a volatile Map.
+          if (critical) throw new Error('ALBOT_SAFETY_STORAGE_UNREADABLE');
+        }
+      }
+      if (critical) throw new Error('ALBOT_SAFETY_STORAGE_UNREADABLE');
       return this.memory.has(key) ? this.memory.get(key) : null;
+    }
+    _criticalDurabilityKey(key) {
+      const name = String(key || '');
+      return name.startsWith('albot:h19:') || name === 'albot:emergency-stop:v1';
     }
     set(key, value) {
       const ls = this._ls();
-      if (ls) { try { ls.setItem(key, value); return true; } catch (_) {} }
+      if (ls) {
+        try {
+          ls.setItem(key, value);
+          if (this._criticalDurabilityKey(key)) return ls.getItem(key) === String(value);
+          return true;
+        } catch (_) {
+          if (this._criticalDurabilityKey(key)) return false;
+        }
+      }
+      // Historical non-safety caches may use memory. H19 and STOP
+      // must never report volatile memory fallback as persisted.
+      if (this._criticalDurabilityKey(key)) return false;
       this.memory.set(key, value); return true;
     }
     remove(key) {
       const ls = this._ls();
-      if (ls) { try { ls.removeItem(key); } catch (_) {} }
+      if (ls) {
+        try {
+          ls.removeItem(key);
+          if (this._criticalDurabilityKey(key)) return ls.getItem(key) === null;
+          return true;
+        } catch (_) {
+          if (this._criticalDurabilityKey(key)) return false;
+        }
+      }
+      if (this._criticalDurabilityKey(key)) return false;
       this.memory.delete(key);
+      return true;
     }
     sharedAvailable() {
       return !!this._sharedLs();
@@ -140,17 +174,44 @@
       this._load();
     }
     _load() {
-      const raw = this.storage && this.storage.get(this.key);
-      const parsed = raw ? safeJsonParse(raw, null) : null;
-      if (parsed && parsed.latched === true) this.state = { latched: true, reason: cleanText(parsed.reason || 'PERSISTED_STOP', 200), at: parsed.at || null };
+      try {
+        if (!this.storage || typeof this.storage.get !== 'function') {
+          throw new Error('EMERGENCY_STOP_STORAGE_MISSING');
+        }
+        const raw = this.storage.get(this.key);
+        if (raw === null) return; // confirmed read of an absent record
+        const parsed = typeof raw === 'string' ? safeJsonParse(raw, null) : null;
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)
+            || typeof parsed.latched !== 'boolean') {
+          throw new Error('EMERGENCY_STOP_STORAGE_CORRUPT');
+        }
+        if (parsed.latched === true) {
+          this.state = { latched: true, reason: cleanText(parsed.reason || 'PERSISTED_STOP', 200), at: parsed.at || null };
+        }
+      } catch (_) {
+        // Unknown persistent safety state must block gameplay on startup.
+        // Do not write an 'unlatched' default over the original evidence.
+        this.state = { latched: true, reason: 'EMERGENCY_STOP_STORAGE_UNVERIFIED', at: null };
+        if (this.logger) this.logger.error('EMERGENCY_STOP_STORAGE_UNVERIFIED');
+      }
     }
-    _persist() {
-      if (this.storage) this.storage.set(this.key, JSON.stringify(this.state));
+    _persist(state = this.state) {
+      if (!this.storage || typeof this.storage.set !== 'function'
+          || typeof this.storage.get !== 'function') return false;
+      try {
+        const value = JSON.stringify(state);
+        return this.storage.set(this.key, value) !== false
+          && this.storage.get(this.key) === value;
+      } catch (_) {
+        return false;
+      }
     }
     latch(reason = 'MANUAL_STOP') {
       if (!this.state.latched) {
         this.state = { latched: true, reason: cleanText(reason, 200) || 'MANUAL_STOP', at: nowIso() };
-        this._persist();
+        // Always latch in memory immediately, even if durable write fails.
+        // A future SSD migration must restore an unconfirmed latch on reload.
+        if (!this._persist() && this.logger) this.logger.error('EMERGENCY_STOP_DURABILITY_UNCONFIRMED');
         if (this.logger) this.logger.error('GLOBALER STOP AKTIVIERT', this.state);
         if (this.bus) this.bus.emit('emergency-stop', this.status());
       }
@@ -158,8 +219,21 @@
     }
     reset() {
       const previous = this.status();
-      this.state = { latched: false, reason: null, at: null };
-      this._persist();
+      // An unreadable/corrupt saved STOP must be reconciled on a fresh
+      // verified load. Even a now-writable store cannot prove the original
+      // latch was safe to discard.
+      if (previous.latched && previous.reason === 'EMERGENCY_STOP_STORAGE_UNVERIFIED') {
+        return { ...previous, resetBlocked: true,
+          reason: 'EMERGENCY_STOP_RESTORE_REQUIRES_RECONCILIATION' };
+      }
+      const proposed = { latched: false, reason: null, at: null };
+      // Never remove an active in-memory safety latch if its durable reset
+      // is rejected by storage quota or a failed readback.
+      if (!this._persist(proposed)) {
+        if (this.logger) this.logger.error('EMERGENCY_STOP_RESET_PERSISTENCE_UNCONFIRMED');
+        return { ...previous, resetBlocked: true, reason: 'EMERGENCY_STOP_RESET_PERSISTENCE_UNCONFIRMED' };
+      }
+      this.state = proposed;
       if (this.logger) this.logger.warn('Globaler STOP wurde manuell zurückgesetzt', { previous });
       if (this.bus) this.bus.emit('emergency-reset', this.status());
       return this.status();

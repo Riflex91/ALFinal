@@ -197,6 +197,7 @@ function makeContext(name, names, network, state, nowRef, options = {}) {
       state.disconnects = (state.disconnects || 0) + 1;
       state.disconnected = true;
     },
+    prepareCharacterHandoff: options.prepareCharacterHandoff || null,
     navigateCharacterLocal: (desiredName, reason, navigationOptions = {}) => {
       state.navigations = state.navigations || [];
       state.navigationRequests = state.navigationRequests || [];
@@ -818,4 +819,128 @@ test('H19 cross-window preserves recovery authority after an UNKNOWN leave dispa
   assert.equal(lease.targetName, 'My_Merchant');
   assert.equal(bState.party.partyId, 'party-4');
   a.transport.destroy(); b.transport.destroy();
+});
+
+
+test('H36 SSD preflight rejection prevents H31 irreversible character disconnect', async () => {
+  const names = ['My_Ranger1', 'My_Priest', 'My_Mage'];
+  const network = new Map();
+  const nowRef = { value: 4000 };
+  const coordinatorState = {
+    running: true, runEpoch: 1, emergencyStopLatched: false,
+    onlineNames: ['My_Ranger1', 'My_Priest'],
+    characterNavigateCapable: true, characterDisconnectCapable: true
+  };
+  const targetState = {
+    running: true, runEpoch: 1, emergencyStopLatched: false,
+    onlineNames: ['My_Ranger1', 'My_Priest'],
+    characterNavigateCapable: true, characterDisconnectCapable: true
+  };
+  const a = makeContext('My_Ranger1', names, network, coordinatorState, nowRef);
+  const b = makeContext('My_Priest', names, network, targetState, nowRef, {
+    prepareCharacterHandoff: async () => { throw new Error('SSD_HOST_UNAVAILABLE'); }
+  });
+  a.transport.install();
+  b.transport.install();
+  a.transport.broadcastHeartbeat();
+  b.transport.broadcastHeartbeat();
+  const dispatch = a.transport.requestCharacterNavigation('My_Priest', 'My_Mage');
+  assert.equal(dispatch.state, 'DISPATCHED');
+  const settlement = await dispatch.value;
+  assert.equal(settlement.success, false);
+  assert.equal(targetState.disconnects || 0, 0);
+  assert.deepEqual(targetState.navigations || [], []);
+  a.transport.destroy();
+  b.transport.destroy();
+});
+
+test('H36 SSD handoff is committed before the atomic disconnect/navigation pair', async () => {
+  const names = ['My_Ranger1', 'My_Priest', 'My_Mage'];
+  const network = new Map();
+  const nowRef = { value: 4500 };
+  const aState = {
+    running: true, runEpoch: 1, emergencyStopLatched: false,
+    onlineNames: ['My_Ranger1', 'My_Priest'],
+    characterNavigateCapable: true, characterDisconnectCapable: true
+  };
+  const bState = {
+    running: true, runEpoch: 1, emergencyStopLatched: false,
+    onlineNames: ['My_Ranger1', 'My_Priest'],
+    characterNavigateCapable: true, characterDisconnectCapable: true
+  };
+  const a = makeContext('My_Ranger1', names, network, aState, nowRef);
+  const b = makeContext('My_Priest', names, network, bState, nowRef, {
+    prepareCharacterHandoff: async (desired, sourceName) => {
+      assert.equal(desired, 'My_Mage');
+      assert.equal(sourceName, 'My_Priest');
+      assert.equal(bState.disconnects || 0, 0);
+      await Promise.resolve(); // host response is asynchronous
+      bState.ssdCommitted = true;
+      return { accepted: true };
+    }
+  });
+  a.transport.install();
+  b.transport.install();
+  a.transport.broadcastHeartbeat();
+  b.transport.broadcastHeartbeat();
+  const dispatch = a.transport.requestCharacterNavigation('My_Priest', 'My_Mage');
+  assert.equal(dispatch.state, 'DISPATCHED');
+  const settlement = await dispatch.value;
+  assert.equal(settlement.success, true);
+  assert.equal(bState.ssdCommitted, true);
+  assert.equal(bState.disconnects, 1);
+  assert.deepEqual(bState.navigations, ['My_Mage']);
+  a.transport.destroy();
+  b.transport.destroy();
+});
+
+
+test('H25 asynchronous SSD preparation revalidates STOP, runtime and target occupancy before disconnect', async () => {
+  const cases = [
+    ['emergency-stop', state => { state.emergencyStopLatched = true; }, /H25_CROSS_WINDOW_CHARACTER_EMERGENCY_STOP_LATCHED/],
+    ['runtime-stopped', state => { state.running = false; }, /H25_CROSS_WINDOW_CHARACTER_RUNTIME_NOT_RUNNING/],
+    ['target-now-online', state => { state.onlineNames.push('My_Mage'); }, /H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_ALREADY_ONLINE/]
+  ];
+  for (const [mode, mutateDuringPrepare, reasonPattern] of cases) {
+    const names = ['My_Ranger1', 'My_Priest', 'My_Mage'];
+    const network = new Map();
+    const nowRef = { value: 4600 };
+    const aState = {
+      running: true, runEpoch: 1, emergencyStopLatched: false,
+      onlineNames: ['My_Ranger1', 'My_Priest'],
+      characterNavigateCapable: true, characterDisconnectCapable: true
+    };
+    const bState = {
+      running: true, runEpoch: 1, emergencyStopLatched: false,
+      onlineNames: ['My_Ranger1', 'My_Priest'],
+      characterNavigateCapable: true, characterDisconnectCapable: true
+    };
+    let prepared = false;
+    const a = makeContext('My_Ranger1', names, network, aState, nowRef);
+    const b = makeContext('My_Priest', names, network, bState, nowRef, {
+      prepareCharacterHandoff: async () => {
+        await Promise.resolve(); // simulate SSD GET + POST latency
+        prepared = true;
+        mutateDuringPrepare(bState);
+        return { accepted: true };
+      }
+    });
+    try {
+      a.transport.install();
+      b.transport.install();
+      a.transport.broadcastHeartbeat();
+      b.transport.broadcastHeartbeat();
+      const dispatch = a.transport.requestCharacterNavigation('My_Priest', 'My_Mage');
+      assert.equal(dispatch.state, 'DISPATCHED', mode);
+      const settlement = await dispatch.value;
+      assert.equal(prepared, true, mode);
+      assert.equal(settlement.success, false, mode);
+      assert.match(String(settlement.reason), reasonPattern, mode);
+      assert.equal(bState.disconnects || 0, 0, mode);
+      assert.deepEqual(bState.navigations || [], [], mode);
+    } finally {
+      a.transport.destroy();
+      b.transport.destroy();
+    }
+  }
 });

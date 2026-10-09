@@ -578,6 +578,66 @@ test('H19 UNKNOWN ownership requires explicit acknowledgement before safety rese
   assert.equal(state.dispatches.length, 1);
 });
 
+test('H19 UNKNOWN acknowledgement refuses storage deletion failures and never clears action ownership', () => {
+  for (const removeResult of [false, true]) {
+    const storage = createMemoryStorage();
+    const f = fixture({ storage, syncUnknown: true, noMutation: true });
+    assert.equal(f.controller.queueStart('My_Merchant').accepted, true);
+    assert.equal(f.controller.tick().state, 'UNKNOWN');
+    const pendingKey = [...storage.map.keys()].find(key => key.includes(':pending:'));
+    assert.ok(pendingKey, 'pending record exists before operator acknowledgement');
+    const initialPending = storage.get(pendingKey);
+    const actualRemove = storage.remove;
+    storage.remove = () => removeResult;
+    const blocked = f.controller.acknowledgeUnknown('OPERATOR_REVIEWED');
+    assert.equal(blocked.accepted, false);
+    assert.equal(blocked.reason, 'H19_UNKNOWN_ACK_PERSISTENCE_UNCONFIRMED');
+    assert.equal(f.controller.status().suspended, true);
+    assert.equal(f.controller.status().currentAction.kind, 'START');
+    assert.equal(f.controller.resetSafety('MUST_NOT_RESET').accepted, false);
+    assert.equal(storage.get(pendingKey), initialPending);
+    assert.equal(f.state.dispatches.length, 1);
+    storage.remove = actualRemove;
+    const recovered = f.controller.acknowledgeUnknown('OPERATOR_REVIEWED_AGAIN');
+    assert.equal(recovered.accepted, true);
+    assert.equal(f.controller.status().currentAction, null);
+    assert.equal(storage.get(pendingKey), null);
+  }
+});
+
+test('H19 fails closed when confirmed game outcome cannot clear pending durable ownership', async () => {
+  for (const removeResult of [false, true]) {
+    const storage = createMemoryStorage();
+    const f = fixture({ storage, manualSettlement: true });
+    assert.equal(f.controller.queueStart('My_Merchant').accepted, true);
+    assert.equal(f.controller.tick().state, 'DISPATCHED');
+    const pendingKey = [...storage.map.keys()].find(key => key.includes(':pending:'));
+    assert.ok(pendingKey);
+    f.resolve({ success: true });
+    await flush();
+    const actualRemove = storage.remove;
+    storage.remove = () => removeResult;
+    const blocked = f.controller.tick();
+    assert.equal(blocked.state, 'UNKNOWN');
+    assert.equal(blocked.reason, 'H19_PENDING_CLEAR_UNCONFIRMED');
+    assert.equal(f.controller.status().suspended, true);
+    assert.equal(f.controller.status().currentAction.kind, 'START');
+    assert.equal(f.controller.status().metrics.actionsConfirmed, 0);
+    assert.equal(storage.map.has(pendingKey), true);
+    assert.equal(f.state.dispatches.length, 1);
+    assert.equal(f.controller.queueStart('My_Merchant').accepted, false);
+    storage.remove = actualRemove;
+    const confirmed = f.controller.tick();
+    assert.equal(confirmed.state, 'CONFIRMED');
+    assert.equal(storage.map.has(pendingKey), false);
+    assert.equal(f.state.dispatches.length, 1);
+    assert.equal(f.controller.status().metrics.actionsConfirmed, 1);
+    // Even with positive live evidence, a storage fault must never
+    // automatically dismiss a separately held safety suspension.
+    assert.equal(f.controller.status().suspended, true);
+  }
+});
+
 test('H19 preserves pending lifecycle ownership across module reload and reconciles instead of redispatching', () => {
   const first = fixture({ neverSettle: true });
   assert.equal(first.controller.queueStart('My_Merchant').accepted, true);
@@ -1183,7 +1243,169 @@ test('H24 surplus-window disconnect remains fail-closed when no replacement is n
   assert.equal(state.crossWindowDispatches.length, 0);
 });
 
-test('H19 stale pending from another runtime session is discarded without suspending the new session', () => {
+test('H19 blocks every mutation when the prepared action cannot be durably stored', () => {
+  for (const setResult of [false, true]) {
+    const storage = { get: () => null, set: () => setResult, remove: () => true };
+    const { controller, state } = fixture({
+      storage, onlineNames: ['My_Ranger'], runnerActiveNames: ['My_Ranger']
+    });
+    assert.equal(controller.queueStart('My_Merchant').accepted, true);
+    const attempted = controller.tick();
+    assert.equal(attempted.accepted, false);
+    assert.equal(attempted.state, 'BLOCKED');
+    assert.equal(attempted.reason, 'H19_PENDING_PERSISTENCE_UNCONFIRMED');
+    assert.equal(state.dispatches.length, 0);
+    assert.equal(controller.status().suspended, true);
+    assert.equal(controller.status().metrics.actionsDispatched, 0);
+  }
+});
+
+test('emergency STOP cannot be reset while the durable write is unconfirmed', () => {
+  const coreSource = fs.readFileSync(path.resolve(here, '../src/core.js'), 'utf8');
+  const values = new Map();
+  let quota = false;
+  const ctx = {
+    console, Date, Math, JSON, Map, Set, Object, Error,
+    localStorage: {
+      getItem(key) { return values.has(key) ? values.get(key) : null; },
+      setItem(key, value) {
+        if (quota) throw new Error('QuotaExceededError');
+        values.set(key, String(value));
+      },
+      removeItem(key) { values.delete(key); }
+    }
+  };
+  ctx.globalThis = ctx;
+  vm.runInNewContext(coreSource, ctx, { filename: 'core.js' });
+  const ns = ctx.__ALBOT_INTERNALS__;
+  const stop = new ns.EmergencyStop({ storage: new ns.StorageAdapter(ctx) });
+  assert.equal(stop.latch('TEST_DURABLE_STOP').latched, true);
+  assert.equal(JSON.parse(values.get('albot:emergency-stop:v1')).latched, true);
+  quota = true;
+  const blocked = stop.reset();
+  assert.equal(blocked.resetBlocked, true);
+  assert.equal(stop.status().latched, true);
+  assert.throws(() => stop.assertAllowed('irreversible_action'), /ALBOT_EMERGENCY_STOP/);
+  assert.equal(JSON.parse(values.get('albot:emergency-stop:v1')).latched, true);
+  quota = false;
+  const accepted = stop.reset();
+  assert.equal(accepted.latched, false);
+  assert.equal(JSON.parse(values.get('albot:emergency-stop:v1')).latched, false);
+});
+
+test('H19 does not treat RAM fallback as confirmed safety storage', () => {
+  const coreSource = fs.readFileSync(path.resolve(here, '../src/core.js'), 'utf8');
+  const ctx = { console, Date, Math, JSON, Map, Set, Object, Error };
+  ctx.globalThis = ctx;
+  vm.runInNewContext(coreSource, ctx, { filename: 'core.js' });
+  const store = new ctx.__ALBOT_INTERNALS__.StorageAdapter(ctx);
+  assert.equal(store.set('albot:h19:pending:v1:My_Mage', 'pending'), false);
+  assert.equal(store.set('albot:emergency-stop:v1', 'STOP'), false);
+  assert.throws(() => store.get('albot:h19:pending:v1:My_Mage'),
+    /ALBOT_SAFETY_STORAGE_UNREADABLE/);
+  assert.equal(store.set('albot:noncritical-test', 'cache'), true);
+
+  ctx.localStorage = {
+    getItem() { return null; },
+    setItem() { throw new Error('QuotaExceededError'); },
+    removeItem() { throw new Error('blocked'); }
+  };
+  assert.equal(store.set('albot:h19:pending:v1:My_Mage', 'pending'), false);
+  assert.equal(store.remove('albot:h19:pending:v1:My_Mage'), false);
+});
+
+test('H19 never dispatches when pending state is unreadable or corrupted at startup', () => {
+  for (const mode of ['exception', 'corrupt-json', 'invalid-record', 'no-key']) {
+    const storage = createMemoryStorage();
+    const getOriginal = storage.get;
+    if (mode === 'exception') {
+      storage.get = key => {
+        if (key.includes(':pending:')) throw new Error('LOCAL_STORAGE_ACCESS_DENIED');
+        return getOriginal(key);
+      };
+    } else if (mode === 'corrupt-json') {
+      storage.set('albot:h19:pending:v1:My_Ranger', '{');
+    } else if (mode === 'invalid-record') {
+      storage.set('albot:h19:pending:v1:My_Ranger', JSON.stringify({ id: 'h19-1' }));
+    } else {
+      // Simulate an otherwise functional storage implementation that cannot
+      // resolve the pending key (undefined is NOT a verified absent value).
+      storage.get = key => key.includes(':pending:') ? undefined : getOriginal(key);
+    }
+    const f = fixture({
+      storage,
+      onlineNames: ['My_Ranger'],
+      runnerActiveNames: ['My_Ranger']
+    });
+    const status = f.controller.status();
+    assert.equal(status.suspended, true, mode);
+    assert.equal(status.suspendedReason, 'H19_PENDING_RESTORE_UNVERIFIED');
+    assert.equal(status.lastAction.type, 'PENDING_RESTORE_BLOCKED');
+    assert.equal(f.controller.queueStart('My_Merchant').accepted, false);
+    assert.deepEqual(
+      [f.controller.resetSafety('UNSAFE_OPERATOR_RESET').accepted,
+        f.controller.resetSafety('UNSAFE_OPERATOR_RESET').reason],
+      [false, 'H19_PENDING_RESTORE_REQUIRES_RECONCILIATION']);
+    assert.equal(f.controller.tick().state, 'SUSPENDED');
+    assert.equal(f.state.dispatches.length, 0);
+    assert.equal(storage.map.has('albot:h19:pending:v1:My_Ranger'),
+      mode === 'corrupt-json' || mode === 'invalid-record');
+  }
+});
+
+test('emergency STOP reload fails closed on corrupted, inaccessible and missing safety storage', () => {
+  const coreSource = fs.readFileSync(path.resolve(here, '../src/core.js'), 'utf8');
+  function internals(root) {
+    const ctx = { console, Date, Math, JSON, Map, Set, Object, Error, ...root };
+    ctx.globalThis = ctx;
+    vm.runInNewContext(coreSource, ctx, { filename: 'core.js' });
+    return { ctx, ns: ctx.__ALBOT_INTERNALS__ };
+  }
+  for (const mode of ['missing', 'denied', 'corrupt']) {
+    const localStorage = mode === 'missing' ? undefined : {
+      getItem() {
+        if (mode === 'denied') throw new Error('BLOCKED_BY_BROWSER');
+        return '{malformed';
+      },
+      setItem() { throw new Error('QUOTA_EXCEEDED'); },
+      removeItem() { throw new Error('READONLY'); }
+    };
+    const { ctx, ns } = internals(localStorage ? { localStorage } : {});
+    const stop = new ns.EmergencyStop({ storage: new ns.StorageAdapter(ctx) });
+    assert.equal(stop.status().latched, true, mode);
+    assert.equal(stop.status().reason, 'EMERGENCY_STOP_STORAGE_UNVERIFIED');
+    assert.throws(() => stop.assertAllowed('unverified_startup'), /ALBOT_EMERGENCY_STOP/);
+    assert.equal(stop.reset().resetBlocked, true);
+    assert.equal(stop.status().latched, true);
+  }
+  const corruptRecord = '{corrupted-stop-evidence';
+  const corruptValues = new Map([['albot:emergency-stop:v1', corruptRecord]]);
+  const writableStorage = {
+    getItem: k => corruptValues.get(k) ?? null,
+    setItem: (k, value) => corruptValues.set(k, String(value)),
+    removeItem: k => corruptValues.delete(k)
+  };
+  const corruptEnv = internals({ localStorage: writableStorage });
+  const corruptStop = new corruptEnv.ns.EmergencyStop({
+    storage: new corruptEnv.ns.StorageAdapter(corruptEnv.ctx)
+  });
+  assert.equal(corruptStop.status().latched, true);
+  const forbiddenClear = corruptStop.reset();
+  assert.equal(forbiddenClear.resetBlocked, true);
+  assert.equal(forbiddenClear.reason, 'EMERGENCY_STOP_RESTORE_REQUIRES_RECONCILIATION');
+  assert.equal(corruptStop.status().latched, true);
+  assert.equal(corruptValues.get('albot:emergency-stop:v1'), corruptRecord);
+  const values = new Map([['albot:emergency-stop:v1', '{"latched":false,"reason":null,"at":null}']]);
+  const localStorage = {
+    getItem: k => values.has(k) ? values.get(k) : null,
+    setItem: (k,v) => values.set(k, String(v)),
+    removeItem: k => values.delete(k)
+  };
+  const { ctx, ns } = internals({ localStorage });
+  assert.equal(new ns.EmergencyStop({ storage: new ns.StorageAdapter(ctx) }).status().latched, false);
+});
+
+test('H19 stale pending without live evidence remains UNKNOWN across sessions', () => {
   const first = fixture({
     sessionId: 'runtime-session-a',
     manualSettlement: true,
@@ -1201,11 +1423,15 @@ test('H19 stale pending from another runtime session is discarded without suspen
     noMutation: true
   });
   const status = second.controller.status();
-  assert.equal(status.currentAction, null);
-  assert.equal(status.suspended, false);
-  assert.equal(status.metrics.stalePendingDiscarded, 1);
-  assert.equal(status.lastAction.type, 'STALE_PENDING_DISCARDED');
-  assert.equal([...first.storage.map.keys()].some(key => key.includes(':pending:')), false);
+  assert.equal(status.currentAction.kind, 'STOP');
+  assert.equal(status.currentAction.unknownRecorded, true);
+  assert.equal(status.suspended, true);
+  assert.equal(status.suspendedReason, 'H19_STALE_PENDING_OUTCOME_UNKNOWN');
+  assert.equal(status.metrics.stalePendingUnknown, 1);
+  assert.equal(status.lastAction.type, 'STALE_PENDING_UNKNOWN_RETAINED');
+  assert.equal([...first.storage.map.keys()].some(key => key.includes(':pending:')), true);
+  assert.equal(second.controller.queueStop('My_Priest').accepted, false);
+  assert.equal(first.state.dispatches.length, 1, 'no blind redispatch');
 });
 
 test('H19 stale pending from another runtime session is reconciled when live character state proves success', () => {
@@ -1404,7 +1630,7 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(runtime, /rejectedDelta === 0/);
   assert.match(runtime, /unknownDelta === 0/);
   assert.match(runtime, /H19_REMOTE_TARGET_NOT_RESTORED/);
-  assert.match(runtime, /options\.version \|\| '0\.26\.69-h26'/);
+  assert.match(runtime, /options\.version \|\| '0\.26\.79-h26'/);
   assert.match(entry, /runtime\.lifecycle\.queueStart/);
   assert.match(entry, /runtime\.lifecycle\.queueStop/);
   assert.match(entry, /runtime\.lifecycle\.queueRespawn/);
@@ -1452,8 +1678,8 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.doesNotMatch(fullAutonomy, /fallbackUsesExactOnlineQuartet/);
   assert.match(build, /src\/cross-window-lifecycle\.js/);
   assert.match(build, /src\/lifecycle-recovery\.js/);
-  assert.match(build, /const runtimeVersion = '0\.26\.69-h26'/);
-  assert.match(dist, /AL Bot 0\.26\.69-h26/);
+  assert.match(build, /const runtimeVersion = '0\.26\.79-h26'/);
+  assert.match(dist, /AL Bot 0\.26\.79-h26/);
   assert.match(dist, /class H19CrossWindowLifecycleTransport/);
   assert.match(dist, /albot-h19-cross-window-v1/);
   assert.match(dist, /h19-cross-window-readiness/);
@@ -1463,7 +1689,7 @@ test('H19 runtime, API, UI, ActionBoundary, build and generated bundle are wired
   assert.match(dist, /class CharacterLifecycleController/);
   assert.match(dist, /H19_REMOTE_TARGET_NOT_RUNNER_CONTROLLABLE/);
   assert.match(dist, /H19_REMOTE_CONTROLLABLE_TARGET_UNAVAILABLE/);
-  assert.equal(pkg.version, '0.26.69');
+  assert.equal(pkg.version, '0.26.79');
 });
 
 

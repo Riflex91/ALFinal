@@ -146,6 +146,7 @@
         lateOutcomeRecoveries: 0,
         rotationCapabilityBlocks: 0,
         stalePendingDiscarded: 0,
+        stalePendingUnknown: 0,
         stalePendingReconciled: 0
       };
     }
@@ -316,8 +317,12 @@
       const key = this._storageKey(kind);
       if (!key || !this.storage || typeof this.storage.set !== 'function') return false;
       try {
-        this.storage.set(key, JSON.stringify(value));
-        return true;
+        const serialized = JSON.stringify(value);
+        if (this.storage.set(key, serialized) === false) return false;
+        // Successful API return does not prove a durable H19 record:
+        // detect no-op, quota failure, or discarded storage writes.
+        return typeof this.storage.get === 'function'
+          && this.storage.get(key) === serialized;
       } catch (_) {
         return false;
       }
@@ -327,8 +332,9 @@
       const key = this._storageKey(kind);
       if (!key || !this.storage || typeof this.storage.remove !== 'function') return false;
       try {
-        this.storage.remove(key);
-        return true;
+        if (this.storage.remove(key) === false) return false;
+        return typeof this.storage.get === 'function'
+          && this.storage.get(key) === null;
       } catch (_) {
         return false;
       }
@@ -340,7 +346,7 @@
       row.ownerSessionId = this.sessionId;
       delete row.response;
       delete row.errorObject;
-      this._writeStorage('pending', row);
+      return this._writeStorage('pending', row);
     }
 
     _persistPolicy() {
@@ -370,14 +376,42 @@
         this.policyState.desiredPartyLeader = cleanText(policy.desiredPartyLeader || '', 120) || null;
       }
 
-      const pending = this._readStorage('pending');
+      let pending = null;
+      try {
+        const key = this._storageKey('pending');
+        if (!key || !this.storage || typeof this.storage.get !== 'function') {
+          throw new Error('H19_PENDING_STORAGE_UNAVAILABLE');
+        }
+        // Missing and unreadable must be distinguishable. Production
+        // StorageAdapter throws when localStorage access is unavailable.
+        const raw = this.storage.get(key);
+        if (raw !== null) {
+          if (typeof raw !== 'string' || !raw) throw new Error('H19_PENDING_RECORD_CORRUPT');
+          pending = JSON.parse(raw);
+          if (!pending || typeof pending !== 'object' || Array.isArray(pending)
+              || typeof pending.kind !== 'string' || !pending.kind
+              || typeof pending.id !== 'string' || !pending.id) {
+            throw new Error('H19_PENDING_RECORD_CORRUPT');
+          }
+        }
+      } catch (_) {
+        this.suspended = true;
+        this.suspendedReason = 'H19_PENDING_RESTORE_UNVERIFIED';
+        this.autonomyEnabled = false;
+        this.metrics.safetyBlocks += 1;
+        this.lastAction = {
+          at: nowIso(), type: 'PENDING_RESTORE_BLOCKED',
+          reason: this.suspendedReason
+        };
+        // No mutation, no deletion, and no guess about the stored action.
+        return;
+      }
       if (pending && pending.kind && pending.id) {
         const sameSession = !!pending.ownerSessionId && String(pending.ownerSessionId) === String(this.sessionId);
         if (!sameSession) {
           const liveOutcome = this._pendingLiveOutcome(pending);
-          this._removeStorage('pending');
           this.metrics.reconciliations += 1;
-          if (liveOutcome.confirmed) {
+          if (liveOutcome.confirmed && this._removeStorage('pending')) {
             this.metrics.stalePendingReconciled += 1;
             this.lastAction = {
               at: nowIso(),
@@ -390,14 +424,24 @@
               currentSessionId: this.sessionId
             };
           } else {
-            this.metrics.stalePendingDiscarded += 1;
+            // No verified live outcome (or no confirmed clear) means UNKNOWN.
+            // Retain original SSD/browser record; NEVER turn it into an
+            // empty default and automatically re-dispatch after reload.
+            this.currentAction = { ...pending, settlement: 'RESTORED',
+              restored: true, response: null, error: null, unknownRecorded: true };
+            this.suspended = true;
+            this.suspendedReason = 'H19_STALE_PENDING_OUTCOME_UNKNOWN';
+            this.autonomyEnabled = false;
+            this.metrics.stalePendingUnknown += 1;
             this.lastAction = {
               at: nowIso(),
-              type: 'STALE_PENDING_DISCARDED',
+              type: 'STALE_PENDING_UNKNOWN_RETAINED',
               actionId: pending.id,
               kind: pending.kind,
               targetName: pending.targetName || null,
-              reason: liveOutcome.reason || 'H19_STALE_PENDING_NO_LIVE_OUTCOME',
+              reason: liveOutcome.confirmed
+                ? 'H19_STALE_PENDING_CLEAR_UNCONFIRMED'
+                : liveOutcome.reason || 'H19_STALE_PENDING_NO_LIVE_OUTCOME',
               previousSessionId: pending.ownerSessionId || null,
               currentSessionId: this.sessionId
             };
@@ -951,6 +995,12 @@
 
     resetSafety(reason = 'H19_EXPLICIT_RESET') {
       if (this.currentAction) return { accepted: false, reason: 'H19_ACTION_IN_FLIGHT' };
+      // A corrupt/inaccessible pending record may represent an already
+      // dispatched irreversible action. A mere button press cannot prove
+      // absence or authorize overwriting it with a new pending request.
+      if (this.suspendedReason === 'H19_PENDING_RESTORE_UNVERIFIED') {
+        return { accepted: false, reason: 'H19_PENDING_RESTORE_REQUIRES_RECONCILIATION' };
+      }
       this.suspended = false;
       this.suspendedReason = null;
       this.lastAction = { at: nowIso(), type: 'SAFETY_RESET', reason: cleanText(reason, 200) };
@@ -962,10 +1012,25 @@
       if (!this.suspended || !current || current.unknownRecorded !== true) {
         return { accepted: false, reason: 'H19_NO_UNKNOWN_ACTION_TO_ACKNOWLEDGE' };
       }
+      // Acknowledging UNKNOWN is an explicit, irreversible ownership
+      // transition. Never claim success until the persisted pending record
+      // has been removed and an exact readback confirms its absence.
+      if (!this._removeStorage('pending')) {
+        this.suspended = true;
+        this.suspendedReason = 'H19_UNKNOWN_ACK_PERSISTENCE_UNCONFIRMED';
+        this.autonomyEnabled = false;
+        this.metrics.safetyBlocks += 1;
+        this.lastAction = {
+          at: nowIso(),
+          type: 'UNKNOWN_ACK_BLOCKED',
+          reason: this.suspendedReason,
+          actionId: current.id || null
+        };
+        return { accepted: false, reason: this.suspendedReason, status: this.status() };
+      }
       const acknowledged = clone(current);
       this.settlementGeneration += 1;
       this.currentAction = null;
-      this._removeStorage('pending');
       this.lastAction = {
         at: nowIso(),
         type: 'UNKNOWN_ACKNOWLEDGED',
@@ -1456,7 +1521,20 @@
         transport: before.transport || 'game-action'
       };
       this.currentAction = action;
-      this._persistCurrent();
+      if (!this._persistCurrent()) {
+        // This is before any game/CM mutation, therefore no UNKNOWN
+        // outcome has been created and the request must not be sent.
+        this.currentAction = null;
+        this.suspended = true;
+        this.suspendedReason = 'H19_PENDING_PERSISTENCE_UNCONFIRMED';
+        this.autonomyEnabled = false;
+        this.metrics.safetyBlocks += 1;
+        this.lastAction = {
+          at: nowIso(), type: 'PRE_DISPATCH_PERSISTENCE_BLOCKED',
+          reason: this.suspendedReason, requestId: request.id || null
+        };
+        return { accepted: false, state: 'BLOCKED', reason: this.suspendedReason };
+      }
 
       let dispatched;
       try {
@@ -1495,8 +1573,12 @@
           dispatched = this.actions.dispatch(actionName, args);
         }
       } catch (error) {
+        if (!this._removeStorage('pending')) {
+          // Failed clear cannot be treated as a completed or rejected action:
+          // retain ownership and block any subsequent automatic dispatch.
+          return this._suspend('H19_PENDING_CLEAR_UNCONFIRMED');
+        }
         this.currentAction = null;
-        this._removeStorage('pending');
         this.metrics.actionsRejected += 1;
         this.lastAction = { at: nowIso(), type: request.kind + '_REJECTED_PRE_DISPATCH', reason: errorReason(error) };
         return { accepted: false, reason: errorReason(error) };
@@ -1517,8 +1599,12 @@
 
       if (!dispatched || dispatched.state !== 'DISPATCHED') {
         const reason = dispatched && dispatched.error && dispatched.error.message || 'H19_ACTION_NOT_DISPATCHED';
+        if (!this._removeStorage('pending')) {
+          // Failed clear cannot be treated as a completed or rejected action:
+          // retain ownership and block any subsequent automatic dispatch.
+          return this._suspend('H19_PENDING_CLEAR_UNCONFIRMED');
+        }
         this.currentAction = null;
-        this._removeStorage('pending');
         this.metrics.actionsRejected += 1;
         this.lastAction = { at: nowIso(), type: request.kind + '_REJECTED_PRE_DISPATCH', reason: cleanText(reason, 300) };
         return { accepted: false, reason: cleanText(reason, 300) };
@@ -1548,8 +1634,12 @@
     _confirmCurrent(details = {}) {
       const current = this.currentAction;
       if (!current) return { state: 'IDLE' };
+      if (!this._removeStorage('pending')) {
+        // Failed clear cannot be treated as a completed or rejected action:
+        // retain ownership and block any subsequent automatic dispatch.
+        return this._suspend('H19_PENDING_CLEAR_UNCONFIRMED');
+      }
       this.currentAction = null;
-      this._removeStorage('pending');
       this.metrics.actionsConfirmed += 1;
       this.actionsThisSession += 1;
       if (current.kind === 'START') this.metrics.startsConfirmed += 1;
@@ -1683,8 +1773,12 @@
               : 0;
             const recoveryLimit = this.config.browserSwapSessionRecoveryLimit;
 
+            if (!this._removeStorage('pending')) {
+              // Failed clear cannot be treated as a completed or rejected action:
+              // retain ownership and block any subsequent automatic dispatch.
+              return this._suspend('H19_PENDING_CLEAR_UNCONFIRMED');
+            }
             this.currentAction = null;
-            this._removeStorage('pending');
             this.metrics.reconciliations += 1;
             this.metrics.stalePendingDiscarded += 1;
 
@@ -1848,8 +1942,12 @@
           const desiredOnline = !!(roster && roster.onlineStateAvailable === true
             && this._onlineSet(roster).has(String(current.desiredName || '')));
           if (desiredOnline) {
+            if (!this._removeStorage('pending')) {
+              // Failed clear cannot be treated as a completed or rejected action:
+              // retain ownership and block any subsequent automatic dispatch.
+              return this._suspend('H19_PENDING_CLEAR_UNCONFIRMED');
+            }
             this.currentAction = null;
-            this._removeStorage('pending');
             this.metrics.actionsRejected += 1;
             this.metrics.browserSwapTargetAlreadyOnlineRecoveries += 1;
             if (current.automatic === true) this.autonomyEnabled = true;
@@ -1872,8 +1970,12 @@
           }
         }
 
+        if (!this._removeStorage('pending')) {
+          // Failed clear cannot be treated as a completed or rejected action:
+          // retain ownership and block any subsequent automatic dispatch.
+          return this._suspend('H19_PENDING_CLEAR_UNCONFIRMED');
+        }
         this.currentAction = null;
-        this._removeStorage('pending');
         this.metrics.actionsRejected += 1;
         if (current.automatic === true) this.autonomyEnabled = false;
         this.lastAction = {
@@ -1890,8 +1992,12 @@
         if (current.kind === 'START' && current.requireCharacterStateChange === true && transientStartRejection(error)) {
           const targetName = cleanText(current.targetName || '', 120);
           const retryAtMs = Date.now() + this.config.startRetryBackoffMs;
+          if (!this._removeStorage('pending')) {
+            // Failed clear cannot be treated as a completed or rejected action:
+            // retain ownership and block any subsequent automatic dispatch.
+            return this._suspend('H19_PENDING_CLEAR_UNCONFIRMED');
+          }
           this.currentAction = null;
-          this._removeStorage('pending');
           this.metrics.actionsRejected += 1;
           this.metrics.transientStartRejects += 1;
           if (targetName) this.transientStartRetries.set(targetName, { retryAtMs, error });
@@ -1916,8 +2022,12 @@
         if (['PARTY_INVITE', 'PARTY_REQUEST'].includes(current.kind) && transientPartyRejection(error)) {
           const targetName = cleanText(current.targetName || '', 120);
           const retryAtMs = Date.now() + this.config.partyRetryBackoffMs;
+          if (!this._removeStorage('pending')) {
+            // Failed clear cannot be treated as a completed or rejected action:
+            // retain ownership and block any subsequent automatic dispatch.
+            return this._suspend('H19_PENDING_CLEAR_UNCONFIRMED');
+          }
           this.currentAction = null;
-          this._removeStorage('pending');
           this.metrics.actionsRejected += 1;
           this.metrics.partyTransientRejects += 1;
           if (targetName) this.partyRetryBackoffs.set(targetName, { retryAtMs, error });
@@ -1941,8 +2051,12 @@
           };
         }
                 if (current.kind === 'RESPAWN' && error === 'cant_respawn') {
+          if (!this._removeStorage('pending')) {
+            // Failed clear cannot be treated as a completed or rejected action:
+            // retain ownership and block any subsequent automatic dispatch.
+            return this._suspend('H19_PENDING_CLEAR_UNCONFIRMED');
+          }
           this.currentAction = null;
-          this._removeStorage('pending');
           this.metrics.actionsRejected += 1;
           this.metrics.respawnCooldownRejects += 1;
           this.autonomyEnabled = false;

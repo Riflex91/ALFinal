@@ -44,6 +44,8 @@
       this.navigateCharacterLocal = typeof options.navigateCharacterLocal === 'function'
         ? options.navigateCharacterLocal
         : () => { throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_UNAVAILABLE'); };
+      this.prepareCharacterHandoff = typeof options.prepareCharacterHandoff === 'function'
+        ? options.prepareCharacterHandoff : null;
       this.getPartyState = typeof options.getPartyState === 'function' ? options.getPartyState : () => null;
       this.leavePartyLocal = typeof options.leavePartyLocal === 'function'
         ? options.leavePartyLocal
@@ -1177,6 +1179,27 @@
           if (before.characterDisconnectCapable !== true) throw new Error('H27_CROSS_WINDOW_CHARACTER_DISCONNECT_CAPABILITY_MISSING');
           const sourceCharacterName = this._localName();
           if (!desiredCharacterName || desiredCharacterName === sourceCharacterName) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_INVALID');
+          if (!this._ownedNames().has(desiredCharacterName)) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_NOT_OWNED');
+          if (this._onlineOwnedNames().has(desiredCharacterName)) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_ALREADY_ONLINE');
+
+          // Host write acknowledgement MUST precede the irreversible disconnect.
+          if (this.prepareCharacterHandoff) {
+            const prepared = await this.prepareCharacterHandoff(desiredCharacterName, sourceCharacterName);
+            if (!prepared || prepared.accepted !== true) {
+              throw new Error(prepared && prepared.reason || 'H25_SSD_HANDOFF_NOT_CONFIRMED');
+            }
+          }
+
+          // SSD preparation is asynchronous. STOP, active runtime, local
+          // identity and target occupancy can all change while awaiting it.
+          // Revalidate immediately before the irreversible disconnect, with
+          // no additional await between this gate and dispatch.
+          const fresh = this._localStatePayload();
+          if (fresh.running !== true) throw new Error('H25_CROSS_WINDOW_CHARACTER_RUNTIME_NOT_RUNNING');
+          if (fresh.emergencyStopLatched !== false) throw new Error('H25_CROSS_WINDOW_CHARACTER_EMERGENCY_STOP_LATCHED');
+          if (fresh.characterNavigateCapable !== true) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_CAPABILITY_MISSING');
+          if (fresh.characterDisconnectCapable !== true) throw new Error('H27_CROSS_WINDOW_CHARACTER_DISCONNECT_CAPABILITY_MISSING');
+          if (this._localName() !== sourceCharacterName) throw new Error('H25_CROSS_WINDOW_CHARACTER_SOURCE_CHANGED');
           if (!this._ownedNames().has(desiredCharacterName)) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_NOT_OWNED');
           if (this._onlineOwnedNames().has(desiredCharacterName)) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_ALREADY_ONLINE');
 

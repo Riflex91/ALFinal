@@ -31,6 +31,8 @@
       this.root = options.root || root;
       this.logger = options.logger || null;
       this.storage = options.storage || null;
+      this.durableStorage = options.durableStorage || null;
+      this.lastPersistenceError = null;
       this.game = options.game || null;
       this.trade = options.trade || null;
       this.baseUrl = 'https://aldata.earthiverse.ca';
@@ -45,26 +47,42 @@
         maxHistoryPerItem: Math.max(24, Math.min(2000, Number(options.maxHistoryPerItem) || 480)),
         externalMaxAgeMs: Math.max(3600000, Math.min(30 * 86400000, Number(options.externalMaxAgeMs) || 7 * 86400000))
       };
-      this._loadHistory();
     }
 
     _key() { return 'albot:market-intelligence-history:v1'; }
 
-    _loadHistory() {
-      if (!this.storage || typeof this.storage.get !== 'function') return;
+    async _loadHistory() {
+      if (!this.durableStorage) return;
       try {
-        const raw = this.storage.get(this._key());
-        const value = raw ? JSON.parse(raw) : null;
-        this.history = value && typeof value.items === 'object' ? value.items : {};
-      } catch (_) { this.history = {}; }
+        const row = await this.durableStorage.read(this._key());
+        const parsed = row.found === true ? JSON.parse(row.value || 'null') : null;
+        this.history = parsed && parsed.schemaVersion === 1 && parsed.items
+          && typeof parsed.items === 'object' ? parsed.items : {};
+        this.lastPersistenceError = null;
+      } catch (error) {
+        this.lastPersistenceError = cleanText(error && error.message || error, 300);
+        if (this.logger) this.logger.warn('SSD Market History Laden fehlgeschlagen',
+          { reason: this.lastPersistenceError });
+      }
     }
 
-    _saveHistory() {
-      if (!this.storage || typeof this.storage.set !== 'function') return;
-      try { this.storage.set(this._key(), JSON.stringify({ schemaVersion: 1, items: this.history })); } catch (_) {}
+    async _saveHistory() {
+      if (!this.durableStorage) return false;
+      try {
+        await this.durableStorage.write(this._key(),
+          JSON.stringify({ schemaVersion: 1, items: this.history }));
+        this.lastPersistenceError = null;
+        return true;
+      } catch (error) {
+        this.lastPersistenceError = cleanText(error && error.message || error, 300);
+        if (this.logger) this.logger.warn('SSD Market History Speichern fehlgeschlagen',
+          { reason: this.lastPersistenceError });
+        return false;
+      }
     }
 
-    start(context = {}) {
+    async start(context = {}) {
+      await this._loadHistory();
       this.moduleActive = true;
       this.scope = context.scope || null;
       if (this.scope && typeof this.scope.interval === 'function') {
@@ -147,7 +165,7 @@
       return { name: null, owner: null };
     }
 
-    _recordHistory(listings, fetchedAtMs) {
+    async _recordHistory(listings, fetchedAtMs) {
       const groups = new Map();
       for (const row of listings) {
         const key = row.itemName + '|' + String(row.level || 0);
@@ -171,7 +189,7 @@
         history.push(sample);
         this.history[key] = history.filter(row => Number(row.atMs) >= cutoff).slice(-this.config.maxHistoryPerItem);
       }
-      this._saveHistory();
+      await this._saveHistory();
     }
 
     async refresh() {
@@ -206,7 +224,7 @@
           staleDropped,
           listings: deduped
         };
-        this._recordHistory(deduped, fetchedAtMs);
+        await this._recordHistory(deduped, fetchedAtMs);
         this.lastError = null;
         if (this.logger) this.logger.info('ALData Trades-Snapshot aktualisiert', { listings: deduped.length, staleDropped });
         return { accepted: true, listings: deduped.length, staleDropped, fetchedAt: this.snapshot.fetchedAt };
@@ -311,6 +329,8 @@
         listings: this.snapshot && this.snapshot.listings ? this.snapshot.listings.length : 0,
         staleDropped: this.snapshot && this.snapshot.staleDropped || 0,
         historyItems: Object.keys(this.history).length,
+        historyStorage: 'D:/ALBot/state/durable-kv',
+        lastPersistenceError: this.lastPersistenceError,
         lastError: clone(this.lastError),
         policies: {
           externalDataNeverProvesMutationSafety: true,

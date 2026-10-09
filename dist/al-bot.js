@@ -1,4 +1,4 @@
-/* AL Bot 0.26.69-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.79-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -97,19 +97,53 @@
       return null;
     }
     get(key) {
+      const critical = this._criticalDurabilityKey(key);
       const ls = this._ls();
-      if (ls) { try { return ls.getItem(key); } catch (_) {} }
+      if (ls) {
+        try { return ls.getItem(key); }
+        catch (_) {
+          // A failed safety read is NEVER proof of an absent STOP/pending
+          // record. In particular, do not fall back to a volatile Map.
+          if (critical) throw new Error('ALBOT_SAFETY_STORAGE_UNREADABLE');
+        }
+      }
+      if (critical) throw new Error('ALBOT_SAFETY_STORAGE_UNREADABLE');
       return this.memory.has(key) ? this.memory.get(key) : null;
+    }
+    _criticalDurabilityKey(key) {
+      const name = String(key || '');
+      return name.startsWith('albot:h19:') || name === 'albot:emergency-stop:v1';
     }
     set(key, value) {
       const ls = this._ls();
-      if (ls) { try { ls.setItem(key, value); return true; } catch (_) {} }
+      if (ls) {
+        try {
+          ls.setItem(key, value);
+          if (this._criticalDurabilityKey(key)) return ls.getItem(key) === String(value);
+          return true;
+        } catch (_) {
+          if (this._criticalDurabilityKey(key)) return false;
+        }
+      }
+      // Historical non-safety caches may use memory. H19 and STOP
+      // must never report volatile memory fallback as persisted.
+      if (this._criticalDurabilityKey(key)) return false;
       this.memory.set(key, value); return true;
     }
     remove(key) {
       const ls = this._ls();
-      if (ls) { try { ls.removeItem(key); } catch (_) {} }
+      if (ls) {
+        try {
+          ls.removeItem(key);
+          if (this._criticalDurabilityKey(key)) return ls.getItem(key) === null;
+          return true;
+        } catch (_) {
+          if (this._criticalDurabilityKey(key)) return false;
+        }
+      }
+      if (this._criticalDurabilityKey(key)) return false;
       this.memory.delete(key);
+      return true;
     }
     sharedAvailable() {
       return !!this._sharedLs();
@@ -141,17 +175,44 @@
       this._load();
     }
     _load() {
-      const raw = this.storage && this.storage.get(this.key);
-      const parsed = raw ? safeJsonParse(raw, null) : null;
-      if (parsed && parsed.latched === true) this.state = { latched: true, reason: cleanText(parsed.reason || 'PERSISTED_STOP', 200), at: parsed.at || null };
+      try {
+        if (!this.storage || typeof this.storage.get !== 'function') {
+          throw new Error('EMERGENCY_STOP_STORAGE_MISSING');
+        }
+        const raw = this.storage.get(this.key);
+        if (raw === null) return; // confirmed read of an absent record
+        const parsed = typeof raw === 'string' ? safeJsonParse(raw, null) : null;
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)
+            || typeof parsed.latched !== 'boolean') {
+          throw new Error('EMERGENCY_STOP_STORAGE_CORRUPT');
+        }
+        if (parsed.latched === true) {
+          this.state = { latched: true, reason: cleanText(parsed.reason || 'PERSISTED_STOP', 200), at: parsed.at || null };
+        }
+      } catch (_) {
+        // Unknown persistent safety state must block gameplay on startup.
+        // Do not write an 'unlatched' default over the original evidence.
+        this.state = { latched: true, reason: 'EMERGENCY_STOP_STORAGE_UNVERIFIED', at: null };
+        if (this.logger) this.logger.error('EMERGENCY_STOP_STORAGE_UNVERIFIED');
+      }
     }
-    _persist() {
-      if (this.storage) this.storage.set(this.key, JSON.stringify(this.state));
+    _persist(state = this.state) {
+      if (!this.storage || typeof this.storage.set !== 'function'
+          || typeof this.storage.get !== 'function') return false;
+      try {
+        const value = JSON.stringify(state);
+        return this.storage.set(this.key, value) !== false
+          && this.storage.get(this.key) === value;
+      } catch (_) {
+        return false;
+      }
     }
     latch(reason = 'MANUAL_STOP') {
       if (!this.state.latched) {
         this.state = { latched: true, reason: cleanText(reason, 200) || 'MANUAL_STOP', at: nowIso() };
-        this._persist();
+        // Always latch in memory immediately, even if durable write fails.
+        // A future SSD migration must restore an unconfirmed latch on reload.
+        if (!this._persist() && this.logger) this.logger.error('EMERGENCY_STOP_DURABILITY_UNCONFIRMED');
         if (this.logger) this.logger.error('GLOBALER STOP AKTIVIERT', this.state);
         if (this.bus) this.bus.emit('emergency-stop', this.status());
       }
@@ -159,8 +220,21 @@
     }
     reset() {
       const previous = this.status();
-      this.state = { latched: false, reason: null, at: null };
-      this._persist();
+      // An unreadable/corrupt saved STOP must be reconciled on a fresh
+      // verified load. Even a now-writable store cannot prove the original
+      // latch was safe to discard.
+      if (previous.latched && previous.reason === 'EMERGENCY_STOP_STORAGE_UNVERIFIED') {
+        return { ...previous, resetBlocked: true,
+          reason: 'EMERGENCY_STOP_RESTORE_REQUIRES_RECONCILIATION' };
+      }
+      const proposed = { latched: false, reason: null, at: null };
+      // Never remove an active in-memory safety latch if its durable reset
+      // is rejected by storage quota or a failed readback.
+      if (!this._persist(proposed)) {
+        if (this.logger) this.logger.error('EMERGENCY_STOP_RESET_PERSISTENCE_UNCONFIRMED');
+        return { ...previous, resetBlocked: true, reason: 'EMERGENCY_STOP_RESET_PERSISTENCE_UNCONFIRMED' };
+      }
+      this.state = proposed;
       if (this.logger) this.logger.warn('Globaler STOP wurde manuell zurückgesetzt', { previous });
       if (this.bus) this.bus.emit('emergency-reset', this.status());
       return this.status();
@@ -456,6 +530,60 @@
   ns.KnowledgeService = KnowledgeService;
   ns.CharacterRosterService = CharacterRosterService;
   ns.helpers = { clone, cleanText, nowIso, onlineFlag, COMBAT_CLASSES, ACTIVE_STATES };
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+
+(function (root) {
+  'use strict';
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns) throw new Error('ALBOT_INTERNALS_MISSING');
+
+  class HostDurableStorageClient {
+    constructor(options = {}) {
+      this.root = options.root || root;
+      this.endpoint = 'http://127.0.0.1:17392/v1/storage';
+      this.requestTimeoutMs = Math.max(500, Math.min(10000, Number(options.requestTimeoutMs) || 3500));
+    }
+
+    async _request(method, key, payload = null) {
+      if (typeof key !== 'string' || !key.startsWith('albot:')) throw new Error('SSD_KEY_INVALID');
+      const fetchFn = this.root && this.root.fetch;
+      if (typeof fetchFn !== 'function') throw new Error('SSD_HOST_FETCH_UNAVAILABLE');
+      const Ctor = this.root.AbortController;
+      const controller = typeof Ctor === 'function' ? new Ctor() : null;
+      const timer = controller && typeof this.root.setTimeout === 'function'
+        ? this.root.setTimeout(() => controller.abort(), this.requestTimeoutMs)
+        : null;
+      try {
+        const url = this.endpoint + '?key=' + encodeURIComponent(key);
+        const request = {
+          method, cache: 'no-store', credentials: 'omit',
+          ...(payload == null ? {} : {
+            headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+            body: JSON.stringify(payload)
+          }),
+          ...(controller ? { signal: controller.signal } : {})
+        };
+        const response = await fetchFn.call(this.root, url, request);
+        if (!response || response.ok !== true) {
+          throw new Error('SSD_HOST_HTTP_' + String(response && response.status || 'FAILED'));
+        }
+        const data = await response.json();
+        if (!data || data.ok !== true) throw new Error('SSD_HOST_RESPONSE_INVALID');
+        return data;
+      } finally {
+        if (timer != null && typeof this.root.clearTimeout === 'function') this.root.clearTimeout(timer);
+      }
+    }
+
+    async read(key) { return this._request('GET', key); }
+    async write(key, value, options = {}) {
+      return this._request('POST', key, { key, value, ...options });
+    }
+    async remove(key) { return this._request('DELETE', key); }
+  }
+
+  ns.HostDurableStorageClient = HostDurableStorageClient;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
 
 
@@ -7130,6 +7258,8 @@
       this.navigateCharacterLocal = typeof options.navigateCharacterLocal === 'function'
         ? options.navigateCharacterLocal
         : () => { throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_UNAVAILABLE'); };
+      this.prepareCharacterHandoff = typeof options.prepareCharacterHandoff === 'function'
+        ? options.prepareCharacterHandoff : null;
       this.getPartyState = typeof options.getPartyState === 'function' ? options.getPartyState : () => null;
       this.leavePartyLocal = typeof options.leavePartyLocal === 'function'
         ? options.leavePartyLocal
@@ -8266,6 +8396,27 @@
           if (!this._ownedNames().has(desiredCharacterName)) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_NOT_OWNED');
           if (this._onlineOwnedNames().has(desiredCharacterName)) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_ALREADY_ONLINE');
 
+          // Host write acknowledgement MUST precede the irreversible disconnect.
+          if (this.prepareCharacterHandoff) {
+            const prepared = await this.prepareCharacterHandoff(desiredCharacterName, sourceCharacterName);
+            if (!prepared || prepared.accepted !== true) {
+              throw new Error(prepared && prepared.reason || 'H25_SSD_HANDOFF_NOT_CONFIRMED');
+            }
+          }
+
+          // SSD preparation is asynchronous. STOP, active runtime, local
+          // identity and target occupancy can all change while awaiting it.
+          // Revalidate immediately before the irreversible disconnect, with
+          // no additional await between this gate and dispatch.
+          const fresh = this._localStatePayload();
+          if (fresh.running !== true) throw new Error('H25_CROSS_WINDOW_CHARACTER_RUNTIME_NOT_RUNNING');
+          if (fresh.emergencyStopLatched !== false) throw new Error('H25_CROSS_WINDOW_CHARACTER_EMERGENCY_STOP_LATCHED');
+          if (fresh.characterNavigateCapable !== true) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_CAPABILITY_MISSING');
+          if (fresh.characterDisconnectCapable !== true) throw new Error('H27_CROSS_WINDOW_CHARACTER_DISCONNECT_CAPABILITY_MISSING');
+          if (this._localName() !== sourceCharacterName) throw new Error('H25_CROSS_WINDOW_CHARACTER_SOURCE_CHANGED');
+          if (!this._ownedNames().has(desiredCharacterName)) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_NOT_OWNED');
+          if (this._onlineOwnedNames().has(desiredCharacterName)) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_ALREADY_ONLINE');
+
           // Do not wait for disconnect settlement/offline evidence here. Adventure
           // Land can reload the outgoing character page as soon as disconnect is
           // dispatched; any delayed timer owned by that page is then destroyed
@@ -8795,6 +8946,7 @@
         lateOutcomeRecoveries: 0,
         rotationCapabilityBlocks: 0,
         stalePendingDiscarded: 0,
+        stalePendingUnknown: 0,
         stalePendingReconciled: 0
       };
     }
@@ -8965,8 +9117,12 @@
       const key = this._storageKey(kind);
       if (!key || !this.storage || typeof this.storage.set !== 'function') return false;
       try {
-        this.storage.set(key, JSON.stringify(value));
-        return true;
+        const serialized = JSON.stringify(value);
+        if (this.storage.set(key, serialized) === false) return false;
+        // Successful API return does not prove a durable H19 record:
+        // detect no-op, quota failure, or discarded storage writes.
+        return typeof this.storage.get === 'function'
+          && this.storage.get(key) === serialized;
       } catch (_) {
         return false;
       }
@@ -8976,8 +9132,9 @@
       const key = this._storageKey(kind);
       if (!key || !this.storage || typeof this.storage.remove !== 'function') return false;
       try {
-        this.storage.remove(key);
-        return true;
+        if (this.storage.remove(key) === false) return false;
+        return typeof this.storage.get === 'function'
+          && this.storage.get(key) === null;
       } catch (_) {
         return false;
       }
@@ -8989,7 +9146,7 @@
       row.ownerSessionId = this.sessionId;
       delete row.response;
       delete row.errorObject;
-      this._writeStorage('pending', row);
+      return this._writeStorage('pending', row);
     }
 
     _persistPolicy() {
@@ -9019,14 +9176,42 @@
         this.policyState.desiredPartyLeader = cleanText(policy.desiredPartyLeader || '', 120) || null;
       }
 
-      const pending = this._readStorage('pending');
+      let pending = null;
+      try {
+        const key = this._storageKey('pending');
+        if (!key || !this.storage || typeof this.storage.get !== 'function') {
+          throw new Error('H19_PENDING_STORAGE_UNAVAILABLE');
+        }
+        // Missing and unreadable must be distinguishable. Production
+        // StorageAdapter throws when localStorage access is unavailable.
+        const raw = this.storage.get(key);
+        if (raw !== null) {
+          if (typeof raw !== 'string' || !raw) throw new Error('H19_PENDING_RECORD_CORRUPT');
+          pending = JSON.parse(raw);
+          if (!pending || typeof pending !== 'object' || Array.isArray(pending)
+              || typeof pending.kind !== 'string' || !pending.kind
+              || typeof pending.id !== 'string' || !pending.id) {
+            throw new Error('H19_PENDING_RECORD_CORRUPT');
+          }
+        }
+      } catch (_) {
+        this.suspended = true;
+        this.suspendedReason = 'H19_PENDING_RESTORE_UNVERIFIED';
+        this.autonomyEnabled = false;
+        this.metrics.safetyBlocks += 1;
+        this.lastAction = {
+          at: nowIso(), type: 'PENDING_RESTORE_BLOCKED',
+          reason: this.suspendedReason
+        };
+        // No mutation, no deletion, and no guess about the stored action.
+        return;
+      }
       if (pending && pending.kind && pending.id) {
         const sameSession = !!pending.ownerSessionId && String(pending.ownerSessionId) === String(this.sessionId);
         if (!sameSession) {
           const liveOutcome = this._pendingLiveOutcome(pending);
-          this._removeStorage('pending');
           this.metrics.reconciliations += 1;
-          if (liveOutcome.confirmed) {
+          if (liveOutcome.confirmed && this._removeStorage('pending')) {
             this.metrics.stalePendingReconciled += 1;
             this.lastAction = {
               at: nowIso(),
@@ -9039,14 +9224,24 @@
               currentSessionId: this.sessionId
             };
           } else {
-            this.metrics.stalePendingDiscarded += 1;
+            // No verified live outcome (or no confirmed clear) means UNKNOWN.
+            // Retain original SSD/browser record; NEVER turn it into an
+            // empty default and automatically re-dispatch after reload.
+            this.currentAction = { ...pending, settlement: 'RESTORED',
+              restored: true, response: null, error: null, unknownRecorded: true };
+            this.suspended = true;
+            this.suspendedReason = 'H19_STALE_PENDING_OUTCOME_UNKNOWN';
+            this.autonomyEnabled = false;
+            this.metrics.stalePendingUnknown += 1;
             this.lastAction = {
               at: nowIso(),
-              type: 'STALE_PENDING_DISCARDED',
+              type: 'STALE_PENDING_UNKNOWN_RETAINED',
               actionId: pending.id,
               kind: pending.kind,
               targetName: pending.targetName || null,
-              reason: liveOutcome.reason || 'H19_STALE_PENDING_NO_LIVE_OUTCOME',
+              reason: liveOutcome.confirmed
+                ? 'H19_STALE_PENDING_CLEAR_UNCONFIRMED'
+                : liveOutcome.reason || 'H19_STALE_PENDING_NO_LIVE_OUTCOME',
               previousSessionId: pending.ownerSessionId || null,
               currentSessionId: this.sessionId
             };
@@ -9600,6 +9795,12 @@
 
     resetSafety(reason = 'H19_EXPLICIT_RESET') {
       if (this.currentAction) return { accepted: false, reason: 'H19_ACTION_IN_FLIGHT' };
+      // A corrupt/inaccessible pending record may represent an already
+      // dispatched irreversible action. A mere button press cannot prove
+      // absence or authorize overwriting it with a new pending request.
+      if (this.suspendedReason === 'H19_PENDING_RESTORE_UNVERIFIED') {
+        return { accepted: false, reason: 'H19_PENDING_RESTORE_REQUIRES_RECONCILIATION' };
+      }
       this.suspended = false;
       this.suspendedReason = null;
       this.lastAction = { at: nowIso(), type: 'SAFETY_RESET', reason: cleanText(reason, 200) };
@@ -9611,10 +9812,25 @@
       if (!this.suspended || !current || current.unknownRecorded !== true) {
         return { accepted: false, reason: 'H19_NO_UNKNOWN_ACTION_TO_ACKNOWLEDGE' };
       }
+      // Acknowledging UNKNOWN is an explicit, irreversible ownership
+      // transition. Never claim success until the persisted pending record
+      // has been removed and an exact readback confirms its absence.
+      if (!this._removeStorage('pending')) {
+        this.suspended = true;
+        this.suspendedReason = 'H19_UNKNOWN_ACK_PERSISTENCE_UNCONFIRMED';
+        this.autonomyEnabled = false;
+        this.metrics.safetyBlocks += 1;
+        this.lastAction = {
+          at: nowIso(),
+          type: 'UNKNOWN_ACK_BLOCKED',
+          reason: this.suspendedReason,
+          actionId: current.id || null
+        };
+        return { accepted: false, reason: this.suspendedReason, status: this.status() };
+      }
       const acknowledged = clone(current);
       this.settlementGeneration += 1;
       this.currentAction = null;
-      this._removeStorage('pending');
       this.lastAction = {
         at: nowIso(),
         type: 'UNKNOWN_ACKNOWLEDGED',
@@ -10105,7 +10321,20 @@
         transport: before.transport || 'game-action'
       };
       this.currentAction = action;
-      this._persistCurrent();
+      if (!this._persistCurrent()) {
+        // This is before any game/CM mutation, therefore no UNKNOWN
+        // outcome has been created and the request must not be sent.
+        this.currentAction = null;
+        this.suspended = true;
+        this.suspendedReason = 'H19_PENDING_PERSISTENCE_UNCONFIRMED';
+        this.autonomyEnabled = false;
+        this.metrics.safetyBlocks += 1;
+        this.lastAction = {
+          at: nowIso(), type: 'PRE_DISPATCH_PERSISTENCE_BLOCKED',
+          reason: this.suspendedReason, requestId: request.id || null
+        };
+        return { accepted: false, state: 'BLOCKED', reason: this.suspendedReason };
+      }
 
       let dispatched;
       try {
@@ -10144,8 +10373,12 @@
           dispatched = this.actions.dispatch(actionName, args);
         }
       } catch (error) {
+        if (!this._removeStorage('pending')) {
+          // Failed clear cannot be treated as a completed or rejected action:
+          // retain ownership and block any subsequent automatic dispatch.
+          return this._suspend('H19_PENDING_CLEAR_UNCONFIRMED');
+        }
         this.currentAction = null;
-        this._removeStorage('pending');
         this.metrics.actionsRejected += 1;
         this.lastAction = { at: nowIso(), type: request.kind + '_REJECTED_PRE_DISPATCH', reason: errorReason(error) };
         return { accepted: false, reason: errorReason(error) };
@@ -10166,8 +10399,12 @@
 
       if (!dispatched || dispatched.state !== 'DISPATCHED') {
         const reason = dispatched && dispatched.error && dispatched.error.message || 'H19_ACTION_NOT_DISPATCHED';
+        if (!this._removeStorage('pending')) {
+          // Failed clear cannot be treated as a completed or rejected action:
+          // retain ownership and block any subsequent automatic dispatch.
+          return this._suspend('H19_PENDING_CLEAR_UNCONFIRMED');
+        }
         this.currentAction = null;
-        this._removeStorage('pending');
         this.metrics.actionsRejected += 1;
         this.lastAction = { at: nowIso(), type: request.kind + '_REJECTED_PRE_DISPATCH', reason: cleanText(reason, 300) };
         return { accepted: false, reason: cleanText(reason, 300) };
@@ -10197,8 +10434,12 @@
     _confirmCurrent(details = {}) {
       const current = this.currentAction;
       if (!current) return { state: 'IDLE' };
+      if (!this._removeStorage('pending')) {
+        // Failed clear cannot be treated as a completed or rejected action:
+        // retain ownership and block any subsequent automatic dispatch.
+        return this._suspend('H19_PENDING_CLEAR_UNCONFIRMED');
+      }
       this.currentAction = null;
-      this._removeStorage('pending');
       this.metrics.actionsConfirmed += 1;
       this.actionsThisSession += 1;
       if (current.kind === 'START') this.metrics.startsConfirmed += 1;
@@ -10332,8 +10573,12 @@
               : 0;
             const recoveryLimit = this.config.browserSwapSessionRecoveryLimit;
 
+            if (!this._removeStorage('pending')) {
+              // Failed clear cannot be treated as a completed or rejected action:
+              // retain ownership and block any subsequent automatic dispatch.
+              return this._suspend('H19_PENDING_CLEAR_UNCONFIRMED');
+            }
             this.currentAction = null;
-            this._removeStorage('pending');
             this.metrics.reconciliations += 1;
             this.metrics.stalePendingDiscarded += 1;
 
@@ -10497,8 +10742,12 @@
           const desiredOnline = !!(roster && roster.onlineStateAvailable === true
             && this._onlineSet(roster).has(String(current.desiredName || '')));
           if (desiredOnline) {
+            if (!this._removeStorage('pending')) {
+              // Failed clear cannot be treated as a completed or rejected action:
+              // retain ownership and block any subsequent automatic dispatch.
+              return this._suspend('H19_PENDING_CLEAR_UNCONFIRMED');
+            }
             this.currentAction = null;
-            this._removeStorage('pending');
             this.metrics.actionsRejected += 1;
             this.metrics.browserSwapTargetAlreadyOnlineRecoveries += 1;
             if (current.automatic === true) this.autonomyEnabled = true;
@@ -10521,8 +10770,12 @@
           }
         }
 
+        if (!this._removeStorage('pending')) {
+          // Failed clear cannot be treated as a completed or rejected action:
+          // retain ownership and block any subsequent automatic dispatch.
+          return this._suspend('H19_PENDING_CLEAR_UNCONFIRMED');
+        }
         this.currentAction = null;
-        this._removeStorage('pending');
         this.metrics.actionsRejected += 1;
         if (current.automatic === true) this.autonomyEnabled = false;
         this.lastAction = {
@@ -10539,8 +10792,12 @@
         if (current.kind === 'START' && current.requireCharacterStateChange === true && transientStartRejection(error)) {
           const targetName = cleanText(current.targetName || '', 120);
           const retryAtMs = Date.now() + this.config.startRetryBackoffMs;
+          if (!this._removeStorage('pending')) {
+            // Failed clear cannot be treated as a completed or rejected action:
+            // retain ownership and block any subsequent automatic dispatch.
+            return this._suspend('H19_PENDING_CLEAR_UNCONFIRMED');
+          }
           this.currentAction = null;
-          this._removeStorage('pending');
           this.metrics.actionsRejected += 1;
           this.metrics.transientStartRejects += 1;
           if (targetName) this.transientStartRetries.set(targetName, { retryAtMs, error });
@@ -10565,8 +10822,12 @@
         if (['PARTY_INVITE', 'PARTY_REQUEST'].includes(current.kind) && transientPartyRejection(error)) {
           const targetName = cleanText(current.targetName || '', 120);
           const retryAtMs = Date.now() + this.config.partyRetryBackoffMs;
+          if (!this._removeStorage('pending')) {
+            // Failed clear cannot be treated as a completed or rejected action:
+            // retain ownership and block any subsequent automatic dispatch.
+            return this._suspend('H19_PENDING_CLEAR_UNCONFIRMED');
+          }
           this.currentAction = null;
-          this._removeStorage('pending');
           this.metrics.actionsRejected += 1;
           this.metrics.partyTransientRejects += 1;
           if (targetName) this.partyRetryBackoffs.set(targetName, { retryAtMs, error });
@@ -10590,8 +10851,12 @@
           };
         }
                 if (current.kind === 'RESPAWN' && error === 'cant_respawn') {
+          if (!this._removeStorage('pending')) {
+            // Failed clear cannot be treated as a completed or rejected action:
+            // retain ownership and block any subsequent automatic dispatch.
+            return this._suspend('H19_PENDING_CLEAR_UNCONFIRMED');
+          }
           this.currentAction = null;
-          this._removeStorage('pending');
           this.metrics.actionsRejected += 1;
           this.metrics.respawnCooldownRejects += 1;
           this.autonomyEnabled = false;
@@ -27703,6 +27968,8 @@ class MerchantProductionPlanner {
       this.root = options.root || root;
       this.logger = options.logger || null;
       this.storage = options.storage || null;
+      this.durableStorage = options.durableStorage || null;
+      this.lastPersistenceError = null;
       this.game = options.game || null;
       this.trade = options.trade || null;
       this.baseUrl = 'https://aldata.earthiverse.ca';
@@ -27717,26 +27984,42 @@ class MerchantProductionPlanner {
         maxHistoryPerItem: Math.max(24, Math.min(2000, Number(options.maxHistoryPerItem) || 480)),
         externalMaxAgeMs: Math.max(3600000, Math.min(30 * 86400000, Number(options.externalMaxAgeMs) || 7 * 86400000))
       };
-      this._loadHistory();
     }
 
     _key() { return 'albot:market-intelligence-history:v1'; }
 
-    _loadHistory() {
-      if (!this.storage || typeof this.storage.get !== 'function') return;
+    async _loadHistory() {
+      if (!this.durableStorage) return;
       try {
-        const raw = this.storage.get(this._key());
-        const value = raw ? JSON.parse(raw) : null;
-        this.history = value && typeof value.items === 'object' ? value.items : {};
-      } catch (_) { this.history = {}; }
+        const row = await this.durableStorage.read(this._key());
+        const parsed = row.found === true ? JSON.parse(row.value || 'null') : null;
+        this.history = parsed && parsed.schemaVersion === 1 && parsed.items
+          && typeof parsed.items === 'object' ? parsed.items : {};
+        this.lastPersistenceError = null;
+      } catch (error) {
+        this.lastPersistenceError = cleanText(error && error.message || error, 300);
+        if (this.logger) this.logger.warn('SSD Market History Laden fehlgeschlagen',
+          { reason: this.lastPersistenceError });
+      }
     }
 
-    _saveHistory() {
-      if (!this.storage || typeof this.storage.set !== 'function') return;
-      try { this.storage.set(this._key(), JSON.stringify({ schemaVersion: 1, items: this.history })); } catch (_) {}
+    async _saveHistory() {
+      if (!this.durableStorage) return false;
+      try {
+        await this.durableStorage.write(this._key(),
+          JSON.stringify({ schemaVersion: 1, items: this.history }));
+        this.lastPersistenceError = null;
+        return true;
+      } catch (error) {
+        this.lastPersistenceError = cleanText(error && error.message || error, 300);
+        if (this.logger) this.logger.warn('SSD Market History Speichern fehlgeschlagen',
+          { reason: this.lastPersistenceError });
+        return false;
+      }
     }
 
-    start(context = {}) {
+    async start(context = {}) {
+      await this._loadHistory();
       this.moduleActive = true;
       this.scope = context.scope || null;
       if (this.scope && typeof this.scope.interval === 'function') {
@@ -27819,7 +28102,7 @@ class MerchantProductionPlanner {
       return { name: null, owner: null };
     }
 
-    _recordHistory(listings, fetchedAtMs) {
+    async _recordHistory(listings, fetchedAtMs) {
       const groups = new Map();
       for (const row of listings) {
         const key = row.itemName + '|' + String(row.level || 0);
@@ -27843,7 +28126,7 @@ class MerchantProductionPlanner {
         history.push(sample);
         this.history[key] = history.filter(row => Number(row.atMs) >= cutoff).slice(-this.config.maxHistoryPerItem);
       }
-      this._saveHistory();
+      await this._saveHistory();
     }
 
     async refresh() {
@@ -27878,7 +28161,7 @@ class MerchantProductionPlanner {
           staleDropped,
           listings: deduped
         };
-        this._recordHistory(deduped, fetchedAtMs);
+        await this._recordHistory(deduped, fetchedAtMs);
         this.lastError = null;
         if (this.logger) this.logger.info('ALData Trades-Snapshot aktualisiert', { listings: deduped.length, staleDropped });
         return { accepted: true, listings: deduped.length, staleDropped, fetchedAt: this.snapshot.fetchedAt };
@@ -27983,6 +28266,8 @@ class MerchantProductionPlanner {
         listings: this.snapshot && this.snapshot.listings ? this.snapshot.listings.length : 0,
         staleDropped: this.snapshot && this.snapshot.staleDropped || 0,
         historyItems: Object.keys(this.history).length,
+        historyStorage: 'D:/ALBot/state/durable-kv',
+        lastPersistenceError: this.lastPersistenceError,
         lastError: clone(this.lastError),
         policies: {
           externalDataNeverProvesMutationSafety: true,
@@ -34110,7 +34395,7 @@ class MerchantProductionPlanner {
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.69-h26';
+      this.version = options.version || '0.26.79-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -34119,6 +34404,7 @@ class MerchantProductionPlanner {
       this.running = false;
       this.runEpoch = 0;
       this._h19FullAutonomyRearmIntent = null;
+      this._h25PreparedHandoff = null;
       this.performanceGuard = {
         supported: typeof (this.root && this.root.performance_trick) === 'function',
         applied: false,
@@ -34132,6 +34418,7 @@ class MerchantProductionPlanner {
       };
       this.bus = new ns.EventBus();
       this.storage = new ns.StorageAdapter(this.root);
+      this.durableStorage = new ns.HostDurableStorageClient({ root: this.root });
       this.logger = new ns.Logger({ bus: this.bus, limit: 400 });
       this.stopLatch = new ns.EmergencyStop({ storage: this.storage, logger: this.logger, bus: this.bus });
       this.scheduler = new ns.Scheduler({ root: this.root, logger: this.logger, bus: this.bus });
@@ -34432,39 +34719,25 @@ class MerchantProductionPlanner {
           + '/in/' + encodeURIComponent(String(server.region))
           + '/' + encodeURIComponent(String(server.identifier)) + '/';
 
-        // Carry Full Autonomy across the H25 browser swap. New runner roots
-        // have no in-memory state; H19 requires the *new* peer to re-arm before
-        // it confirms rotation. Persist one short-lived, server-scoped intent.
-        let rearmKey = null;
+        // H31 persists the rearm intent to SSD *before* the irreversible
+        // disconnect. Navigation must remain synchronous in that same JS turn.
         const previousAutonomy = this.fullAutonomy && typeof this.fullAutonomy.status === 'function'
           ? this.fullAutonomy.status() : null;
         if (previousAutonomy && previousAutonomy.enabled === true) {
-          if (!sourceName || sourceName === name || !this.storage
-              || typeof this.storage.setShared !== 'function'
-              || this.storage.sharedAvailable() !== true) {
-            throw new Error('H25_AUTONOMY_HANDOFF_UNAVAILABLE');
+          const prepared = this._h25PreparedHandoff;
+          if (!prepared || prepared.sourceName !== sourceName
+              || prepared.targetName !== name
+              || prepared.region !== String(server.region)
+              || prepared.identifier !== String(server.identifier)
+              || Date.now() > prepared.expiresAtMs) {
+            throw new Error('H25_SSD_HANDOFF_NOT_CONFIRMED');
           }
-          rearmKey = this._h25AutonomyHandoffKey(name, server);
-          const intended = {
-            schemaVersion: 1, source: 'H25_VALIDATED_BROWSER_SWAP',
-            sourceCharacterName: sourceName, targetCharacterName: name,
-            serverRegion: String(server.region), serverIdentifier: String(server.identifier),
-            taskType: 'FARM',
-            desiredCharacterNames: Array.isArray(previousAutonomy.desiredCharacterNames)
-              ? previousAutonomy.desiredCharacterNames.slice(0, 4) : [],
-            createdAtMs: Date.now(), expiresAtMs: Date.now() + 120000
-          };
-          if (!rearmKey || this.storage.setShared(rearmKey, JSON.stringify(intended)) !== true) {
-            throw new Error('H25_AUTONOMY_HANDOFF_WRITE_FAILED');
-          }
+          this._h25PreparedHandoff = null;
         }
         // Final durable gear snapshot before the page leaves this character.
         try { if (this.accountStrategy) this.accountStrategy.persistLocalProfile(); } catch (_) {}
         try { if (this.hostState) this.hostState.flushFinalBestEffort(); } catch (_) {}
-        try { view.location.assign(url); } catch (error) {
-          if (rearmKey && typeof this.storage.removeShared === 'function') this.storage.removeShared(rearmKey);
-          throw error;
-        }
+        view.location.assign(url);
         return {
           accepted: true,
           url,
@@ -34473,6 +34746,46 @@ class MerchantProductionPlanner {
           sourceCharacterName: sourceName,
           server: { region: server.region, identifier: server.identifier }
         };
+      };
+
+      const prepareH25AutonomyHandoff = async (desiredName, sourceCharacterName) => {
+        const full = this.fullAutonomy && typeof this.fullAutonomy.status === 'function'
+          ? this.fullAutonomy.status() : null;
+        if (!full || full.enabled !== true) return { accepted: true, required: false };
+        const game = this.game.snapshot();
+        const target = String(desiredName || '');
+        const source = game && game.character && String(game.character.name || '');
+        const server = game && game.server || {};
+        const roster = this.roster.refresh();
+        if (!target || !source || source !== String(sourceCharacterName || '')
+            || source === target || !server.region || !server.identifier
+            || !roster || !Array.isArray(roster.accountCharacters)
+            || !roster.accountCharacters.some(row => String(row.name) === target)) {
+          throw new Error('H25_SSD_HANDOFF_IDENTITY_INVALID');
+        }
+        const desired = Array.isArray(full.desiredCharacterNames)
+          ? [...new Set(full.desiredCharacterNames.map(String))].sort() : [];
+        if (desired.length !== 4 || !desired.includes(target)) {
+          throw new Error('H25_SSD_HANDOFF_DESIRED_ROSTER_INVALID');
+        }
+        const key = this._h25AutonomyHandoffKey(target, server);
+        if (!key) throw new Error('H25_SSD_HANDOFF_KEY_INVALID');
+        const at = Date.now();
+        const intended = {
+          schemaVersion: 1, source: 'H25_VALIDATED_BROWSER_SWAP',
+          sourceCharacterName: source, targetCharacterName: target,
+          serverRegion: String(server.region), serverIdentifier: String(server.identifier),
+          taskType: 'FARM', desiredCharacterNames: desired,
+          createdAtMs: at, expiresAtMs: at + 120000
+        };
+        await this._prepareH25DurableIntent(
+          key, JSON.stringify(intended), intended.expiresAtMs);
+        this._h25PreparedHandoff = {
+          sourceName: source, targetName: target,
+          region: String(server.region), identifier: String(server.identifier),
+          expiresAtMs: intended.expiresAtMs
+        };
+        return { accepted: true, required: true };
       };
 
       this.lifecycleTransport = new ns.H19CrossWindowLifecycleTransport({
@@ -34521,6 +34834,7 @@ class MerchantProductionPlanner {
           try { if (this.hostState) this.hostState.flushFinalBestEffort(); } catch (_) {}
           return dispatchH24CharacterDisconnect();
         },
+        prepareCharacterHandoff: prepareH25AutonomyHandoff,
         navigateCharacterLocal: (desiredName, reason, options) => navigateH25BrowserCharacter(desiredName, options),
         leavePartyLocal: () => dispatchH19CrossWindowPartyAction('leave_party', []),
         requestPartyJoinLocal: leaderName => dispatchH19CrossWindowPartyAction('send_party_request', [leaderName]),
@@ -34651,7 +34965,7 @@ class MerchantProductionPlanner {
       this.marketIntelligence = new ns.ALDataMarketIntelligence({
         root: this.root,
         logger: this.logger,
-        storage: this.storage,
+        durableStorage: this.durableStorage,
         game: this.game,
         trade: this.trade
       });
@@ -39927,17 +40241,46 @@ class MerchantProductionPlanner {
         + encodeURIComponent(String(targetName));
     }
 
-    _consumeH25AutonomyHandoff() {
+    async _prepareH25DurableIntent(key, serialized, expiresAtMs) {
+      if (!key || !this.durableStorage
+          || typeof this.durableStorage.read !== 'function'
+          || typeof this.durableStorage.write !== 'function') {
+        throw new Error('H25_SSD_HANDOFF_STORAGE_UNAVAILABLE');
+      }
+      // A previous unfinished handoff may be evidence of an irreversible
+      // browser swap. Never overwrite it with a newer request.
+      const previous = await this.durableStorage.read(key);
+      if (!previous || previous.ok !== true || previous.found !== false) {
+        throw new Error(previous && previous.found === true
+          ? 'H25_SSD_HANDOFF_EXISTING_REQUIRES_RECONCILIATION'
+          : 'H25_SSD_HANDOFF_PREWRITE_READ_UNCONFIRMED');
+      }
+      const written = await this.durableStorage.write(key, serialized, { expiresAtMs });
+      if (!written || written.ok !== true) {
+        throw new Error('H25_SSD_HANDOFF_WRITE_UNCONFIRMED');
+      }
+      // A POST response alone cannot prove a durable H25 intent.
+      const verified = await this.durableStorage.read(key);
+      if (!verified || verified.ok !== true || verified.found !== true
+          || verified.value !== serialized) {
+        throw new Error('H25_SSD_HANDOFF_PERSISTENCE_UNCONFIRMED');
+      }
+      return true;
+    }
+
+    async _consumeH25AutonomyHandoff() {
       if (!this.running || !this.fullAutonomy || this.fullAutonomy.enabled === true
-          || !this.storage || typeof this.storage.getShared !== 'function'
+          || !this.durableStorage || typeof this.durableStorage.read !== 'function'
           || this.stopLatch.status().latched) return { accepted: false, reason: 'H25_REARM_NOT_ELIGIBLE' };
       const snapshot = this.game && this.game.snapshot ? this.game.snapshot() : null;
       const character = snapshot && snapshot.character;
       const server = snapshot && snapshot.server;
       const key = this._h25AutonomyHandoffKey(character && character.name, server);
       if (!key) return { accepted: false, reason: 'H25_REARM_IDENTITY_UNAVAILABLE' };
+      // SSD-only handoff: never read stale browser storage on host failure.
+      const row = await this.durableStorage.read(key);
       let value = null;
-      try { value = JSON.parse(this.storage.getShared(key) || 'null'); } catch (_) {}
+      try { value = row.found === true ? JSON.parse(row.value || 'null') : null; } catch (_) {}
       if (!value) return { accepted: false, reason: 'H25_REARM_NO_HANDOFF' };
       const now = Date.now();
       const names = Array.isArray(value.desiredCharacterNames)
@@ -39961,8 +40304,22 @@ class MerchantProductionPlanner {
         && Number(value.expiresAtMs) - Number(value.createdAtMs) <= 120000
         && names.length === 4 && names.includes(character.name)
         && names.every(name => owned.includes(name));
-      if (typeof this.storage.removeShared === 'function') this.storage.removeShared(key);
+      // Invalid handoff evidence may be needed for reconciliation. Do not
+      // automatically erase it simply because it cannot authorize a rearm.
       if (!valid) return { accepted: false, reason: 'H25_REARM_HANDOFF_INVALID' };
+      // A successful DELETE HTTP acknowledgement is not proof that a stale
+      // handoff cannot be replayed. Confirm absence before rearming.
+      await this.durableStorage.remove(key);
+      const cleared = await this.durableStorage.read(key);
+      if (!cleared || cleared.ok !== true || cleared.found !== false) {
+        return { accepted: false, reason: 'H25_REARM_HANDOFF_CLEAR_UNCONFIRMED' };
+      }
+      // Emergency STOP or runtime state may change during the awaited SSD
+      // calls. Re-evaluate the latch immediately before enabling autonomy.
+      if (!this.running || this.stopLatch.status().latched
+          || !this.fullAutonomy || this.fullAutonomy.enabled === true) {
+        return { accepted: false, reason: 'H25_REARM_NOT_ELIGIBLE' };
+      }
       // Starting only arms the local controller. Party and farming mutations
       // still require their independent live readiness/ownership gates.
       const result = this.fullAutonomy.startAutonomy({
@@ -39985,7 +40342,7 @@ class MerchantProductionPlanner {
 
       await this.modules.startAll(this._runtimeContext());
       try {
-        const handoff = this._consumeH25AutonomyHandoff();
+        const handoff = await this._consumeH25AutonomyHandoff();
         if (handoff && handoff.accepted) this.logger.info('H25 Full Autonomy nach Browserwechsel reaktiviert');
       } catch (error) {
         this.logger.warn('H25 Full Autonomy Handoff fehlgeschlagen', {
@@ -40036,7 +40393,12 @@ class MerchantProductionPlanner {
     }
 
     resetEmergencyStop() {
-      this.stopLatch.reset();
+      const result = this.stopLatch.reset();
+      // A denied disk/browser-store reset must be visible to the operator:
+      // never imply success merely because the API returned a status object.
+      if (result && result.resetBlocked === true) {
+        throw new Error('EMERGENCY_STOP_RESET_PERSISTENCE_UNCONFIRMED');
+      }
       return this.status();
     }
 
@@ -42506,7 +42868,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.69-h26',
+    version: '0.26.79-h26',
     bootCount,
     replacedPrevious: !!previous
   });

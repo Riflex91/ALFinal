@@ -14,7 +14,7 @@ const env=()=>{
 };
 function load(root,name){vm.runInNewContext(fs.readFileSync(path.resolve(dir,'../src/'+name),'utf8'),root,{filename:name});}
 
-test('H41 validated H25 swap re-arms only the exact new owned character on the exact server and consumes intent once',()=>{
+test('H41 validated H25 swap re-arms only the exact new owned character on the exact server and consumes intent once',async()=>{
  const root=env();load(root,'runtime.js');
  const C=root.__ALBOT_INTERNALS__.ALBotRuntime;
  const runtime=Object.create(C.prototype);
@@ -27,28 +27,32 @@ test('H41 validated H25 swap re-arms only the exact new owned character on the e
  runtime.roster={refresh:()=>({accountCharacters:names.map(name=>({name}))})};
  let starts=0,got=null;
  runtime.fullAutonomy={enabled:false,startAutonomy:o=>{starts++;got=o;return {accepted:true}}};
- runtime.storage={
-  getShared:k=>values.get(k)||null,
-  removeShared:k=>{values.delete(k);return true;}
+ runtime.durableStorage={
+  read:async k=>({ok:true,found:values.has(k),value:values.get(k)||null}),
+  remove:async k=>{values.delete(k);return {ok:true,removed:true};}
  };
  const now=Date.now();
  values.set(key,JSON.stringify({schemaVersion:1,source:'H25_VALIDATED_BROWSER_SWAP',
   sourceCharacterName:'My_Ranger1',targetCharacterName:'My_Ranger3',
   serverRegion:'EU',serverIdentifier:'II',taskType:'FARM',desiredCharacterNames:names,
   createdAtMs:now,expiresAtMs:now+60000}));
- assert.equal(runtime._consumeH25AutonomyHandoff().accepted,true);
+ assert.equal((await runtime._consumeH25AutonomyHandoff()).accepted,true);
  assert.equal(starts,1);assert.equal(got.taskType,'FARM');
- assert.equal(runtime._consumeH25AutonomyHandoff().accepted,false);
+ assert.equal((await runtime._consumeH25AutonomyHandoff()).accepted,false);
  assert.equal(starts,1);
  values.set(key,JSON.stringify({schemaVersion:1,source:'H25_VALIDATED_BROWSER_SWAP',
   sourceCharacterName:'My_Ranger1',targetCharacterName:'My_Ranger3',
   serverRegion:'US',serverIdentifier:'II',taskType:'FARM',desiredCharacterNames:names,
   createdAtMs:now,expiresAtMs:now+60000}));
- assert.equal(runtime._consumeH25AutonomyHandoff().accepted,false);
- assert.equal(starts,1);assert.equal(values.has(key),false);
+ const blocked = await runtime._consumeH25AutonomyHandoff();
+ assert.equal(blocked.accepted,false);
+ assert.equal(blocked.reason,'H25_REARM_HANDOFF_INVALID');
+ assert.equal(starts,1);
+ // Invalid SSD evidence is preserved for explicit reconciliation, not deleted.
+ assert.equal(values.has(key),true);
 });
 
-test('H41 stale swap, rogue target mismatch and emergency STOP never grant autonomous work',()=>{
+test('H41 stale swap, rogue target mismatch and emergency STOP never grant autonomous work',async()=>{
  const root=env();load(root,'runtime.js');
  const C=root.__ALBOT_INTERNALS__.ALBotRuntime;
  const runtime=Object.create(C.prototype);
@@ -63,15 +67,18 @@ test('H41 stale swap, rogue target mismatch and emergency STOP never grant auton
  runtime.running=true;runtime.stopLatch={status:()=>({latched})};
  runtime.game={snapshot:()=>({character:{name:'My_Ranger3'},server})};
  runtime.roster={refresh:()=>({accountCharacters:names.map(name=>({name}))})};
- runtime.storage={getShared:k=>map.get(k)||null,removeShared:k=>{map.delete(k);return true}};
+ runtime.durableStorage={
+  read:async k=>({ok:true,found:map.has(k),value:map.get(k)||null}),
+  remove:async k=>{map.delete(k);return {ok:true,removed:true};}
+ };
  runtime.fullAutonomy={enabled:false,startAutonomy:()=>{starts++;return {accepted:true}}};
- assert.equal(runtime._consumeH25AutonomyHandoff().accepted,false);
+ assert.equal((await runtime._consumeH25AutonomyHandoff()).accepted,false);
  assert.equal(starts,0);
  latched=true;map.set(key,JSON.stringify({schemaVersion:1,source:'H25_VALIDATED_BROWSER_SWAP',
    sourceCharacterName:'My_Ranger1',targetCharacterName:'My_Ranger3',serverRegion:'EU',
    serverIdentifier:'II',taskType:'FARM',desiredCharacterNames:names,
    createdAtMs:Date.now(),expiresAtMs:Date.now()+60000}));
- assert.equal(runtime._consumeH25AutonomyHandoff().accepted,false);assert.equal(starts,0);
+ assert.equal((await runtime._consumeH25AutonomyHandoff()).accepted,false);assert.equal(starts,0);
 });
 
 test('H41 local undergeared rogue queues only safe inventory improvements into empty slots',()=>{
