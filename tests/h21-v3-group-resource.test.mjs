@@ -840,3 +840,38 @@ test('H22 live regression: structured potion cooldown rejection stays a known re
   assert.equal(status.lastUse.state, 'REJECTED');
   assert.equal(status.lastUse.reason, 'cooldown');
 });
+
+test('resource topoff honors live cooldown and does not dispatch unavailable potion', () => {
+  const f=resourceFixture({mp:100});
+  let blocked=true;
+  f.controller.root.is_on_cooldown=action=>blocked && action==='use_mp';
+  const waiting=f.controller.tick();
+  assert.equal(waiting.state,'WAITING');
+  assert.equal(waiting.reason,'RESOURCE_TOPOFF_LIVE_COOLDOWN');
+  assert.equal(f.state.dispatches.length,0);
+  blocked=false;
+  assert.equal(f.controller.tick().state,'DISPATCHED');
+  assert.equal(f.controller.status().metrics.liveCooldownWaits,1);
+});
+
+test('resource topoff does not retry instantly after a confirmed potion action', async () => {
+  const f=resourceFixture({mp:100});
+  assert.equal(f.controller.tick().state,'DISPATCHED');
+  await Promise.resolve();
+  assert.equal(f.controller.tick().state,'OBSERVED');
+  assert.equal(f.controller.tick().reason,'RESOURCE_TOPOFF_COOLDOWN');
+  assert.equal(f.state.dispatches.length,1);
+});
+
+test('resource topoff not_ready rejection applies a longer bounded backoff without UNKNOWN', async () => {
+  const f=resourceFixture({mp:100,rejectObjectReason:'not_ready'});
+  assert.equal(f.controller.tick().state,'DISPATCHED');
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(f.controller.tick().state,'OBSERVED');
+  const status=f.controller.status();
+  assert.equal(status.metrics.notReadyBackoffs,1);
+  assert.equal(status.metrics.unknown,0);
+  assert.ok(f.controller.backoffUntilMs-f.controller.now()>=2500);
+  assert.equal(f.controller.tick().reason,'RESOURCE_TOPOFF_COOLDOWN');
+});
