@@ -456,6 +456,94 @@ test('H19 rejected lifecycle Promise suspends without blind retry', async () => 
 });
 
 
+test('H19 late STOP live evidence clears the matching rejected-settlement suspension without redispatch', async () => {
+  const { controller, state } = fixture({
+    activeNames: ['My_Ranger', 'My_Priest', 'My_Merchant'],
+    rejectPromise: true,
+    noMutation: true
+  });
+  assert.equal(controller._enqueue('STOP', 'My_Merchant', { automatic: true }).accepted, true);
+  assert.equal(controller.tick().state, 'DISPATCHED');
+  await flush();
+  const unknown = controller.tick();
+  assert.equal(unknown.state, 'UNKNOWN');
+  assert.equal(unknown.reason, 'H19_DISPATCH_REJECTED_WITHOUT_LIVE_OUTCOME');
+  assert.equal(controller.status().currentAction.kind, 'STOP');
+  assert.equal(controller.status().currentAction.unknownRecorded, true);
+  assert.equal(controller.status().autonomyEnabled, false);
+
+  // A rejected settlement without live offline evidence must remain fail-closed.
+  assert.equal(controller.tick().state, 'UNKNOWN');
+  assert.equal(state.dispatches.length, 1);
+  assert.equal(controller.status().suspended, true);
+
+  // The exact STOP action is now confirmed by independent account roster truth.
+  state.online.delete('My_Merchant');
+  state.active.delete('My_Merchant');
+  const confirmed = controller.tick();
+  assert.equal(confirmed.state, 'CONFIRMED');
+  assert.equal(confirmed.kind, 'STOP');
+  assert.equal(confirmed.targetName, 'My_Merchant');
+  assert.equal(confirmed.details.evidence, 'ACTIVE_ROSTER_ABSENT');
+  assert.equal(confirmed.lateConfirmed, true);
+
+  const status = controller.status();
+  assert.equal(status.currentAction, null);
+  assert.equal(status.suspended, false);
+  assert.equal(status.suspendedReason, null);
+  assert.equal(status.autonomyEnabled, true);
+  assert.equal(status.lastAction.type, 'STOP_CONFIRMED');
+  assert.equal(status.lastAction.lateConfirmed, true);
+  assert.equal(status.metrics.actionsUnknown, 1);
+  assert.equal(status.metrics.actionsDispatched, 1);
+  assert.equal(status.metrics.actionsConfirmed, 1);
+  assert.equal(status.metrics.lateOutcomeRecoveries, 1);
+  assert.equal(state.dispatches.length, 1);
+});
+
+test('H19 rejected START stays suspended if there is no live state confirmation', async () => {
+  const { controller, state } = fixture({ rejectPromise: true, noMutation: true });
+  assert.equal(controller.queueStart('My_Merchant').accepted, true);
+  assert.equal(controller.tick().state, 'DISPATCHED');
+  await flush();
+  assert.equal(controller.tick().state, 'UNKNOWN');
+  for (let i = 0; i < 3; i += 1) {
+    assert.equal(controller.tick().state, 'UNKNOWN');
+  }
+  const status = controller.status();
+  assert.equal(status.suspended, true);
+  assert.equal(status.suspendedReason, 'H19_DISPATCH_REJECTED_WITHOUT_LIVE_OUTCOME');
+  assert.equal(status.currentAction.kind, 'START');
+  assert.equal(status.metrics.actionsConfirmed, 0);
+  assert.equal(status.metrics.lateOutcomeRecoveries, 0);
+  assert.equal(state.dispatches.length, 1);
+});
+
+test('H19 late confirmation does not clear a suspension attributed to another action kind', async () => {
+  const { controller, state } = fixture({
+    activeNames: ['My_Ranger', 'My_Priest', 'My_Merchant'],
+    rejectPromise: true,
+    noMutation: true
+  });
+  assert.equal(controller.queueStop('My_Merchant').accepted, true);
+  assert.equal(controller.tick().state, 'DISPATCHED');
+  await flush();
+  assert.equal(controller.tick().state, 'UNKNOWN');
+
+  // A mismatched safety reason cannot be cleared by an unrelated confirmation.
+  controller.suspendedReason = 'H19_START_UNVERIFIED_TIMEOUT';
+  state.online.delete('My_Merchant');
+  state.active.delete('My_Merchant');
+  const confirmed = controller.tick();
+  assert.equal(confirmed.state, 'CONFIRMED');
+  assert.equal(confirmed.lateConfirmed, false);
+  const status = controller.status();
+  assert.equal(status.suspended, true);
+  assert.equal(status.suspendedReason, 'H19_START_UNVERIFIED_TIMEOUT');
+  assert.equal(status.metrics.lateOutcomeRecoveries, 0);
+  assert.equal(state.dispatches.length, 1);
+});
+
 test('H19 synchronous UNKNOWN preserves ownership, removes queued duplicate and counts once', () => {
   const { controller, state } = fixture({ syncUnknown: true, noMutation: true });
   assert.equal(controller.queueStart('My_Merchant').accepted, true);

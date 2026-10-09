@@ -643,3 +643,23 @@ Die bereits separat erfasste Remote-Recovery-Evidence aus dem inzwischen stale g
 - Cleanup PASS: Ziel aktiv, Autonomie aus, keine aktive Aktion, Queue leer, keine Suspension; Lifecycle-Policy wiederhergestellt.
 
 Dieser Nachtrag ersetzt oder veraendert keine fruehere Evidence; er stellt lediglich sicher, dass der aktuelle, auf neuem `main` basierende H19-Abschluss-PR sowohl Remote-Recovery- als auch Party-Recovery-Evidence enthaelt.
+
+
+### Incident 2026-10-09 – H19 rejected settlement, later confirmed STOP
+
+Live diagnosis for `My_Merchant` on `0.26.68-h26`: H19 remained
+`suspended=true` with `H19_DISPATCH_REJECTED_WITHOUT_LIVE_OUTCOME`,
+`currentAction=null`, and `lastAction.type=STOP_CONFIRMED` for `My_Rogue`.
+This is consistent with an UNKNOWN transport settlement being subsequently
+confirmed by the actual game state while the old safety latch remained set.
+The live report does not include the original rejected settlement payload.
+
+Candidate change: only when the still-owned, UNKNOWN-recorded, REJECTED action
+receives a trusted live confirmation does H19 clear its matching rejection
+suspension and resume automatic lifecycle ownership if that action was automatic.
+Without live evidence the UNKNOWN remains suspended, with no blind retry.
+
+**Live validation pending:** the candidate is not yet demonstrated to clear this
+condition in a real Adventure Land run. The previously latched `0.26.68-h26`
+instance is not retroactively cleared by code changes in this PR. Do not
+blindly retry character starts or reset UNKNOWN ownership without reconciliation.
