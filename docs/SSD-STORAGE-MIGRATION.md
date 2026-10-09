@@ -235,6 +235,23 @@ This is still browser-store staging. It does **not** replace the future SSD
 preload and confirmed asynchronous STOP/UNKNOWN state transition; legacy
 browser safety records must not be deleted during this stage.
 
+## H25 single-use SSD handoff reconciliation
+
+The candidate's H25 browser-navigation handoff is stored in native SSD
+KV only; this is not a license to switch the account/telemetry writer.
+Before a validated handoff can re-arm Full Autonomy, the target runtime
+must verify the exact character, server, roster, expiry, and Emergency STOP
+status. It then performs the intended single-use SSD DELETE and confirms
+the key is absent through a separate SSD GET. An acknowledged but ignored
+DELETE must block the re-arm with `H25_REARM_HANDOFF_CLEAR_UNCONFIRMED`.
+Host read errors likewise do not authorize re-arm.
+
+Malformed, expired, or mismatched H25 handoff records return
+`H25_REARM_HANDOFF_INVALID` **without automatic deletion**: preserve the
+evidence for operator-controlled reconciliation. This is a runtime gate,
+not a live-proof substitute. The automated H36/H41 tests use mocked SSD
+responses and do not establish actual Windows KV durability.
+
 ## Read-only browser safety witness (one browser context at a time)
 
 After reviewing `scripts/ssd-browser-safety-witness.js` in the exact
