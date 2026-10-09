@@ -147,7 +147,10 @@ test('H41 remote advisory never authorizes a Merchant direct gear delivery witho
   snapshot:()=>({available:true,character:{name:'My_Merchant',ctype:'merchant'}}),
   equipmentSnapshot:()=>({available:false,reason:'TARGET_NOT_VISIBLE'}),
   equipmentDefinition:name=>name==='hpamulet'
-    ? {name:'hpamulet',type:'amulet',classes:[],stats:{hp:100},upgradeGrowth:{}} : null
+    ? {name:'hpamulet',type:'amulet',classes:[],stats:{hp:100},upgradeGrowth:{}}
+    : name==='claw'
+      ? {name:'claw',type:'weapon',wtype:'fist',classes:[],stats:{attack:2},upgradeGrowth:{}}
+      : null
  };
  const peer={running:true,profile:{
   name:'My_Rogue',ctype:'rogue',observedAtMs:Date.now(),equipmentKnown:true,
