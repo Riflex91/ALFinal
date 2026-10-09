@@ -44,8 +44,12 @@ test('H41 validated H25 swap re-arms only the exact new owned character on the e
   sourceCharacterName:'My_Ranger1',targetCharacterName:'My_Ranger3',
   serverRegion:'US',serverIdentifier:'II',taskType:'FARM',desiredCharacterNames:names,
   createdAtMs:now,expiresAtMs:now+60000}));
- assert.equal((await runtime._consumeH25AutonomyHandoff()).accepted,false);
- assert.equal(starts,1);assert.equal(values.has(key),false);
+ const blocked = await runtime._consumeH25AutonomyHandoff();
+ assert.equal(blocked.accepted,false);
+ assert.equal(blocked.reason,'H25_REARM_HANDOFF_INVALID');
+ assert.equal(starts,1);
+ // Invalid SSD evidence is preserved for explicit reconciliation, not deleted.
+ assert.equal(values.has(key),true);
 });
 
 test('H41 stale swap, rogue target mismatch and emergency STOP never grant autonomous work',async()=>{
