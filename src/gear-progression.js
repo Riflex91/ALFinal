@@ -374,12 +374,11 @@
     _profileEquipment(profile) {
       if (!profile || !profile.equipment || typeof profile.equipment !== 'object') return null;
       if (profile.equipmentKnown === false) return null;
-      // An explicitly observed empty equipment map is known empty, not
-      // UNKNOWN. Account/merchant risk checks still require fresh evidence.
-      return profile.equipmentKnown === true
+      // An empty map is not sufficient proof that all equipment slots were
+      // inspected; retain H32's fail-closed requirement.
+      return Object.values(profile.equipment).some(item => item && item.name)
         ? profile.equipment
-        : (Object.values(profile.equipment).some(item => item && item.name)
-          ? profile.equipment : null);
+        : null;
     }
 
     _classProfile(ctype) {

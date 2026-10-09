@@ -130,11 +130,11 @@ test('H41 merchant sees gear of fresh remote Rogue for planning but not from an 
  assert.equal(gear._equipmentSnapshot('My_Rogue').available,false);
 });
 
-test('H41 future gear evaluator considers verified empty loadout known, not profile equipment UNKNOWN',()=>{
+test('H41 future gear evaluator preserves H32 unknown-gear guard for empty snapshots',()=>{
  const root=env();load(root,'gear-progression.js');
  const C=root.__ALBOT_INTERNALS__.FutureGearEconomyEvaluator;
  const g=new C({root});
- assert.deepEqual(clone(g._profileEquipment({equipment:{},equipmentKnown:true})),{});
+ assert.equal(g._profileEquipment({equipment:{},equipmentKnown:true}),null);
  assert.equal(g._profileEquipment({equipment:{},equipmentKnown:false}),null);
  assert.equal(g._profileEquipment({equipment:null,equipmentKnown:true}),null);
 });
