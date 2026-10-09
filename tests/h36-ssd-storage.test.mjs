@@ -140,3 +140,99 @@ test('H36 H25 emergency STOP disallows SSD handoff consumption and gameplay rear
   assert.equal(result.reason, 'H25_REARM_NOT_ELIGIBLE');
   assert.deepEqual(f.calls, []);
 });
+
+
+test('H36 H25 preparation requires a confirmed SSD write readback before browser handoff', async () => {
+  const f = h25HandoffFixture();
+  const key = f.proto._h25AutonomyHandoffKey('My_Mage', { region: 'EU', identifier: 'I' });
+  let saved = null;
+  f.runtime.durableStorage = {
+    async read(requested) {
+      assert.equal(requested, key);
+      f.calls.push('read');
+      return saved === null ? { ok: true, found: false }
+        : { ok: true, found: true, value: saved };
+    },
+    async write(requested, value, opts) {
+      assert.equal(requested, key);
+      assert.equal(opts.expiresAtMs, 123456);
+      f.calls.push('write');
+      saved = value;
+      return { ok: true };
+    }
+  };
+  const result = await f.proto._prepareH25DurableIntent.call(
+    f.runtime, key, 'exact-intent', 123456);
+  assert.equal(result, true);
+  assert.deepEqual(f.calls, ['read', 'write', 'read']);
+  assert.equal(saved, 'exact-intent');
+});
+
+test('H36 H25 preparation refuses existing unresolved intent without overwriting evidence', async () => {
+  const f = h25HandoffFixture();
+  let overwritten = false;
+  f.runtime.durableStorage = {
+    read: async () => { f.calls.push('read'); return { ok: true, found: true, value: 'original-evidence' }; },
+    write: async () => { overwritten = true; f.calls.push('write'); return { ok: true }; }
+  };
+  await assert.rejects(
+    f.proto._prepareH25DurableIntent.call(f.runtime, 'albot:h25:test', 'new-intent', 100),
+    /H25_SSD_HANDOFF_EXISTING_REQUIRES_RECONCILIATION/
+  );
+  assert.equal(overwritten, false);
+  assert.deepEqual(f.calls, ['read']);
+});
+
+test('H36 H25 preparation refuses unverified prewrite reads and performs no write', async () => {
+  for (const row of [{ ok: false, found: false }, { ok: true }, null]) {
+    const f = h25HandoffFixture();
+    f.runtime.durableStorage = {
+      read: async () => { f.calls.push('read'); return row; },
+      write: async () => { f.calls.push('write'); return { ok: true }; }
+    };
+    await assert.rejects(
+      f.proto._prepareH25DurableIntent.call(f.runtime, 'albot:h25:test', 'intent', 100),
+      /H25_SSD_HANDOFF_PREWRITE_READ_UNCONFIRMED/
+    );
+    assert.deepEqual(f.calls, ['read']);
+  }
+});
+
+test('H36 H25 preparation blocks acknowledged no-op and mismatched SSD readback', async () => {
+  for (const readback of [
+    { ok: true, found: false },
+    { ok: true, found: true, value: 'wrong-intent' },
+    { ok: false, found: true, value: 'exact-intent' }
+  ]) {
+    const f = h25HandoffFixture();
+    let count = 0;
+    f.runtime.durableStorage = {
+      read: async () => {
+        f.calls.push('read');
+        return count++ === 0 ? { ok: true, found: false } : readback;
+      },
+      write: async () => { f.calls.push('write'); return { ok: true }; }
+    };
+    await assert.rejects(
+      f.proto._prepareH25DurableIntent.call(f.runtime, 'albot:h25:test', 'exact-intent', 100),
+      /H25_SSD_HANDOFF_PERSISTENCE_UNCONFIRMED/
+    );
+    assert.deepEqual(f.calls, ['read', 'write', 'read']);
+  }
+});
+
+test('H36 H25 rearm rechecks emergency STOP after asynchronous SSD consumption', async () => {
+  const f = h25HandoffFixture();
+  let latched = false;
+  f.runtime.stopLatch.status = () => ({ latched });
+  const originalRead = f.runtime.durableStorage.read;
+  f.runtime.durableStorage.read = async () => {
+    const row = await originalRead();
+    if (f.calls.filter(call => call === 'read').length === 2) latched = true;
+    return row;
+  };
+  const outcome = await f.proto._consumeH25AutonomyHandoff.call(f.runtime);
+  assert.equal(outcome.accepted, false);
+  assert.equal(outcome.reason, 'H25_REARM_NOT_ELIGIBLE');
+  assert.deepEqual(f.calls, ['read', 'remove', 'read']);
+});
