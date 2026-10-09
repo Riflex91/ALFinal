@@ -141,7 +141,10 @@
         actions: this.actions,
         inventory: this.inventory,
         roster: this.roster,
-        combat: this.combat
+        combat: this.combat,
+        crossWindow: this.lifecycleTransport,
+        autoEquipAllowed: () => this.running === true && this.fullAutonomy
+          && this.fullAutonomy.enabled === true && !this.stopLatch.status().latched
       });
       this.gearProgression = new ns.FutureGearEconomyEvaluator({
         root: this.root,
@@ -324,10 +327,39 @@
           + '/in/' + encodeURIComponent(String(server.region))
           + '/' + encodeURIComponent(String(server.identifier)) + '/';
 
+        // Carry Full Autonomy across the H25 browser swap. New runner roots
+        // have no in-memory state; H19 requires the *new* peer to re-arm before
+        // it confirms rotation. Persist one short-lived, server-scoped intent.
+        let rearmKey = null;
+        const previousAutonomy = this.fullAutonomy && typeof this.fullAutonomy.status === 'function'
+          ? this.fullAutonomy.status() : null;
+        if (previousAutonomy && previousAutonomy.enabled === true) {
+          if (!sourceName || sourceName === name || !this.storage
+              || typeof this.storage.setShared !== 'function'
+              || this.storage.sharedAvailable() !== true) {
+            throw new Error('H25_AUTONOMY_HANDOFF_UNAVAILABLE');
+          }
+          rearmKey = this._h25AutonomyHandoffKey(name, server);
+          const intended = {
+            schemaVersion: 1, source: 'H25_VALIDATED_BROWSER_SWAP',
+            sourceCharacterName: sourceName, targetCharacterName: name,
+            serverRegion: String(server.region), serverIdentifier: String(server.identifier),
+            taskType: 'FARM',
+            desiredCharacterNames: Array.isArray(previousAutonomy.desiredCharacterNames)
+              ? previousAutonomy.desiredCharacterNames.slice(0, 4) : [],
+            createdAtMs: Date.now(), expiresAtMs: Date.now() + 120000
+          };
+          if (!rearmKey || this.storage.setShared(rearmKey, JSON.stringify(intended)) !== true) {
+            throw new Error('H25_AUTONOMY_HANDOFF_WRITE_FAILED');
+          }
+        }
         // Final durable gear snapshot before the page leaves this character.
         try { if (this.accountStrategy) this.accountStrategy.persistLocalProfile(); } catch (_) {}
         try { if (this.hostState) this.hostState.flushFinalBestEffort(); } catch (_) {}
-        view.location.assign(url);
+        try { view.location.assign(url); } catch (error) {
+          if (rearmKey && typeof this.storage.removeShared === 'function') this.storage.removeShared(rearmKey);
+          throw error;
+        }
         return {
           accepted: true,
           url,
@@ -5780,6 +5812,58 @@
       return ns.helpers.clone(guard);
     }
 
+    _h25AutonomyHandoffKey(targetName, server) {
+      if (!targetName || !server || !server.region || !server.identifier) return null;
+      return 'albot:h25:autonomy-handoff:v1:'
+        + encodeURIComponent(String(server.region)) + ':'
+        + encodeURIComponent(String(server.identifier)) + ':'
+        + encodeURIComponent(String(targetName));
+    }
+
+    _consumeH25AutonomyHandoff() {
+      if (!this.running || !this.fullAutonomy || this.fullAutonomy.enabled === true
+          || !this.storage || typeof this.storage.getShared !== 'function'
+          || this.stopLatch.status().latched) return { accepted: false, reason: 'H25_REARM_NOT_ELIGIBLE' };
+      const snapshot = this.game && this.game.snapshot ? this.game.snapshot() : null;
+      const character = snapshot && snapshot.character;
+      const server = snapshot && snapshot.server;
+      const key = this._h25AutonomyHandoffKey(character && character.name, server);
+      if (!key) return { accepted: false, reason: 'H25_REARM_IDENTITY_UNAVAILABLE' };
+      let value = null;
+      try { value = JSON.parse(this.storage.getShared(key) || 'null'); } catch (_) {}
+      if (!value) return { accepted: false, reason: 'H25_REARM_NO_HANDOFF' };
+      const now = Date.now();
+      const names = Array.isArray(value.desiredCharacterNames)
+        ? [...new Set(value.desiredCharacterNames.map(String))].sort() : [];
+      let owned = [];
+      try {
+        const roster = this.roster && this.roster.refresh ? this.roster.refresh() : null;
+        owned = roster && Array.isArray(roster.accountCharacters)
+          ? roster.accountCharacters.map(row => String(row.name || '')) : [];
+      } catch (_) {}
+      const valid = value.schemaVersion === 1 && value.source === 'H25_VALIDATED_BROWSER_SWAP'
+        && value.targetCharacterName === String(character.name)
+        && value.sourceCharacterName && value.sourceCharacterName !== value.targetCharacterName
+        && value.serverRegion === String(server.region)
+        && value.serverIdentifier === String(server.identifier)
+        && value.taskType === 'FARM'
+        && Number.isFinite(Number(value.createdAtMs))
+        && Number.isFinite(Number(value.expiresAtMs))
+        && now >= Number(value.createdAtMs) - 5000
+        && now <= Number(value.expiresAtMs)
+        && Number(value.expiresAtMs) - Number(value.createdAtMs) <= 120000
+        && names.length === 4 && names.includes(character.name)
+        && names.every(name => owned.includes(name));
+      if (typeof this.storage.removeShared === 'function') this.storage.removeShared(key);
+      if (!valid) return { accepted: false, reason: 'H25_REARM_HANDOFF_INVALID' };
+      // Starting only arms the local controller. Party and farming mutations
+      // still require their independent live readiness/ownership gates.
+      const result = this.fullAutonomy.startAutonomy({
+        taskType: 'FARM', waitForRoster: true, desiredCharacterNames: names
+      });
+      return { accepted: !!(result && result.accepted), reason: result && result.reason || null };
+    }
+
     async start() {
       if (this._destroyed) throw new Error('ALBOT_RUNTIME_DESTROYED');
       if (this.stopLatch.status().latched) throw new Error('ALBOT_START_BLOCKED_BY_EMERGENCY_STOP');
@@ -5793,6 +5877,14 @@
       try { this.roster.refresh(); } catch (_) {}
 
       await this.modules.startAll(this._runtimeContext());
+      try {
+        const handoff = this._consumeH25AutonomyHandoff();
+        if (handoff && handoff.accepted) this.logger.info('H25 Full Autonomy nach Browserwechsel reaktiviert');
+      } catch (error) {
+        this.logger.warn('H25 Full Autonomy Handoff fehlgeschlagen', {
+          reason: ns.helpers.cleanText(error && error.message || error || 'H25_HANDOFF_FAILED', 200)
+        });
+      }
       this.scheduler.interval('runtime', 'module-watchdog', () => {
         this.modules.checkWatchdogs();
       }, 1000, { immediate: true });

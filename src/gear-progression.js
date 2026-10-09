@@ -374,9 +374,12 @@
     _profileEquipment(profile) {
       if (!profile || !profile.equipment || typeof profile.equipment !== 'object') return null;
       if (profile.equipmentKnown === false) return null;
-      return Object.values(profile.equipment).some(item => item && item.name)
+      // An explicitly observed empty equipment map is known empty, not
+      // UNKNOWN. Account/merchant risk checks still require fresh evidence.
+      return profile.equipmentKnown === true
         ? profile.equipment
-        : null;
+        : (Object.values(profile.equipment).some(item => item && item.name)
+          ? profile.equipment : null);
     }
 
     _classProfile(ctype) {
@@ -948,7 +951,10 @@
             itemCount: family === 'COMPOUND' ? 3 : 1
           });
           if (!mutationPolicy.allowed) action = 'HOLD';
-        } else if (protection.targetOnline !== true) {
+        } else if (action === 'GEAR') {
+          // Reservations are needed for H18 even when the target is online.
+          // The old offline-only condition made every online Gear delivery
+          // impossible despite complete, validated equipment evidence.
           this._rememberGearReservation(item, protection);
         }
         return {

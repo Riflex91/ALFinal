@@ -54,6 +54,10 @@
       this.inventory = options.inventory || null;
       this.roster = options.roster || null;
       this.combat = options.combat || null;
+      this.crossWindow = options.crossWindow || null;
+      this.autoEquipAllowed = typeof options.autoEquipAllowed === 'function'
+        ? options.autoEquipAllowed : () => false;
+      this.autoEquipLastAtMs = 0;
       this.moduleActive = false;
       this.scope = null;
       this.pending = null;
@@ -66,7 +70,8 @@
       this.config = {
         tickMs: Math.max(250, Math.min(5000, Number(options.tickMs) || 750)),
         outcomeTimeoutMs: Math.max(1000, Math.min(60000, Number(options.outcomeTimeoutMs) || 6000)),
-        improvementEpsilon: Math.max(0, Number(options.improvementEpsilon) || 0.01)
+        improvementEpsilon: Math.max(0, Number(options.improvementEpsilon) || 0.01),
+        autoEquipProbeMs: Math.max(3000, Math.min(60000, Number(options.autoEquipProbeMs) || 15000))
       };
       this.metrics = {
         ticks: 0,
@@ -88,7 +93,8 @@
         safetyBlocks: 0,
         twoHandBlocks: 0,
         combatBlocks: 0,
-        goalEvaluations: 0
+        goalEvaluations: 0,
+        autoEquipQueued: 0
       };
     }
 
@@ -166,8 +172,29 @@
     }
 
     _equipmentSnapshot(name = null) {
-      try { return this.game && this.game.equipmentSnapshot ? this.game.equipmentSnapshot(name) : null; }
-      catch (_) { return null; }
+      let observed = null;
+      try { observed = this.game && this.game.equipmentSnapshot ? this.game.equipmentSnapshot(name) : null; } catch (_) {}
+      if (observed && observed.available !== false) return observed;
+      // Advisory cross-window snapshot for GROUP PLANNING only. This is not
+      // remote action permission: H14 delivery revalidation requires actual
+      // visible, live target equipment before send_item.
+      if (!name || !this.crossWindow || typeof this.crossWindow.freshPeer !== 'function') return observed;
+      let peer = null;
+      try { peer = this.crossWindow.freshPeer(String(name)); } catch (_) {}
+      const p = peer && peer.profile;
+      const at = p && Number(p.observedAtMs);
+      if (!peer || !peer.running || !p || p.equipmentKnown !== true
+          || !p.equipment || typeof p.equipment !== 'object'
+          || !Number.isFinite(at) || Date.now() - at > 9000 || at > Date.now() + 5000) return observed;
+      const slots = {};
+      for (const [slot, item] of Object.entries(p.equipment)) {
+        if (!GEAR_SLOTS.includes(slot) || !item || !item.name) continue;
+        const def = this._equipmentDefinition(item.name);
+        if (!def) return observed;
+        slots[slot] = { ...clone(item), slot, definition: def };
+      }
+      return { schemaVersion: 1, available: true, source: 'FRESH_PEER_ADVISORY',
+        character: { name: String(name), ctype: p.ctype }, slots };
     }
 
     _roster() {
@@ -869,7 +896,10 @@
       const row = (inventory.items || []).find(item => Number(item.slot) === Number(request.inventorySlot));
       if (!row || this._fingerprint(row) !== request.candidateFingerprint) return { ok: false, reason: 'H14_DELIVERY_SOURCE_CHANGED' };
       if (row.locked || row.giveaway || row.gift || row.expiresAt) return { ok: false, reason: 'H14_DELIVERY_ITEM_NOT_TRANSFER_SAFE' };
-      const targetEquipment = this._equipmentSnapshot(request.targetName);
+      // The peer snapshot is advisory: only the live target visible to the
+      // Merchant authorizes this irreversible transfer.
+      const targetEquipment = this.game && this.game.equipmentSnapshot
+        ? this.game.equipmentSnapshot(request.targetName) : null;
       if (!targetEquipment || targetEquipment.available === false) return { ok: false, reason: 'H14_DELIVERY_TARGET_NOT_VISIBLE' };
       const current = targetEquipment.slots && targetEquipment.slots[request.targetSlot] || null;
       const currentScore = current ? this.score(current, farmer.ctype) : Number.NEGATIVE_INFINITY;
@@ -892,7 +922,27 @@
       }
 
       const request = this.request;
-      if (!request) return this.plan();
+      if (!request) {
+        // Empty slots are safe, high-value improvements for undergeared
+        // farmers. Never auto-replace equipped items or act during combat.
+        const now = Date.now();
+        if (now - this.autoEquipLastAtMs >= this.config.autoEquipProbeMs
+            && this.autoEquipAllowed() === true && !this._combatActive()) {
+          this.autoEquipLastAtMs = now;
+          const plan = this.plan();
+          const first = plan && plan.local && (plan.local.improvements || []).find(row =>
+            row.current == null && row.safeSwitch === true && row.bestInventory);
+          if (first) {
+            const queued = this.queueEquip(first.bestInventory.inventorySlot, first.slot);
+            if (queued && queued.accepted) {
+              this.metrics.autoEquipQueued += 1;
+              return { state: 'QUEUED', reason: 'H14_AUTO_EQUIP_EMPTY_SLOT', request: clone(queued.request) };
+            }
+          }
+          return plan;
+        }
+        return this.plan();
+      }
 
       const inventory = this._inventorySnapshot();
       if (!inventory || inventory.available === false) return { state: 'BLOCKED', reason: 'H14_INVENTORY_UNAVAILABLE' };

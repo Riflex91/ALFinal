@@ -967,6 +967,22 @@
 
       if (now - this.lastLogisticsProbeAtMs >= this.config.logisticsProbeMs && !economyNow.currentAction) {
         this.lastLogisticsProbeAtMs = now;
+        // Only H28 explicitly reserved gear may enter H18 delivery. An
+        // advisory remote snapshot never authorizes send_item by itself.
+        try {
+          const gear = this.runtime.gear;
+          const future = this.runtime.gearProgression;
+          if (gear && future && typeof gear.plan === 'function'
+              && typeof future.deliveryAuthorization === 'function') {
+            const proposals = gear.plan().group.proposals || [];
+            for (const candidate of proposals) {
+              const authorization = future.deliveryAuthorization(candidate.item, candidate.targetName);
+              if (!authorization || authorization.allowed !== true) continue;
+              const queued = logistics.queueGearDelivery(candidate.targetName, candidate.inventorySlot);
+              if (queued && queued.accepted === true) break;
+            }
+          }
+        } catch (_) {}
         const wasEconomyOwned = this.started.economy && economyNow.autonomyEnabled === true;
         if (wasEconomyOwned) {
           try { economy.stopAutonomy('FULL_AUTONOMY_LOGISTICS_PROBE'); } catch (_) {}
