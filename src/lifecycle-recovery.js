@@ -995,6 +995,12 @@
 
     resetSafety(reason = 'H19_EXPLICIT_RESET') {
       if (this.currentAction) return { accepted: false, reason: 'H19_ACTION_IN_FLIGHT' };
+      // A corrupt/inaccessible pending record may represent an already
+      // dispatched irreversible action. A mere button press cannot prove
+      // absence or authorize overwriting it with a new pending request.
+      if (this.suspendedReason === 'H19_PENDING_RESTORE_UNVERIFIED') {
+        return { accepted: false, reason: 'H19_PENDING_RESTORE_REQUIRES_RECONCILIATION' };
+      }
       this.suspended = false;
       this.suspendedReason = null;
       this.lastAction = { at: nowIso(), type: 'SAFETY_RESET', reason: cleanText(reason, 200) };
