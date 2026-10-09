@@ -94,6 +94,25 @@ test('global emergency stop blocks actions and persists until reset', async () =
   assert.equal(ctx.ALBot.status().emergencyStop.latched, false);
 });
 
+test('runtime STOP reset explicitly fails when the durable reset cannot be confirmed', async () => {
+  const ctx = runtimeContext();
+  vm.runInNewContext(bundle, ctx);
+  await ctx.ALBot.start();
+  await ctx.ALBot.emergencyStop('TEST_DURABLE_RESET_BLOCK');
+  assert.equal(ctx.ALBot.status().emergencyStop.latched, true);
+  const setter = ctx.localStorage.setItem;
+  ctx.localStorage.setItem = () => { throw new Error('QuotaExceededError'); };
+  try {
+    assert.throws(() => ctx.ALBot.resetEmergencyStop(),
+      /EMERGENCY_STOP_RESET_PERSISTENCE_UNCONFIRMED/);
+    assert.equal(ctx.ALBot.status().emergencyStop.latched, true);
+    assert.equal(ctx.ALBot.actions.canAct('test'), false);
+  } finally {
+    ctx.localStorage.setItem = setter;
+  }
+  assert.equal(ctx.ALBot.resetEmergencyStop().emergencyStop.latched, false);
+});
+
 test('goal service supports add, pause, resume, cancel and strategic priorities', () => {
   const ctx = runtimeContext();
   vm.runInNewContext(bundle, ctx);
