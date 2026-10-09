@@ -312,8 +312,19 @@
         const ageMs = Math.max(0, finite(peer.ageMs, this.now() - finite(peer.observedAtMs, this.now())));
         if (peer.fresh !== true) add('GROUP_PEER_STALE:' + name, ageMs >= this.config.peerCriticalMs ? 2 : 1, 'group');
         const observationState = cleanText(peer.observation && peer.observation.state || '', 20).toUpperCase() || null;
-        if (observationState === 'CRITICAL') add('GROUP_PEER_CRITICAL:' + name, 2, 'group');
-        else if (observationState === 'DEGRADED') add('GROUP_PEER_DEGRADED:' + name, 1, 'group');
+        const substates = peer.observation && peer.observation.subsystems || null;
+        // Group status is an aggregate, not an independent failure. Replaying
+        // remote GROUP_PEER_DEGRADED in every window created a WARN cascade.
+        const independent = substates && ['runtime', 'farmer', 'merchant']
+          .map(slot => cleanText(substates[slot] && substates[slot].state || '', 20).toUpperCase());
+        if (independent && independent.includes('CRITICAL')) {
+          add('GROUP_PEER_CRITICAL:' + name, 2, 'group');
+        } else if (independent && independent.includes('DEGRADED')) {
+          add('GROUP_PEER_DEGRADED:' + name, 1, 'group');
+        } else if (!independent && observationState === 'CRITICAL') {
+          // Legacy peers with no breakdown must still propagate hard faults.
+          add('GROUP_PEER_CRITICAL:' + name, 2, 'group');
+        }
         remote.push({ name, fresh: peer.fresh === true, ageMs, observationState });
       }
 
