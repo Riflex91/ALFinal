@@ -40221,7 +40221,12 @@ class MerchantProductionPlanner {
     }
 
     resetEmergencyStop() {
-      this.stopLatch.reset();
+      const result = this.stopLatch.reset();
+      // A denied disk/browser-store reset must be visible to the operator:
+      // never imply success merely because the API returned a status object.
+      if (result && result.resetBlocked === true) {
+        throw new Error('EMERGENCY_STOP_RESET_PERSISTENCE_UNCONFIRMED');
+      }
       return this.status();
     }
 
