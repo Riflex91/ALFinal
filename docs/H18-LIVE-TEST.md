@@ -297,3 +297,27 @@ Die Gold-Verteilung wurde im bounded H18-Live-Gate bewusst nicht mutiert; sie bl
 **H18 – Party Logistics ist damit abgeschlossen.**
 
 Nächster Entwicklungsblock: **H19 – Character Lifecycle & Recovery**.
+
+## Ergänzung 2026-10-09 – Cross-Map-Gear-Logistik (PR #113)
+
+Der historische H18-Live-PASS oben betrifft Regroup/Potion-Supply; er ist **kein** Live-Nachweis
+für Cross-Map-Gear-Transfers.
+
+- H29 gibt nur lokal beobachtete `x/y`-Positionen weiter; unbekannte Werte bleiben `null`.
+- H19 erhält `equipmentKnown` nur bei explizit bekannter nichtleerer Ausrüstung.
+- H14 kann frische fremde Gear-Daten (maximal 9 Sekunden) ausschließlich für Vorschläge verwenden.
+- H18 darf auf Basis eines frischen, gleichserverigen, eigenen und zur gleichen Party gehörenden
+  H19-Peers nur **für bereits H28-autorisierte Gear-Lieferungen** einen `APPROACH` planen.
+- Vor der Anreise wird die Reservierung erneut geprüft; vor `send_item` ist die tatsächliche
+  Live-Sichtbarkeit, Eigentümerschaft und aktuelle H28-Autorisierung erneut erforderlich.
+- STOP, unbekannte/abgelaufene Profile, fehlende Position, fremde Party oder unautorisierte
+  Lieferung: fail closed, keine Fernübergabe.
+
+**Offenes Live-Gate:** Merchant besitzt passende bestätigte H28-Reservierung, Farmer befindet sich
+auf anderer Map, H18 nähert sich an, Farmer wird live sichtbar, `send_item` wird bestätigt,
+Farmer rüstet Gegenstand nachweislich aus; keine UNKNOWN-Aktion. Zusätzlich H25 Ranger3-Rearm
+und stabile vier aktive Adventure-Land-Sitzungen bestätigen.
+
+Der Diagnoseexport von 2026-10-09 17:43 UTC zeigt ein getrenntes Login-/Verbindungsproblem
+(`Too many loose connections from your network` in den Screenshots), fehlende vollständige Party
+und `Failed to fetch` zum lokalen Host. Für diese Fehler liegt noch kein Live-PASS vor.
