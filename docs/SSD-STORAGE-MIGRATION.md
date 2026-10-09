@@ -33,3 +33,20 @@ browser-storage migration and must not be presented as one.
   for existing browser data. This PR performs no browser-storage deletion.
 - Validate in a local host smoke test and then Adventure Land live test before
   promoting the candidate release.
+
+## One-time non-destructive browser data backup
+
+After the **new Windows host** is installed and running, open DevTools on the
+Adventure Land page and run the reviewed source from
+`scripts/migrate-browser-storage-to-ssd.js`.
+
+The script copies only ALFinal-owned `albot:` keys (except transient H25
+handoffs), V3 `aio-v3-content-drift-v1` keys, and the
+`cstore_AIO_V3_WORLD_MODEL` entry. It checks for existing SSD records and
+requires readback equality after each new write. Existing different values
+are reported as conflicts and **never overwritten**. It prints only sizes,
+groups and outcomes, not raw keys or values.
+
+**This is a backup, not a cutover.** It removes zero browser keys; the
+remaining V3/ALFinal runtime consumers must be migrated and validated before
+any deletion. Do not run the script until `/health` reports `durableStore`.
