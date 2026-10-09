@@ -1190,6 +1190,19 @@
             }
           }
 
+          // SSD preparation is asynchronous. STOP, active runtime, local
+          // identity and target occupancy can all change while awaiting it.
+          // Revalidate immediately before the irreversible disconnect, with
+          // no additional await between this gate and dispatch.
+          const fresh = this._localStatePayload();
+          if (fresh.running !== true) throw new Error('H25_CROSS_WINDOW_CHARACTER_RUNTIME_NOT_RUNNING');
+          if (fresh.emergencyStopLatched !== false) throw new Error('H25_CROSS_WINDOW_CHARACTER_EMERGENCY_STOP_LATCHED');
+          if (fresh.characterNavigateCapable !== true) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_CAPABILITY_MISSING');
+          if (fresh.characterDisconnectCapable !== true) throw new Error('H27_CROSS_WINDOW_CHARACTER_DISCONNECT_CAPABILITY_MISSING');
+          if (this._localName() !== sourceCharacterName) throw new Error('H25_CROSS_WINDOW_CHARACTER_SOURCE_CHANGED');
+          if (!this._ownedNames().has(desiredCharacterName)) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_NOT_OWNED');
+          if (this._onlineOwnedNames().has(desiredCharacterName)) throw new Error('H25_CROSS_WINDOW_CHARACTER_NAVIGATION_TARGET_ALREADY_ONLINE');
+
           // Do not wait for disconnect settlement/offline evidence here. Adventure
           // Land can reload the outgoing character page as soon as disconnect is
           // dispatched; any delayed timer owned by that page is then destroyed
