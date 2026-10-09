@@ -27,6 +27,7 @@
       };
       this.bus = new ns.EventBus();
       this.storage = new ns.StorageAdapter(this.root);
+      this.durableStorage = new ns.HostDurableStorageClient({ root: this.root });
       this.logger = new ns.Logger({ bus: this.bus, limit: 400 });
       this.stopLatch = new ns.EmergencyStop({ storage: this.storage, logger: this.logger, bus: this.bus });
       this.scheduler = new ns.Scheduler({ root: this.root, logger: this.logger, bus: this.bus });
