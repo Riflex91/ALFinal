@@ -34765,8 +34765,8 @@ class MerchantProductionPlanner {
           taskType: 'FARM', desiredCharacterNames: desired,
           createdAtMs: at, expiresAtMs: at + 120000
         };
-        await this.durableStorage.write(key, JSON.stringify(intended),
-          { expiresAtMs: intended.expiresAtMs });
+        await this._prepareH25DurableIntent(
+          key, JSON.stringify(intended), intended.expiresAtMs);
         this._h25PreparedHandoff = {
           sourceName: source, targetName: target,
           region: String(server.region), identifier: String(server.identifier),
@@ -40228,6 +40228,33 @@ class MerchantProductionPlanner {
         + encodeURIComponent(String(targetName));
     }
 
+    async _prepareH25DurableIntent(key, serialized, expiresAtMs) {
+      if (!key || !this.durableStorage
+          || typeof this.durableStorage.read !== 'function'
+          || typeof this.durableStorage.write !== 'function') {
+        throw new Error('H25_SSD_HANDOFF_STORAGE_UNAVAILABLE');
+      }
+      // A previous unfinished handoff may be evidence of an irreversible
+      // browser swap. Never overwrite it with a newer request.
+      const previous = await this.durableStorage.read(key);
+      if (!previous || previous.ok !== true || previous.found !== false) {
+        throw new Error(previous && previous.found === true
+          ? 'H25_SSD_HANDOFF_EXISTING_REQUIRES_RECONCILIATION'
+          : 'H25_SSD_HANDOFF_PREWRITE_READ_UNCONFIRMED');
+      }
+      const written = await this.durableStorage.write(key, serialized, { expiresAtMs });
+      if (!written || written.ok !== true) {
+        throw new Error('H25_SSD_HANDOFF_WRITE_UNCONFIRMED');
+      }
+      // A POST response alone cannot prove a durable H25 intent.
+      const verified = await this.durableStorage.read(key);
+      if (!verified || verified.ok !== true || verified.found !== true
+          || verified.value !== serialized) {
+        throw new Error('H25_SSD_HANDOFF_PERSISTENCE_UNCONFIRMED');
+      }
+      return true;
+    }
+
     async _consumeH25AutonomyHandoff() {
       if (!this.running || !this.fullAutonomy || this.fullAutonomy.enabled === true
           || !this.durableStorage || typeof this.durableStorage.read !== 'function'
@@ -40273,6 +40300,12 @@ class MerchantProductionPlanner {
       const cleared = await this.durableStorage.read(key);
       if (!cleared || cleared.ok !== true || cleared.found !== false) {
         return { accepted: false, reason: 'H25_REARM_HANDOFF_CLEAR_UNCONFIRMED' };
+      }
+      // Emergency STOP or runtime state may change during the awaited SSD
+      // calls. Re-evaluate the latch immediately before enabling autonomy.
+      if (!this.running || this.stopLatch.status().latched
+          || !this.fullAutonomy || this.fullAutonomy.enabled === true) {
+        return { accepted: false, reason: 'H25_REARM_NOT_ELIGIBLE' };
       }
       // Starting only arms the local controller. Party and farming mutations
       // still require their independent live readiness/ownership gates.
