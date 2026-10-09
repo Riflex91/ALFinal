@@ -85,6 +85,10 @@
         skillReserveRatio: Math.max(0, Math.min(0.50, Number(options.skillReserveRatio) || 0.10)),
         minPotionUtilization: Math.max(0.25, Math.min(1, Number(options.minPotionUtilization) || 0.50)),
         cooldownMs: Math.max(500, Math.min(3000, Number(options.cooldownMs) || 650)),
+        // One potion cooldown is shared by HP/MP; the former 650ms pacing
+        // repeatedly hit the live server's not_ready state.
+        potionMinIntervalMs: Math.max(1000, Math.min(5000, Number(options.potionMinIntervalMs) || 2100)),
+        notReadyBackoffMs: Math.max(1500, Math.min(10000, Number(options.notReadyBackoffMs) || 3000)),
         outcomeTimeoutMs: Math.max(1000, Math.min(10000, Number(options.outcomeTimeoutMs) || 3000))
       };
       this.moduleActive = false;
@@ -106,6 +110,8 @@
         rejected: 0,
         unknown: 0,
         cooldownWaits: 0,
+        liveCooldownWaits: 0,
+        notReadyBackoffs: 0,
         potionUnavailable: 0,
         overhealAvoided: 0,
         operationalBypasses: 0,
@@ -271,6 +277,19 @@
       }).catch(() => {});
     }
 
+    _potionCooldown(action) {
+      const now = this.now();
+      for (const source of [this.root, this.root && this.root.parent].filter(Boolean)) {
+        try {
+          if (typeof source.is_on_cooldown === 'function' && source.is_on_cooldown(action) === true) return true;
+          const next = source.next_skill && source.next_skill[action];
+          const until = next && typeof next.getTime === 'function' ? next.getTime() : finite(next);
+          if (until != null && until > now) return true;
+        } catch (_) {}
+      }
+      return false;
+    }
+
     _knownRejection(value) {
       const text = rejectionText(value).toLowerCase();
       return /cooldown|safet|no_mp|no_hp|full|not_ready|cant_use|cannot_use|unavailable/.test(text);
@@ -316,7 +335,9 @@
         if (this._knownRejection(detail)) {
           this.pending = null;
           this.metrics.rejected += 1;
-          this.backoffUntilMs = this.now() + this.config.cooldownMs;
+          const notReady = /not_ready|cooldown/.test(rejectionText(detail).toLowerCase());
+          if (notReady) this.metrics.notReadyBackoffs += 1;
+          this.backoffUntilMs = this.now() + (notReady ? this.config.notReadyBackoffMs : this.config.cooldownMs);
           this.lastUse = { at: new Date().toISOString(), action: pending.action, state: 'REJECTED', reason: cleanText(detail && (detail.reason || detail.message) || detail, 240) };
           return true;
         }
@@ -367,7 +388,8 @@
           : (this.suspendedReason ? { state: 'SUSPENDED', reason: this.suspendedReason } : { state: 'OBSERVED' });
       }
       const now = this.now();
-      if (now < this.backoffUntilMs || now - this.lastAttemptAtMs < this.config.cooldownMs) {
+      if (now < this.backoffUntilMs
+          || now - this.lastAttemptAtMs < Math.max(this.config.cooldownMs, this.config.potionMinIntervalMs)) {
         this.metrics.cooldownWaits += 1;
         return { state: 'WAITING', reason: 'RESOURCE_TOPOFF_COOLDOWN' };
       }
@@ -417,6 +439,13 @@
             ? 'RESOURCE_TOPOFF_HP_POTION_UNAVAILABLE'
             : 'RESOURCE_TOPOFF_UTILIZATION_HOLD';
         this.lastDecision = { at: new Date().toISOString(), state: 'WAITING', reason, hpRatio, mpRatio, skillReserve, supply };
+        return clone(this.lastDecision);
+      }
+
+      if (this._potionCooldown(selected.action)) {
+        this.metrics.liveCooldownWaits += 1;
+        this.lastDecision = { at: new Date().toISOString(), state: 'WAITING',
+          reason: 'RESOURCE_TOPOFF_LIVE_COOLDOWN', action: selected.action };
         return clone(this.lastDecision);
       }
 

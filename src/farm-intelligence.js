@@ -78,7 +78,8 @@
         groupFollowStep: Math.max(20, Math.min(100, Number(options.groupFollowStep) || 70)),
         groupLeaderRecoveryMaxStep: Math.max(25, Math.min(90, Number(options.groupLeaderRecoveryMaxStep) || 60)),
         groupLeaderRecoveryMinImprovement: Math.max(3, Math.min(40, Number(options.groupLeaderRecoveryMinImprovement) || 6)),
-        groupMovementRetryMs: Math.max(500, Math.min(10000, Number(options.groupMovementRetryMs) || 2000))
+        groupMovementRetryMs: Math.max(500, Math.min(10000, Number(options.groupMovementRetryMs) || 2000)),
+        groupModerateRegroupGraceMs: Math.max(1000, Math.min(10000, Number(options.groupModerateRegroupGraceMs) || 2500))
       };
 
       this.moduleActive = false;
@@ -89,6 +90,7 @@
       this.groupPolicy = { leaderName: null, memberNames: [] };
       this.groupMove = null;
       this.groupMoveRetryAfterMs = null;
+      this.groupModerateSeparationSinceMs = null;
       this.lastTransientMovementFailureOrderId = null;
       this.currentSelection = null;
       this.lastPlan = null;
@@ -191,6 +193,7 @@
       };
       this.groupMove = null;
       this.groupMoveRetryAfterMs = null;
+      this.groupModerateSeparationSinceMs = null;
       this.lastTransientMovementFailureOrderId = null;
       this.currentSelection = null;
       this.lastPlan = null;
@@ -215,6 +218,7 @@
       this.currentSelection = null;
       this.groupMove = null;
       this.groupMoveRetryAfterMs = null;
+      this.groupModerateSeparationSinceMs = null;
       this.lastTransientMovementFailureOrderId = null;
       this.suspendedReason = null;
       return { stopped: true, session: ended };
@@ -599,7 +603,7 @@
           + components.respawn * 0.08
           + components.competition * 0.06
           + components.safety * 0.10
-        ) + (demand && row.mtype === demand.monsterType ? 15 : 0)).toFixed(2));
+        ) + (demand && row.mtype === demand.monsterType ? 120 : 0)).toFixed(2));
         row.materialDemandMatch = !!(demand && row.mtype === demand.monsterType);
       }
       rows.sort((a, b) => b.score - a.score || b.visibleSafeCount - a.visibleSafeCount || String(a.key).localeCompare(String(b.key)));
@@ -1253,6 +1257,23 @@
           maxPairDistance: hardDistance,
           hardRegroupDistance: this.config.groupHardRegroupDistance
         };
+      }
+
+      // A short, moderate separation during leader kiting should not
+      // repeatedly tear down H8. Missing/cross-map positions and hard gaps
+      // are handled immediately by the fail-closed branches above.
+      const moderate = localRegroupDistance >= this.config.groupRegroupTriggerDistance
+        && localRegroupDistance < this.config.groupHardRegroupDistance
+        && hardDistance < this.config.groupHardRegroupDistance;
+      if (moderate && this._ownedFarming(farm)) {
+        if (this.groupModerateSeparationSinceMs == null) this.groupModerateSeparationSinceMs = this.now();
+        if (this.now() - this.groupModerateSeparationSinceMs < this.config.groupModerateRegroupGraceMs) {
+          this.metrics.groupFollowerHolds += 1;
+          return { state: 'FARMING', reason: 'H9_MODERATE_REGROUP_GRACE',
+            leaderName: group.leaderName, distance: leaderDistance, maxPairDistance: hardDistance };
+        }
+      } else {
+        this.groupModerateSeparationSinceMs = null;
       }
 
       const activeOwnMove = this._ownedMovement(movement);

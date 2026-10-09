@@ -1,4 +1,4 @@
-/* AL Bot 0.26.64-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.65-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -5091,6 +5091,10 @@
         skillReserveRatio: Math.max(0, Math.min(0.50, Number(options.skillReserveRatio) || 0.10)),
         minPotionUtilization: Math.max(0.25, Math.min(1, Number(options.minPotionUtilization) || 0.50)),
         cooldownMs: Math.max(500, Math.min(3000, Number(options.cooldownMs) || 650)),
+        // One potion cooldown is shared by HP/MP; the former 650ms pacing
+        // repeatedly hit the live server's not_ready state.
+        potionMinIntervalMs: Math.max(1000, Math.min(5000, Number(options.potionMinIntervalMs) || 2100)),
+        notReadyBackoffMs: Math.max(1500, Math.min(10000, Number(options.notReadyBackoffMs) || 3000)),
         outcomeTimeoutMs: Math.max(1000, Math.min(10000, Number(options.outcomeTimeoutMs) || 3000))
       };
       this.moduleActive = false;
@@ -5112,6 +5116,8 @@
         rejected: 0,
         unknown: 0,
         cooldownWaits: 0,
+        liveCooldownWaits: 0,
+        notReadyBackoffs: 0,
         potionUnavailable: 0,
         overhealAvoided: 0,
         operationalBypasses: 0,
@@ -5277,6 +5283,19 @@
       }).catch(() => {});
     }
 
+    _potionCooldown(action) {
+      const now = this.now();
+      for (const source of [this.root, this.root && this.root.parent].filter(Boolean)) {
+        try {
+          if (typeof source.is_on_cooldown === 'function' && source.is_on_cooldown(action) === true) return true;
+          const next = source.next_skill && source.next_skill[action];
+          const until = next && typeof next.getTime === 'function' ? next.getTime() : finite(next);
+          if (until != null && until > now) return true;
+        } catch (_) {}
+      }
+      return false;
+    }
+
     _knownRejection(value) {
       const text = rejectionText(value).toLowerCase();
       return /cooldown|safet|no_mp|no_hp|full|not_ready|cant_use|cannot_use|unavailable/.test(text);
@@ -5322,7 +5341,9 @@
         if (this._knownRejection(detail)) {
           this.pending = null;
           this.metrics.rejected += 1;
-          this.backoffUntilMs = this.now() + this.config.cooldownMs;
+          const notReady = /not_ready|cooldown/.test(rejectionText(detail).toLowerCase());
+          if (notReady) this.metrics.notReadyBackoffs += 1;
+          this.backoffUntilMs = this.now() + (notReady ? this.config.notReadyBackoffMs : this.config.cooldownMs);
           this.lastUse = { at: new Date().toISOString(), action: pending.action, state: 'REJECTED', reason: cleanText(detail && (detail.reason || detail.message) || detail, 240) };
           return true;
         }
@@ -5373,7 +5394,8 @@
           : (this.suspendedReason ? { state: 'SUSPENDED', reason: this.suspendedReason } : { state: 'OBSERVED' });
       }
       const now = this.now();
-      if (now < this.backoffUntilMs || now - this.lastAttemptAtMs < this.config.cooldownMs) {
+      if (now < this.backoffUntilMs
+          || now - this.lastAttemptAtMs < Math.max(this.config.cooldownMs, this.config.potionMinIntervalMs)) {
         this.metrics.cooldownWaits += 1;
         return { state: 'WAITING', reason: 'RESOURCE_TOPOFF_COOLDOWN' };
       }
@@ -5423,6 +5445,13 @@
             ? 'RESOURCE_TOPOFF_HP_POTION_UNAVAILABLE'
             : 'RESOURCE_TOPOFF_UTILIZATION_HOLD';
         this.lastDecision = { at: new Date().toISOString(), state: 'WAITING', reason, hpRatio, mpRatio, skillReserve, supply };
+        return clone(this.lastDecision);
+      }
+
+      if (this._potionCooldown(selected.action)) {
+        this.metrics.liveCooldownWaits += 1;
+        this.lastDecision = { at: new Date().toISOString(), state: 'WAITING',
+          reason: 'RESOURCE_TOPOFF_LIVE_COOLDOWN', action: selected.action };
         return clone(this.lastDecision);
       }
 
@@ -16155,7 +16184,8 @@
         groupFollowStep: Math.max(20, Math.min(100, Number(options.groupFollowStep) || 70)),
         groupLeaderRecoveryMaxStep: Math.max(25, Math.min(90, Number(options.groupLeaderRecoveryMaxStep) || 60)),
         groupLeaderRecoveryMinImprovement: Math.max(3, Math.min(40, Number(options.groupLeaderRecoveryMinImprovement) || 6)),
-        groupMovementRetryMs: Math.max(500, Math.min(10000, Number(options.groupMovementRetryMs) || 2000))
+        groupMovementRetryMs: Math.max(500, Math.min(10000, Number(options.groupMovementRetryMs) || 2000)),
+        groupModerateRegroupGraceMs: Math.max(1000, Math.min(10000, Number(options.groupModerateRegroupGraceMs) || 2500))
       };
 
       this.moduleActive = false;
@@ -16166,6 +16196,7 @@
       this.groupPolicy = { leaderName: null, memberNames: [] };
       this.groupMove = null;
       this.groupMoveRetryAfterMs = null;
+      this.groupModerateSeparationSinceMs = null;
       this.lastTransientMovementFailureOrderId = null;
       this.currentSelection = null;
       this.lastPlan = null;
@@ -16268,6 +16299,7 @@
       };
       this.groupMove = null;
       this.groupMoveRetryAfterMs = null;
+      this.groupModerateSeparationSinceMs = null;
       this.lastTransientMovementFailureOrderId = null;
       this.currentSelection = null;
       this.lastPlan = null;
@@ -16292,6 +16324,7 @@
       this.currentSelection = null;
       this.groupMove = null;
       this.groupMoveRetryAfterMs = null;
+      this.groupModerateSeparationSinceMs = null;
       this.lastTransientMovementFailureOrderId = null;
       this.suspendedReason = null;
       return { stopped: true, session: ended };
@@ -16676,7 +16709,7 @@
           + components.respawn * 0.08
           + components.competition * 0.06
           + components.safety * 0.10
-        ) + (demand && row.mtype === demand.monsterType ? 15 : 0)).toFixed(2));
+        ) + (demand && row.mtype === demand.monsterType ? 120 : 0)).toFixed(2));
         row.materialDemandMatch = !!(demand && row.mtype === demand.monsterType);
       }
       rows.sort((a, b) => b.score - a.score || b.visibleSafeCount - a.visibleSafeCount || String(a.key).localeCompare(String(b.key)));
@@ -17330,6 +17363,23 @@
           maxPairDistance: hardDistance,
           hardRegroupDistance: this.config.groupHardRegroupDistance
         };
+      }
+
+      // A short, moderate separation during leader kiting should not
+      // repeatedly tear down H8. Missing/cross-map positions and hard gaps
+      // are handled immediately by the fail-closed branches above.
+      const moderate = localRegroupDistance >= this.config.groupRegroupTriggerDistance
+        && localRegroupDistance < this.config.groupHardRegroupDistance
+        && hardDistance < this.config.groupHardRegroupDistance;
+      if (moderate && this._ownedFarming(farm)) {
+        if (this.groupModerateSeparationSinceMs == null) this.groupModerateSeparationSinceMs = this.now();
+        if (this.now() - this.groupModerateSeparationSinceMs < this.config.groupModerateRegroupGraceMs) {
+          this.metrics.groupFollowerHolds += 1;
+          return { state: 'FARMING', reason: 'H9_MODERATE_REGROUP_GRACE',
+            leaderName: group.leaderName, distance: leaderDistance, maxPairDistance: hardDistance };
+        }
+      } else {
+        this.groupModerateSeparationSinceMs = null;
       }
 
       const activeOwnMove = this._ownedMovement(movement);
@@ -28485,7 +28535,9 @@ class MerchantProductionPlanner {
         wishlistGoldReserve: Math.max(0, Math.floor(Number(options.wishlistGoldReserve) || 100000)),
         wishlistFallbackPrice: Math.max(1, Math.floor(Number(options.wishlistFallbackPrice) || 20)),
         wishlistCooldownMs: Math.max(10000, Math.min(3600000, Number(options.wishlistCooldownMs) || 120000)),
-        materialFarmWaitMs: Math.max(15000, Math.min(600000, Number(options.materialFarmWaitMs) || 180000)),
+        // Six minutes gives a safely reachable source time to generate drops;
+        // still bounded: expiration restores ordinary guarded acquisition.
+        materialFarmWaitMs: Math.max(30000, Math.min(900000, Number(options.materialFarmWaitMs) || 360000)),
         giveawayProbeMs: Math.max(2000, Math.min(300000, Number(options.giveawayProbeMs) || 15000)),
         pontyProbeMs: Math.max(15000, Math.min(3600000, Number(options.pontyProbeMs) || 90000)),
         pontyMaxSpend: Math.max(10000, Math.floor(Number(options.pontyMaxSpend) || 1000000)),
@@ -32705,8 +32757,19 @@ class MerchantProductionPlanner {
         const ageMs = Math.max(0, finite(peer.ageMs, this.now() - finite(peer.observedAtMs, this.now())));
         if (peer.fresh !== true) add('GROUP_PEER_STALE:' + name, ageMs >= this.config.peerCriticalMs ? 2 : 1, 'group');
         const observationState = cleanText(peer.observation && peer.observation.state || '', 20).toUpperCase() || null;
-        if (observationState === 'CRITICAL') add('GROUP_PEER_CRITICAL:' + name, 2, 'group');
-        else if (observationState === 'DEGRADED') add('GROUP_PEER_DEGRADED:' + name, 1, 'group');
+        const substates = peer.observation && peer.observation.subsystems || null;
+        // Group status is an aggregate, not an independent failure. Replaying
+        // remote GROUP_PEER_DEGRADED in every window created a WARN cascade.
+        const independent = substates && ['runtime', 'farmer', 'merchant']
+          .map(slot => cleanText(substates[slot] && substates[slot].state || '', 20).toUpperCase());
+        if (independent && independent.includes('CRITICAL')) {
+          add('GROUP_PEER_CRITICAL:' + name, 2, 'group');
+        } else if (independent && independent.includes('DEGRADED')) {
+          add('GROUP_PEER_DEGRADED:' + name, 1, 'group');
+        } else if (!independent && observationState === 'CRITICAL') {
+          // Legacy peers with no breakdown must still propagate hard faults.
+          add('GROUP_PEER_CRITICAL:' + name, 2, 'group');
+        }
         remote.push({ name, fresh: peer.fresh === true, ageMs, observationState });
       }
 
@@ -33907,7 +33970,7 @@ class MerchantProductionPlanner {
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.64-h26';
+      this.version = options.version || '0.26.65-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -42209,7 +42272,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.64-h26',
+    version: '0.26.65-h26',
     bootCount,
     replacedPrevious: !!previous
   });
