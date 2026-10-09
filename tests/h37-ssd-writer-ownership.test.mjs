@@ -79,7 +79,7 @@ test('HTTP account and telemetry writes stop when ownership is lost', async t =>
     const accountDenied = await fetch(base + '/v1/state/account', { method: 'POST', body: '{}' });
     assert.equal(accountDenied.status, 423);
   } finally {
-    await app.close();
+    await assert.rejects(app.close(), /ALBOT_WRITER_OWNERSHIP_LOST/);
     // Deliberately retain the invalidated lease for operator reconciliation.
   }
 });
