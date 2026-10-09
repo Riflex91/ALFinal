@@ -682,6 +682,11 @@
           y: row.profile.y == null || !Number.isFinite(Number(row.profile.y)) ? null : Number(row.profile.y),
           gold: Number.isFinite(Number(row.profile.gold)) ? Math.max(0, Number(row.profile.gold)) : null,
           gearScore: Number.isFinite(Number(row.profile.gearScore)) ? Math.max(0, Number(row.profile.gearScore)) : 0,
+          // Preserve an explicit known-equipment signal for H14 planning.
+          // A missing or empty peer snapshot must remain UNKNOWN (fail closed).
+          equipmentKnown: row.profile.equipmentKnown === true
+            && row.profile.equipment && typeof row.profile.equipment === 'object'
+            && Object.values(row.profile.equipment).some(item => item && item.name) || false,
           equipment: row.profile.equipment && typeof row.profile.equipment === 'object'
             ? Object.fromEntries(Object.entries(row.profile.equipment).slice(0, 20).map(([slot, item]) => {
                 const key = cleanText(slot, 40);

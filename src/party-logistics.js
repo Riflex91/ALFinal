@@ -463,6 +463,9 @@
         // A cross-map farmer is not locally visible. Travel only for already
         // authorized GEAR requests, on a fresh owned/server-matched peer
         // position. Never allow a transfer until the *live* target is visible.
+        if (request.kind === 'GEAR' && !this._gearDeliveryRow(request.inventorySlot, request.targetName)) {
+          return { state: 'BLOCKED', reason: 'H18_GEAR_DELIVERY_NOT_AUTHORIZED', selected: null };
+        }
         const anchor = request.kind === 'GEAR' ? this._freshGearTravelAnchor(target, party) : null;
         if (!anchor) return { state: 'WAITING', reason: 'H18_TARGET_NOT_VISIBLE', selected: null };
         const advisoryDistance = this._distance(snap.character, anchor);

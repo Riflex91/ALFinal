@@ -37,6 +37,8 @@ function setup() {
     crossWindow: { freshPeer: name => name === 'My_Rogue' ? peer : null },
     actions: { available: name => name === 'send_item' }
   });
+  ctl._gearDeliveryRow = () => ({ row: { name: 'hpamulet', slot: 4, quantity: 1 },
+    authorization: { reservation: { fingerprint: 'hpamulet|0||' } } });
   const request = { id: 'gear-1', kind: 'GEAR', targetName: 'My_Rogue', inventorySlot: 4 };
   return { ctl, local, target, party, peer, request };
 }
@@ -58,6 +60,9 @@ test('H42 reserved remote Gear may approach only a fresh same-party owned peer',
   peer.party.partyId = 'My_Merchant';
   peer.emergencyStopLatched = true;
   assert.equal(ctl._requestPlan(request, party, { character: local }).reason, 'H18_TARGET_NOT_VISIBLE');
+  peer.emergencyStopLatched = false;
+  ctl._gearDeliveryRow = () => null;
+  assert.equal(ctl._requestPlan(request, party, { character: local }).reason, 'H18_GEAR_DELIVERY_NOT_AUTHORIZED');
 });
 
 test('H42 live visibility is required for gear send; advisory proximity alone is not sufficient', () => {
@@ -90,4 +95,28 @@ test('H42 local profile coordinates preserve unknown positions as null', () => {
   character.x = null; character.y = undefined;
   const unknown = ctl.localProfile();
   assert.equal(unknown.x, null); assert.equal(unknown.y, null);
+});
+
+test('H42 H19 peer normalization retains only explicitly known nonempty Gear for H14 advisory', () => {
+  const root = env(); load(root, 'cross-window-lifecycle.js');
+  const C = root.__ALBOT_INTERNALS__.H19CrossWindowLifecycleTransport;
+  const tx = Object.create(C.prototype);
+  tx.now = () => Date.now();
+  tx.config = { staleMs: 5000, maxPeers: 16 };
+  tx.peers = new Map();
+  const at = Date.now();
+  const payload = {
+    sessionId: 'h19-rogue-session', running: true,
+    profile: { name: 'My_Rogue', ctype: 'rogue', map: 'cave',
+      equipmentKnown: true, equipment: { mainhand: { name: 'claw', level: 0 } }, observedAtMs: at }
+  };
+  const known = tx._updatePeer('My_Rogue', payload, at);
+  assert.equal(known.profile.equipmentKnown, true);
+  assert.equal(known.profile.equipment.mainhand.name, 'claw');
+  payload.profile.equipmentKnown = false;
+  assert.equal(tx._updatePeer('My_Rogue', payload, at).profile.equipmentKnown, false);
+  payload.profile.equipmentKnown = true; payload.profile.equipment = {};
+  assert.equal(tx._updatePeer('My_Rogue', payload, at).profile.equipmentKnown, false);
+  payload.profile.equipment = null;
+  assert.equal(tx._updatePeer('My_Rogue', payload, at).profile.equipmentKnown, false);
 });
