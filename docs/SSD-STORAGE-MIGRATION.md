@@ -36,7 +36,7 @@ browser-storage migration and must not be presented as one.
 
 ## One-time non-destructive browser data backup
 
-After the **new Windows host** is installed and running, open DevTools on the
+After the **native Windows Bridge SSD API** is installed, explicitly enabled and running, open DevTools on the
 Adventure Land page and run the reviewed source from
 `scripts/migrate-browser-storage-to-ssd.js`.
 
@@ -50,16 +50,6 @@ groups and outcomes, not raw keys or values.
 **This is a backup, not a cutover.** It removes zero browser keys; the
 remaining V3/ALFinal runtime consumers must be migrated and validated before
 any deletion. Do not run the script until `/health` reports `durableStore`.
-
-## Windows Bridge process ownership proof
-
-The local host's `/health` includes `processId`, the **actual Node.js
-process PID**. The optional native Windows Bridge host manager must compare
-this PID with the child process it just launched, in addition to checking
-`ok` and the `durableStore` capability. A healthy response from a
-different, already-running host is not proof of ownership and must not
-authorize an update, takeover, or success state. The PID is not a secret and
-does not grant extra API privileges.
 
 ## Native Windows Bridge SSD endpoint (revised integration)
 
@@ -76,7 +66,8 @@ required for the SSD API. The older proposed Node host-manager/updater PR
 `Riflex91/Riflex91-Repo#994` is superseded for SSD persistence and should
 not be merged as-is.
 
-The obsolete ALFinal Node-side storage endpoint and host release workflow are
-still present in this candidate for now, but the browser SSD client and the
-backup helper do not call them. The remaining host/telemetry release
-responsibility and full account/STOP migration require separate review.
+The legacy ALFinal Node-side storage endpoint is still present for
+compatibility during migration, but the browser SSD client and backup helper
+no longer use it. The separate Node host-release workflow has been removed
+from this candidate: native SSD updates are delivered with the self-updating
+Windows Bridge. Telemetry/account/STOP migration requires separate review.
