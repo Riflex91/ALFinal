@@ -41,6 +41,12 @@ test('H36 SSD HTTP API rejects foreign origins and confirms writes before reads'
   try {
     await new Promise(resolve => app.server.listen(0, '127.0.0.1', resolve));
     const address = app.server.address();
+    const healthResponse = await fetch('http://127.0.0.1:' + address.port + '/health');
+    assert.equal(healthResponse.status, 200);
+    const health = await healthResponse.json();
+    assert.equal(health.ok, true);
+    assert.equal(health.processId, process.pid);
+    assert.equal(health.durableStore.schemaVersion, 1);
     const url = 'http://127.0.0.1:' + address.port + '/v1/storage?key='
       + encodeURIComponent('albot:h25:autonomy-handoff:v1:EU:I:My_Mage');
     const denied = await fetch(url, { headers: { Origin: 'https://evil.invalid' } });

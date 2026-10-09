@@ -50,3 +50,13 @@ groups and outcomes, not raw keys or values.
 **This is a backup, not a cutover.** It removes zero browser keys; the
 remaining V3/ALFinal runtime consumers must be migrated and validated before
 any deletion. Do not run the script until `/health` reports `durableStore`.
+
+## Windows Bridge process ownership proof
+
+The local host's `/health` includes `processId`, the **actual Node.js
+process PID**. The optional native Windows Bridge host manager must compare
+this PID with the child process it just launched, in addition to checking
+`ok` and the `durableStore` capability. A healthy response from a
+different, already-running host is not proof of ownership and must not
+authorize an update, takeover, or success state. The PID is not a secret and
+does not grant extra API privileges.

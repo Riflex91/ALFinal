@@ -240,7 +240,14 @@ export function createTelemetryServer(options = {}) {
     }
     if (req.method === 'GET' && req.url === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ ok: true, store: store.status(), stateStore: stateStore.status(), durableStore: durableStore.status() }));
+      return res.end(JSON.stringify({
+        ok: true,
+        // Host ownership check for the native Windows Bridge. This is not an
+        // authentication secret and confers no gameplay/process authority.
+        processId: process.pid,
+        store: store.status(), stateStore: stateStore.status(),
+        durableStore: durableStore.status()
+      }));
     }
     if (req.method === 'GET' && req.url === '/v1/state/account') {
       if (!allowOrigin(origin)) {
