@@ -97,3 +97,38 @@ test('browser witness never interprets an empty snapshot as cutover permission',
   assert.equal(result.cutoverAuthorized, false);
   assert.equal(result.liveMutationPerformed, false);
 });
+
+test('browser witness rejects invalid H19 pending ownership records rather than claiming verified evidence', async t => {
+  for (const value of [
+    JSON.stringify({ id: '', kind: 'STOP', unknownRecorded: true }),
+    JSON.stringify({ id: 'record', kind: '' }),
+    '[]'
+  ]) {
+    const key = 'albot:h19:pending:v1:SecretMage';
+    const { result, records, calls } = await witness(t, { [key]: value });
+    assert.equal(result.verified, false);
+    assert.equal(result.issue, 'BROWSER_SAFETY_EVIDENCE_UNVERIFIED');
+    assert.equal(result.cutoverAuthorized, false);
+    assert.equal(result.fingerprints.length, 0);
+    assert.equal(records.get(key), value);
+    assert.ok(calls.every(call => call === 'get'));
+  }
+});
+
+test('browser witness rejects malformed H19 policy and H25 handoff evidence without writing', async t => {
+  const cases = [
+    ['albot:h19:policy:v1:SecretMage', '{bad-json'],
+    ['albot:h19:policy:v1:SecretMage', '{"desiredActiveNames":"unsafe"}'],
+    ['albot:h25:autonomy-handoff:v1:SecretMage', '{bad-json'],
+    ['albot:h25:autonomy-handoff:v1:SecretMage', '[]']
+  ];
+  for (const [key, value] of cases) {
+    const { result, records, calls } = await witness(t, { [key]: value });
+    assert.equal(result.verified, false);
+    assert.equal(result.issue, 'BROWSER_SAFETY_EVIDENCE_UNVERIFIED');
+    assert.equal(result.cutoverAuthorized, false);
+    assert.equal(result.fingerprints.length, 0);
+    assert.equal(records.get(key), value);
+    assert.ok(calls.every(call => call === 'get'));
+  }
+});
