@@ -40264,9 +40264,16 @@ class MerchantProductionPlanner {
         && Number(value.expiresAtMs) - Number(value.createdAtMs) <= 120000
         && names.length === 4 && names.includes(character.name)
         && names.every(name => owned.includes(name));
-      // Require a confirmed single-use delete before rearming autonomy.
-      await this.durableStorage.remove(key);
+      // Invalid handoff evidence may be needed for reconciliation. Do not
+      // automatically erase it simply because it cannot authorize a rearm.
       if (!valid) return { accepted: false, reason: 'H25_REARM_HANDOFF_INVALID' };
+      // A successful DELETE HTTP acknowledgement is not proof that a stale
+      // handoff cannot be replayed. Confirm absence before rearming.
+      await this.durableStorage.remove(key);
+      const cleared = await this.durableStorage.read(key);
+      if (!cleared || cleared.ok !== true || cleared.found !== false) {
+        return { accepted: false, reason: 'H25_REARM_HANDOFF_CLEAR_UNCONFIRMED' };
+      }
       // Starting only arms the local controller. Party and farming mutations
       // still require their independent live readiness/ownership gates.
       const result = this.fullAutonomy.startAutonomy({
