@@ -1200,6 +1200,39 @@ test('H19 blocks every mutation when the prepared action cannot be durably store
   }
 });
 
+test('emergency STOP cannot be reset while the durable write is unconfirmed', () => {
+  const coreSource = fs.readFileSync(path.resolve(here, '../src/core.js'), 'utf8');
+  const values = new Map();
+  let quota = false;
+  const ctx = {
+    console, Date, Math, JSON, Map, Set, Object, Error,
+    localStorage: {
+      getItem(key) { return values.has(key) ? values.get(key) : null; },
+      setItem(key, value) {
+        if (quota) throw new Error('QuotaExceededError');
+        values.set(key, String(value));
+      },
+      removeItem(key) { values.delete(key); }
+    }
+  };
+  ctx.globalThis = ctx;
+  vm.runInNewContext(coreSource, ctx, { filename: 'core.js' });
+  const ns = ctx.__ALBOT_INTERNALS__;
+  const stop = new ns.EmergencyStop({ storage: new ns.StorageAdapter(ctx) });
+  assert.equal(stop.latch('TEST_DURABLE_STOP').latched, true);
+  assert.equal(JSON.parse(values.get('albot:emergency-stop:v1')).latched, true);
+  quota = true;
+  const blocked = stop.reset();
+  assert.equal(blocked.resetBlocked, true);
+  assert.equal(stop.status().latched, true);
+  assert.throws(() => stop.assertAllowed('irreversible_action'), /ALBOT_EMERGENCY_STOP/);
+  assert.equal(JSON.parse(values.get('albot:emergency-stop:v1')).latched, true);
+  quota = false;
+  const accepted = stop.reset();
+  assert.equal(accepted.latched, false);
+  assert.equal(JSON.parse(values.get('albot:emergency-stop:v1')).latched, false);
+});
+
 test('H19 does not treat RAM fallback as confirmed safety storage', () => {
   const coreSource = fs.readFileSync(path.resolve(here, '../src/core.js'), 'utf8');
   const ctx = { console, Date, Math, JSON, Map, Set, Object, Error };
