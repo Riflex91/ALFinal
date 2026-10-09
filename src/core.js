@@ -96,8 +96,17 @@
       return null;
     }
     get(key) {
+      const critical = this._criticalDurabilityKey(key);
       const ls = this._ls();
-      if (ls) { try { return ls.getItem(key); } catch (_) {} }
+      if (ls) {
+        try { return ls.getItem(key); }
+        catch (_) {
+          // A failed safety read is NEVER proof of an absent STOP/pending
+          // record. In particular, do not fall back to a volatile Map.
+          if (critical) throw new Error('ALBOT_SAFETY_STORAGE_UNREADABLE');
+        }
+      }
+      if (critical) throw new Error('ALBOT_SAFETY_STORAGE_UNREADABLE');
       return this.memory.has(key) ? this.memory.get(key) : null;
     }
     _criticalDurabilityKey(key) {
@@ -165,9 +174,26 @@
       this._load();
     }
     _load() {
-      const raw = this.storage && this.storage.get(this.key);
-      const parsed = raw ? safeJsonParse(raw, null) : null;
-      if (parsed && parsed.latched === true) this.state = { latched: true, reason: cleanText(parsed.reason || 'PERSISTED_STOP', 200), at: parsed.at || null };
+      try {
+        if (!this.storage || typeof this.storage.get !== 'function') {
+          throw new Error('EMERGENCY_STOP_STORAGE_MISSING');
+        }
+        const raw = this.storage.get(this.key);
+        if (raw === null) return; // confirmed read of an absent record
+        const parsed = typeof raw === 'string' ? safeJsonParse(raw, null) : null;
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)
+            || typeof parsed.latched !== 'boolean') {
+          throw new Error('EMERGENCY_STOP_STORAGE_CORRUPT');
+        }
+        if (parsed.latched === true) {
+          this.state = { latched: true, reason: cleanText(parsed.reason || 'PERSISTED_STOP', 200), at: parsed.at || null };
+        }
+      } catch (_) {
+        // Unknown persistent safety state must block gameplay on startup.
+        // Do not write an 'unlatched' default over the original evidence.
+        this.state = { latched: true, reason: 'EMERGENCY_STOP_STORAGE_UNVERIFIED', at: null };
+        if (this.logger) this.logger.error('EMERGENCY_STOP_STORAGE_UNVERIFIED');
+      }
     }
     _persist(state = this.state) {
       if (!this.storage || typeof this.storage.set !== 'function'
