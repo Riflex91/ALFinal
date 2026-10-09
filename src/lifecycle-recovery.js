@@ -376,7 +376,36 @@
         this.policyState.desiredPartyLeader = cleanText(policy.desiredPartyLeader || '', 120) || null;
       }
 
-      const pending = this._readStorage('pending');
+      let pending = null;
+      try {
+        const key = this._storageKey('pending');
+        if (!key || !this.storage || typeof this.storage.get !== 'function') {
+          throw new Error('H19_PENDING_STORAGE_UNAVAILABLE');
+        }
+        // Missing and unreadable must be distinguishable. Production
+        // StorageAdapter throws when localStorage access is unavailable.
+        const raw = this.storage.get(key);
+        if (raw !== null) {
+          if (typeof raw !== 'string' || !raw) throw new Error('H19_PENDING_RECORD_CORRUPT');
+          pending = JSON.parse(raw);
+          if (!pending || typeof pending !== 'object' || Array.isArray(pending)
+              || typeof pending.kind !== 'string' || !pending.kind
+              || typeof pending.id !== 'string' || !pending.id) {
+            throw new Error('H19_PENDING_RECORD_CORRUPT');
+          }
+        }
+      } catch (_) {
+        this.suspended = true;
+        this.suspendedReason = 'H19_PENDING_RESTORE_UNVERIFIED';
+        this.autonomyEnabled = false;
+        this.metrics.safetyBlocks += 1;
+        this.lastAction = {
+          at: nowIso(), type: 'PENDING_RESTORE_BLOCKED',
+          reason: this.suspendedReason
+        };
+        // No mutation, no deletion, and no guess about the stored action.
+        return;
+      }
       if (pending && pending.kind && pending.id) {
         const sameSession = !!pending.ownerSessionId && String(pending.ownerSessionId) === String(this.sessionId);
         if (!sameSession) {
