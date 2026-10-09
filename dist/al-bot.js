@@ -1,4 +1,4 @@
-/* AL Bot 0.26.66-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.68-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -6163,6 +6163,7 @@
       this.exchangeCraft = options.exchangeCraft || null;
       this.economy = options.economy || null;
       this.gearProgression = options.gearProgression || null;
+      this.crossWindow = options.crossWindow || null;
       this.canAct = typeof options.canAct === 'function' ? options.canAct : null;
 
       this.moduleActive = false;
@@ -6340,6 +6341,29 @@
       const party = snapshot || this._partySnapshot();
       if (!wanted || !party || !Array.isArray(party.ownedMembers)) return null;
       return party.ownedMembers.find(member => String(member.name || '') === wanted && !member.local) || null;
+    }
+
+    _freshGearTravelAnchor(target, party) {
+      // Remote profile coordinates authorize a bounded approach only, never send_item.
+      // Cross-window freshness also verifies server and account ownership.
+      if (!target || !party || !party.coordinationEnabled
+          || !this.crossWindow || typeof this.crossWindow.freshPeer !== 'function') return null;
+      let peer = null;
+      try { peer = this.crossWindow.freshPeer(String(target.name)); } catch (_) {}
+      const profile = peer && peer.profile;
+      const observedAtMs = profile && Number(profile.observedAtMs);
+      const now = Date.now();
+      if (!peer || peer.running !== true || peer.emergencyStopLatched === true
+          || !profile || String(profile.name || '') !== String(target.name)
+          || profile.rip === true || !profile.map
+          || !Number.isFinite(observedAtMs)
+          || observedAtMs > now + 5000 || now - observedAtMs > 9000
+          || finite(profile.x) == null || finite(profile.y) == null
+          || !party.partyId || !peer.party
+          || String(peer.party.partyId || '') !== String(party.partyId)
+          || !Array.isArray(peer.party.memberNames)
+          || !peer.party.memberNames.includes(String(target.name))) return null;
+      return { map: String(profile.map), x: finite(profile.x), y: finite(profile.y) };
     }
 
     _safeSupplyRow(row) {
@@ -6557,8 +6581,32 @@
       const target = request && this._ownedTarget(request.targetName, party);
       if (!target) return { state: 'BLOCKED', reason: 'H18_TARGET_NOT_OWNED_PARTY_MEMBER', selected: null };
       if (target.rip) return { state: 'WAITING', reason: 'H18_TARGET_DEAD', selected: null };
-      if (!target.visible || !target.map || finite(target.x) == null || finite(target.y) == null) {
-        return { state: 'WAITING', reason: 'H18_TARGET_NOT_VISIBLE', selected: null };
+      if (target.visible !== true || !target.map || finite(target.x) == null || finite(target.y) == null) {
+        // A cross-map farmer is not locally visible. Travel only for already
+        // authorized GEAR requests, on a fresh owned/server-matched peer
+        // position. Never allow a transfer until the *live* target is visible.
+        if (request.kind === 'GEAR' && !this._gearDeliveryRow(request.inventorySlot, request.targetName)) {
+          return { state: 'BLOCKED', reason: 'H18_GEAR_DELIVERY_NOT_AUTHORIZED', selected: null };
+        }
+        const anchor = request.kind === 'GEAR' ? this._freshGearTravelAnchor(target, party) : null;
+        if (!anchor) return { state: 'WAITING', reason: 'H18_TARGET_NOT_VISIBLE', selected: null };
+        const advisoryDistance = this._distance(snap.character, anchor);
+        if (String(snap.character.map || '') === anchor.map
+            && advisoryDistance != null && advisoryDistance <= this.config.transferRange) {
+          return { state: 'WAITING', reason: 'H18_TARGET_NOT_VISIBLE', selected: null };
+        }
+        return {
+          state: 'READY',
+          reason: 'H18_GEAR_REMOTE_APPROACH_REQUIRED',
+          selected: {
+            kind: 'APPROACH',
+            requestId: request.id,
+            targetName: target.name,
+            destination: anchor,
+            distance: advisoryDistance,
+            advisoryOnly: true
+          }
+        };
       }
       const distance = this._distance(snap.character, target);
       if (String(snap.character.map || '') !== String(target.map || '') || distance == null || distance > this.config.transferRange) {
@@ -7716,8 +7764,15 @@
           range: Number.isFinite(Number(row.profile.range)) ? Number(row.profile.range) : null,
           rip: row.profile.rip === true,
           map: cleanText(row.profile.map || '', 120) || null,
+          x: row.profile.x == null || !Number.isFinite(Number(row.profile.x)) ? null : Number(row.profile.x),
+          y: row.profile.y == null || !Number.isFinite(Number(row.profile.y)) ? null : Number(row.profile.y),
           gold: Number.isFinite(Number(row.profile.gold)) ? Math.max(0, Number(row.profile.gold)) : null,
           gearScore: Number.isFinite(Number(row.profile.gearScore)) ? Math.max(0, Number(row.profile.gearScore)) : 0,
+          // Preserve an explicit known-equipment signal for H14 planning.
+          // A missing or empty peer snapshot must remain UNKNOWN (fail closed).
+          equipmentKnown: row.profile.equipmentKnown === true
+            && row.profile.equipment && typeof row.profile.equipment === 'object'
+            && Object.values(row.profile.equipment).some(item => item && item.name) || false,
           equipment: row.profile.equipment && typeof row.profile.equipment === 'object'
             ? Object.fromEntries(Object.entries(row.profile.equipment).slice(0, 20).map(([slot, item]) => {
                 const key = cleanText(slot, 40);
@@ -11320,6 +11375,8 @@
         range: finite(character.range),
         rip: character.rip === true,
         map: cleanText(character.map || '', 120) || null,
+        x: character.x == null ? null : finite(character.x),
+        y: character.y == null ? null : finite(character.y),
         gold: finite(character.gold),
         gearScore: this._localGearScore(character),
         equipment,
@@ -34046,7 +34103,7 @@ class MerchantProductionPlanner {
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.66-h26';
+      this.version = options.version || '0.26.68-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -34512,6 +34569,8 @@ class MerchantProductionPlanner {
           return this.stop(reason);
         }
       });
+      // H18 may travel toward a fresh, owned H19 peer, but transfers require live visibility.
+      this.partyLogistics.crossWindow = this.lifecycleTransport;
       this.hostState = new ns.HostPersistentStateClient({
         root: this.root,
         logger: this.logger
@@ -42440,7 +42499,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.66-h26',
+    version: '0.26.68-h26',
     bootCount,
     replacedPrevious: !!previous
   });

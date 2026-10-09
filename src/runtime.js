@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.66-h26';
+      this.version = options.version || '0.26.68-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -471,6 +471,8 @@
           return this.stop(reason);
         }
       });
+      // H18 may travel toward a fresh, owned H19 peer, but transfers require live visibility.
+      this.partyLogistics.crossWindow = this.lifecycleTransport;
       this.hostState = new ns.HostPersistentStateClient({
         root: this.root,
         logger: this.logger

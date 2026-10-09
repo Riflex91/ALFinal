@@ -402,6 +402,8 @@
         range: finite(character.range),
         rip: character.rip === true,
         map: cleanText(character.map || '', 120) || null,
+        x: character.x == null ? null : finite(character.x),
+        y: character.y == null ? null : finite(character.y),
         gold: finite(character.gold),
         gearScore: this._localGearScore(character),
         equipment,

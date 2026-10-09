@@ -41,6 +41,7 @@
       this.exchangeCraft = options.exchangeCraft || null;
       this.economy = options.economy || null;
       this.gearProgression = options.gearProgression || null;
+      this.crossWindow = options.crossWindow || null;
       this.canAct = typeof options.canAct === 'function' ? options.canAct : null;
 
       this.moduleActive = false;
@@ -218,6 +219,29 @@
       const party = snapshot || this._partySnapshot();
       if (!wanted || !party || !Array.isArray(party.ownedMembers)) return null;
       return party.ownedMembers.find(member => String(member.name || '') === wanted && !member.local) || null;
+    }
+
+    _freshGearTravelAnchor(target, party) {
+      // Remote profile coordinates authorize a bounded approach only, never send_item.
+      // Cross-window freshness also verifies server and account ownership.
+      if (!target || !party || !party.coordinationEnabled
+          || !this.crossWindow || typeof this.crossWindow.freshPeer !== 'function') return null;
+      let peer = null;
+      try { peer = this.crossWindow.freshPeer(String(target.name)); } catch (_) {}
+      const profile = peer && peer.profile;
+      const observedAtMs = profile && Number(profile.observedAtMs);
+      const now = Date.now();
+      if (!peer || peer.running !== true || peer.emergencyStopLatched === true
+          || !profile || String(profile.name || '') !== String(target.name)
+          || profile.rip === true || !profile.map
+          || !Number.isFinite(observedAtMs)
+          || observedAtMs > now + 5000 || now - observedAtMs > 9000
+          || finite(profile.x) == null || finite(profile.y) == null
+          || !party.partyId || !peer.party
+          || String(peer.party.partyId || '') !== String(party.partyId)
+          || !Array.isArray(peer.party.memberNames)
+          || !peer.party.memberNames.includes(String(target.name))) return null;
+      return { map: String(profile.map), x: finite(profile.x), y: finite(profile.y) };
     }
 
     _safeSupplyRow(row) {
@@ -435,8 +459,32 @@
       const target = request && this._ownedTarget(request.targetName, party);
       if (!target) return { state: 'BLOCKED', reason: 'H18_TARGET_NOT_OWNED_PARTY_MEMBER', selected: null };
       if (target.rip) return { state: 'WAITING', reason: 'H18_TARGET_DEAD', selected: null };
-      if (!target.visible || !target.map || finite(target.x) == null || finite(target.y) == null) {
-        return { state: 'WAITING', reason: 'H18_TARGET_NOT_VISIBLE', selected: null };
+      if (target.visible !== true || !target.map || finite(target.x) == null || finite(target.y) == null) {
+        // A cross-map farmer is not locally visible. Travel only for already
+        // authorized GEAR requests, on a fresh owned/server-matched peer
+        // position. Never allow a transfer until the *live* target is visible.
+        if (request.kind === 'GEAR' && !this._gearDeliveryRow(request.inventorySlot, request.targetName)) {
+          return { state: 'BLOCKED', reason: 'H18_GEAR_DELIVERY_NOT_AUTHORIZED', selected: null };
+        }
+        const anchor = request.kind === 'GEAR' ? this._freshGearTravelAnchor(target, party) : null;
+        if (!anchor) return { state: 'WAITING', reason: 'H18_TARGET_NOT_VISIBLE', selected: null };
+        const advisoryDistance = this._distance(snap.character, anchor);
+        if (String(snap.character.map || '') === anchor.map
+            && advisoryDistance != null && advisoryDistance <= this.config.transferRange) {
+          return { state: 'WAITING', reason: 'H18_TARGET_NOT_VISIBLE', selected: null };
+        }
+        return {
+          state: 'READY',
+          reason: 'H18_GEAR_REMOTE_APPROACH_REQUIRED',
+          selected: {
+            kind: 'APPROACH',
+            requestId: request.id,
+            targetName: target.name,
+            destination: anchor,
+            distance: advisoryDistance,
+            advisoryOnly: true
+          }
+        };
       }
       const distance = this._distance(snap.character, target);
       if (String(snap.character.map || '') !== String(target.map || '') || distance == null || distance > this.config.transferRange) {
