@@ -1342,6 +1342,10 @@ test('H19 never dispatches when pending state is unreadable or corrupted at star
     assert.equal(status.suspendedReason, 'H19_PENDING_RESTORE_UNVERIFIED');
     assert.equal(status.lastAction.type, 'PENDING_RESTORE_BLOCKED');
     assert.equal(f.controller.queueStart('My_Merchant').accepted, false);
+    assert.deepEqual(
+      [f.controller.resetSafety('UNSAFE_OPERATOR_RESET').accepted,
+        f.controller.resetSafety('UNSAFE_OPERATOR_RESET').reason],
+      [false, 'H19_PENDING_RESTORE_REQUIRES_RECONCILIATION']);
     assert.equal(f.controller.tick().state, 'SUSPENDED');
     assert.equal(f.state.dispatches.length, 0);
     assert.equal(storage.map.has('albot:h19:pending:v1:My_Ranger'),
@@ -1374,6 +1378,23 @@ test('emergency STOP reload fails closed on corrupted, inaccessible and missing 
     assert.equal(stop.reset().resetBlocked, true);
     assert.equal(stop.status().latched, true);
   }
+  const corruptRecord = '{corrupted-stop-evidence';
+  const corruptValues = new Map([['albot:emergency-stop:v1', corruptRecord]]);
+  const writableStorage = {
+    getItem: k => corruptValues.get(k) ?? null,
+    setItem: (k, value) => corruptValues.set(k, String(value)),
+    removeItem: k => corruptValues.delete(k)
+  };
+  const corruptEnv = internals({ localStorage: writableStorage });
+  const corruptStop = new corruptEnv.ns.EmergencyStop({
+    storage: new corruptEnv.ns.StorageAdapter(corruptEnv.ctx)
+  });
+  assert.equal(corruptStop.status().latched, true);
+  const forbiddenClear = corruptStop.reset();
+  assert.equal(forbiddenClear.resetBlocked, true);
+  assert.equal(forbiddenClear.reason, 'EMERGENCY_STOP_RESTORE_REQUIRES_RECONCILIATION');
+  assert.equal(corruptStop.status().latched, true);
+  assert.equal(corruptValues.get('albot:emergency-stop:v1'), corruptRecord);
   const values = new Map([['albot:emergency-stop:v1', '{"latched":false,"reason":null,"at":null}']]);
   const localStorage = {
     getItem: k => values.has(k) ? values.get(k) : null,
