@@ -1183,7 +1183,44 @@ test('H24 surplus-window disconnect remains fail-closed when no replacement is n
   assert.equal(state.crossWindowDispatches.length, 0);
 });
 
-test('H19 stale pending from another runtime session is discarded without suspending the new session', () => {
+test('H19 blocks every mutation when the prepared action cannot be durably stored', () => {
+  for (const setResult of [false, true]) {
+    const storage = { get: () => null, set: () => setResult, remove: () => true };
+    const { controller, state } = fixture({
+      storage, onlineNames: ['My_Ranger'], runnerActiveNames: ['My_Ranger']
+    });
+    assert.equal(controller.queueStart('My_Merchant').accepted, true);
+    const attempted = controller.tick();
+    assert.equal(attempted.accepted, false);
+    assert.equal(attempted.state, 'BLOCKED');
+    assert.equal(attempted.reason, 'H19_PENDING_PERSISTENCE_UNCONFIRMED');
+    assert.equal(state.dispatches.length, 0);
+    assert.equal(controller.status().suspended, true);
+    assert.equal(controller.status().metrics.actionsDispatched, 0);
+  }
+});
+
+test('H19 does not treat RAM fallback as confirmed safety storage', () => {
+  const coreSource = fs.readFileSync(path.resolve(here, '../src/core.js'), 'utf8');
+  const ctx = { console, Date, Math, JSON, Map, Set, Object, Error };
+  ctx.globalThis = ctx;
+  vm.runInNewContext(coreSource, ctx, { filename: 'core.js' });
+  const store = new ctx.__ALBOT_INTERNALS__.StorageAdapter(ctx);
+  assert.equal(store.set('albot:h19:pending:v1:My_Mage', 'pending'), false);
+  assert.equal(store.set('albot:emergency-stop:v1', 'STOP'), false);
+  assert.equal(store.get('albot:h19:pending:v1:My_Mage'), null);
+  assert.equal(store.set('albot:noncritical-test', 'cache'), true);
+
+  ctx.localStorage = {
+    getItem() { return null; },
+    setItem() { throw new Error('QuotaExceededError'); },
+    removeItem() { throw new Error('blocked'); }
+  };
+  assert.equal(store.set('albot:h19:pending:v1:My_Mage', 'pending'), false);
+  assert.equal(store.remove('albot:h19:pending:v1:My_Mage'), false);
+});
+
+test('H19 stale pending without live evidence remains UNKNOWN across sessions', () => {
   const first = fixture({
     sessionId: 'runtime-session-a',
     manualSettlement: true,
@@ -1201,11 +1238,15 @@ test('H19 stale pending from another runtime session is discarded without suspen
     noMutation: true
   });
   const status = second.controller.status();
-  assert.equal(status.currentAction, null);
-  assert.equal(status.suspended, false);
-  assert.equal(status.metrics.stalePendingDiscarded, 1);
-  assert.equal(status.lastAction.type, 'STALE_PENDING_DISCARDED');
-  assert.equal([...first.storage.map.keys()].some(key => key.includes(':pending:')), false);
+  assert.equal(status.currentAction.kind, 'STOP');
+  assert.equal(status.currentAction.unknownRecorded, true);
+  assert.equal(status.suspended, true);
+  assert.equal(status.suspendedReason, 'H19_STALE_PENDING_OUTCOME_UNKNOWN');
+  assert.equal(status.metrics.stalePendingUnknown, 1);
+  assert.equal(status.lastAction.type, 'STALE_PENDING_UNKNOWN_RETAINED');
+  assert.equal([...first.storage.map.keys()].some(key => key.includes(':pending:')), true);
+  assert.equal(second.controller.queueStop('My_Priest').accepted, false);
+  assert.equal(first.state.dispatches.length, 1, 'no blind redispatch');
 });
 
 test('H19 stale pending from another runtime session is reconciled when live character state proves success', () => {
