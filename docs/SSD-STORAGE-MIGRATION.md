@@ -165,6 +165,19 @@ copy, and source after, rescans the source inventory and records a manifest.
 Each copied file is flushed to disk. It will not copy unrecognized entries,
 follow symlinks or write into either source tree.
 
+Run the independent read-only backup verifier after copying and again just
+before any separately approved restore test:
+
+```powershell
+node scripts/ssd-cutover-verify.mjs "E:/ALBot-backups/cutover-2026-10-09"
+```
+
+It rechecks the manifest schema and SHA-256 of each copied file, rejects
+unexpected files, corruption, traversal and `INCOMPLETE`. Keep the original
+manifest SHA-256 printed by the backup command **outside the backup directory**
+and compare it to the verifier's result; a self-consistent backup cannot
+protect against a malicious rewrite of both its data and its manifest.
+
 **Successful output does not authorize a cutover.** It carries
 `cutoverAuthorized: false`, and the manifest records
 `scope: "account-and-telemetry-only"`. Verify the snapshot and test restore
