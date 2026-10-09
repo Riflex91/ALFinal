@@ -14,6 +14,7 @@
       this.running = false;
       this.runEpoch = 0;
       this._h19FullAutonomyRearmIntent = null;
+      this._h25PreparedHandoff = null;
       this.performanceGuard = {
         supported: typeof (this.root && this.root.performance_trick) === 'function',
         applied: false,
@@ -328,39 +329,25 @@
           + '/in/' + encodeURIComponent(String(server.region))
           + '/' + encodeURIComponent(String(server.identifier)) + '/';
 
-        // Carry Full Autonomy across the H25 browser swap. New runner roots
-        // have no in-memory state; H19 requires the *new* peer to re-arm before
-        // it confirms rotation. Persist one short-lived, server-scoped intent.
-        let rearmKey = null;
+        // H31 persists the rearm intent to SSD *before* the irreversible
+        // disconnect. Navigation must remain synchronous in that same JS turn.
         const previousAutonomy = this.fullAutonomy && typeof this.fullAutonomy.status === 'function'
           ? this.fullAutonomy.status() : null;
         if (previousAutonomy && previousAutonomy.enabled === true) {
-          if (!sourceName || sourceName === name || !this.storage
-              || typeof this.storage.setShared !== 'function'
-              || this.storage.sharedAvailable() !== true) {
-            throw new Error('H25_AUTONOMY_HANDOFF_UNAVAILABLE');
+          const prepared = this._h25PreparedHandoff;
+          if (!prepared || prepared.sourceName !== sourceName
+              || prepared.targetName !== name
+              || prepared.region !== String(server.region)
+              || prepared.identifier !== String(server.identifier)
+              || Date.now() > prepared.expiresAtMs) {
+            throw new Error('H25_SSD_HANDOFF_NOT_CONFIRMED');
           }
-          rearmKey = this._h25AutonomyHandoffKey(name, server);
-          const intended = {
-            schemaVersion: 1, source: 'H25_VALIDATED_BROWSER_SWAP',
-            sourceCharacterName: sourceName, targetCharacterName: name,
-            serverRegion: String(server.region), serverIdentifier: String(server.identifier),
-            taskType: 'FARM',
-            desiredCharacterNames: Array.isArray(previousAutonomy.desiredCharacterNames)
-              ? previousAutonomy.desiredCharacterNames.slice(0, 4) : [],
-            createdAtMs: Date.now(), expiresAtMs: Date.now() + 120000
-          };
-          if (!rearmKey || this.storage.setShared(rearmKey, JSON.stringify(intended)) !== true) {
-            throw new Error('H25_AUTONOMY_HANDOFF_WRITE_FAILED');
-          }
+          this._h25PreparedHandoff = null;
         }
         // Final durable gear snapshot before the page leaves this character.
         try { if (this.accountStrategy) this.accountStrategy.persistLocalProfile(); } catch (_) {}
         try { if (this.hostState) this.hostState.flushFinalBestEffort(); } catch (_) {}
-        try { view.location.assign(url); } catch (error) {
-          if (rearmKey && typeof this.storage.removeShared === 'function') this.storage.removeShared(rearmKey);
-          throw error;
-        }
+        view.location.assign(url);
         return {
           accepted: true,
           url,
@@ -369,6 +356,46 @@
           sourceCharacterName: sourceName,
           server: { region: server.region, identifier: server.identifier }
         };
+      };
+
+      const prepareH25AutonomyHandoff = async (desiredName, sourceCharacterName) => {
+        const full = this.fullAutonomy && typeof this.fullAutonomy.status === 'function'
+          ? this.fullAutonomy.status() : null;
+        if (!full || full.enabled !== true) return { accepted: true, required: false };
+        const game = this.game.snapshot();
+        const target = String(desiredName || '');
+        const source = game && game.character && String(game.character.name || '');
+        const server = game && game.server || {};
+        const roster = this.roster.refresh();
+        if (!target || !source || source !== String(sourceCharacterName || '')
+            || source === target || !server.region || !server.identifier
+            || !roster || !Array.isArray(roster.accountCharacters)
+            || !roster.accountCharacters.some(row => String(row.name) === target)) {
+          throw new Error('H25_SSD_HANDOFF_IDENTITY_INVALID');
+        }
+        const desired = Array.isArray(full.desiredCharacterNames)
+          ? [...new Set(full.desiredCharacterNames.map(String))].sort() : [];
+        if (desired.length !== 4 || !desired.includes(target)) {
+          throw new Error('H25_SSD_HANDOFF_DESIRED_ROSTER_INVALID');
+        }
+        const key = this._h25AutonomyHandoffKey(target, server);
+        if (!key) throw new Error('H25_SSD_HANDOFF_KEY_INVALID');
+        const at = Date.now();
+        const intended = {
+          schemaVersion: 1, source: 'H25_VALIDATED_BROWSER_SWAP',
+          sourceCharacterName: source, targetCharacterName: target,
+          serverRegion: String(server.region), serverIdentifier: String(server.identifier),
+          taskType: 'FARM', desiredCharacterNames: desired,
+          createdAtMs: at, expiresAtMs: at + 120000
+        };
+        await this.durableStorage.write(key, JSON.stringify(intended),
+          { expiresAtMs: intended.expiresAtMs });
+        this._h25PreparedHandoff = {
+          sourceName: source, targetName: target,
+          region: String(server.region), identifier: String(server.identifier),
+          expiresAtMs: intended.expiresAtMs
+        };
+        return { accepted: true, required: true };
       };
 
       this.lifecycleTransport = new ns.H19CrossWindowLifecycleTransport({
@@ -417,6 +444,7 @@
           try { if (this.hostState) this.hostState.flushFinalBestEffort(); } catch (_) {}
           return dispatchH24CharacterDisconnect();
         },
+        prepareCharacterHandoff: prepareH25AutonomyHandoff,
         navigateCharacterLocal: (desiredName, reason, options) => navigateH25BrowserCharacter(desiredName, options),
         leavePartyLocal: () => dispatchH19CrossWindowPartyAction('leave_party', []),
         requestPartyJoinLocal: leaderName => dispatchH19CrossWindowPartyAction('send_party_request', [leaderName]),
@@ -5823,17 +5851,19 @@
         + encodeURIComponent(String(targetName));
     }
 
-    _consumeH25AutonomyHandoff() {
+    async _consumeH25AutonomyHandoff() {
       if (!this.running || !this.fullAutonomy || this.fullAutonomy.enabled === true
-          || !this.storage || typeof this.storage.getShared !== 'function'
+          || !this.durableStorage || typeof this.durableStorage.read !== 'function'
           || this.stopLatch.status().latched) return { accepted: false, reason: 'H25_REARM_NOT_ELIGIBLE' };
       const snapshot = this.game && this.game.snapshot ? this.game.snapshot() : null;
       const character = snapshot && snapshot.character;
       const server = snapshot && snapshot.server;
       const key = this._h25AutonomyHandoffKey(character && character.name, server);
       if (!key) return { accepted: false, reason: 'H25_REARM_IDENTITY_UNAVAILABLE' };
+      // SSD-only handoff: never read stale browser storage on host failure.
+      const row = await this.durableStorage.read(key);
       let value = null;
-      try { value = JSON.parse(this.storage.getShared(key) || 'null'); } catch (_) {}
+      try { value = row.found === true ? JSON.parse(row.value || 'null') : null; } catch (_) {}
       if (!value) return { accepted: false, reason: 'H25_REARM_NO_HANDOFF' };
       const now = Date.now();
       const names = Array.isArray(value.desiredCharacterNames)
@@ -5857,7 +5887,8 @@
         && Number(value.expiresAtMs) - Number(value.createdAtMs) <= 120000
         && names.length === 4 && names.includes(character.name)
         && names.every(name => owned.includes(name));
-      if (typeof this.storage.removeShared === 'function') this.storage.removeShared(key);
+      // Require a confirmed single-use delete before rearming autonomy.
+      await this.durableStorage.remove(key);
       if (!valid) return { accepted: false, reason: 'H25_REARM_HANDOFF_INVALID' };
       // Starting only arms the local controller. Party and farming mutations
       // still require their independent live readiness/ownership gates.
@@ -5881,7 +5912,7 @@
 
       await this.modules.startAll(this._runtimeContext());
       try {
-        const handoff = this._consumeH25AutonomyHandoff();
+        const handoff = await this._consumeH25AutonomyHandoff();
         if (handoff && handoff.accepted) this.logger.info('H25 Full Autonomy nach Browserwechsel reaktiviert');
       } catch (error) {
         this.logger.warn('H25 Full Autonomy Handoff fehlgeschlagen', {
