@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import { pathToFileURL } from 'node:url';
+import { acquireNodeWriterLease } from './ssd-writer-ownership.mjs';
 
 const DEFAULT_ROOT = process.env.ALBOT_TELEMETRY_ROOT || 'D:/ALBot/telemetry';
 const DEFAULT_STATE_ROOT = process.env.ALBOT_STATE_ROOT || 'D:/ALBot/state';
@@ -27,6 +28,7 @@ function within(root, target) {
 export class TelemetryStore {
   constructor(options = {}) {
     this.root = path.resolve(options.root || DEFAULT_ROOT);
+    this.writeGuard = typeof options.writeGuard === 'function' ? options.writeGuard : null;
     this.rawRetentionDays = Math.max(1, Number(options.rawRetentionDays) || RAW_RETENTION_DAYS);
     this.dailyRetentionDays = Math.max(30, Number(options.dailyRetentionDays) || DAILY_RETENTION_DAYS);
     this.daily = new Map();
@@ -36,6 +38,7 @@ export class TelemetryStore {
 
   ingest(record) {
     if (!record || typeof record !== 'object') return false;
+    this.writeGuard?.();
     const atMs = Number(record.atMs) || Date.parse(record.at || '') || Date.now();
     const day = dayOf(atMs);
     const hour = hourOf(atMs);
@@ -87,6 +90,7 @@ export class TelemetryStore {
   }
 
   flushDaily() {
+    this.writeGuard?.();
     for (const summary of this.daily.values()) {
       const dir = path.join(this.root, 'daily', summary.day);
       ensureDir(dir);
@@ -96,6 +100,7 @@ export class TelemetryStore {
   }
 
   prune() {
+    this.writeGuard?.();
     const pruneDir = (base, retentionDays) => {
       if (!fs.existsSync(base)) return 0;
       const cutoff = Date.now() - retentionDays * 86400000;
@@ -131,6 +136,7 @@ export class TelemetryStore {
 export class PersistentStateStore {
   constructor(options = {}) {
     this.root = path.resolve(options.stateRoot || DEFAULT_STATE_ROOT);
+    this.writeGuard = typeof options.writeGuard === 'function' ? options.writeGuard : null;
     this.profileRoot = path.join(this.root, 'account-profiles');
     this.wealthPath = path.join(this.root, 'account-wealth.json');
     ensureDir(this.profileRoot);
@@ -151,6 +157,7 @@ export class PersistentStateStore {
   }
 
   _writeJsonAtomic(target, value) {
+    this.writeGuard?.();
     if (!within(this.root, target)) throw new Error('STATE_PATH_OUTSIDE_ROOT');
     ensureDir(path.dirname(target));
     const tmp = target + '.tmp-' + process.pid + '-' + Date.now();
@@ -217,8 +224,9 @@ export class PersistentStateStore {
 }
 
 export function createTelemetryServer(options = {}) {
-  const store = options.store || new TelemetryStore(options);
-  const stateStore = options.stateStore || new PersistentStateStore(options);
+  const writeGuard = options.writerLease ? () => options.writerLease.assertOwned() : null;
+  const store = options.store || new TelemetryStore({ ...options, writeGuard });
+  const stateStore = options.stateStore || new PersistentStateStore({ ...options, writeGuard });
   const host = options.host || DEFAULT_HOST;
   const port = Number(options.port) || DEFAULT_PORT;
   const allowOrigin = origin => !origin || origin === 'https://adventure.land' || origin === 'https://www.adventure.land'
@@ -258,6 +266,12 @@ export function createTelemetryServer(options = {}) {
     if (!allowOrigin(origin)) {
       res.writeHead(403);
       return res.end('origin blocked');
+    }
+    try {
+      writeGuard?.();
+    } catch (_) {
+      res.writeHead(423, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok: false, error: 'ALBOT_WRITER_OWNERSHIP_UNVERIFIED' }));
     }
     let size = 0;
     let body = '';
@@ -305,15 +319,20 @@ export function createTelemetryServer(options = {}) {
   const close = async () => {
     clearInterval(flushTimer);
     clearInterval(pruneTimer);
-    try { store.flushDaily(); } catch (_) {}
+    let flushError = null;
+    try { store.flushDaily(); } catch (error) { flushError = error; }
     await new Promise(resolve => server.close(() => resolve()));
+    if (flushError) throw flushError;
   };
 
   return { server, store, stateStore, host, port, close };
 }
 
 async function main() {
-  const app = createTelemetryServer();
+  // Acquire before telemetry pruning, account writes, or opening the HTTP port.
+  // A stale lease is an explicit STOP; no automatic owner transfer or reclaim.
+  const writerLease = acquireNodeWriterLease(DEFAULT_STATE_ROOT);
+  const app = createTelemetryServer({ writerLease });
   app.store.prune();
   app.server.listen(app.port, app.host, () => {
     console.log('[AL Bot telemetry] listening on http://' + app.host + ':' + app.port);
@@ -322,8 +341,14 @@ async function main() {
   });
   const shutdown = async signal => {
     console.log('[AL Bot telemetry] ' + signal + ' - flushing and stopping');
-    await app.close();
-    process.exit(0);
+    try {
+      await app.close();
+      writerLease.release(); // only after the final SSD write was confirmed
+      process.exit(0);
+    } catch (error) {
+      console.error('[AL Bot telemetry] shutdown write/ownership unresolved:', error);
+      process.exit(1); // leave lease for operator reconciliation
+    }
   };
   process.once('SIGINT', () => shutdown('SIGINT'));
   process.once('SIGTERM', () => shutdown('SIGTERM'));
