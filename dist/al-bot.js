@@ -220,6 +220,13 @@
     }
     reset() {
       const previous = this.status();
+      // An unreadable/corrupt saved STOP must be reconciled on a fresh
+      // verified load. Even a now-writable store cannot prove the original
+      // latch was safe to discard.
+      if (previous.latched && previous.reason === 'EMERGENCY_STOP_STORAGE_UNVERIFIED') {
+        return { ...previous, resetBlocked: true,
+          reason: 'EMERGENCY_STOP_RESTORE_REQUIRES_RECONCILIATION' };
+      }
       const proposed = { latched: false, reason: null, at: null };
       // Never remove an active in-memory safety latch if its durable reset
       // is rejected by storage quota or a failed readback.
@@ -9775,6 +9782,12 @@
 
     resetSafety(reason = 'H19_EXPLICIT_RESET') {
       if (this.currentAction) return { accepted: false, reason: 'H19_ACTION_IN_FLIGHT' };
+      // A corrupt/inaccessible pending record may represent an already
+      // dispatched irreversible action. A mere button press cannot prove
+      // absence or authorize overwriting it with a new pending request.
+      if (this.suspendedReason === 'H19_PENDING_RESTORE_UNVERIFIED') {
+        return { accepted: false, reason: 'H19_PENDING_RESTORE_REQUIRES_RECONCILIATION' };
+      }
       this.suspended = false;
       this.suspendedReason = null;
       this.lastAction = { at: nowIso(), type: 'SAFETY_RESET', reason: cleanText(reason, 200) };
