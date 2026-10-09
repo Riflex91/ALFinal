@@ -578,6 +578,66 @@ test('H19 UNKNOWN ownership requires explicit acknowledgement before safety rese
   assert.equal(state.dispatches.length, 1);
 });
 
+test('H19 UNKNOWN acknowledgement refuses storage deletion failures and never clears action ownership', () => {
+  for (const removeResult of [false, true]) {
+    const storage = createMemoryStorage();
+    const f = fixture({ storage, syncUnknown: true, noMutation: true });
+    assert.equal(f.controller.queueStart('My_Merchant').accepted, true);
+    assert.equal(f.controller.tick().state, 'UNKNOWN');
+    const pendingKey = [...storage.map.keys()].find(key => key.includes(':pending:'));
+    assert.ok(pendingKey, 'pending record exists before operator acknowledgement');
+    const initialPending = storage.get(pendingKey);
+    const actualRemove = storage.remove;
+    storage.remove = () => removeResult;
+    const blocked = f.controller.acknowledgeUnknown('OPERATOR_REVIEWED');
+    assert.equal(blocked.accepted, false);
+    assert.equal(blocked.reason, 'H19_UNKNOWN_ACK_PERSISTENCE_UNCONFIRMED');
+    assert.equal(f.controller.status().suspended, true);
+    assert.equal(f.controller.status().currentAction.kind, 'START');
+    assert.equal(f.controller.resetSafety('MUST_NOT_RESET').accepted, false);
+    assert.equal(storage.get(pendingKey), initialPending);
+    assert.equal(f.state.dispatches.length, 1);
+    storage.remove = actualRemove;
+    const recovered = f.controller.acknowledgeUnknown('OPERATOR_REVIEWED_AGAIN');
+    assert.equal(recovered.accepted, true);
+    assert.equal(f.controller.status().currentAction, null);
+    assert.equal(storage.get(pendingKey), null);
+  }
+});
+
+test('H19 fails closed when confirmed game outcome cannot clear pending durable ownership', async () => {
+  for (const removeResult of [false, true]) {
+    const storage = createMemoryStorage();
+    const f = fixture({ storage, manualSettlement: true });
+    assert.equal(f.controller.queueStart('My_Merchant').accepted, true);
+    assert.equal(f.controller.tick().state, 'DISPATCHED');
+    const pendingKey = [...storage.map.keys()].find(key => key.includes(':pending:'));
+    assert.ok(pendingKey);
+    f.resolve({ success: true });
+    await flush();
+    const actualRemove = storage.remove;
+    storage.remove = () => removeResult;
+    const blocked = f.controller.tick();
+    assert.equal(blocked.state, 'UNKNOWN');
+    assert.equal(blocked.reason, 'H19_PENDING_CLEAR_UNCONFIRMED');
+    assert.equal(f.controller.status().suspended, true);
+    assert.equal(f.controller.status().currentAction.kind, 'START');
+    assert.equal(f.controller.status().metrics.actionsConfirmed, 0);
+    assert.equal(storage.map.has(pendingKey), true);
+    assert.equal(f.state.dispatches.length, 1);
+    assert.equal(f.controller.queueStart('My_Merchant').accepted, false);
+    storage.remove = actualRemove;
+    const confirmed = f.controller.tick();
+    assert.equal(confirmed.state, 'CONFIRMED');
+    assert.equal(storage.map.has(pendingKey), false);
+    assert.equal(f.state.dispatches.length, 1);
+    assert.equal(f.controller.status().metrics.actionsConfirmed, 1);
+    // Even with positive live evidence, a storage fault must never
+    // automatically dismiss a separately held safety suspension.
+    assert.equal(f.controller.status().suspended, true);
+  }
+});
+
 test('H19 preserves pending lifecycle ownership across module reload and reconciles instead of redispatching', () => {
   const first = fixture({ neverSettle: true });
   assert.equal(first.controller.queueStart('My_Merchant').accepted, true);
