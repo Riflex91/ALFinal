@@ -90,3 +90,40 @@ automation** yet, and old uninstrumented Node versions cannot be considered
 fenced. Do not alter or delete the owner/lease files manually without a
 reviewed shutdown, backup and verification procedure. Existing account and
 telemetry browser clients stay on port 17391 in this draft.
+
+## Read-only single-writer preflight
+
+The standalone diagnostic `scripts/ssd-writer-preflight.mjs` inspects the
+persistent writer owner and lease records, validates bounded account snapshot
+files and computes a privacy-preserving account fingerprint. It **does not**
+modify any data or take ownership of SSD paths.
+
+After an operator has approved inspecting the local installation, run:
+
+```powershell
+node scripts/ssd-writer-preflight.mjs "D:/ALBot/state" "D:/ALBot/telemetry"
+```
+
+It produces JSON observations and explicit blockers. Exit status 2 means
+blocked or unsafe; exit status 1 means manual verification is still required.
+It deliberately **never** returns permission to switch writers; a missing
+lease and an unoccupied port are insufficient proof against old,
+uninstrumented Node versions. Do not remove a stale lease to make the
+diagnostic pass.
+
+## H19 emergency persistence staging
+
+H19's browser-backed pre-dispatch pending record now requires a successful
+write plus exact readback. StorageAdapter may still use transient memory for
+historical **non-safety** cache keys, but never for `albot:h19:` or the
+Emergency STOP key. If the pending record cannot be confirmed, H19
+blocks dispatch and suspends further lifecycle actions. On a session change,
+an old pending action without verified live outcome is retained as UNKNOWN
+rather than silently deleted and retried. Valid positive live evidence can
+still reconcile a genuinely completed action.
+
+This is **intermediate safety hardening, not SSD H19 completion**:
+persistent STOP/UNKNOWN state still needs a separate verified SSD preload,
+durable async acknowledgement, and evidence-backed recovery path. Never
+clear browser safety keys or reset existing STOP/UNKNOWN latches during the
+migration.
