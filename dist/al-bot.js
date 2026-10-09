@@ -9731,10 +9731,25 @@
       if (!this.suspended || !current || current.unknownRecorded !== true) {
         return { accepted: false, reason: 'H19_NO_UNKNOWN_ACTION_TO_ACKNOWLEDGE' };
       }
+      // Acknowledging UNKNOWN is an explicit, irreversible ownership
+      // transition. Never claim success until the persisted pending record
+      // has been removed and an exact readback confirms its absence.
+      if (!this._removeStorage('pending')) {
+        this.suspended = true;
+        this.suspendedReason = 'H19_UNKNOWN_ACK_PERSISTENCE_UNCONFIRMED';
+        this.autonomyEnabled = false;
+        this.metrics.safetyBlocks += 1;
+        this.lastAction = {
+          at: nowIso(),
+          type: 'UNKNOWN_ACK_BLOCKED',
+          reason: this.suspendedReason,
+          actionId: current.id || null
+        };
+        return { accepted: false, reason: this.suspendedReason, status: this.status() };
+      }
       const acknowledged = clone(current);
       this.settlementGeneration += 1;
       this.currentAction = null;
-      this._removeStorage('pending');
       this.lastAction = {
         at: nowIso(),
         type: 'UNKNOWN_ACKNOWLEDGED',
@@ -10277,8 +10292,12 @@
           dispatched = this.actions.dispatch(actionName, args);
         }
       } catch (error) {
+        if (!this._removeStorage('pending')) {
+          // Failed clear cannot be treated as a completed or rejected action:
+          // retain ownership and block any subsequent automatic dispatch.
+          return this._suspend('H19_PENDING_CLEAR_UNCONFIRMED');
+        }
         this.currentAction = null;
-        this._removeStorage('pending');
         this.metrics.actionsRejected += 1;
         this.lastAction = { at: nowIso(), type: request.kind + '_REJECTED_PRE_DISPATCH', reason: errorReason(error) };
         return { accepted: false, reason: errorReason(error) };
@@ -10299,8 +10318,12 @@
 
       if (!dispatched || dispatched.state !== 'DISPATCHED') {
         const reason = dispatched && dispatched.error && dispatched.error.message || 'H19_ACTION_NOT_DISPATCHED';
+        if (!this._removeStorage('pending')) {
+          // Failed clear cannot be treated as a completed or rejected action:
+          // retain ownership and block any subsequent automatic dispatch.
+          return this._suspend('H19_PENDING_CLEAR_UNCONFIRMED');
+        }
         this.currentAction = null;
-        this._removeStorage('pending');
         this.metrics.actionsRejected += 1;
         this.lastAction = { at: nowIso(), type: request.kind + '_REJECTED_PRE_DISPATCH', reason: cleanText(reason, 300) };
         return { accepted: false, reason: cleanText(reason, 300) };
@@ -10330,8 +10353,12 @@
     _confirmCurrent(details = {}) {
       const current = this.currentAction;
       if (!current) return { state: 'IDLE' };
+      if (!this._removeStorage('pending')) {
+        // Failed clear cannot be treated as a completed or rejected action:
+        // retain ownership and block any subsequent automatic dispatch.
+        return this._suspend('H19_PENDING_CLEAR_UNCONFIRMED');
+      }
       this.currentAction = null;
-      this._removeStorage('pending');
       this.metrics.actionsConfirmed += 1;
       this.actionsThisSession += 1;
       if (current.kind === 'START') this.metrics.startsConfirmed += 1;
@@ -10465,8 +10492,12 @@
               : 0;
             const recoveryLimit = this.config.browserSwapSessionRecoveryLimit;
 
+            if (!this._removeStorage('pending')) {
+              // Failed clear cannot be treated as a completed or rejected action:
+              // retain ownership and block any subsequent automatic dispatch.
+              return this._suspend('H19_PENDING_CLEAR_UNCONFIRMED');
+            }
             this.currentAction = null;
-            this._removeStorage('pending');
             this.metrics.reconciliations += 1;
             this.metrics.stalePendingDiscarded += 1;
 
@@ -10630,8 +10661,12 @@
           const desiredOnline = !!(roster && roster.onlineStateAvailable === true
             && this._onlineSet(roster).has(String(current.desiredName || '')));
           if (desiredOnline) {
+            if (!this._removeStorage('pending')) {
+              // Failed clear cannot be treated as a completed or rejected action:
+              // retain ownership and block any subsequent automatic dispatch.
+              return this._suspend('H19_PENDING_CLEAR_UNCONFIRMED');
+            }
             this.currentAction = null;
-            this._removeStorage('pending');
             this.metrics.actionsRejected += 1;
             this.metrics.browserSwapTargetAlreadyOnlineRecoveries += 1;
             if (current.automatic === true) this.autonomyEnabled = true;
@@ -10654,8 +10689,12 @@
           }
         }
 
+        if (!this._removeStorage('pending')) {
+          // Failed clear cannot be treated as a completed or rejected action:
+          // retain ownership and block any subsequent automatic dispatch.
+          return this._suspend('H19_PENDING_CLEAR_UNCONFIRMED');
+        }
         this.currentAction = null;
-        this._removeStorage('pending');
         this.metrics.actionsRejected += 1;
         if (current.automatic === true) this.autonomyEnabled = false;
         this.lastAction = {
@@ -10672,8 +10711,12 @@
         if (current.kind === 'START' && current.requireCharacterStateChange === true && transientStartRejection(error)) {
           const targetName = cleanText(current.targetName || '', 120);
           const retryAtMs = Date.now() + this.config.startRetryBackoffMs;
+          if (!this._removeStorage('pending')) {
+            // Failed clear cannot be treated as a completed or rejected action:
+            // retain ownership and block any subsequent automatic dispatch.
+            return this._suspend('H19_PENDING_CLEAR_UNCONFIRMED');
+          }
           this.currentAction = null;
-          this._removeStorage('pending');
           this.metrics.actionsRejected += 1;
           this.metrics.transientStartRejects += 1;
           if (targetName) this.transientStartRetries.set(targetName, { retryAtMs, error });
@@ -10698,8 +10741,12 @@
         if (['PARTY_INVITE', 'PARTY_REQUEST'].includes(current.kind) && transientPartyRejection(error)) {
           const targetName = cleanText(current.targetName || '', 120);
           const retryAtMs = Date.now() + this.config.partyRetryBackoffMs;
+          if (!this._removeStorage('pending')) {
+            // Failed clear cannot be treated as a completed or rejected action:
+            // retain ownership and block any subsequent automatic dispatch.
+            return this._suspend('H19_PENDING_CLEAR_UNCONFIRMED');
+          }
           this.currentAction = null;
-          this._removeStorage('pending');
           this.metrics.actionsRejected += 1;
           this.metrics.partyTransientRejects += 1;
           if (targetName) this.partyRetryBackoffs.set(targetName, { retryAtMs, error });
@@ -10723,8 +10770,12 @@
           };
         }
                 if (current.kind === 'RESPAWN' && error === 'cant_respawn') {
+          if (!this._removeStorage('pending')) {
+            // Failed clear cannot be treated as a completed or rejected action:
+            // retain ownership and block any subsequent automatic dispatch.
+            return this._suspend('H19_PENDING_CLEAR_UNCONFIRMED');
+          }
           this.currentAction = null;
-          this._removeStorage('pending');
           this.metrics.actionsRejected += 1;
           this.metrics.respawnCooldownRejects += 1;
           this.autonomyEnabled = false;
