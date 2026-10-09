@@ -54,8 +54,8 @@ any deletion. Do not run the script until `/health` reports `durableStore`.
 ## Native Windows Bridge SSD endpoint (revised integration)
 
 The persistent browser SSD client and non-destructive backup helper now use
-`http://127.0.0.1:17392`, implemented **natively in Windows Bridge** (draft
-`Riflex91/Riflex91-Repo#995`). The native Bridge writes the same durable-kv
+`http://127.0.0.1:17392`, implemented **natively in Windows Bridge** (merged as staging PR
+`Riflex91/Riflex91-Repo#995`; not a Stable publication). The native Bridge writes the same durable-kv
 file layout beneath `D:/ALBot/state/durable-kv`. It requires explicit opt-in,
 and its absence is a hard block for H25 handoffs: never fall back to browser
 localStorage or an unconfirmed write.
@@ -82,14 +82,14 @@ A second writer, stale lease, corrupt marker or `bridge` owner stops the
 legacy host instead of guessing that it owns the SSD. Graceful termination
 releases only a verified lease after confirmed flush; owner identity persists.
 
-The counterpart `AlFinalNativeWriterOwnership` in Windows Bridge draft PR
+The counterpart `AlFinalNativeWriterOwnership` merged from Windows Bridge PR
 `#995` uses the same marker and exclusive lease-file convention. Native
 account/telemetry POST remain production-disabled and cannot be enabled by
 a free TCP port alone. There is **no operator cutover procedure or rollback
 automation** yet, and old uninstrumented Node versions cannot be considered
 fenced. Do not alter or delete the owner/lease files manually without a
 reviewed shutdown, backup and verification procedure. Existing account and
-telemetry browser clients stay on port 17391 in this draft.
+telemetry browser clients stay on port 17391 in this uninstalled candidate.
 
 ## Read-only single-writer preflight
 
@@ -192,3 +192,45 @@ against any old uninstrumented process, GUI activation of Bridge account or
 telemetry POST, live browser endpoint switching, and a transactional rollback.
 Those remain separate review and live-evidence gates. No branch in this
 migration is eligible for Stable promotion on the strength of a backup alone.
+
+## Read-only local witness (no process intervention)
+
+An additional standalone witness collects only bounded local health status,
+the existing account fingerprint, and owner/lease marker diagnostics:
+
+```powershell
+node scripts/ssd-readonly-witness.mjs "D:/ALBot/state" "D:/ALBot/telemetry"
+```
+
+It sends **only GET /health** to loopback ports 17391 and 17392, and reads
+the same filesystem paths used by `ssd-writer-preflight.mjs`. It sends no
+POST/DELETE, never changes the owner, never clears an old lease, does not
+stop/restart Node or Windows Bridge, and does not mutate browser/game state.
+Unexpected services, invalid JSON, oversized replies and timeouts are
+reported as unverified without printing health-payload contents. Existing
+account values and character names are not logged; account files contribute
+only to counts and a comparison fingerprint.
+
+The witness returns `cutoverAuthorized: false` and
+`liveGameplayVerified: false` regardless of observed endpoints. A responsive
+Windows Bridge KV server can coexist with a legacy Node account/telemetry
+server; **simultaneous healthy ports do not prove two active account writers**.
+Conversely, a closed port does not prove an old uninstrumented Node service
+cannot be restarted. Save the witness JSON as review evidence separately,
+then collect explicit browser H19/STOP/UNKNOWN/H25 observations with no
+reset/deletion. No live evidence is automatically asserted by this script.
+
+## H19 pending-clear invariants
+
+Every H19 resolution path (confirmed, rejected, cross-window retry or
+explicit UNKNOWN acknowledgement) must verify that persistent `pending`
+has actually been cleared. If storage returns false, throws or silently
+ignores deletion, H19 retains in-memory action ownership, suspends, and
+refuses automatic redispatch. No successful acknowledgement or confirmation
+may be reported for an unconfirmed persistent clear. Even if later readback
+succeeds, an independently raised H19 suspension remains in force until
+an authorized safety reset.
+
+This is still browser-store staging. It does **not** replace the future SSD
+preload and confirmed asynchronous STOP/UNKNOWN state transition; legacy
+browser safety records must not be deleted during this stage.
