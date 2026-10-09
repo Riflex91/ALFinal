@@ -9,7 +9,7 @@ const dir=path.dirname(fileURLToPath(import.meta.url));
 const clone=x=>x==null?x:JSON.parse(JSON.stringify(x));
 const env=()=>{
  const r={console,Date,Math,JSON,Map,Set,Promise,Object,String,Number,Array,Boolean,Error,
-   __ALBOT_INTERNALS__:{helpers:{clone,cleanText:(v,max=120)=>String(v==null?'':v).trim().slice(0,max)}}};
+   __ALBOT_INTERNALS__:{Scheduler:class {},helpers:{clone,cleanText:(v,max=120)=>String(v==null?'':v).trim().slice(0,max)}}};
  r.globalThis=r;return r;
 };
 function load(root,name){vm.runInNewContext(fs.readFileSync(path.resolve(dir,'../src/'+name),'utf8'),root,{filename:name});}
