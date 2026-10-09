@@ -159,6 +159,9 @@ export function createOfflineCutoverBackup(options = {}) {
     fs.mkdirSync(path.dirname(target), { recursive: true });
     const sourceBefore = sha256(file.source);
     fs.copyFileSync(file.source, target, fs.constants.COPYFILE_EXCL);
+    // The success manifest must not precede the copied bytes reaching disk.
+    const copiedFd = fs.openSync(target, 'r');
+    try { fs.fsyncSync(copiedFd); } finally { fs.closeSync(copiedFd); }
     const copyHash = sha256(target);
     const sourceAfter = sha256(file.source);
     const originalSize = fs.lstatSync(file.source).size;
