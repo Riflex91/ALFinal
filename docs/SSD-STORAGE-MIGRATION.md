@@ -239,11 +239,20 @@ browser safety records must not be deleted during this stage.
 
 The candidate's H25 browser-navigation handoff is stored in native SSD
 KV only; this is not a license to switch the account/telemetry writer.
+Before preparing a new irreversible browser swap, the runtime requires a
+verified SSD GET proving the exact handoff key is absent, refuses to
+overwrite unresolved prior evidence, and requires a separate GET/readback
+of the exact serialized value after SSD POST. An acknowledged but
+discarded POST raises `H25_SSD_HANDOFF_PERSISTENCE_UNCONFIRMED`; an
+existing handoff raises `H25_SSD_HANDOFF_EXISTING_REQUIRES_RECONCILIATION`.
+These failures do not authorize navigation.
 Before a validated handoff can re-arm Full Autonomy, the target runtime
 must verify the exact character, server, roster, expiry, and Emergency STOP
 status. It then performs the intended single-use SSD DELETE and confirms
 the key is absent through a separate SSD GET. An acknowledged but ignored
 DELETE must block the re-arm with `H25_REARM_HANDOFF_CLEAR_UNCONFIRMED`.
+Emergency STOP and runtime eligibility must be checked **again** immediately
+before rearming, since they can change during awaited SSD operations.
 Host read errors likewise do not authorize re-arm.
 
 Malformed, expired, or mismatched H25 handoff records return
