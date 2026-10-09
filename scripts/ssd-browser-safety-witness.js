@@ -53,18 +53,35 @@
       report.fingerprints.push({ group: kind, sha256: contentHash, bytes: encoder.encode(value).byteLength });
       if (kind === 'stop') {
         const row = JSON.parse(value);
-        if (!row || typeof row.latched !== 'boolean') throw new Error('BROWSER_STOP_RECORD_INVALID');
+        if (!row || typeof row !== 'object' || Array.isArray(row)
+            || typeof row.latched !== 'boolean') throw new Error('BROWSER_STOP_RECORD_INVALID');
         report.stop = { found: true, latched: row.latched, valid: true };
       }
       if (kind === 'h19-pending') {
         const row = JSON.parse(value);
-        if (!row || typeof row !== 'object' || typeof row.id !== 'string'
-            || typeof row.kind !== 'string') throw new Error('BROWSER_PENDING_RECORD_INVALID');
+        if (!row || typeof row !== 'object' || Array.isArray(row)
+            || typeof row.id !== 'string' || !row.id
+            || typeof row.kind !== 'string' || !row.kind) {
+          throw new Error('BROWSER_PENDING_RECORD_INVALID');
+        }
         report.h19.pendingCount += 1;
         if (row.unknownRecorded === true) report.h19.unknownCount += 1;
       }
-      if (kind === 'h19-policy') report.h19.policyCount += 1;
-      if (kind === 'h25-handoff') report.h25.handoffCount += 1;
+      if (kind === 'h19-policy') {
+        const row = JSON.parse(value);
+        if (!row || typeof row !== 'object' || Array.isArray(row)
+            || !Array.isArray(row.desiredActiveNames)) {
+          throw new Error('BROWSER_POLICY_RECORD_INVALID');
+        }
+        report.h19.policyCount += 1;
+      }
+      if (kind === 'h25-handoff') {
+        const row = JSON.parse(value);
+        if (!row || typeof row !== 'object' || Array.isArray(row)) {
+          throw new Error('BROWSER_HANDOFF_RECORD_INVALID');
+        }
+        report.h25.handoffCount += 1;
+      }
     }
     report.fingerprints.sort((a, b) =>
       a.group.localeCompare(b.group) || a.sha256.localeCompare(b.sha256));
