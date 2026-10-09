@@ -234,3 +234,45 @@ an authorized safety reset.
 This is still browser-store staging. It does **not** replace the future SSD
 preload and confirmed asynchronous STOP/UNKNOWN state transition; legacy
 browser safety records must not be deleted during this stage.
+
+## Read-only browser safety witness (one browser context at a time)
+
+After reviewing `scripts/ssd-browser-safety-witness.js` in the exact
+development checkout, use the browser developer console in **each relevant
+Adventure Land window** to execute that file's entire source. This is
+**inspection only**; the file is not part of `dist/al-bot.js`, and must not
+be injected into production as an automatic action. No browser refresh,
+STOP reset, H19 acknowledgement, runtime restart, or gameplay mutation is
+required or authorized by this procedure.
+
+It enumerates the local window's `localStorage` using only read APIs and
+prints a single JSON report containing:
+- whether the STOP record is valid and latched;
+- counts of H19 pending, UNKNOWN-marked and policy records;
+- counts of H25 handoffs;
+- stable SHA-256 fingerprints and sizes of the selected safety records.
+
+The report contains **no original keys, character names, target IDs,
+stored values or account gold**. Corrupt safety entries, denied reads or
+missing cryptographic hashing make `verified=false`. Its
+`cutoverAuthorized` flag is **always false**. `verified=true` means only
+that these records were read in this window, not that other open windows or
+the local Windows services are safe.
+
+Preserve the JSON separately and compare before/after fingerprints without
+deleting any underlying browser record. Pair this evidence with
+`ssd-readonly-witness.mjs` from the Windows command line and the exact
+version/CI head. Review outstanding STOP/UNKNOWN records manually;
+**do not perform mutating H19 live tests while they are unresolved**.
+
+## Startup safety with unreadable browser persistence
+
+The runtime now fails closed if its emergency STOP key is present but corrupt
+or cannot be read: it starts with an in-memory
+`EMERGENCY_STOP_STORAGE_UNVERIFIED` latch and does not replace the original
+record with a default. H19 similarly sets
+`H19_PENDING_RESTORE_UNVERIFIED` and blocks lifecycle dispatch if the
+pending safety key cannot be read or parsed. Confirmed absence is distinct
+from unreadability; no volatile memory fallback can prove a critical key is
+absent. A missing or corrupt safety record must not be silently cleared to
+make the migration proceed.
