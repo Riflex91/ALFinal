@@ -5,9 +5,9 @@ browser-storage migration and must not be presented as one.
 
 ## Current SSD contract
 - Existing `D:/ALBot/state` and `D:/ALBot/telemetry` remain in place.
-- The Windows host offers `GET /v1/storage?key=...`,
+- The native Windows Bridge exposes `GET /v1/storage?key=...`,
   `POST /v1/storage?key=...` and `DELETE /v1/storage?key=...`.
-- Durable KV records use hashed filenames beneath `D:/ALBot/state/durable-kv`
+- Native Bridge KV records use hashed filenames beneath `D:/ALBot/state/durable-kv`
   and temporary-file write, fsync, atomic rename before an HTTP success.
 - Only ALBot-owned keys, AIO V3 content drift keys, and the V3 world model key
   are accepted by this storage API. Untrusted browser-origin requests are denied.
@@ -66,8 +66,6 @@ required for the SSD API. The older proposed Node host-manager/updater PR
 `Riflex91/Riflex91-Repo#994` is superseded for SSD persistence and should
 not be merged as-is.
 
-The legacy ALFinal Node-side storage endpoint is still present for
-compatibility during migration, but the browser SSD client and backup helper
-no longer use it. The separate Node host-release workflow has been removed
+The obsolete Node-side durable-kv endpoint has been removed entirely. The\nlegacy Node service remains responsible only for telemetry and account state\nuntil a verified single-writer handover. The separate Node host-release workflow has been removed
 from this candidate: native SSD updates are delivered with the self-updating
 Windows Bridge. Telemetry/account/STOP migration requires separate review.

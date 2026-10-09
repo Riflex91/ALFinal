@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import { pathToFileURL } from 'node:url';
-import { DurableKeyStore } from './durable-storage.mjs';
 
 const DEFAULT_ROOT = process.env.ALBOT_TELEMETRY_ROOT || 'D:/ALBot/telemetry';
 const DEFAULT_STATE_ROOT = process.env.ALBOT_STATE_ROOT || 'D:/ALBot/state';
@@ -220,7 +219,6 @@ export class PersistentStateStore {
 export function createTelemetryServer(options = {}) {
   const store = options.store || new TelemetryStore(options);
   const stateStore = options.stateStore || new PersistentStateStore(options);
-  const durableStore = options.durableStore || new DurableKeyStore({ stateRoot: stateStore.root });
   const host = options.host || DEFAULT_HOST;
   const port = Number(options.port) || DEFAULT_PORT;
   const allowOrigin = origin => !origin || origin === 'https://adventure.land' || origin === 'https://www.adventure.land'
@@ -230,7 +228,7 @@ export function createTelemetryServer(options = {}) {
     const origin = String(req.headers.origin || '');
     if (allowOrigin(origin)) {
       res.setHeader('Access-Control-Allow-Origin', origin || '*');
-      res.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
+      res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
       res.setHeader('Access-Control-Allow-Private-Network', 'true');
     }
@@ -240,14 +238,7 @@ export function createTelemetryServer(options = {}) {
     }
     if (req.method === 'GET' && req.url === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({
-        ok: true,
-        // Host ownership check for the native Windows Bridge. This is not an
-        // authentication secret and confers no gameplay/process authority.
-        processId: process.pid,
-        store: store.status(), stateStore: stateStore.status(),
-        durableStore: durableStore.status()
-      }));
+      return res.end(JSON.stringify({ ok: true, store: store.status(), stateStore: stateStore.status() }));
     }
     if (req.method === 'GET' && req.url === '/v1/state/account') {
       if (!allowOrigin(origin)) {
@@ -256,55 +247,6 @@ export function createTelemetryServer(options = {}) {
       }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify(stateStore.readAccount()));
-    }
-
-    const durablePath = req.url && req.url.split('?')[0] === '/v1/storage';
-    const durableRequest = durablePath && ['GET', 'POST', 'DELETE'].includes(req.method);
-    if (durableRequest) {
-      if (!allowOrigin(origin)) {
-        res.writeHead(403);
-        return res.end('origin blocked');
-      }
-      const send = (status, payload) => {
-        res.writeHead(status, { 'Content-Type': 'application/json' });
-        return res.end(JSON.stringify(payload));
-      };
-      const key = new URL(req.url, 'http://127.0.0.1').searchParams.get('key');
-      if (req.method !== 'POST') {
-        try {
-          const data = req.method === 'GET'
-            ? durableStore.read(key)
-            : durableStore.remove(key);
-          return send(200, { ok: true, ...data });
-        } catch (error) {
-          return send(400, { ok: false, error: String(error && error.message || error) });
-        }
-      }
-      let bytes = 0;
-      let payload = '';
-      req.setEncoding('utf8');
-      req.on('data', chunk => {
-        bytes += Buffer.byteLength(chunk);
-        if (bytes > 4 * 1024 * 1024) {
-          if (!res.writableEnded) send(413, { ok: false, error: 'DURABLE_PAYLOAD_TOO_LARGE' });
-          req.destroy();
-          return;
-        }
-        payload += chunk;
-      });
-      req.on('end', () => {
-        if (res.writableEnded) return;
-        try {
-          const row = JSON.parse(payload || '{}');
-          if (key !== row.key) throw new Error('DURABLE_KEY_MISMATCH');
-          const result = durableStore.write(row.key, row.value, row);
-          send(200, { ok: true, ...result });
-        } catch (error) {
-          send(error && error.message === 'DURABLE_REVISION_CONFLICT' ? 409 : 400,
-            { ok: false, error: String(error && error.message || error) });
-        }
-      });
-      return;
     }
 
     const telemetryWrite = req.method === 'POST' && req.url === '/v1/telemetry';
@@ -367,7 +309,7 @@ export function createTelemetryServer(options = {}) {
     await new Promise(resolve => server.close(() => resolve()));
   };
 
-  return { server, store, stateStore, durableStore, host, port, close };
+  return { server, store, stateStore, host, port, close };
 }
 
 async function main() {
@@ -377,7 +319,6 @@ async function main() {
     console.log('[AL Bot telemetry] listening on http://' + app.host + ':' + app.port);
     console.log('[AL Bot telemetry] storage root: ' + app.store.root);
     console.log('[AL Bot state] storage root: ' + app.stateStore.root);
-    console.log('[AL Bot durable storage] root: ' + app.durableStore.root);
   });
   const shutdown = async signal => {
     console.log('[AL Bot telemetry] ' + signal + ' - flushing and stopping');
