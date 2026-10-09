@@ -69,3 +69,24 @@ not be merged as-is.
 The obsolete Node-side durable-kv endpoint has been removed entirely. The\nlegacy Node service remains responsible only for telemetry and account state\nuntil a verified single-writer handover. The separate Node host-release workflow has been removed
 from this candidate: native SSD updates are delivered with the self-updating
 Windows Bridge. Telemetry/account/STOP migration requires separate review.
+
+## Account/telemetry ownership groundwork (not yet active in live)
+
+The legacy `host/telemetry-recorder.mjs` now imports
+`host/ssd-writer-ownership.mjs`. When this candidate is explicitly deployed,
+the Node host atomically creates and verifies two files under
+`D:/ALBot/state`: `writer-owner.json` (durable `node` owner) and
+`writer-lease.json` (unique running-instance lease). Account and telemetry
+writers, daily flush and pruning are fenced before filesystem mutation.
+A second writer, stale lease, corrupt marker or `bridge` owner stops the
+legacy host instead of guessing that it owns the SSD. Graceful termination
+releases only a verified lease after confirmed flush; owner identity persists.
+
+The counterpart `AlFinalNativeWriterOwnership` in Windows Bridge draft PR
+`#995` uses the same marker and exclusive lease-file convention. Native
+account/telemetry POST remain production-disabled and cannot be enabled by
+a free TCP port alone. There is **no operator cutover procedure or rollback
+automation** yet, and old uninstrumented Node versions cannot be considered
+fenced. Do not alter or delete the owner/lease files manually without a
+reviewed shutdown, backup and verification procedure. Existing account and
+telemetry browser clients stay on port 17391 in this draft.
