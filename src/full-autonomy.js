@@ -972,7 +972,12 @@
         try {
           const gear = this.runtime.gear;
           const future = this.runtime.gearProgression;
-          if (gear && future && typeof gear.plan === 'function'
+          // Never duplicate a delivery already queued or underway. H18 may
+          // be travelling across maps for longer than the 30s probe interval.
+          const deliveryStatus = logistics.status();
+          const idleDelivery = !(deliveryStatus.currentAction)
+            && !(Array.isArray(deliveryStatus.queue) && deliveryStatus.queue.length);
+          if (idleDelivery && gear && future && typeof gear.plan === 'function'
               && typeof future.deliveryAuthorization === 'function') {
             const proposals = gear.plan().group.proposals || [];
             for (const candidate of proposals) {
