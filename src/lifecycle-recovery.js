@@ -146,6 +146,7 @@
         lateOutcomeRecoveries: 0,
         rotationCapabilityBlocks: 0,
         stalePendingDiscarded: 0,
+        stalePendingUnknown: 0,
         stalePendingReconciled: 0
       };
     }
@@ -316,8 +317,12 @@
       const key = this._storageKey(kind);
       if (!key || !this.storage || typeof this.storage.set !== 'function') return false;
       try {
-        this.storage.set(key, JSON.stringify(value));
-        return true;
+        const serialized = JSON.stringify(value);
+        if (this.storage.set(key, serialized) === false) return false;
+        // Successful API return does not prove a durable H19 record:
+        // detect no-op, quota failure, or discarded storage writes.
+        return typeof this.storage.get === 'function'
+          && this.storage.get(key) === serialized;
       } catch (_) {
         return false;
       }
@@ -327,8 +332,9 @@
       const key = this._storageKey(kind);
       if (!key || !this.storage || typeof this.storage.remove !== 'function') return false;
       try {
-        this.storage.remove(key);
-        return true;
+        if (this.storage.remove(key) === false) return false;
+        return typeof this.storage.get === 'function'
+          && this.storage.get(key) === null;
       } catch (_) {
         return false;
       }
@@ -340,7 +346,7 @@
       row.ownerSessionId = this.sessionId;
       delete row.response;
       delete row.errorObject;
-      this._writeStorage('pending', row);
+      return this._writeStorage('pending', row);
     }
 
     _persistPolicy() {
@@ -375,9 +381,8 @@
         const sameSession = !!pending.ownerSessionId && String(pending.ownerSessionId) === String(this.sessionId);
         if (!sameSession) {
           const liveOutcome = this._pendingLiveOutcome(pending);
-          this._removeStorage('pending');
           this.metrics.reconciliations += 1;
-          if (liveOutcome.confirmed) {
+          if (liveOutcome.confirmed && this._removeStorage('pending')) {
             this.metrics.stalePendingReconciled += 1;
             this.lastAction = {
               at: nowIso(),
@@ -390,14 +395,24 @@
               currentSessionId: this.sessionId
             };
           } else {
-            this.metrics.stalePendingDiscarded += 1;
+            // No verified live outcome (or no confirmed clear) means UNKNOWN.
+            // Retain original SSD/browser record; NEVER turn it into an
+            // empty default and automatically re-dispatch after reload.
+            this.currentAction = { ...pending, settlement: 'RESTORED',
+              restored: true, response: null, error: null, unknownRecorded: true };
+            this.suspended = true;
+            this.suspendedReason = 'H19_STALE_PENDING_OUTCOME_UNKNOWN';
+            this.autonomyEnabled = false;
+            this.metrics.stalePendingUnknown += 1;
             this.lastAction = {
               at: nowIso(),
-              type: 'STALE_PENDING_DISCARDED',
+              type: 'STALE_PENDING_UNKNOWN_RETAINED',
               actionId: pending.id,
               kind: pending.kind,
               targetName: pending.targetName || null,
-              reason: liveOutcome.reason || 'H19_STALE_PENDING_NO_LIVE_OUTCOME',
+              reason: liveOutcome.confirmed
+                ? 'H19_STALE_PENDING_CLEAR_UNCONFIRMED'
+                : liveOutcome.reason || 'H19_STALE_PENDING_NO_LIVE_OUTCOME',
               previousSessionId: pending.ownerSessionId || null,
               currentSessionId: this.sessionId
             };
@@ -1456,7 +1471,20 @@
         transport: before.transport || 'game-action'
       };
       this.currentAction = action;
-      this._persistCurrent();
+      if (!this._persistCurrent()) {
+        // This is before any game/CM mutation, therefore no UNKNOWN
+        // outcome has been created and the request must not be sent.
+        this.currentAction = null;
+        this.suspended = true;
+        this.suspendedReason = 'H19_PENDING_PERSISTENCE_UNCONFIRMED';
+        this.autonomyEnabled = false;
+        this.metrics.safetyBlocks += 1;
+        this.lastAction = {
+          at: nowIso(), type: 'PRE_DISPATCH_PERSISTENCE_BLOCKED',
+          reason: this.suspendedReason, requestId: request.id || null
+        };
+        return { accepted: false, state: 'BLOCKED', reason: this.suspendedReason };
+      }
 
       let dispatched;
       try {
