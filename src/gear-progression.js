@@ -374,6 +374,8 @@
     _profileEquipment(profile) {
       if (!profile || !profile.equipment || typeof profile.equipment !== 'object') return null;
       if (profile.equipmentKnown === false) return null;
+      // An empty map is not sufficient proof that all equipment slots were
+      // inspected; retain H32's fail-closed requirement.
       return Object.values(profile.equipment).some(item => item && item.name)
         ? profile.equipment
         : null;
@@ -948,7 +950,10 @@
             itemCount: family === 'COMPOUND' ? 3 : 1
           });
           if (!mutationPolicy.allowed) action = 'HOLD';
-        } else if (protection.targetOnline !== true) {
+        } else if (action === 'GEAR') {
+          // Reservations are needed for H18 even when the target is online.
+          // The old offline-only condition made every online Gear delivery
+          // impossible despite complete, validated equipment evidence.
           this._rememberGearReservation(item, protection);
         }
         return {
