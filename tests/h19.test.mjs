@@ -1301,7 +1301,8 @@ test('H19 does not treat RAM fallback as confirmed safety storage', () => {
   const store = new ctx.__ALBOT_INTERNALS__.StorageAdapter(ctx);
   assert.equal(store.set('albot:h19:pending:v1:My_Mage', 'pending'), false);
   assert.equal(store.set('albot:emergency-stop:v1', 'STOP'), false);
-  assert.equal(store.get('albot:h19:pending:v1:My_Mage'), null);
+  assert.throws(() => store.get('albot:h19:pending:v1:My_Mage'),
+    /ALBOT_SAFETY_STORAGE_UNREADABLE/);
   assert.equal(store.set('albot:noncritical-test', 'cache'), true);
 
   ctx.localStorage = {
@@ -1311,6 +1312,76 @@ test('H19 does not treat RAM fallback as confirmed safety storage', () => {
   };
   assert.equal(store.set('albot:h19:pending:v1:My_Mage', 'pending'), false);
   assert.equal(store.remove('albot:h19:pending:v1:My_Mage'), false);
+});
+
+test('H19 never dispatches when pending state is unreadable or corrupted at startup', () => {
+  for (const mode of ['exception', 'corrupt-json', 'invalid-record', 'no-key']) {
+    const storage = createMemoryStorage();
+    const getOriginal = storage.get;
+    if (mode === 'exception') {
+      storage.get = key => {
+        if (key.includes(':pending:')) throw new Error('LOCAL_STORAGE_ACCESS_DENIED');
+        return getOriginal(key);
+      };
+    } else if (mode === 'corrupt-json') {
+      storage.set('albot:h19:pending:v1:My_Ranger', '{');
+    } else if (mode === 'invalid-record') {
+      storage.set('albot:h19:pending:v1:My_Ranger', JSON.stringify({ id: 'h19-1' }));
+    } else {
+      // Simulate an otherwise functional storage implementation that cannot
+      // resolve the pending key (undefined is NOT a verified absent value).
+      storage.get = key => key.includes(':pending:') ? undefined : getOriginal(key);
+    }
+    const f = fixture({
+      storage,
+      onlineNames: ['My_Ranger'],
+      runnerActiveNames: ['My_Ranger']
+    });
+    const status = f.controller.status();
+    assert.equal(status.suspended, true, mode);
+    assert.equal(status.suspendedReason, 'H19_PENDING_RESTORE_UNVERIFIED');
+    assert.equal(status.lastAction.type, 'PENDING_RESTORE_BLOCKED');
+    assert.equal(f.controller.queueStart('My_Merchant').accepted, false);
+    assert.equal(f.controller.tick().state, 'SUSPENDED');
+    assert.equal(f.state.dispatches.length, 0);
+    assert.equal(storage.map.has('albot:h19:pending:v1:My_Ranger'),
+      mode === 'corrupt-json' || mode === 'invalid-record');
+  }
+});
+
+test('emergency STOP reload fails closed on corrupted, inaccessible and missing safety storage', () => {
+  const coreSource = fs.readFileSync(path.resolve(here, '../src/core.js'), 'utf8');
+  function internals(root) {
+    const ctx = { console, Date, Math, JSON, Map, Set, Object, Error, ...root };
+    ctx.globalThis = ctx;
+    vm.runInNewContext(coreSource, ctx, { filename: 'core.js' });
+    return { ctx, ns: ctx.__ALBOT_INTERNALS__ };
+  }
+  for (const mode of ['missing', 'denied', 'corrupt']) {
+    const localStorage = mode === 'missing' ? undefined : {
+      getItem() {
+        if (mode === 'denied') throw new Error('BLOCKED_BY_BROWSER');
+        return '{malformed';
+      },
+      setItem() { throw new Error('QUOTA_EXCEEDED'); },
+      removeItem() { throw new Error('READONLY'); }
+    };
+    const { ctx, ns } = internals(localStorage ? { localStorage } : {});
+    const stop = new ns.EmergencyStop({ storage: new ns.StorageAdapter(ctx) });
+    assert.equal(stop.status().latched, true, mode);
+    assert.equal(stop.status().reason, 'EMERGENCY_STOP_STORAGE_UNVERIFIED');
+    assert.throws(() => stop.assertAllowed('unverified_startup'), /ALBOT_EMERGENCY_STOP/);
+    assert.equal(stop.reset().resetBlocked, true);
+    assert.equal(stop.status().latched, true);
+  }
+  const values = new Map([['albot:emergency-stop:v1', '{"latched":false,"reason":null,"at":null}']]);
+  const localStorage = {
+    getItem: k => values.has(k) ? values.get(k) : null,
+    setItem: (k,v) => values.set(k, String(v)),
+    removeItem: k => values.delete(k)
+  };
+  const { ctx, ns } = internals({ localStorage });
+  assert.equal(new ns.EmergencyStop({ storage: new ns.StorageAdapter(ctx) }).status().latched, false);
 });
 
 test('H19 stale pending without live evidence remains UNKNOWN across sessions', () => {
