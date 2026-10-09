@@ -575,7 +575,7 @@
       this.marketIntelligence = new ns.ALDataMarketIntelligence({
         root: this.root,
         logger: this.logger,
-        storage: this.storage,
+        durableStorage: this.durableStorage,
         game: this.game,
         trade: this.trade
       });

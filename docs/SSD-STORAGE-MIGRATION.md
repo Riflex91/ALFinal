@@ -23,8 +23,10 @@ browser-storage migration and must not be presented as one.
   actions, policies, knowledge, gear, account caches, and updater) to a durable
   preload/confirmed-write contract; never mark a gameplay mutation dispatched
   until its required safety state is confirmed durable.
-- Move ALFinal market intelligence history and remaining large histories to
-  SSD with bounded retention.
+- ALFinal market intelligence now reads/writes new history snapshots via SSD,
+  never browser localStorage. Legacy history still requires explicit backup
+  and import before removing the browser copy.
+- Move remaining ALFinal large histories to SSD with bounded retention.
 - Migrate AIO V3 content drift and world-model persistence separately in
   `Riflex91/Riflex91-Repo`; its older runtime currently writes its own keys.
 - Provide an explicit, reviewed **backup/export before deletion** migration
