@@ -112,7 +112,9 @@
         wishlistGoldReserve: Math.max(0, Math.floor(Number(options.wishlistGoldReserve) || 100000)),
         wishlistFallbackPrice: Math.max(1, Math.floor(Number(options.wishlistFallbackPrice) || 20)),
         wishlistCooldownMs: Math.max(10000, Math.min(3600000, Number(options.wishlistCooldownMs) || 120000)),
-        materialFarmWaitMs: Math.max(15000, Math.min(600000, Number(options.materialFarmWaitMs) || 180000)),
+        // Six minutes gives a safely reachable source time to generate drops;
+        // still bounded: expiration restores ordinary guarded acquisition.
+        materialFarmWaitMs: Math.max(30000, Math.min(900000, Number(options.materialFarmWaitMs) || 360000)),
         giveawayProbeMs: Math.max(2000, Math.min(300000, Number(options.giveawayProbeMs) || 15000)),
         pontyProbeMs: Math.max(15000, Math.min(3600000, Number(options.pontyProbeMs) || 90000)),
         pontyMaxSpend: Math.max(10000, Math.floor(Number(options.pontyMaxSpend) || 1000000)),
