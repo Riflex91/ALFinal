@@ -130,7 +130,7 @@ migration.
 
 ## Offline account/telemetry backup for a future single-writer cutover
 
-The optional \`scripts/ssd-cutover-backup.mjs\` is **copy-only** and is not
+The optional `scripts/ssd-cutover-backup.mjs` is **copy-only** and is not
 part of normal ALFinal startup. It is intentionally not connected to the
 Windows Bridge toggles or release automation.
 
@@ -140,8 +140,8 @@ Windows Bridge toggles or release automation.
    service cleanly and confirm its final flush has finished. Also disable
    watchdogs, services, scheduled tasks and any other restart path, including
    older uninstrumented Node versions. Port 17391 being free is not sufficient.
-2. Confirm there is no active or stale \`writer-lease.json\` requiring
-   reconciliation; the persistent owner must still be \`node\`. **Never
+2. Confirm there is no active or stale `writer-lease.json` requiring
+   reconciliation; the persistent owner must still be `node`. **Never
    delete a lease blindly.**
 3. Independently back up browser-side STOP/UNKNOWN/H19 and V3 data. This
    offline tool **does not copy browser storage or the native durable-kv tree**.
@@ -151,25 +151,25 @@ Windows Bridge toggles or release automation.
 
 Only after the operator has actually stopped all writers, use:
 
-\`\`\`powershell
+```powershell
 node scripts/ssd-writer-preflight.mjs "D:/ALBot/state" "D:/ALBot/telemetry"
 node scripts/ssd-cutover-backup.mjs "D:/ALBot/state" "D:/ALBot/telemetry" "E:/ALBot-backups/cutover-2026-10-09" --confirm-stopped
-\`\`\`
+```
 
 Replace the example backup path with a new, existing-parent destination.
-The \`--confirm-stopped\` switch is a statement by the operator, **not**
+The `--confirm-stopped` switch is a statement by the operator, **not**
 proof that no uninstrumented service is running. The tool copies bounded
-\`account-profiles/*.json\`, \`account-wealth.json\`, and telemetry
-\`raw/\` and \`daily/\` records. It verifies SHA-256 for source before,
+`account-profiles/*.json`, `account-wealth.json`, and telemetry
+`raw/` and `daily/` records. It verifies SHA-256 for source before,
 copy, and source after, rescans the source inventory and records a manifest.
 Each copied file is flushed to disk. It will not copy unrecognized entries,
 follow symlinks or write into either source tree.
 
 **Successful output does not authorize a cutover.** It carries
-\`cutoverAuthorized: false\`, and the manifest records
-\`scope: "account-and-telemetry-only"\`. Verify the snapshot and test restore
+`cutoverAuthorized: false`, and the manifest records
+`scope: "account-and-telemetry-only"`. Verify the snapshot and test restore
 in an isolated temporary environment. Interrupted or inconsistent backups
-retain an \`INCOMPLETE\` marker, are never automatically removed and must
+retain an `INCOMPLETE` marker, are never automatically removed and must
 never be treated as recovery evidence. Hard limits (30,000 files, 4 GiB
 combined, 128 MiB per raw file, 1 MiB per JSON file) fail closed if the
 data set exceeds this staging tool's validated scope.
