@@ -219,6 +219,13 @@
     }
     reset() {
       const previous = this.status();
+      // An unreadable/corrupt saved STOP must be reconciled on a fresh
+      // verified load. Even a now-writable store cannot prove the original
+      // latch was safe to discard.
+      if (previous.latched && previous.reason === 'EMERGENCY_STOP_STORAGE_UNVERIFIED') {
+        return { ...previous, resetBlocked: true,
+          reason: 'EMERGENCY_STOP_RESTORE_REQUIRES_RECONCILIATION' };
+      }
       const proposed = { latched: false, reason: null, at: null };
       // Never remove an active in-memory safety latch if its durable reset
       // is rejected by storage quota or a failed readback.
