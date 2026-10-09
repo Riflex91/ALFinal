@@ -23,6 +23,7 @@ jobs:
       - name: Diagnostic isolated tests
         run: |
           npm run build
+          npm run verify:transport
           echo "=== H21 V3 group/resource ==="
           timeout 30s node --test tests/h21-v3-group-resource.test.mjs
           echo "=== H20 account strategy ==="
