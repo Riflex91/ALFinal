@@ -1572,9 +1572,16 @@
       }
       if (current.signalId) this.partySignals = this.partySignals.filter(row => String(row.id) !== String(current.signalId));
       const timeoutReason = 'H19_' + current.kind + '_UNVERIFIED_TIMEOUT';
+      // Only live confirmation of this still-owned action may reconcile its
+      // matching UNKNOWN. A rejected transport settlement is not itself proof
+      // of failure when the desired game state subsequently becomes observable.
       const lateConfirmed = current.unknownRecorded === true
         && this.suspended === true
-        && this.suspendedReason === timeoutReason;
+        && (
+          this.suspendedReason === timeoutReason
+          || (this.suspendedReason === 'H19_DISPATCH_REJECTED_WITHOUT_LIVE_OUTCOME'
+            && current.settlement === 'REJECTED')
+        );
       if (lateConfirmed) {
         this.suspended = false;
         this.suspendedReason = null;

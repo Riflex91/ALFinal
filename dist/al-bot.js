@@ -1,4 +1,4 @@
-/* AL Bot 0.26.68-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.69-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -10221,9 +10221,16 @@
       }
       if (current.signalId) this.partySignals = this.partySignals.filter(row => String(row.id) !== String(current.signalId));
       const timeoutReason = 'H19_' + current.kind + '_UNVERIFIED_TIMEOUT';
+      // Only live confirmation of this still-owned action may reconcile its
+      // matching UNKNOWN. A rejected transport settlement is not itself proof
+      // of failure when the desired game state subsequently becomes observable.
       const lateConfirmed = current.unknownRecorded === true
         && this.suspended === true
-        && this.suspendedReason === timeoutReason;
+        && (
+          this.suspendedReason === timeoutReason
+          || (this.suspendedReason === 'H19_DISPATCH_REJECTED_WITHOUT_LIVE_OUTCOME'
+            && current.settlement === 'REJECTED')
+        );
       if (lateConfirmed) {
         this.suspended = false;
         this.suspendedReason = null;
@@ -34103,7 +34110,7 @@ class MerchantProductionPlanner {
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.68-h26';
+      this.version = options.version || '0.26.69-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -42499,7 +42506,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.68-h26',
+    version: '0.26.69-h26',
     bootCount,
     replacedPrevious: !!previous
   });
