@@ -170,13 +170,23 @@
       const parsed = raw ? safeJsonParse(raw, null) : null;
       if (parsed && parsed.latched === true) this.state = { latched: true, reason: cleanText(parsed.reason || 'PERSISTED_STOP', 200), at: parsed.at || null };
     }
-    _persist() {
-      if (this.storage) this.storage.set(this.key, JSON.stringify(this.state));
+    _persist(state = this.state) {
+      if (!this.storage || typeof this.storage.set !== 'function'
+          || typeof this.storage.get !== 'function') return false;
+      try {
+        const value = JSON.stringify(state);
+        return this.storage.set(this.key, value) !== false
+          && this.storage.get(this.key) === value;
+      } catch (_) {
+        return false;
+      }
     }
     latch(reason = 'MANUAL_STOP') {
       if (!this.state.latched) {
         this.state = { latched: true, reason: cleanText(reason, 200) || 'MANUAL_STOP', at: nowIso() };
-        this._persist();
+        // Always latch in memory immediately, even if durable write fails.
+        // A future SSD migration must restore an unconfirmed latch on reload.
+        if (!this._persist() && this.logger) this.logger.error('EMERGENCY_STOP_DURABILITY_UNCONFIRMED');
         if (this.logger) this.logger.error('GLOBALER STOP AKTIVIERT', this.state);
         if (this.bus) this.bus.emit('emergency-stop', this.status());
       }
@@ -184,8 +194,14 @@
     }
     reset() {
       const previous = this.status();
-      this.state = { latched: false, reason: null, at: null };
-      this._persist();
+      const proposed = { latched: false, reason: null, at: null };
+      // Never remove an active in-memory safety latch if its durable reset
+      // is rejected by storage quota or a failed readback.
+      if (!this._persist(proposed)) {
+        if (this.logger) this.logger.error('EMERGENCY_STOP_RESET_PERSISTENCE_UNCONFIRMED');
+        return { ...previous, resetBlocked: true, reason: 'EMERGENCY_STOP_RESET_PERSISTENCE_UNCONFIRMED' };
+      }
+      this.state = proposed;
       if (this.logger) this.logger.warn('Globaler STOP wurde manuell zurückgesetzt', { previous });
       if (this.bus) this.bus.emit('emergency-reset', this.status());
       return this.status();
