@@ -63,7 +63,7 @@ test('H36 browser client uses only confirmed localhost SSD HTTP operations', asy
 function h25HandoffFixture(options = {}) {
   // Execute the actual production class method, not a mock implementation.
   const source = fs.readFileSync(path.resolve(here, '../src/runtime.js'), 'utf8');
-  const context = { __ALBOT_INTERNALS__: {} };
+  const context = { __ALBOT_INTERNALS__: { Scheduler: class {} } };
   context.globalThis = context;
   vm.runInNewContext(source, context, { filename: 'runtime.js' });
   const proto = context.__ALBOT_INTERNALS__.ALBotRuntime.prototype;
