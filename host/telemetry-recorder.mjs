@@ -301,7 +301,8 @@ export function createTelemetryServer(options = {}) {
       try {
         const payload = JSON.parse(body || '{}');
         if (kvWrite) {
-          kvStore.set(kvKey, payload.value);
+          if (payload && payload.operation === 'DELETE') kvStore.remove(kvKey);
+          else kvStore.set(kvKey, payload.value);
           res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
           return res.end(JSON.stringify({ ok: true }));
         }
