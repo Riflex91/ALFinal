@@ -111,6 +111,11 @@
     diagnostics: () => runtime.diagnostics(),
     performance_trick: () => runtime.performanceTrick(),
 
+    visibleClients: {
+      status: () => runtime.visibleClients.status(),
+      enable: () => runtime.visibleClients.enable()
+    },
+
     bridge: bridge ? {
       identity: () => bridge.identity(),
       status: () => bridge.status(),
@@ -511,6 +516,7 @@
   };
 
   if (api.bridge) Object.freeze(api.bridge);
+  Object.freeze(api.visibleClients);
   Object.freeze(api.scheduler);
   Object.freeze(api.modules);
   Object.freeze(api.game);
