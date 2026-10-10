@@ -35,9 +35,12 @@ for ($i = 0; $i -lt 20; $i++) {
     $wanted = [System.IO.Path]::GetFullPath($ssd)
     $kvActual = [System.IO.Path]::GetFullPath([string]$status.kvStore.root)
     $kvWanted = [System.IO.Path]::GetFullPath('D:\ALBot\state\kv')
-    if ($status.ok -eq $true -and $actual.TrimEnd('\') -ieq $wanted.TrimEnd('\')
-        -and $status.kvStore.available -eq $true
-        -and $kvActual.TrimEnd('\') -ieq $kvWanted.TrimEnd('\')) {
+    # PowerShell 5.1: do not start a new line with "-and" inside an if.
+    # Evaluate each comparison first, then combine the booleans on one line.
+    $telemetryRootMatches = $actual.TrimEnd('\') -ieq $wanted.TrimEnd('\')
+    $kvRootMatches = $kvActual.TrimEnd('\') -ieq $kvWanted.TrimEnd('\')
+    $kvReady = ($null -ne $status.kvStore) -and ($status.kvStore.available -eq $true)
+    if (($status.ok -eq $true) -and $telemetryRootMatches -and $kvReady -and $kvRootMatches) {
       $healthy = $true
       break
     }
