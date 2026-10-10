@@ -217,8 +217,8 @@ test('H39 uses live get_servers() results and never picks an unverified target',
   ]});
   assert.equal(h._target({ region: 'EU', identifier: 'II' }), null);
   h._refreshGameServerCatalog();
-  await Promise.resolve();
-  await Promise.resolve();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.catalogPending, false);
   assert.deepEqual({ ...h._target({ region: 'EU', identifier: 'II' }) }, { region: 'US', identifier: 'I' });
   assert.equal(h.catalogError, null);
 });
