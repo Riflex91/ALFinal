@@ -1,4 +1,4 @@
-/* AL Bot 0.26.94-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.95-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -7198,6 +7198,21 @@
         return { kind: 'VISIBLE_BROWSER', visible: true, reason: 'H43_RENDERED_GAMEPLAY_OBSERVED', characterName: name };
       } catch (_) { return { kind: 'UNKNOWN', visible: false, reason: 'H43_EVIDENCE_UNAVAILABLE', characterName: name }; }
     }
+    protectsConfiguredQuartet() {
+      // H45: child-CODE launch is forbidden for this configured account even
+      // before H43 has been manually armed or all four browser tabs are ready.
+      // Using account online/runnerActive as a proxy for visible sessions was
+      // the regression that kept My_Ranger1/My_Ranger2 in CODE-aktiv slots.
+      if (this.enabled()) return true;
+      let localName = '';
+      try { localName = clean(this.game.snapshot().character.name); } catch (_) {}
+      if (!localName) {
+        // The CODE iframe can expose character before the adapter snapshot
+        // is ready. Still never authorize a child launch during that gap.
+        try { localName = clean(this.root && this.root.character && this.root.character.name); } catch (_) {}
+      }
+      return NAMES.includes(localName);
+    }
     enable() {
       if (!this._ssdAvailable()) return { accepted: false, reason: 'H43_SSD_REQUIRED' };
       const local = this.localEvidence();
@@ -7217,9 +7232,29 @@
       this.enabledSeen = true;
       return { accepted: true, reason: 'H43_VISIBLE_MODE_ARMED', characters: [...NAMES] };
     }
+    autoEnableIfReady() {
+      // A Merchant CODE loader can start before its game canvas is connected.
+      // Retry only after the genuine Merchant renderer is observable; never
+      // arm SSD from a child or from a character-selection connection page.
+      if (this.enabled()) return { accepted: true, reason: 'H45_ALREADY_ARMED' };
+      const evidence = this.localEvidence();
+      if (evidence.characterName !== 'My_Merchant' || evidence.visible !== true)
+        return { accepted: false, reason: 'H45_WAITING_FOR_VISIBLE_MERCHANT' };
+      return this.enable();
+    }
     fixedQuartet() {
-      // An explicitly armed SSD mode survives temporarily missing windows.
+      // H45: a known quartet client with an owned SSD-backed roster never
+      // substitutes My_Priest/My_Warrior while waiting for rendered tabs.
       if (this.enabled()) return [...NAMES];
+      if (this.protectsConfiguredQuartet() && this._ssdAvailable()) {
+        let roster = null;
+        try { roster = this.roster.refresh(); } catch (_) {}
+        const account = new Map((roster && roster.accountCharacters || [])
+          .filter(row => row && row.name)
+          .map(row => [clean(row.name), row]));
+        if (roster && roster.accountStateAvailable === true
+            && NAMES.every(name => account.has(name))) return [...NAMES];
+      }
       // During migration, a complete four-window group can be protected
       // immediately, even if the one-time Merchant enable was forgotten.
       // Never infer this from account online or child-runner state alone.
@@ -7232,6 +7267,7 @@
     }
     status() {
       const enabled = this.enabled();
+      const protectionActive = this.protectsConfiguredQuartet();
       const local = this.localEvidence();
       let roster = null;
       try { roster = this.roster.refresh(); } catch (_) {}
@@ -7251,6 +7287,8 @@
         };
       });
       return { schemaVersion: 1, mode: 'visible-browser-quartet', enabled,
+        protectionActive, childCodeStartsBlocked: protectionActive,
+        protectedCharacterNames: protectionActive ? [...NAMES] : [],
         ssdAvailable: this._ssdAvailable(), local, clients,
         visibleAndRunningCount: clients.filter(row => row.visible && row.runtimeRunning).length,
         complete: enabled && clients.every(row => row.visible && row.runtimeRunning && row.online) };
@@ -9529,10 +9567,13 @@
       }
 
       const targetName = String(owned.name);
-      if (this.visibleClients && this.visibleClients.enabled()
-          && (mode === 'BROWSER_SWAP' || (mode === 'START' && options.requireCharacterStateChange === true)
-            || (mode === 'STOP' && options.requireCharacterStateChange === true))) {
-        return { ok: false, reason: 'H43_VISIBLE_MODE_CHILD_LIFECYCLE_BLOCKED' };
+      if (this.visibleClients && typeof this.visibleClients.protectsConfiguredQuartet === 'function'
+          && this.visibleClients.protectsConfiguredQuartet()
+          && (mode === 'BROWSER_SWAP' || mode === 'START' || mode === 'STOP')) {
+        // No caller (manual H19 queue, automatic planner, stale retry) can
+        // rotate a visible character or create/stop its hidden CODE child.
+        return { ok: false, reason: this.visibleClients.enabled()
+          ? 'H43_VISIBLE_MODE_CHILD_LIFECYCLE_BLOCKED' : 'H45_CHILD_CODE_LIFECYCLE_DISABLED' };
       }
       const active = this._onlineSet(roster).has(targetName);
       const runnerActive = this._runnerActiveSet(roster).has(targetName);
@@ -9889,7 +9930,9 @@
       const startEvidence = this._startEvidenceSet(roster);
       const localName = this._localName();
       const desiredActive = new Set(this.policyState.desiredActiveNames.map(String));
-      if (this.visibleClients && this.visibleClients.enabled()) {
+      if (this.visibleClients && typeof this.visibleClients.protectsConfiguredQuartet === 'function'
+          && this.visibleClients.protectsConfiguredQuartet()) {
+        // H45 blocks child starts even before explicit SSD arming.
         // H43 never replaces a graphical client by a CODE child or rotates
         // an already-open browser away from its character identity.
         const unexpected = [...active].filter(name => this._ownedRow(name, roster) && !desiredActive.has(String(name)));
@@ -35232,7 +35275,7 @@ class MerchantProductionPlanner {
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.94-h26';
+      this.version = options.version || '0.26.95-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -35606,6 +35649,10 @@ class MerchantProductionPlanner {
         getLocalState: () => {
           let game = null;
           try { game = this.game.snapshot(); } catch (_) {}
+          // H45: when game loading delayed initial activation, each regular
+          // H19 heartbeat offers another safe opportunity to arm the
+          // Merchant's SSD intent. Hidden CODE children never qualify.
+          try { this.visibleClients.autoEnableIfReady(); } catch (_) {}
           return {
             localName: game && game.character ? game.character.name : null,
             running: this.running,
@@ -35646,7 +35693,12 @@ class MerchantProductionPlanner {
           try { if (this.hostState) this.hostState.flushFinalBestEffort(); } catch (_) {}
           return dispatchH24CharacterDisconnect();
         },
-        navigateCharacterLocal: (desiredName, reason, options) => navigateH25BrowserCharacter(desiredName, options),
+        navigateCharacterLocal: (desiredName, reason, options) => {
+          if (this.visibleClients.protectsConfiguredQuartet()) {
+            throw new Error('H45_VISIBLE_BROWSER_IDENTITY_ROTATION_DISABLED');
+          }
+          return navigateH25BrowserCharacter(desiredName, options);
+        },
         leavePartyLocal: () => dispatchH19CrossWindowPartyAction('leave_party', []),
         requestPartyJoinLocal: leaderName => dispatchH19CrossWindowPartyAction('send_party_request', [leaderName]),
         prepareUpdateLocal: (payload, sender) => {
@@ -35723,8 +35775,13 @@ class MerchantProductionPlanner {
         crossWindow: this.lifecycleTransport,
         visibleClients: this.visibleClients,
         sessionId: this.lifecycleTransport && this.lifecycleTransport.sessionId || null,
-        navigateCharacterLocal: desiredName => navigateH25BrowserCharacter(desiredName),
-        canNavigateCharacterLocal: () => h25BrowserNavigationCapability(),
+        navigateCharacterLocal: desiredName => {
+          if (this.visibleClients.protectsConfiguredQuartet()) {
+            throw new Error('H45_VISIBLE_BROWSER_IDENTITY_ROTATION_DISABLED');
+          }
+          return navigateH25BrowserCharacter(desiredName);
+        },
+        canNavigateCharacterLocal: () => !this.visibleClients.protectsConfiguredQuartet() && h25BrowserNavigationCapability(),
         canAct: action => this.actionAllowed(action)
       });
       this.accountStrategy = new ns.AccountStrategyController({
@@ -41206,7 +41263,7 @@ class MerchantProductionPlanner {
 
     actionAllowed(action = 'action') {
       if ((action === 'start_character' || action === 'stop_character')
-          && this.visibleClients && this.visibleClients.enabled()) return false;
+          && this.visibleClients && this.visibleClients.protectsConfiguredQuartet()) return false;
       if (!this.storage.sharedAvailable()) return false;
       if (!this.running) return false;
       if (!this.scheduler.status().enabled) return false;
@@ -41216,8 +41273,8 @@ class MerchantProductionPlanner {
 
     assertActionAllowed(action = 'action') {
       if ((action === 'start_character' || action === 'stop_character')
-          && this.visibleClients && this.visibleClients.enabled())
-        throw new Error('H43_VISIBLE_MODE_CHILD_LIFECYCLE_BLOCKED:' + action);
+          && this.visibleClients && this.visibleClients.protectsConfiguredQuartet())
+        throw new Error('H45_CHILD_CODE_LIFECYCLE_DISABLED:' + action);
       if (!this.storage.sharedAvailable()) throw new Error('ALBOT_SSD_STATE_UNAVAILABLE:' + action);
       if (!this.running || !this.scheduler.status().enabled) throw new Error('ALBOT_RUNTIME_NOT_RUNNING:' + action);
       return this.stopLatch.assertAllowed(action);
@@ -43660,7 +43717,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.94-h26',
+    version: '0.26.95-h26',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -44174,6 +44231,20 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
   if (autoStartLive) {
     Promise.resolve().then(async () => {
       if (!runtime.running) await runtime.start();
+      // H45: the Merchant arms the SSD-backed visible quartet automatically,
+      // BEFORE Full Autonomy can schedule any character lifecycle action.
+      // Even if the page renderer is still connecting, the central H45 guard
+      // independently forbids all CODE child starts for configured characters.
+      if (runtime.visibleClients && !runtime.visibleClients.enabled()) {
+        const evidence = runtime.visibleClients.localEvidence();
+        if (evidence.characterName === 'My_Merchant') {
+          const armed = runtime.visibleClients.enable();
+          runtime.logger.info('H45 sichtbarer Vier-Client-Betrieb geprüft', {
+            accepted: armed.accepted === true,
+            reason: armed.reason || null
+          });
+        }
+      }
       const started = runtime.fullAutonomy.startAutonomy({ taskType: 'FARM', waitForRoster: true });
       runtime.logger.info('Full Autonomy Autostart verarbeitet', {
         accepted: !!(started && started.accepted === true),
