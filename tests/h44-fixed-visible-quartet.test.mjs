@@ -105,9 +105,12 @@ test('H44 refuses pinned character slots when account ownership evidence is unav
   assert.equal(f.created.some(e=>e.kind==='partyCoordinator'),false);
 });
 
-test('H44 legacy unarmed/unrendered mode remains on existing strategy policy',()=>{
+test('H44 unarmed mode preserves H41 healthy-roster fallback and does not force H44 selection',()=>{
   const f=make('My_Merchant',{fixed:false});
   f.c.tick();
-  assert.deepEqual(normalized(f.c.desiredCharacterNames),wrong);
+  // H41 already prefers the healthy online quartet over a proposed Priest
+  // if all four online profiles can be proven valid.
+  assert.deepEqual(normalized(f.c.desiredCharacterNames),names);
   assert.equal(f.created.find(e=>e.kind==='strategy').args.allowedCharacterNames,undefined);
+  assert.equal(f.c.lastPlan.selectionPolicy,undefined);
 });
