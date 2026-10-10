@@ -14018,6 +14018,8 @@
         let requiresRotation = readiness.unexpectedOnlineNames.length > 0
           || onlineDesiredCount !== 4
           || readiness.missing.length > 0;
+        const rotationFallback = null;
+
         // H37: a healthy online 3-farmer + merchant group is a safe fallback
         // when the preferred replacement quartet cannot be rotated. Never
         // evict current browser characters just to satisfy task optimization.
