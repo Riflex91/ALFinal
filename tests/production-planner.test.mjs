@@ -236,7 +236,7 @@ test('generated ALFinal bundle exposes the planner with its real game adapter an
   };
   ctx.globalThis = ctx;
   vm.runInNewContext(fs.readFileSync(new URL('../dist/al-bot.js', import.meta.url), 'utf8'), ctx);
-  assert.equal(ctx.ALBot.version, '0.26.91-h26');
+  assert.equal(ctx.ALBot.version, '0.26.93-h26');
   assert.equal(ctx.ALBot.status().running, false);
   const plan = ctx.ALBot.exchangeCraft.productionGraph('output', 1, { includeBank: false });
   assert.equal(plan.state, 'READY');

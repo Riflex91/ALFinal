@@ -76,7 +76,7 @@
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.91-h26',
+    version: '0.26.93-h26',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -110,6 +110,11 @@
     selfTest: () => runtime.selfTest(),
     diagnostics: () => runtime.diagnostics(),
     performance_trick: () => runtime.performanceTrick(),
+
+    visibleClients: {
+      status: () => runtime.visibleClients.status(),
+      enable: () => runtime.visibleClients.enable()
+    },
 
     bridge: bridge ? {
       identity: () => bridge.identity(),
@@ -511,6 +516,7 @@
   };
 
   if (api.bridge) Object.freeze(api.bridge);
+  Object.freeze(api.visibleClients);
   Object.freeze(api.scheduler);
   Object.freeze(api.modules);
   Object.freeze(api.game);
