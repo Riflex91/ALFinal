@@ -65,6 +65,21 @@
         return { kind: 'VISIBLE_BROWSER', visible: true, reason: 'H43_RENDERED_GAMEPLAY_OBSERVED', characterName: name };
       } catch (_) { return { kind: 'UNKNOWN', visible: false, reason: 'H43_EVIDENCE_UNAVAILABLE', characterName: name }; }
     }
+    protectsConfiguredQuartet() {
+      // H45: child-CODE launch is forbidden for this configured account even
+      // before H43 has been manually armed or all four browser tabs are ready.
+      // Using account online/runnerActive as a proxy for visible sessions was
+      // the regression that kept My_Ranger1/My_Ranger2 in CODE-aktiv slots.
+      if (this.enabled()) return true;
+      let localName = '';
+      try { localName = clean(this.game.snapshot().character.name); } catch (_) {}
+      if (!localName) {
+        // The CODE iframe can expose character before the adapter snapshot
+        // is ready. Still never authorize a child launch during that gap.
+        try { localName = clean(this.root && this.root.character && this.root.character.name); } catch (_) {}
+      }
+      return NAMES.includes(localName);
+    }
     enable() {
       if (!this._ssdAvailable()) return { accepted: false, reason: 'H43_SSD_REQUIRED' };
       const local = this.localEvidence();
@@ -84,9 +99,29 @@
       this.enabledSeen = true;
       return { accepted: true, reason: 'H43_VISIBLE_MODE_ARMED', characters: [...NAMES] };
     }
+    autoEnableIfReady() {
+      // A Merchant CODE loader can start before its game canvas is connected.
+      // Retry only after the genuine Merchant renderer is observable; never
+      // arm SSD from a child or from a character-selection connection page.
+      if (this.enabled()) return { accepted: true, reason: 'H45_ALREADY_ARMED' };
+      const evidence = this.localEvidence();
+      if (evidence.characterName !== 'My_Merchant' || evidence.visible !== true)
+        return { accepted: false, reason: 'H45_WAITING_FOR_VISIBLE_MERCHANT' };
+      return this.enable();
+    }
     fixedQuartet() {
-      // An explicitly armed SSD mode survives temporarily missing windows.
+      // H45: a known quartet client with an owned SSD-backed roster never
+      // substitutes My_Priest/My_Warrior while waiting for rendered tabs.
       if (this.enabled()) return [...NAMES];
+      if (this.protectsConfiguredQuartet() && this._ssdAvailable()) {
+        let roster = null;
+        try { roster = this.roster.refresh(); } catch (_) {}
+        const account = new Map((roster && roster.accountCharacters || [])
+          .filter(row => row && row.name)
+          .map(row => [clean(row.name), row]));
+        if (roster && roster.accountStateAvailable === true
+            && NAMES.every(name => account.has(name))) return [...NAMES];
+      }
       // During migration, a complete four-window group can be protected
       // immediately, even if the one-time Merchant enable was forgotten.
       // Never infer this from account online or child-runner state alone.
@@ -99,6 +134,7 @@
     }
     status() {
       const enabled = this.enabled();
+      const protectionActive = this.protectsConfiguredQuartet();
       const local = this.localEvidence();
       let roster = null;
       try { roster = this.roster.refresh(); } catch (_) {}
@@ -118,6 +154,8 @@
         };
       });
       return { schemaVersion: 1, mode: 'visible-browser-quartet', enabled,
+        protectionActive, childCodeStartsBlocked: protectionActive,
+        protectedCharacterNames: protectionActive ? [...NAMES] : [],
         ssdAvailable: this._ssdAvailable(), local, clients,
         visibleAndRunningCount: clients.filter(row => row.visible && row.runtimeRunning).length,
         complete: enabled && clients.every(row => row.visible && row.runtimeRunning && row.online) };

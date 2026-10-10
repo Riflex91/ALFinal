@@ -5,7 +5,7 @@
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.94-h26';
+      this.version = options.version || '0.26.95-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -379,6 +379,10 @@
         getLocalState: () => {
           let game = null;
           try { game = this.game.snapshot(); } catch (_) {}
+          // H45: when game loading delayed initial activation, each regular
+          // H19 heartbeat offers another safe opportunity to arm the
+          // Merchant's SSD intent. Hidden CODE children never qualify.
+          try { this.visibleClients.autoEnableIfReady(); } catch (_) {}
           return {
             localName: game && game.character ? game.character.name : null,
             running: this.running,
@@ -419,7 +423,12 @@
           try { if (this.hostState) this.hostState.flushFinalBestEffort(); } catch (_) {}
           return dispatchH24CharacterDisconnect();
         },
-        navigateCharacterLocal: (desiredName, reason, options) => navigateH25BrowserCharacter(desiredName, options),
+        navigateCharacterLocal: (desiredName, reason, options) => {
+          if (this.visibleClients.protectsConfiguredQuartet()) {
+            throw new Error('H45_VISIBLE_BROWSER_IDENTITY_ROTATION_DISABLED');
+          }
+          return navigateH25BrowserCharacter(desiredName, options);
+        },
         leavePartyLocal: () => dispatchH19CrossWindowPartyAction('leave_party', []),
         requestPartyJoinLocal: leaderName => dispatchH19CrossWindowPartyAction('send_party_request', [leaderName]),
         prepareUpdateLocal: (payload, sender) => {
@@ -496,8 +505,13 @@
         crossWindow: this.lifecycleTransport,
         visibleClients: this.visibleClients,
         sessionId: this.lifecycleTransport && this.lifecycleTransport.sessionId || null,
-        navigateCharacterLocal: desiredName => navigateH25BrowserCharacter(desiredName),
-        canNavigateCharacterLocal: () => h25BrowserNavigationCapability(),
+        navigateCharacterLocal: desiredName => {
+          if (this.visibleClients.protectsConfiguredQuartet()) {
+            throw new Error('H45_VISIBLE_BROWSER_IDENTITY_ROTATION_DISABLED');
+          }
+          return navigateH25BrowserCharacter(desiredName);
+        },
+        canNavigateCharacterLocal: () => !this.visibleClients.protectsConfiguredQuartet() && h25BrowserNavigationCapability(),
         canAct: action => this.actionAllowed(action)
       });
       this.accountStrategy = new ns.AccountStrategyController({
@@ -5979,7 +5993,7 @@
 
     actionAllowed(action = 'action') {
       if ((action === 'start_character' || action === 'stop_character')
-          && this.visibleClients && this.visibleClients.enabled()) return false;
+          && this.visibleClients && this.visibleClients.protectsConfiguredQuartet()) return false;
       if (!this.storage.sharedAvailable()) return false;
       if (!this.running) return false;
       if (!this.scheduler.status().enabled) return false;
@@ -5989,8 +6003,8 @@
 
     assertActionAllowed(action = 'action') {
       if ((action === 'start_character' || action === 'stop_character')
-          && this.visibleClients && this.visibleClients.enabled())
-        throw new Error('H43_VISIBLE_MODE_CHILD_LIFECYCLE_BLOCKED:' + action);
+          && this.visibleClients && this.visibleClients.protectsConfiguredQuartet())
+        throw new Error('H45_CHILD_CODE_LIFECYCLE_DISABLED:' + action);
       if (!this.storage.sharedAvailable()) throw new Error('ALBOT_SSD_STATE_UNAVAILABLE:' + action);
       if (!this.running || !this.scheduler.status().enabled) throw new Error('ALBOT_RUNTIME_NOT_RUNNING:' + action);
       return this.stopLatch.assertAllowed(action);

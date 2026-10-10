@@ -311,8 +311,18 @@ test('H42: never targets PVP, even when it has three online members', () => {
 
 test('H42: a committed rejoin cannot bypass local H19 suspension', () => {
   const t = team({ servers: { My_Merchant:'I' } });
-  for (const name of names) t.members[name].hop.tick();
-  t.members.My_Merchant.hop.tick();
+  // Inject an explicit previously committed H42 ticket. This exercises the
+  // safety branch independently of asynchronous majority-selection timing.
+  // Majority election is verified by the preceding H42 tests.
+  const sourceByName = Object.fromEntries(names.map(name => [
+    name, { region: t.members[name].server.region, identifier: t.members[name].server.identifier }
+  ]));
+  t.db.set('albot:h38:server-hop:v1:rejoin', JSON.stringify({
+    version:1,state:'COMMITTED',id:'h42-test-committed-suspended',
+    names,author:'My_Merchant',
+    target:{region:'EU',identifier:'II'},sources:sourceByName,
+    atMs:Date.now(),expiresAtMs:Date.now()+60000
+  }));
   t.members.My_Merchant.runtime.lifecycle.status = () => ({
     suspended:true,currentAction:null,metrics:{actionsUnknown:0}
   });
