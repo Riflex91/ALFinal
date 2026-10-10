@@ -53,3 +53,19 @@ Wenn der Merchant eine andere Teamzusammensetzung optimiert, aber H19 die Rotati
 - Öffentliche Statusabfrage: `ALBot.serverHop.status()`; für automatische Migration `enabled: true` (Standard). Konfiguration ändert keine H19-Sperren.
 
 Die SSD-Telemetrie und der H22-Safe-Updater bleiben unverändert.
+
+
+## H41: SSD-only bot-owned state (staged; requires host installation before promotion)
+
+The bot's **persistent own state** is stored on the Windows SSD under `D:\\ALBot`:
+- `D:\\ALBot\\state\\kv`: H19 cross-window coordination, H25 handoffs, emergency-stop markers, account configuration, party and Merchant material farm demands, H22 update state, and other `albot:` keys.
+- `D:\\ALBot\\state\\account-profiles` and `account-wealth.json`: durable account profiles and wealth, via the already existing host-state writer.
+- `D:\\ALBot\\telemetry\\raw` and `daily`: telemetry history.
+
+The new storage adapter uses a **synchronous localhost HTTP API** on `127.0.0.1:17391` compatible with existing H19 and material demand contracts. It **never silently falls back to browser localStorage in real browser mode**. If the host is unavailable, its storage or disk path is not on `D:\\ALBot`, or a write fails, game-action dispatch is blocked. Browsers may require localhost permission.
+
+The Windows service must be installed **before the H41 client bundle is promoted to Stable**. Run `host/INSTALL-SSD-TELEMETRY.ps1` on the Windows host from a local checkout containing both `telemetry-recorder.mjs` and `ssd-kv-store.mjs`. The installer stops and updates only the pre-existing `ALBot-SSD-Telemetry` scheduled task; checks the SSD paths, service health, and KV write/read/delete; and restarts automatically at Windows logon. Node.js and the `D:` volume are required. No API credentials are stored on disk by this installer.
+
+**Rollout boundary:** A GitHub merge does not start any Windows service. Until the user's host passes SSD-KV verification, PR #119 must not be promoted: the old bot continues on the previous Stable instead of stopping all four characters. Existing browser-localStorage values are *not automatically copied to SSD* by this PR (stale H19 execution state must not be blindly replayed). A separate reviewed, one-time migration is needed if old goals/configurations must be preserved.
+
+H41 also binds the GearController to the initialized H19 transport and prioritizes an already healthy 3-Farmer+Merchant online quartet so the Merchant can invite My_Ranger1 and resume safe gear/material coordination without unnecessary H25 swaps.

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import { pathToFileURL } from 'node:url';
+import { SSDKeyValueStore } from './ssd-kv-store.mjs';
 
 const DEFAULT_ROOT = process.env.ALBOT_TELEMETRY_ROOT || 'D:/ALBot/telemetry';
 const DEFAULT_STATE_ROOT = process.env.ALBOT_STATE_ROOT || 'D:/ALBot/state';
@@ -219,6 +220,7 @@ export class PersistentStateStore {
 export function createTelemetryServer(options = {}) {
   const store = options.store || new TelemetryStore(options);
   const stateStore = options.stateStore || new PersistentStateStore(options);
+  const kvStore = options.kvStore || new SSDKeyValueStore({ root: path.join(options.stateRoot || DEFAULT_STATE_ROOT, 'kv') });
   const host = options.host || DEFAULT_HOST;
   const port = Number(options.port) || DEFAULT_PORT;
   const allowOrigin = origin => !origin || origin === 'https://adventure.land' || origin === 'https://www.adventure.land'
@@ -228,7 +230,7 @@ export function createTelemetryServer(options = {}) {
     const origin = String(req.headers.origin || '');
     if (allowOrigin(origin)) {
       res.setHeader('Access-Control-Allow-Origin', origin || '*');
-      res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+      res.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
       res.setHeader('Access-Control-Allow-Private-Network', 'true');
     }
@@ -238,7 +240,7 @@ export function createTelemetryServer(options = {}) {
     }
     if (req.method === 'GET' && req.url === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ ok: true, store: store.status(), stateStore: stateStore.status() }));
+      return res.end(JSON.stringify({ ok: true, store: store.status(), stateStore: stateStore.status(), kvStore: kvStore.status() }));
     }
     if (req.method === 'GET' && req.url === '/v1/state/account') {
       if (!allowOrigin(origin)) {
@@ -249,9 +251,31 @@ export function createTelemetryServer(options = {}) {
       return res.end(JSON.stringify(stateStore.readAccount()));
     }
 
+    // Synchronous per-key storage for H19 peer coordination, H25 handoffs,
+    // material requests and all other bot-owned state. The SSD service is
+    // single-writer; no browser localStorage fallback is permitted.
+    let kvKey = null;
+    try {
+      const parsed = new URL(req.url || '/', 'http://localhost');
+      if (parsed.pathname === '/v1/kv') kvKey = parsed.searchParams.get('key');
+    } catch (_) {}
+    if (kvKey !== null && ['GET', 'POST', 'DELETE'].includes(req.method)) {
+      if (!allowOrigin(origin)) { res.writeHead(403); return res.end('origin blocked'); }
+      try {
+        if (req.method === 'GET' || req.method === 'DELETE') {
+          const value = req.method === 'GET' ? kvStore.get(kvKey) : (kvStore.remove(kvKey), null);
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+          return res.end(JSON.stringify({ ok: true, value }));
+        }
+      } catch (error) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ ok: false, error: String(error.message || error) }));
+      }
+    }
+    const kvWrite = req.method === 'POST' && kvKey !== null;
     const telemetryWrite = req.method === 'POST' && req.url === '/v1/telemetry';
     const stateWrite = req.method === 'POST' && req.url === '/v1/state/account';
-    if (!telemetryWrite && !stateWrite) {
+    if (!telemetryWrite && !stateWrite && !kvWrite) {
       res.writeHead(404);
       return res.end('not found');
     }
@@ -276,6 +300,12 @@ export function createTelemetryServer(options = {}) {
       if (res.writableEnded) return;
       try {
         const payload = JSON.parse(body || '{}');
+        if (kvWrite) {
+          if (payload && payload.operation === 'DELETE') kvStore.remove(kvKey);
+          else kvStore.set(kvKey, payload.value);
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+          return res.end(JSON.stringify({ ok: true }));
+        }
         if (stateWrite) {
           const written = stateStore.writeAccount(payload);
           res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -309,7 +339,7 @@ export function createTelemetryServer(options = {}) {
     await new Promise(resolve => server.close(() => resolve()));
   };
 
-  return { server, store, stateStore, host, port, close };
+  return { server, store, stateStore, kvStore, host, port, close };
 }
 
 async function main() {
