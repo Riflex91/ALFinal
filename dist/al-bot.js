@@ -1,4 +1,4 @@
-/* AL Bot 0.26.92-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.91-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
