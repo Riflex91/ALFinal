@@ -73,6 +73,11 @@
       if (this.enabled()) return true;
       let localName = '';
       try { localName = clean(this.game.snapshot().character.name); } catch (_) {}
+      if (!localName) {
+        // The CODE iframe can expose character before the adapter snapshot
+        // is ready. Still never authorize a child launch during that gap.
+        try { localName = clean(this.root && this.root.character && this.root.character.name); } catch (_) {}
+      }
       return NAMES.includes(localName);
     }
     enable() {
