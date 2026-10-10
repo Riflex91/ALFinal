@@ -18138,8 +18138,18 @@
         if (!out.some(s => s.region === region && s.identifier === identifier)) out.push({ region, identifier });
       }
       // Stable iteration order allows round-robin between both continents.
+      const romanValue = value => {
+        const weights = { I: 1, V: 5, X: 10, L: 50, C: 100, D: 500, M: 1000 };
+        let total = 0, previous = 0;
+        for (const c of String(value).split('').reverse()) {
+          const n = weights[c] || 0;
+          total += n < previous ? -n : n;
+          previous = n;
+        }
+        return total;
+      };
       return out.sort((a, b) => a.region.localeCompare(b.region)
-        || a.identifier.length - b.identifier.length
+        || romanValue(a.identifier) - romanValue(b.identifier)
         || a.identifier.localeCompare(b.identifier));
     }
     _refreshGameServerCatalog() {
