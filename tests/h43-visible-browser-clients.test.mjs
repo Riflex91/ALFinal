@@ -74,16 +74,18 @@ test('H19 never starts child, disconnects visible peer or rotates in visible mod
   assert.equal(lifecycle._validateRemoteTarget('My_Ranger1','STOP',{requireCharacterStateChange:true}).ok,false);
 });
 
-test('H44 fixed roster is inferred only from four confirmed rendered browser sessions',()=>{
+test('H45 named quartet is pinned even before all browser clients are rendered',()=>{
   const f=fixture();
   f.mode.transport={freshPeer:()=>({visibleClient:true,clientKind:'VISIBLE_BROWSER',running:true})};
   assert.equal(f.mode.fixedQuartet().join('|'),names.join('|'));
   const missing=fixture('My_Merchant',{online:['My_Merchant','My_Ranger1','My_Ranger2']});
   missing.mode.transport={freshPeer:()=>({visibleClient:true,clientKind:'VISIBLE_BROWSER',running:true})};
-  assert.equal(missing.mode.fixedQuartet(),null);
+  assert.equal(missing.mode.fixedQuartet().join('|'),names.join('|'));
   const child=fixture();
   child.mode.transport={freshPeer:()=>({visibleClient:false,clientKind:'CHILD_CODE_RUNNER',running:true})};
-  assert.equal(child.mode.fixedQuartet(),null);
+  assert.equal(child.mode.fixedQuartet().join('|'),names.join('|'));
+  const unrelated=fixture('Unrelated_Client');
+  assert.equal(unrelated.mode.fixedQuartet(),null);
   missing.mode.enable();
   assert.equal(missing.mode.fixedQuartet().join('|'),names.join('|'));
 });
