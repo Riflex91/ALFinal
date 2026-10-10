@@ -101,7 +101,7 @@
       try {
         const xhr = new this.root.XMLHttpRequest();
         xhr.open(method, this.endpoint + path, false);
-        if (method === 'POST') xhr.setRequestHeader('Content-Type', 'application/json');
+        if (method === 'POST') xhr.setRequestHeader('Content-Type', 'text/plain;charset=UTF-8');
         xhr.send(payload == null ? null : JSON.stringify(payload));
         if (xhr.status !== 200 || !xhr.responseText) throw new Error('SSD_HTTP_' + xhr.status);
         const value = JSON.parse(xhr.responseText);
@@ -166,7 +166,7 @@
       }
       const uri = this._key(key);
       if (!uri) return false;
-      const response = this._request('DELETE', uri);
+      const response = this._request('POST', uri, { operation: 'DELETE' });
       if (response) this.metrics.deletes++;
       return !!response;
     }
