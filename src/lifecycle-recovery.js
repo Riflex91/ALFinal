@@ -700,10 +700,12 @@
       }
 
       const targetName = String(owned.name);
-      if (this.visibleClients && this.visibleClients.enabled()
-          && (mode === 'BROWSER_SWAP' || (mode === 'START' && options.requireCharacterStateChange === true)
-            || (mode === 'STOP' && options.requireCharacterStateChange === true))) {
-        return { ok: false, reason: 'H43_VISIBLE_MODE_CHILD_LIFECYCLE_BLOCKED' };
+      if (this.visibleClients && typeof this.visibleClients.protectsConfiguredQuartet === 'function'
+          && this.visibleClients.protectsConfiguredQuartet()
+          && (mode === 'BROWSER_SWAP' || mode === 'START' || mode === 'STOP')) {
+        // No caller (manual H19 queue, automatic planner, stale retry) can
+        // rotate a visible character or create/stop its hidden CODE child.
+        return { ok: false, reason: 'H45_CHILD_CODE_LIFECYCLE_DISABLED' };
       }
       const active = this._onlineSet(roster).has(targetName);
       const runnerActive = this._runnerActiveSet(roster).has(targetName);
@@ -1060,7 +1062,9 @@
       const startEvidence = this._startEvidenceSet(roster);
       const localName = this._localName();
       const desiredActive = new Set(this.policyState.desiredActiveNames.map(String));
-      if (this.visibleClients && this.visibleClients.enabled()) {
+      if (this.visibleClients && typeof this.visibleClients.protectsConfiguredQuartet === 'function'
+          && this.visibleClients.protectsConfiguredQuartet()) {
+        // H45 blocks child starts even before explicit SSD arming.
         // H43 never replaces a graphical client by a CODE child or rotates
         // an already-open browser away from its character identity.
         const unexpected = [...active].filter(name => this._ownedRow(name, roster) && !desiredActive.has(String(name)));
