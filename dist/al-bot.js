@@ -18549,6 +18549,13 @@
           return this._decision('BLOCKED', 'H42_REJOIN_CHANGE_THROW', { error: clean(error && error.message || error, 160) });
         }
       }
+      // A previously confirmed H38 relocation has priority over H42
+      // recovery. Do not reverse an in-flight coordinated server change.
+      const normalHop = this._read('proposal');
+      if (normalHop && normalHop.state === 'COMMITTED'
+          && now < normalHop.expiresAtMs)
+        return this._decision('WAITING', 'H42_EXISTING_H38_MIGRATION');
+
       const online = safeNames(ready.online);
       if (online.length !== 4 || !online.includes(ready.name)) return null;
       if (ready.ctype !== 'merchant') return null;
