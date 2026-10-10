@@ -127,9 +127,15 @@
         const explicitlyPve = row.pvp === false || row.pvp === 0
           || row.is_pvp === false || row.isPvp === false
           || String(row.type || '').toLowerCase() === 'pve';
-        const forbidden = row.pvp === true || row.is_pvp === true || row.isPvp === true
+        // H39: the server name itself is a hard PVP deny rule.
+        // Even contradictory metadata (pvp: false / type: pve) cannot
+        // override a name containing "pvp" at any position or case.
+        const serverName = String(row.name || row.server_name || row.serverName || '');
+        const pvpInName = serverName.toLowerCase().includes('pvp');
+        const forbidden = pvpInName || row.pvp === true || row.is_pvp === true || row.isPvp === true
           || row.hardcore === true || row.isHardcore === true
-          || /PVP|HARDCORE|PVP|ARENA/i.test(String(row.name || '') + ' ' + String(row.type || '') + ' ' + identifier);
+          || /PVP|HARDCORE/i.test(String(row.type || '') + ' ' + identifier)
+          || /HARDCORE/i.test(serverName);
         if (!explicitlyPve || forbidden) continue;
         if (!out.some(s => s.region === region && s.identifier === identifier)) out.push({ region, identifier });
       }
