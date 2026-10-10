@@ -520,6 +520,9 @@
         runtime: this,
         strategy: this.accountStrategy
       });
+      this.serverHop = new ns.ServerHopController({
+        runtime: this, root: this.root, storage: this.storage, game: this.game
+      });
       this.safeUpdater = new ns.SafeAutoUpdater({
         root: this.root,
         logger: this.logger,
@@ -867,6 +870,15 @@
         start: context => this.fullAutonomy.start(context),
         stop: reason => this.fullAutonomy.stop(reason),
         status: () => this.fullAutonomy.status()
+      });
+
+      this.modules.register({
+        id: 'server-hop',
+        title: 'H38 Coordinated Crowded-Spawn Server Hop',
+        version: '0.38.0',
+        start: context => this.serverHop.start(context),
+        stop: () => this.serverHop.stop(),
+        status: () => this.serverHop.status()
       });
 
       this.modules.register({
@@ -5991,6 +6003,7 @@
         combat: this.combat.status(),
         farming: this.farming.status(),
         farmIntelligence: this.farmIntelligence.status(),
+        serverHop: this.serverHop.status(),
         inventory: this.inventory.status(),
         merchant: this.merchant.status(),
         bank: this.bank.status(),
@@ -6039,6 +6052,7 @@
         combat: this.combat.status(),
         farming: this.farming.status(),
         farmIntelligence: this.farmIntelligence.status(),
+        serverHop: this.serverHop.status(),
         inventory: this.inventory.status(),
         merchant: this.merchant.status(),
         bank: this.bank.status(),
