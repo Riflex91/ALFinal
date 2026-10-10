@@ -573,7 +573,7 @@ test('H9 leader cancels farm travel on hard separation so a lagging follower can
     ctype: 'warrior',
     partyOwnedMembers: [
       { name: 'My_Warrior', ctype: 'warrior', damageType: 'physical', map: 'main', x: 0, y: 0 },
-      { name: 'My_Ranger1', ctype: 'ranger', damageType: 'physical', map: 'main', x: 300, y: 0 }
+      { name: 'My_Ranger1', ctype: 'ranger', damageType: 'physical', map: 'main', x: 450, y: 0 }
     ]
   });
   f.setActiveMovementOwner('farm-intelligence-h9');
