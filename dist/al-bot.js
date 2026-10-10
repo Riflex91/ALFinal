@@ -16042,6 +16042,7 @@
         } catch (_) { return false; }
       };
       const candidates = [];
+      const anchor = this._farmKiteAnchor(character);
 
       if (currentDistance < hardSafeDistance + 4) {
         const step = Math.max(8, Math.min(Math.max(1, desiredDistance - currentDistance), speed * this.config.kiteStepSeconds, Math.max(20, maxRangeDistance * 0.25)));
@@ -16079,14 +16080,38 @@
         }
       }
 
+      if (currentDistance < hardSafeDistance + 4) {
+        const spiral = this._spiralKiteEscape(character, target, desiredDistance,
+          hardSafeDistance, maxRangeDistance, canMove);
+        if (spiral) candidates.push(spiral);
+      }
+
       candidates.sort((a, b) => a.score - b.score);
+      let rejectedByAnchor = false;
       for (const candidate of candidates) {
+        if (!this._anchorAllowsKite(character, candidate, anchor)) {
+          rejectedByAnchor = true;
+          continue;
+        }
         if (!this._groupTetherAllows(character, candidate)) {
           this.metrics.kiteGroupTetherBlocks += 1;
           continue;
         }
+        if (rejectedByAnchor) this.metrics.kiteAnchorCorrections += 1;
+        if (candidate.spiral) this.metrics.kiteSpiralEscapes += 1;
         this.orbitDirectionByCharacter.set(String(character.name || 'local'), candidate.direction);
         return candidate;
+      }
+      // V3 Alpha31 fallback: a character in the enemy's immediate attack
+      // envelope must not be trapped just because the orbit is geometrically
+      // impossible. Emergency escapes may leave normal attack range, but
+      // still require terrain and group-tether ownership checks.
+      if (currentDistance < hardSafeDistance + 4) {
+        const emergency = this._emergencyKiteEscape(character, target, canMove);
+        if (emergency && this._groupTetherAllows(character, emergency)) {
+          this.metrics.kiteEmergencyEscapes += 1;
+          return emergency;
+        }
       }
       return null;
     }
@@ -16099,13 +16124,17 @@
         this.metrics.meleeKiteBypasses += 1;
         return false;
       }
-      if (!character || !target || String(target.targetId || '') !== String(character.name || '')) {
+      if (!character) return false;
+      // V3 Alpha31: only an actual aggro holder moves, but the immediate
+      // attacker may differ from the selected farm target.
+      const threat = this._kiteThreat(game, target);
+      if (!threat) {
         this.metrics.kiteNoAggroHolds += 1;
         return false;
       }
       if (this._foreignMovementActive() || this._combatMovementActive()) return false;
 
-      const waypoint = this._kiteWaypoint(character, target);
+      const waypoint = this._kiteWaypoint(character, threat);
       if (!waypoint) {
         this.metrics.kiteTerrainBlocks += 1;
         return false;
@@ -16122,9 +16151,11 @@
         this.session.lastDecision = {
           at: new Date().toISOString(),
           type: waypoint.escape ? 'KITE_ESCAPE' : 'KITE_ORBIT',
-          targetId: target.id,
+          targetId: threat.id,
           destination: { x: waypoint.x, y: waypoint.y },
           afterDistance: waypoint.afterDistance,
+          emergency: waypoint.emergency === true,
+          spiral: waypoint.spiral === true,
           groupTether: this.session.policy.leaderOwnedPulls === true
         };
         return true;
