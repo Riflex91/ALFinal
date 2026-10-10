@@ -1200,7 +1200,56 @@
         let requiresRotation = readiness.unexpectedOnlineNames.length > 0
           || onlineDesiredCount !== 4
           || readiness.missing.length > 0;
-        const rotationFallback = null;
+        // H37: a healthy online 3-farmer + merchant group is a safe fallback
+        // when the preferred replacement quartet cannot be rotated. Never
+        // evict current browser characters just to satisfy task optimization.
+        // This alters selection only; H19 safety gates remain authoritative.
+        if (requiresRotation && localName === String(merchantName || '')
+            && this.runtime.lifecycle
+            && typeof this.runtime.lifecycle.characterRotationReadiness === 'function') {
+          const rotationProbe = this.runtime.lifecycle.characterRotationReadiness(nextDesired);
+          if (rotationProbe && rotationProbe.ready === false) {
+            const lifecycleState = this.runtime.lifecycle.status();
+            const live = [...new Set(readiness.online.map(String))].sort();
+            const profiles = live.map(name => readiness.profiles.find(row => row && String(row.name) === name && row.online === true));
+            const singleMerchant = profiles.filter(row => row && String(row.ctype || '').toLowerCase() === 'merchant').length === 1;
+            const farmers = profiles.filter(row => row && ['warrior', 'paladin', 'ranger', 'rogue', 'mage', 'priest']
+              .includes(String(row.ctype || '').toLowerCase())).length;
+            const safeCurrent = live.length === 4 && live.includes(String(merchantName))
+              && profiles.every(Boolean) && singleMerchant && farmers === 3
+              && lifecycleState && !lifecycleState.suspended
+              && !lifecycleState.currentAction && lifecycleState.queueLength === 0
+              && Number(lifecycleState.metrics && lifecycleState.metrics.actionsUnknown || 0) === 0;
+            if (safeCurrent) {
+              nextDesired = live;
+              this.desiredCharacterNames = live.slice();
+              this.desiredSource = 'merchant-authority';
+              this.desiredChangedAtMs = Date.now();
+              this.selectionCandidateNames = [];
+              this.selectionCandidateSinceMs = null;
+              plan = this._alignPlanToDesired(plan, live, merchantName, plan.leaderName || null);
+              quartet = this._desiredQuartet(plan);
+              this.lastPlan = clone(plan);
+              readiness = this._profileReadiness();
+              requiresRotation = false;
+            }
+          }
+        }
+
+        // A browser that is due to be replaced must wait for its merchant
+        // coordinator; it cannot rotate itself and must not hard-fail the
+        // group before the merchant can publish a fallback/rotation decision.
+        if (requiresRotation && localName !== String(merchantName || '')
+            && readiness.unexpectedOnlineNames.includes(localName)) {
+          this.strategy.recordTraining(false);
+          return this.lastDecision = {
+            at: new Date().toISOString(),
+            state: 'WARMING',
+            reason: 'FULL_AUTONOMY_WAITING_MERCHANT_ROTATION',
+            requestedDesiredCharacterNames: nextDesired,
+            onlineCharacterNames: readiness.online
+          };
+        }
 
         if (requiresRotation && this.runtime.lifecycle
             && typeof this.runtime.lifecycle.characterRotationReadiness === 'function') {
