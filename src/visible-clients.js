@@ -119,6 +119,7 @@
     }
     status() {
       const enabled = this.enabled();
+      const protectionActive = this.protectsConfiguredQuartet();
       const local = this.localEvidence();
       let roster = null;
       try { roster = this.roster.refresh(); } catch (_) {}
@@ -138,8 +139,7 @@
         };
       });
       return { schemaVersion: 1, mode: 'visible-browser-quartet', enabled,
-        protectionActive: this.protectsConfiguredQuartet(),
-        childCodeStartsBlocked: this.protectsConfiguredQuartet(),
+        protectionActive, childCodeStartsBlocked: protectionActive,
         ssdAvailable: this._ssdAvailable(), local, clients,
         visibleAndRunningCount: clients.filter(row => row.visible && row.runtimeRunning).length,
         complete: enabled && clients.every(row => row.visible && row.runtimeRunning && row.online) };
