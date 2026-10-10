@@ -92,6 +92,7 @@
       this.lastWishlistAtMs = 0;
       this.lastGiveawayProbeAtMs = 0;
       this.materialFarmRequest = null;
+      this.lastMaterialDemandCheckAtMs = 0;
 
       this.config = {
         tickMs: Math.max(500, Math.min(5000, Number(options.tickMs) || 1000)),
@@ -1591,6 +1592,12 @@
           || !this.exchangeCraft || typeof this.exchangeCraft.productionGraph !== 'function') return null;
       const now = Date.now();
       const prior = this.materialFarmRequest;
+      // Only one global material demand per server: never replace an active
+      // rod request with a pickaxe request on the next observer tick.
+      if (prior && now < prior.expiresAtMs && prior.tool !== tool) {
+        return { state: 'WAITING', reason: 'MERCHANT_TOOL_OTHER_MATERIAL_FARM_PENDING',
+          material: prior.material, monsterType: prior.monsterType };
+      }
       if (prior && prior.tool === tool) {
         // A bounded request is not renewed indefinitely. When it expires,
         // ordinary guarded acquisition may be tried again.
@@ -1811,9 +1818,52 @@
       return { state: 'IDLE', reason: task.reason || 'MERCHANT_AUTONOMY_NO_ACTION' };
     }
 
+    _maintainToolMaterialDemand() {
+      // Planning is read-only; publishing one bounded material demand to
+      // shared storage does not mutate economy or steal the H17 action owner.
+      // Consequently a busy Exchange no longer starves tool acquisition.
+      if (!this.moduleActive || !this.autoManage || this.suspendedReason || !this._isMerchant()) return null;
+      const now = Date.now();
+      if (now - this.lastMaterialDemandCheckAtMs < 10000) return null;
+      this.lastMaterialDemandCheckAtMs = now;
+
+      const previous = this.materialFarmRequest;
+      if (previous && now < previous.expiresAtMs) {
+        const quantity = this._inventoryCount(previous.material);
+        if (quantity == null || quantity < previous.quantity) {
+          return { state: 'WAITING', reason: 'MERCHANT_TOOL_MATERIAL_FARM_PENDING',
+            material: previous.material, monsterType: previous.monsterType };
+        }
+        // The Merchant owns this key: clear only the matching payload to avoid
+        // deleting a newer or foreign request that arrived in the meantime.
+        const key = this._materialFarmKey();
+        if (key && this.storage && typeof this.storage.getShared === 'function'
+            && typeof this.storage.removeShared === 'function') {
+          try {
+            const current = JSON.parse(this.storage.getShared(key) || 'null');
+            if (current && current.createdAtMs === previous.createdAtMs
+                && current.material === previous.material
+                && current.merchant === previous.merchant) this.storage.removeShared(key);
+          } catch (_) {}
+        }
+        this.materialFarmRequest = null;
+      }
+
+      for (const tool of ['rod', 'pickaxe']) {
+        const skill = tool === 'rod' ? 'fishing' : 'mining';
+        if (!this._skillEnabled(skill)) continue;
+        if (this._inventoryRow(tool) || this._equippedMainhand()
+            && this._equippedMainhand().name === tool) continue;
+        const demand = this._requestToolMaterialFarm(tool);
+        if (demand) return demand;
+      }
+      return null;
+    }
+
     _maintenanceTick() {
       this._observePending();
       this._childBusy();
+      this._maintainToolMaterialDemand();
       if (this.merritSession) {
         const parcels = this._inventoryCount('marketparcel');
         if (parcels != null && finite(this.merritSession.baselineParcels) != null
