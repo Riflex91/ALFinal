@@ -80,9 +80,11 @@ test('H38 sustained congestion creates a proposal; four peers ACK before any nav
   const ranger = t.members.My_Ranger1.hop;
   ranger.congestedSinceMs = Date.now() - 130000;
   for (const name of names) t.members[name].hop.tick();
+  t.members.My_Merchant.hop.tick();
   assert.equal(t.members.My_Merchant.hop.status().metrics.proposals, 1);
   assert.equal(t.members.My_Merchant.calls.length, 0);
   for (const name of names) t.members[name].hop.tick();
+  t.members.My_Merchant.hop.tick();
   const ticketKey = 'albot:h38:server-hop:v1:proposal';
   let ticket = JSON.parse(t.db.get(ticketKey));
   assert.equal(ticket.state, 'COMMITTED');
