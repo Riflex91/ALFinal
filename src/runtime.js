@@ -370,6 +370,7 @@
         };
       };
 
+      this.visibleClients = new ns.VisibleClientMode({ root: this.root, runtime: this, game: this.game, roster: this.roster, storage: this.storage });
       this.lifecycleTransport = new ns.H19CrossWindowLifecycleTransport({
         root: this.root,
         logger: this.logger,
@@ -400,6 +401,8 @@
               : null,
             characterDisconnectCapable: this.actions.available('disconnect') === true,
             characterNavigateCapable: h25BrowserNavigationCapability(),
+            visibleClient: this.visibleClients.localEvidence().visible === true,
+            clientKind: this.visibleClients.localEvidence().kind,
             version: this.version,
             profile: this.accountStrategy && typeof this.accountStrategy.persistLocalProfile === 'function'
               ? this.accountStrategy.persistLocalProfile()
@@ -474,6 +477,7 @@
       // H41: GearController is constructed before H19 transport exists.
       // Bind the real transport now; without this, H14 sees no remote gear
       // profile, cannot make Rogue proposals, and never queues deliveries.
+      this.visibleClients.transport = this.lifecycleTransport;
       this.gear.crossWindow = this.lifecycleTransport;
       // H18 may travel toward a fresh, owned H19 peer, but transfers require live visibility.
       this.partyLogistics.crossWindow = this.lifecycleTransport;
@@ -490,6 +494,7 @@
         party: this.party,
         storage: this.storage,
         crossWindow: this.lifecycleTransport,
+        visibleClients: this.visibleClients,
         sessionId: this.lifecycleTransport && this.lifecycleTransport.sessionId || null,
         navigateCharacterLocal: desiredName => navigateH25BrowserCharacter(desiredName),
         canNavigateCharacterLocal: () => h25BrowserNavigationCapability(),
