@@ -590,6 +590,20 @@
   if (autoStartLive) {
     Promise.resolve().then(async () => {
       if (!runtime.running) await runtime.start();
+      // H45: the Merchant arms the SSD-backed visible quartet automatically,
+      // BEFORE Full Autonomy can schedule any character lifecycle action.
+      // Even if the page renderer is still connecting, the central H45 guard
+      // independently forbids all CODE child starts for configured characters.
+      if (runtime.visibleClients && !runtime.visibleClients.enabled()) {
+        const evidence = runtime.visibleClients.localEvidence();
+        if (evidence.characterName === 'My_Merchant') {
+          const armed = runtime.visibleClients.enable();
+          runtime.logger.info('H45 sichtbarer Vier-Client-Betrieb geprüft', {
+            accepted: armed.accepted === true,
+            reason: armed.reason || null
+          });
+        }
+      }
       const started = runtime.fullAutonomy.startAutonomy({ taskType: 'FARM', waitForRoster: true });
       runtime.logger.info('Full Autonomy Autostart verarbeitet', {
         accepted: !!(started && started.accepted === true),
