@@ -156,3 +156,16 @@ test('H45 Merchant autostart enables SSD mode before Full Autonomy starts',()=>{
   assert.ok(at>0 && autonomy>at);
   assert.match(entry,/evidence\.characterName === 'My_Merchant'/);
 });
+
+test('H45 auto-arm waits for connected visible Merchant and retries on heartbeat', () => {
+  const f=fixture('My_Merchant',{connected:false});
+  assert.equal(f.mode.autoEnableIfReady().accepted,false);
+  assert.equal(f.mode.enabled(),false);
+  f.top.character={name:'My_Merchant'};
+  assert.equal(f.mode.autoEnableIfReady().accepted,true);
+  assert.equal(f.mode.enabled(),true);
+  assert.equal(f.mode.autoEnableIfReady().reason,'H45_ALREADY_ARMED');
+  const child=fixture('My_Ranger1',{pageName:'My_Merchant',child:true});
+  assert.equal(child.mode.autoEnableIfReady().accepted,false);
+  assert.equal(child.mode.enabled(),false);
+});
