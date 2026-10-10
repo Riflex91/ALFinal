@@ -194,7 +194,11 @@ test('H39 permits all verified EU/US PVE realms but excludes PVP, Hardcore, unkn
     { region: 'ASIA', name: 'I', pvp: false },
     { region: 'US', name: 'V' },
     { region: 'EU', name: 'VI', pvp: 'unknown' },
-    { region: 'US', name: 'III', pvp: false }
+    { region: 'US', name: 'III', pvp: false },
+    { region: 'EU', identifier: 'VII', name: 'EU-PvP-7', pvp: false, type: 'pve' },
+    { region: 'US', identifier: 'VIII', name: 'pVp-Battle', pvp: false },
+    { region: 'EU', identifier: 'IX', name: 'NoPvP', pvp: false },
+    { region: 'US', identifier: 'X', name: 'US Normal PvP Zone', pvp: 0 }
   ]});
   assert.deepEqual([...list].map(s => s.region + ' ' + s.identifier), [
     'EU I','EU II','EU III','EU IV','US I','US II','US III','US IV'
@@ -203,6 +207,12 @@ test('H39 permits all verified EU/US PVE realms but excludes PVP, Hardcore, unkn
   assert.deepEqual({ ...h._target({ region: 'EU', identifier: 'IV' }) }, { region: 'US', identifier: 'I' });
   assert.deepEqual({ ...h._target({ region: 'US', identifier: 'IV' }) }, { region: 'EU', identifier: 'I' });
   assert.equal(h._target({ region: 'US', identifier: 'PVP' }), null);
+  for (const id of ['VII', 'IX']) {
+    assert.equal(list.some(s => s.region === 'EU' && s.identifier === id), false);
+  }
+  for (const id of ['VIII', 'X']) {
+    assert.equal(list.some(s => s.region === 'US' && s.identifier === id), false);
+  }
 });
 
 test('H39 uses live get_servers() results and never picks an unverified target', async () => {
