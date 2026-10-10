@@ -1,0 +1,57 @@
+name: Build and publish repaired AL Bot
+
+on:
+  push:
+    branches:
+      - fix/restore-full-autonomy-ssd-telemetry-20261010
+      - main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: repaired-albot-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Rebuild reproducible browser bundle
+        env:
+          CI: 'false'
+        run: npm run build
+      - name: Validate transport and H37 live-team fallback
+        run: |
+          npm run verify:transport
+          node --test tests/h37-restore-online-quartet.test.mjs
+      - name: Commit generated bundle to checked-out branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dist/al-bot.js
+          if ! git diff --cached --quiet; then
+            git commit -m "build: synchronize repaired AL Bot browser bundle"
+            git push origin HEAD:${{ github.ref_name }}
+          fi
+      - name: Publish immutable stable manifest only on main
+        if: github.ref == 'refs/heads/main'
+        env:
+          CI: 'false'
+        run: |
+          export ALBOT_RELEASE_COMMIT_SHA="$(git rev-parse HEAD)"
+          export ALBOT_RELEASED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          npm run build
+          git add release/al-bot-release.json
+          if ! git diff --cached --quiet; then
+            git commit -m "release: promote 0.26.80-h26 pinned browser update"
+            git push origin HEAD:${{ github.ref_name }}
+          fi
