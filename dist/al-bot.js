@@ -1,4 +1,4 @@
-/* AL Bot 0.26.92-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.93-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -35143,7 +35143,7 @@ class MerchantProductionPlanner {
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.92-h26';
+      this.version = options.version || '0.26.93-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -41116,6 +41116,8 @@ class MerchantProductionPlanner {
     }
 
     actionAllowed(action = 'action') {
+      if ((action === 'start_character' || action === 'stop_character')
+          && this.visibleClients && this.visibleClients.enabled()) return false;
       if (!this.storage.sharedAvailable()) return false;
       if (!this.running) return false;
       if (!this.scheduler.status().enabled) return false;
@@ -41124,6 +41126,9 @@ class MerchantProductionPlanner {
     }
 
     assertActionAllowed(action = 'action') {
+      if ((action === 'start_character' || action === 'stop_character')
+          && this.visibleClients && this.visibleClients.enabled())
+        throw new Error('H43_VISIBLE_MODE_CHILD_LIFECYCLE_BLOCKED:' + action);
       if (!this.storage.sharedAvailable()) throw new Error('ALBOT_SSD_STATE_UNAVAILABLE:' + action);
       if (!this.running || !this.scheduler.status().enabled) throw new Error('ALBOT_RUNTIME_NOT_RUNNING:' + action);
       return this.stopLatch.assertAllowed(action);
@@ -43566,7 +43571,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.92-h26',
+    version: '0.26.93-h26',
     bootCount,
     replacedPrevious: !!previous
   });
