@@ -1160,6 +1160,11 @@
             };
           }
           plan = this._alignPlanToDesired(plan, fixedQuartet, 'My_Merchant');
+          // Catch-up priorities must not reference an unselected legacy
+          // character; retain the advisory ranking without an invalid target.
+          if (plan.progression && !fixedQuartet.includes(String(plan.progression.selectedCharacterName || ''))) {
+            plan.progression.selectedCharacterName = null;
+          }
           plan.status = 'SELECTION_READY';
           plan.taskType = effectiveTaskType;
           plan.selectionPolicy = 'H44_FIXED_VISIBLE_QUARTET';
