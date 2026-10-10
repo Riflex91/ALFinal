@@ -5978,6 +5978,8 @@
     }
 
     actionAllowed(action = 'action') {
+      if ((action === 'start_character' || action === 'stop_character')
+          && this.visibleClients && this.visibleClients.enabled()) return false;
       if (!this.storage.sharedAvailable()) return false;
       if (!this.running) return false;
       if (!this.scheduler.status().enabled) return false;
@@ -5986,6 +5988,9 @@
     }
 
     assertActionAllowed(action = 'action') {
+      if ((action === 'start_character' || action === 'stop_character')
+          && this.visibleClients && this.visibleClients.enabled())
+        throw new Error('H43_VISIBLE_MODE_CHILD_LIFECYCLE_BLOCKED:' + action);
       if (!this.storage.sharedAvailable()) throw new Error('ALBOT_SSD_STATE_UNAVAILABLE:' + action);
       if (!this.running || !this.scheduler.status().enabled) throw new Error('ALBOT_RUNTIME_NOT_RUNNING:' + action);
       return this.stopLatch.assertAllowed(action);
