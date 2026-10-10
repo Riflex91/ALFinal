@@ -130,7 +130,7 @@ test('H45 unarmed merchant H19 refuses code child start, stop and rotation', () 
 });
 
 test('H45 runtime action gate protects even an unarmed Merchant and still permits party actions',()=>{
-  const ctx={__ALBOT_INTERNALS__:{Scheduler:class {},helpers:{clone,cleanText}}};
+  const ctx={__ALBOT_INTERNALS__:{Scheduler:class {},helpers:{clone,cleanText:(v,m=300)=>String(v??'').slice(0,m)}}};
   ctx.globalThis=ctx;
   vm.runInNewContext(fs.readFileSync(new URL('../src/runtime.js',import.meta.url),'utf8'),ctx);
   const Runtime=ctx.__ALBOT_INTERNALS__.ALBotRuntime;
