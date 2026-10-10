@@ -1214,6 +1214,9 @@
         return;
       }
 
+      // H40: a pending attack must still be reconciled every tick, but its
+      // server response must not freeze threat avoidance for up to 3 seconds.
+      if (this.pendingAttack && this.session.policy.kiting) this._kite(game, null);
       if (this._observePendingAttack()) return;
 
       const localName = String(character.name || '');
@@ -1275,6 +1278,15 @@
         return;
       }
 
+      // V3: defend against live local aggro before the ordinary skill,
+      // AoE, target-approach or attack-cooldown paths can postpone movement.
+      // Low-HP retreat and UNKNOWN failure handling still run earlier.
+      if (this._kite(game, target)) {
+        if (readiness.inRange && !readiness.cooldown && readiness.canAttack)
+          this._beginAttack(target);
+        return;
+      }
+
       if (this.classSkills && typeof this.classSkills.maybeUse === 'function') {
         const skill = this.classSkills.maybeUse({
           game,
@@ -1323,11 +1335,6 @@
 
       if (!readiness.inRange) {
         this._approach(game, target);
-        return;
-      }
-
-      if (this._kite(game, target)) {
-        if (!readiness.cooldown && readiness.canAttack) this._beginAttack(target);
         return;
       }
 
