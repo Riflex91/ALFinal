@@ -68,65 +68,112 @@
     clear() { this.entries.length = 0; }
   }
 
+  // H41: Production runtime persistence goes only to the local SSD writer.
+  // Legacy localStorage is NOT a runtime storage fallback. The test-only
+  // branch below preserves Node VM fixtures that do not expose XMLHttpRequest.
   class StorageAdapter {
-    constructor(rootRef) { this.root = rootRef; this.memory = new Map(); }
-    _ls() {
-      try { return this.root && this.root.localStorage ? this.root.localStorage : null; } catch (_) { return null; }
+    constructor(rootRef) {
+      this.root = rootRef;
+      this.memory = new Map();
+      this.endpoint = 'http://127.0.0.1:17391';
+      this.mode = rootRef && typeof rootRef.XMLHttpRequest === 'function'
+        ? 'SSD_ONLY' : 'NON_BROWSER_TEST_FIXTURE';
+      this.lastProbeMs = 0;
+      this.hostAvailable = false;
+      this.failureUntilMs = 0;
+      this.lastError = null;
+      this.metrics = { reads: 0, writes: 0, deletes: 0, failures: 0 };
     }
-    _sharedLs() {
-      let current = this.root;
-      for (let depth = 0; depth < 8 && current; depth += 1) {
-        try {
-          const ls = current.localStorage || null;
-          if (ls && typeof ls.getItem === 'function' && typeof ls.setItem === 'function') {
-            ls.getItem('__albot_shared_storage_probe__');
-            return ls;
-          }
-        } catch (_) {}
-        let parentWindow = null;
-        try {
-          parentWindow = current.parent && current.parent !== current ? current.parent : null;
-          if (parentWindow) void parentWindow.document;
-        } catch (_) {
-          parentWindow = null;
-        }
-        if (!parentWindow) break;
-        current = parentWindow;
-      }
+    _legacyFixture() {
+      // A native Adventure Land browser always exposes XMLHttpRequest.
+      if (this.mode !== 'NON_BROWSER_TEST_FIXTURE') return null;
+      try { return this.root && this.root.localStorage || null; } catch (_) { return null; }
+    }
+    _failure(error) {
+      this.hostAvailable = false;
+      this.failureUntilMs = Date.now() + 2000;
+      this.lastError = String(error && error.message || error || 'SSD_HOST_UNAVAILABLE').slice(0,250);
+      this.metrics.failures++;
       return null;
     }
-    get(key) {
-      const ls = this._ls();
-      if (ls) { try { return ls.getItem(key); } catch (_) {} }
-      return this.memory.has(key) ? this.memory.get(key) : null;
+    _request(method, path, payload) {
+      if (Date.now() < this.failureUntilMs) return null;
+      try {
+        const xhr = new this.root.XMLHttpRequest();
+        xhr.open(method, this.endpoint + path, false);
+        if (method === 'POST') xhr.setRequestHeader('Content-Type', 'application/json');
+        xhr.send(payload == null ? null : JSON.stringify(payload));
+        if (xhr.status !== 200 || !xhr.responseText) throw new Error('SSD_HTTP_' + xhr.status);
+        const value = JSON.parse(xhr.responseText);
+        if (!value || value.ok !== true) throw new Error('SSD_RESPONSE_INVALID');
+        this.hostAvailable = true;
+        this.failureUntilMs = 0;
+        this.lastError = null;
+        return value;
+      } catch (error) { return this._failure(error); }
     }
-    set(key, value) {
-      const ls = this._ls();
-      if (ls) { try { ls.setItem(key, value); return true; } catch (_) {} }
-      this.memory.set(key, value); return true;
-    }
-    remove(key) {
-      const ls = this._ls();
-      if (ls) { try { ls.removeItem(key); } catch (_) {} }
-      this.memory.delete(key);
+    _key(key) {
+      const text = String(key == null ? '' : key);
+      // Keep all of AL Bot's keys, including existing extension keys, but
+      // do not permit arbitrary browser-origin filesystem access.
+      if (!text.startsWith('albot:') || text.length > 512) return null;
+      return '/v1/kv?key=' + encodeURIComponent(text);
     }
     sharedAvailable() {
-      return !!this._sharedLs();
+      if (this.mode === 'NON_BROWSER_TEST_FIXTURE') return !!this._legacyFixture();
+      const now = Date.now();
+      if (now < this.failureUntilMs) return false;
+      if (now - this.lastProbeMs > 1500 || !this.lastProbeMs) {
+        this.lastProbeMs = now;
+        const health = this._request('GET', '/health');
+        const root = health && health.kvStore && String(health.kvStore.root || '').replace(/\\/g, '/').toLowerCase();
+        if (!root || !root.startsWith('d:/albot/state/kv')) return !!this._failure('SSD_ROOT_MUST_BE_D_ALBOT');
+      }
+      return this.hostAvailable;
     }
+    get(key) { return this.getShared(key); }
+    set(key, value) { return this.setShared(key, value); }
+    remove(key) { return this.removeShared(key); }
     getShared(key) {
-      const ls = this._sharedLs();
-      if (!ls) return null;
-      try { return ls.getItem(key); } catch (_) { return null; }
+      if (this.mode === 'NON_BROWSER_TEST_FIXTURE') {
+        const ls = this._legacyFixture();
+        if (ls) try { return ls.getItem(key); } catch (_) {}
+        return this.memory.get(key) ?? null;
+      }
+      const uri = this._key(key);
+      if (!uri) return null;
+      const response = this._request('GET', uri);
+      if (response) this.metrics.reads++;
+      return response ? response.value : null;
     }
     setShared(key, value) {
-      const ls = this._sharedLs();
-      if (!ls) return false;
-      try { ls.setItem(key, value); return true; } catch (_) { return false; }
+      if (this.mode === 'NON_BROWSER_TEST_FIXTURE') {
+        const ls = this._legacyFixture();
+        if (ls) try { ls.setItem(key, String(value)); return true; } catch (_) {}
+        this.memory.set(key, String(value)); return true;
+      }
+      const uri = this._key(key);
+      if (!uri) return false;
+      const response = this._request('POST', uri, { value: String(value) });
+      if (response) this.metrics.writes++;
+      return !!response;
     }
     removeShared(key) {
-      const ls = this._sharedLs();
-      if (!ls) return false;
-      try { ls.removeItem(key); return true; } catch (_) { return false; }
+      if (this.mode === 'NON_BROWSER_TEST_FIXTURE') {
+        const ls = this._legacyFixture();
+        if (ls) try { ls.removeItem(key); return true; } catch (_) {}
+        return this.memory.delete(key);
+      }
+      const uri = this._key(key);
+      if (!uri) return false;
+      const response = this._request('DELETE', uri);
+      if (response) this.metrics.deletes++;
+      return !!response;
+    }
+    status() {
+      return { backend: this.mode, hostAvailable: this.sharedAvailable(),
+        root: 'D:/ALBot/state/kv', endpoint: this.endpoint,
+        lastError: this.lastError, metrics: { ...this.metrics } };
     }
   }
 
