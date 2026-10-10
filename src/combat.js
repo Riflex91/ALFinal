@@ -878,6 +878,14 @@
       return false;
     }
 
+    _setOrbitDirection(character, direction) {
+      const policy = this.session && this.session.policy || {};
+      const key = policy.leaderOwnedPulls === true && policy.groupLeaderName
+        ? 'group:' + String(policy.groupLeaderName)
+        : 'character:' + String(character && character.name || 'local');
+      this.orbitDirectionByCharacter.set(key, direction >= 0 ? 1 : -1);
+    }
+
     _farmKiteAnchor(character) {
       // Ported from V3 alpha33: avoid orbiting indefinitely away from a
       // verified farming anchor. Missing/cross-map coordinates add no bounds.
@@ -1002,18 +1010,30 @@
       const monsterSpeed = Math.max(1, finite(target.speed) || finite(definition && definition.speed) || 40);
       const hardSafeDistance = monsterRange + this.config.kiteMonsterBuffer + monsterSpeed * this.config.kiteSpeedBufferSeconds;
       const maxRangeDistance = range * this.config.kiteMaxRangeRatio;
-      if (hardSafeDistance + 8 >= maxRangeDistance) return null;
-
       const currentDistance = Math.hypot(cx - tx, cy - ty);
-      const desiredDistance = Math.min(maxRangeDistance, Math.max(range * this.config.kiteDesiredRangeRatio, hardSafeDistance + 16));
-      const speed = Math.max(1, finite(character.speed) || 40);
-      const preferred = this._orbitDirection(character);
       const canMove = (x, y) => {
         try {
-          const value = this.movement && typeof this.movement._canMoveTo === 'function' ? this.movement._canMoveTo(x, y) : null;
+          const value = this.movement && typeof this.movement._canMoveTo === 'function'
+            ? this.movement._canMoveTo(x, y) : null;
           return value !== false;
         } catch (_) { return false; }
       };
+      // No forced approach to an aggro monster that is already safely
+      // outside our working attack radius.
+      if (currentDistance > maxRangeDistance + 10) return null;
+      if (hardSafeDistance + 8 >= maxRangeDistance) {
+        const escape = this._emergencyKiteEscape(character, target, canMove);
+        if (escape && this._groupTetherAllows(character, escape)) {
+          this.metrics.kiteEmergencyEscapes++;
+          return escape;
+        }
+        return null;
+      }
+
+
+      const desiredDistance = Math.min(maxRangeDistance, Math.max(range * this.config.kiteDesiredRangeRatio, hardSafeDistance + 16));
+      const speed = Math.max(1, finite(character.speed) || 40);
+      const preferred = this._orbitDirection(character);
       const candidates = [];
       const anchor = this._farmKiteAnchor(character);
 
@@ -1072,7 +1092,7 @@
         }
         if (rejectedByAnchor) this.metrics.kiteAnchorCorrections += 1;
         if (candidate.spiral) this.metrics.kiteSpiralEscapes += 1;
-        this.orbitDirectionByCharacter.set(String(character.name || 'local'), candidate.direction);
+        this._setOrbitDirection(character, candidate.direction);
         return candidate;
       }
       // V3 Alpha31 fallback: a character in the enemy's immediate attack
