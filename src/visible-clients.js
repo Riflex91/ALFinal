@@ -155,6 +155,7 @@
       });
       return { schemaVersion: 1, mode: 'visible-browser-quartet', enabled,
         protectionActive, childCodeStartsBlocked: protectionActive,
+        protectedCharacterNames: protectionActive ? [...NAMES] : [],
         ssdAvailable: this._ssdAvailable(), local, clients,
         visibleAndRunningCount: clients.filter(row => row.visible && row.runtimeRunning).length,
         complete: enabled && clients.every(row => row.visible && row.runtimeRunning && row.online) };
