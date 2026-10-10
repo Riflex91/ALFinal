@@ -81,7 +81,13 @@ test('H38 sustained congestion creates a proposal; four peers ACK before any nav
   ranger.congestedSinceMs = Date.now() - 130000;
   for (const name of names) t.members[name].hop.tick();
   t.members.My_Merchant.hop.tick();
-  assert.equal(t.members.My_Merchant.hop.status().metrics.proposals, 1);
+  assert.equal(t.members.My_Merchant.hop.status().metrics.proposals, 1,
+    JSON.stringify({
+      merchant: t.members.My_Merchant.hop.status().lastDecision,
+      ranger: t.members.My_Ranger1.hop.status().lastDecision,
+      congestion: t.db.get('albot:h38:server-hop:v1:congestion'),
+      peers: names.map(n => t.db.get('albot:h38:server-hop:v1:peer:' + n))
+    }));
   assert.equal(t.members.My_Merchant.calls.length, 0);
   for (const name of names) t.members[name].hop.tick();
   t.members.My_Merchant.hop.tick();
@@ -154,7 +160,7 @@ test('H38 group leader does not cancel travel on the first hard-gap sample', () 
   instance._groupEncounterActive = () => false;
   instance._stopOwnedFarming = () => {};
   instance._bestLeaderRecoveryWaypoint = () => null;
-  const group = { complete: true, sameMap: true, maxPairDistance: 225, leaderName: 'My_Ranger1' };
+  const group = { enabled: true, isLeader: true, complete: true, sameMap: true, maxPairDistance: 225, leaderName: 'My_Ranger1' };
   const first = instance._tickGroupLeader({ name: 'My_Ranger1' }, group);
   assert.equal(first.reason, 'H38_GROUP_TRAVEL_COHESION_GRACE');
   assert.deepEqual(cancelled, []);
