@@ -25,6 +25,9 @@
         peerMaxAgeMs: 7000,
         proposalTimeoutMs: 25000,
         commitDelayMs: 9000,
+        splitRejoinPeerMaxAgeMs: 15000,
+        splitRejoinTicketMs: 120000,
+        splitRejoinCooldownMs: 300000,
         // A current, authoritative get_servers() catalog is required before
         // navigation. The target list contains only explicitly non-PVP EU/US
         // realms. Never guess server identifiers or assume unknown PVP flags.
@@ -38,7 +41,8 @@
       this.catalogPending = false;
       this.catalogError = null;
       this.catalogRequestId = 0;
-      this.metrics = { congestionObservations: 0, proposals: 0, prepared: 0, commits: 0, navigations: 0, blocked: 0 };
+      this.metrics = { congestionObservations: 0, proposals: 0, prepared: 0, commits: 0, navigations: 0, blocked: 0,
+        splitRejoinProposals: 0, splitRejoinNavigations: 0, splitRejoinCompleted: 0 };
     }
 
     _server() {
@@ -80,6 +84,7 @@
       const desired = this._desired();
       const roster = s.roster && s.roster.refresh();
       const online = safeNames(roster && roster.onlineCharacterNames);
+      const owned = safeNames(roster && roster.accountCharacters && roster.accountCharacters.map(row => row.name));
       const safe = this.config.enabled && this.moduleActive && s.running === true
         && s.stopLatch && !s.stopLatch.status().latched
         && server && name && character && !character.rip
@@ -93,9 +98,26 @@
         && updater && !updater.busy
         && !(this.game.snapshot().target);
       const fn = this._changeServerFunction();
+      // Split-party recovery requires a fresh owned four-character roster,
+      // but must not require an already assembled party or H19 peers.
+      const rejoinSafe = this.config.enabled && this.moduleActive && s.running === true
+        && s.stopLatch && !s.stopLatch.status().latched
+        && !!fn && !!name && !!server && !character.rip
+        && full && full.enabled === true
+        && roster && roster.accountStateAvailable === true
+        && roster.onlineStateAvailable === true
+        && online.length === 4 && owned.length >= 4
+        && online.every(n => owned.includes(n)) && online.includes(name)
+        && lifecycle && !lifecycle.suspended && !lifecycle.currentAction
+        && Number(lifecycle.metrics && lifecycle.metrics.actionsUnknown || 0) === 0
+        && combat && !combat.pendingAttack && !combat.suspended
+        && farming && !farming.pending && !farming.suspended
+        && movement && !movement.active && updater && !updater.busy
+        && !(this.game.snapshot().target);
       return {
         atMs: Date.now(), name, ctype: String(character && character.ctype || ''),
-        server, desired, safe: !!safe && !!fn, switchApiAvailable: !!fn
+        server, desired, online, rejoinSafe: !!rejoinSafe,
+        safe: !!safe && !!fn, switchApiAvailable: !!fn
       };
     }
     _changeServerFunction() {
@@ -235,7 +257,112 @@
         if (state && state.reporter === ready.name) this._write('congestion', null);
       }
     }
+    _standardPveServer(server) {
+      // H42 self-repair targets only the already-observed live majority
+      // server, and only normal EU/US Roman-numeral worlds. Any "pvp" or
+      // Hardcore name, identifier or region must be rejected.
+      if (!server || !['EU', 'US'].includes(String(server.region || '').toUpperCase())) return false;
+      const id = String(server.identifier || '').toUpperCase();
+      const name = String(server.name || '');
+      return /^[IVXLCDM]{1,10}$/.test(id) && !/pvp|hardcore/i.test(id + ' ' + name);
+    }
+    _sameServer(a, b) {
+      return !!(a && b && a.region === b.region && a.identifier === b.identifier);
+    }
+    _splitRejoinPeer(name, online, now) {
+      const peer = this._read('peer:' + name);
+      return peer && peer.name === name && peer.rejoinSafe === true
+        && peer.server && this._standardPveServer(peer.server)
+        && now >= peer.atMs && now - peer.atMs <= this.config.splitRejoinPeerMaxAgeMs
+        && JSON.stringify(safeNames(peer.online)) === JSON.stringify(online)
+        ? peer : null;
+    }
+    _splitRejoinActive(ticket, now = Date.now()) {
+      if (!ticket || ticket.version !== 1 || ticket.state !== 'COMMITTED'
+          || now > ticket.expiresAtMs || !this._standardPveServer(ticket.target)
+          || !Array.isArray(ticket.names) || ticket.names.length !== 4) return false;
+      return !ticket.names.every(name => {
+        const peer = this._read('peer:' + name);
+        return peer && peer.server && this._sameServer(peer.server, ticket.target)
+          && now >= peer.atMs && now - peer.atMs < this.config.splitRejoinPeerMaxAgeMs;
+      });
+    }
+    _splitRejoin(ready, now) {
+      const ticket = this._read('rejoin');
+      if (ticket && ticket.version === 1 && ticket.state === 'COMMITTED'
+          && now <= ticket.expiresAtMs && this._standardPveServer(ticket.target)) {
+        if (!safeNames(ticket.names).includes(ready.name)) return this._decision('BLOCKED', 'H42_REJOIN_UNOWNED_LOCAL');
+        if (this._sameServer(ready.server, ticket.target)) {
+          if (!this._splitRejoinActive(ticket, now)) {
+            if (ready.ctype === 'merchant') {
+              this._write('rejoin', { ...ticket, state: 'COMPLETE', completedAtMs: now });
+              this.metrics.splitRejoinCompleted++;
+            }
+            return this._decision('IDLE', 'H42_REJOIN_COMPLETE');
+          }
+          return this._decision('WAITING', 'H42_REJOIN_WAIT_FOR_PEERS', { target: ticket.target });
+        }
+        if (!ready.rejoinSafe) return this._decision('BLOCKED', 'H42_REJOIN_H19_SAFETY_GATE');
+        if (!ready.online || JSON.stringify(safeNames(ready.online)) !== JSON.stringify(safeNames(ticket.names)))
+          return this._decision('BLOCKED', 'H42_REJOIN_ROSTER_CHANGED');
+        const source = ticket.sources && ticket.sources[ready.name];
+        if (!source || !this._sameServer(source, ready.server))
+          return this._decision('BLOCKED', 'H42_REJOIN_SOURCE_CHANGED');
+        const last = this._read('rejoin-executed:' + ready.name);
+        if (last && last.id === ticket.id) return this._decision('WAITING', 'H42_REJOIN_ALREADY_DISPATCHED');
+        if (!this._write('rejoin-executed:' + ready.name, { id: ticket.id, atMs: now }))
+          return this._decision('BLOCKED', 'H42_REJOIN_EXECUTION_MARKER_FAILED');
+        const change = this._changeServerFunction();
+        if (!change) return this._decision('BLOCKED', 'H42_REJOIN_API_UNAVAILABLE');
+        try {
+          change(ticket.target.region, ticket.target.identifier);
+          this.metrics.splitRejoinNavigations++;
+          return this._decision('SWITCHING', 'H42_REJOIN_SERVER_CHANGE_DISPATCHED', { target: ticket.target });
+        } catch (error) {
+          return this._decision('BLOCKED', 'H42_REJOIN_CHANGE_THROW', { error: clean(error && error.message || error, 160) });
+        }
+      }
+      const online = safeNames(ready.online);
+      if (online.length !== 4 || !online.includes(ready.name)) return null;
+      if (ready.ctype !== 'merchant') return null;
+      const peers = online.map(name => this._splitRejoinPeer(name, online, now));
+      if (peers.some(peer => !peer)) return null;
+      if (peers.filter(peer => peer.ctype === 'merchant').length !== 1
+          || peers.filter(peer => FARMER.has(peer.ctype)).length !== 3) return null;
+      const groups = new Map();
+      for (const peer of peers) {
+        const id = peer.server.region + ':' + peer.server.identifier;
+        const group = groups.get(id) || { server: peer.server, members: [] };
+        group.members.push(peer.name);
+        groups.set(id, group);
+      }
+      if (groups.size === 1) return null;
+      // A 2:2 split is ambiguous: no forced server moves.
+      const majority = [...groups.values()].find(group => group.members.length === 3);
+      if (!majority || !this._standardPveServer(majority.server)) return null;
+      const old = this._read('rejoin-last');
+      if (old && Number.isFinite(old.atMs)
+          && now - old.atMs < this.config.splitRejoinCooldownMs) {
+        return this._decision('WAITING', 'H42_REJOIN_RETRY_COOLDOWN');
+      }
+      const proposed = {
+        version: 1, id: 'h42-' + ready.name + '-' + now,
+        state: 'COMMITTED', author: ready.name, names: online,
+        target: majority.server, sources: Object.fromEntries(peers.map(peer => [peer.name, peer.server])),
+        atMs: now, expiresAtMs: now + this.config.splitRejoinTicketMs
+      };
+      if (!this._write('rejoin', proposed)
+          || !this._write('rejoin-last', { atMs: now, id: proposed.id }))
+        return this._decision('BLOCKED', 'H42_REJOIN_SSD_WRITE_FAILED');
+      this.metrics.splitRejoinProposals++;
+      return this._decision('COMMITTED', 'H42_REJOIN_MAJORITY_SELECTED',
+        { target: majority.server, movingNames: online.filter(name => !majority.members.includes(name)) });
+    }
+    rejoinActive() {
+      return this._splitRejoinActive(this._read('rejoin'));
+    }
     handoffActive() {
+      if (this.rejoinActive()) return true;
       const ticket = this._read('proposal');
       if (!ticket || ticket.schemaVersion !== 1 || ticket.state !== 'COMMITTED'
           || Date.now() > ticket.expiresAtMs || !ticket.target) return false;
@@ -277,6 +404,11 @@
       const now = Date.now(), ready = this._readiness();
       if (!ready.name || !ready.server) return this._decision('WAITING', 'H38_NO_CHARACTER_OR_SERVER');
       if (!this._write('peer:' + ready.name, ready)) return this._decision('WAITING', 'H38_SHARED_STORAGE_UNAVAILABLE');
+
+      // H42 must run before H38 congestion planning. It does not require
+      // Full Autonomy to have already formed the party on one realm.
+      const rejoin = this._splitRejoin(ready, now);
+      if (rejoin) return rejoin;
 
       const pending = this._read('proposal');
       // Never repeat an already-successful navigation after reloading.
