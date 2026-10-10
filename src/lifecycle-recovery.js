@@ -43,6 +43,7 @@
       this.party = options.party || null;
       this.storage = options.storage || null;
       this.crossWindow = options.crossWindow || null;
+      this.visibleClients = options.visibleClients || null;
       this.navigateCharacterLocal = typeof options.navigateCharacterLocal === 'function'
         ? options.navigateCharacterLocal
         : null;
@@ -699,6 +700,11 @@
       }
 
       const targetName = String(owned.name);
+      if (this.visibleClients && this.visibleClients.enabled()
+          && (mode === 'BROWSER_SWAP' || (mode === 'START' && options.requireCharacterStateChange === true)
+            || (mode === 'STOP' && options.requireCharacterStateChange === true))) {
+        return { ok: false, reason: 'H43_VISIBLE_MODE_CHILD_LIFECYCLE_BLOCKED' };
+      }
       const active = this._onlineSet(roster).has(targetName);
       const runnerActive = this._runnerActiveSet(roster).has(targetName);
       const startPresent = this._startEvidenceSet(roster).has(targetName);
@@ -1054,6 +1060,27 @@
       const startEvidence = this._startEvidenceSet(roster);
       const localName = this._localName();
       const desiredActive = new Set(this.policyState.desiredActiveNames.map(String));
+      if (this.visibleClients && this.visibleClients.enabled()) {
+        // H43 never replaces a graphical client by a CODE child or rotates
+        // an already-open browser away from its character identity.
+        const unexpected = [...active].filter(name => this._ownedRow(name, roster) && !desiredActive.has(String(name)));
+        if (unexpected.length) return {
+          state: 'BLOCKED', reason: 'H43_UNEXPECTED_ONLINE_CHARACTER_PROTECTED',
+          unexpectedOnlineNames: unexpected.sort()
+        };
+        const missing = [...desiredActive].filter(name => !active.has(name));
+        if (missing.length) return {
+          state: 'WAITING', reason: 'H43_VISIBLE_GAME_CLIENT_REQUIRED',
+          missingVisibleCharacterNames: missing.sort()
+        };
+        for (const name of desiredActive) {
+          if (name === localName) continue;
+          const peer = this.crossWindow && typeof this.crossWindow.freshPeer === 'function'
+            ? this.crossWindow.freshPeer(name) : null;
+          if (!peer || peer.visibleClient !== true || peer.running !== true)
+            return { state: 'WAITING', reason: 'H43_VISIBLE_PEER_NOT_READY', targetName: name };
+        }
+      }
 
       // Separate browser windows are rotated in-place: navigate the outgoing
       // browser directly to the missing desired character on the same server.
