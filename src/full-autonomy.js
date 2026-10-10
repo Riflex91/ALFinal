@@ -1217,9 +1217,12 @@
         // This alters selection only; H19 safety gates remain authoritative.
         if (requiresRotation && localName === String(merchantName || '')
             && this.runtime.lifecycle
-            && typeof this.runtime.lifecycle.characterRotationReadiness === 'function') {
-          const rotationProbe = this.runtime.lifecycle.characterRotationReadiness(nextDesired);
-          if (rotationProbe && rotationProbe.ready === false) {
+            && typeof this.runtime.lifecycle.status === 'function') {
+            // H41: an already-live, valid 3+1 quartet takes precedence over
+            // replacing browser windows. The H37 implementation only ran
+            // when the *rotation probe* was blocked, allowing a nominally
+            // "ready" H25 swap to fail during SSD handoff and strand the
+            // existing ranger outside the party.
             const lifecycleState = this.runtime.lifecycle.status();
             const live = [...new Set(readiness.online.map(String))].sort();
             const profiles = live.map(name => readiness.profiles.find(row => row && String(row.name) === name && row.online === true));
@@ -1244,7 +1247,6 @@
               readiness = this._profileReadiness();
               requiresRotation = false;
             }
-          }
         }
 
         // A browser that is due to be replaced must wait for its merchant
