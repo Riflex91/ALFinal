@@ -25,12 +25,19 @@
         peerMaxAgeMs: 7000,
         proposalTimeoutMs: 25000,
         commitDelayMs: 9000,
-        // Only the two documented, non-PVP EU worlds. No speculative PVP,
-        // cross-region or unverified realm navigation.
-        targetServers: [{ region: 'EU', identifier: 'I' }, { region: 'EU', identifier: 'II' }]
+        // A current, authoritative get_servers() catalog is required before
+        // navigation. The target list contains only explicitly non-PVP EU/US
+        // realms. Never guess server identifiers or assume unknown PVP flags.
+        catalogRefreshMs: 300000,
+        catalogMaxAgeMs: 900000,
+        targetServers: []
       };
       this.lastDecision = null;
       this.congestedSinceMs = null;
+      this.catalogUpdatedAtMs = null;
+      this.catalogPending = false;
+      this.catalogError = null;
+      this.catalogRequestId = 0;
       this.metrics = { congestionObservations: 0, proposals: 0, prepared: 0, commits: 0, navigations: 0, blocked: 0 };
     }
 
@@ -97,11 +104,95 @@
       }
       return null;
     }
+    _gameServerCatalogFunction() {
+      for (const r of [this.root, this.root && this.root.parent]) {
+        try { if (r && typeof r.get_servers === 'function') return r.get_servers.bind(r); } catch (_) {}
+      }
+      return null;
+    }
+    _normalizeGameServerCatalog(response) {
+      const rows = Array.isArray(response) ? response
+        : response && Array.isArray(response.servers) ? response.servers
+        : response && response.data && Array.isArray(response.data.servers) ? response.data.servers
+        : response && response.servers && typeof response.servers === 'object'
+          ? Object.values(response.servers) : [];
+      const out = [];
+      for (const row of rows) {
+        if (!row || typeof row !== 'object') continue;
+        const region = String(row.region || row.server_region || row.serverRegion || '').trim().toUpperCase();
+        const identifier = String(row.identifier || row.server_identifier || row.serverIdentifier || row.name || '').trim().toUpperCase();
+        if (!['EU', 'US'].includes(region) || !/^[IVXLCDM]{1,10}$/.test(identifier)) continue;
+        // The server API is authoritative for PVP classification. Unknown
+        // PVP metadata is NOT enough evidence for a safe automatic hop.
+        const explicitlyPve = row.pvp === false || row.pvp === 0
+          || row.is_pvp === false || row.isPvp === false
+          || String(row.type || '').toLowerCase() === 'pve';
+        const forbidden = row.pvp === true || row.is_pvp === true || row.isPvp === true
+          || row.hardcore === true || row.isHardcore === true
+          || /PVP|HARDCORE|PVP|ARENA/i.test(String(row.name || '') + ' ' + String(row.type || '') + ' ' + identifier);
+        if (!explicitlyPve || forbidden) continue;
+        if (!out.some(s => s.region === region && s.identifier === identifier)) out.push({ region, identifier });
+      }
+      // Stable iteration order allows round-robin between both continents.
+      return out.sort((a, b) => a.region.localeCompare(b.region)
+        || a.identifier.length - b.identifier.length
+        || a.identifier.localeCompare(b.identifier));
+    }
+    _refreshGameServerCatalog() {
+      const character = this._character();
+      if (!this.moduleActive || !character || String(character.ctype) !== 'merchant') return;
+      const now = Date.now();
+      if (this.catalogPending || this.catalogUpdatedAtMs != null
+          && now - this.catalogUpdatedAtMs < this.config.catalogRefreshMs) return;
+      const getServers = this._gameServerCatalogFunction();
+      if (!getServers) {
+        this.catalogError = 'H39_GET_SERVERS_API_UNAVAILABLE';
+        this.config.targetServers = [];
+        this.catalogUpdatedAtMs = now;
+        return;
+      }
+      const requestId = ++this.catalogRequestId;
+      this.catalogPending = true;
+      let result;
+      try { result = getServers(); } catch (error) {
+        this.catalogPending = false;
+        this.config.targetServers = [];
+        this.catalogUpdatedAtMs = now;
+        this.catalogError = 'H39_GET_SERVERS_CALL_FAILED:' + clean(error && error.message || error, 120);
+        return;
+      }
+      Promise.resolve(result).then(servers => {
+        if (!this.moduleActive || requestId !== this.catalogRequestId) return;
+        this.catalogUpdatedAtMs = Date.now();
+        this.config.targetServers = this._normalizeGameServerCatalog(servers);
+        this.catalogError = this.config.targetServers.length ? null : 'H39_NO_VERIFIED_PVE_SERVERS';
+      }, error => {
+        if (!this.moduleActive || requestId !== this.catalogRequestId) return;
+        this.catalogUpdatedAtMs = Date.now();
+        this.config.targetServers = [];
+        this.catalogError = 'H39_GET_SERVERS_REJECTED:' + clean(error && error.message || error, 120);
+      }).then(() => {
+        if (requestId === this.catalogRequestId) this.catalogPending = false;
+      });
+    }
     _target(server) {
-      if (!server || server.region !== 'EU') return null;
-      const options = this.config.targetServers.filter(s => s.region === server.region
-        && s.identifier !== server.identifier && !/PVP|HARDCORE/i.test(s.identifier));
-      return options[0] || null;
+      if (!server || !['EU', 'US'].includes(server.region)
+          || this.catalogPending || !this.catalogUpdatedAtMs
+          || Date.now() - this.catalogUpdatedAtMs > this.config.catalogMaxAgeMs) return null;
+      const list = this.config.targetServers;
+      if (!Array.isArray(list) || list.length < 2) return null;
+      const current = list.findIndex(s => s.region === server.region && s.identifier === server.identifier);
+      // The current server may have been omitted from a degraded catalog:
+      // fail closed instead of choosing an unrelated realm.
+      if (current < 0) return null;
+      // Round-robin over EU and US worlds, never PVP, including cross-region
+      // transitions when reaching the end of one continent's catalog.
+      for (let offset = 1; offset < list.length; offset++) {
+        const candidate = list[(current + offset) % list.length];
+        if (candidate && (candidate.region !== server.region || candidate.identifier !== server.identifier))
+          return { region: candidate.region, identifier: candidate.identifier };
+      }
+      return null;
     }
     _congestion(ready) {
       if (!FARMER.has(ready.ctype) || !ready.safe) return false;
@@ -166,6 +257,7 @@
     }
     tick() {
       if (!this.moduleActive || !this.config.enabled) return this._decision('IDLE', 'H38_DISABLED');
+      this._refreshGameServerCatalog();
       const now = Date.now(), ready = this._readiness();
       if (!ready.name || !ready.server) return this._decision('WAITING', 'H38_NO_CHARACTER_OR_SERVER');
       if (!this._write('peer:' + ready.name, ready)) return this._decision('WAITING', 'H38_SHARED_STORAGE_UNAVAILABLE');
@@ -255,7 +347,12 @@
         context.scope.interval('server-hop-observer', () => this.tick(), this.config.observerMs);
       return this.status();
     }
-    stop() { this.moduleActive = false; return this.status(); }
+    stop() {
+      this.moduleActive = false;
+      this.catalogRequestId++;
+      this.catalogPending = false;
+      return this.status();
+    }
     configure(options = {}) {
       if (options.enabled != null) this.config.enabled = options.enabled === true;
       return this.status();
@@ -263,6 +360,12 @@
     status() {
       return { moduleActive: this.moduleActive, enabled: this.config.enabled,
         lastDecision: clone(this.lastDecision), congestionSinceMs: this.congestedSinceMs,
+        catalog: {
+          updatedAtMs: this.catalogUpdatedAtMs,
+          pending: this.catalogPending,
+          error: this.catalogError,
+          verifiedPveServers: clone(this.config.targetServers)
+        },
         config: clone(this.config), metrics: clone(this.metrics) };
     }
   }
