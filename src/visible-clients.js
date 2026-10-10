@@ -84,6 +84,19 @@
       this.enabledSeen = true;
       return { accepted: true, reason: 'H43_VISIBLE_MODE_ARMED', characters: [...NAMES] };
     }
+    fixedQuartet() {
+      // An explicitly armed SSD mode survives temporarily missing windows.
+      if (this.enabled()) return [...NAMES];
+      // During migration, a complete four-window group can be protected
+      // immediately, even if the one-time Merchant enable was forgotten.
+      // Never infer this from account online or child-runner state alone.
+      const observed = this.status();
+      if (observed.ssdAvailable === true
+          && observed.clients.length === NAMES.length
+          && observed.clients.every(row => row.visible === true
+            && row.online === true && row.runtimeRunning === true)) return [...NAMES];
+      return null;
+    }
     status() {
       const enabled = this.enabled();
       const local = this.localEvidence();
