@@ -73,3 +73,17 @@ test('H19 never starts child, disconnects visible peer or rotates in visible mod
   assert.equal(lifecycle._validateRemoteTarget('My_Ranger1','BROWSER_SWAP',{desiredName:'My_Rogue'}).ok,false);
   assert.equal(lifecycle._validateRemoteTarget('My_Ranger1','STOP',{requireCharacterStateChange:true}).ok,false);
 });
+
+test('H44 fixed roster is inferred only from four confirmed rendered browser sessions',()=>{
+  const f=fixture();
+  f.mode.transport={freshPeer:()=>({visibleClient:true,clientKind:'VISIBLE_BROWSER',running:true})};
+  assert.equal(f.mode.fixedQuartet().join('|'),names.join('|'));
+  const missing=fixture('My_Merchant',{online:['My_Merchant','My_Ranger1','My_Ranger2']});
+  missing.mode.transport={freshPeer:()=>({visibleClient:true,clientKind:'VISIBLE_BROWSER',running:true})};
+  assert.equal(missing.mode.fixedQuartet(),null);
+  const child=fixture();
+  child.mode.transport={freshPeer:()=>({visibleClient:false,clientKind:'CHILD_CODE_RUNNER',running:true})};
+  assert.equal(child.mode.fixedQuartet(),null);
+  missing.mode.enable();
+  assert.equal(missing.mode.fixedQuartet().join('|'),names.join('|'));
+});
