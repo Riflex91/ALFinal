@@ -1126,7 +1126,44 @@
           ? this.runtime.encounters.preferredTask()
           : null;
         const effectiveTaskType = encounterPriority && encounterPriority.taskType || this.config.taskType;
-        let plan = this.strategy.optimizeTask({ type: effectiveTaskType });
+        const fixedQuartet = this.runtime.visibleClients
+          && typeof this.runtime.visibleClients.fixedQuartet === 'function'
+          ? this.runtime.visibleClients.fixedQuartet()
+          : null;
+        let plan = this.strategy.optimizeTask({
+          type: effectiveTaskType,
+          ...(fixedQuartet ? { allowedCharacterNames: fixedQuartet } : {})
+        });
+        if (fixedQuartet) {
+          // H44: Explicitly preserve the four user-selected browser characters.
+          // Profile scoring/catch-up is advisory; it must never replace a
+          // rendered Ranger with a cached/offline Priest or Warrior.
+          const account = this.runtime.roster && typeof this.runtime.roster.refresh === 'function'
+            ? this.runtime.roster.refresh()
+            : null;
+          const owned = new Map((account && account.accountCharacters || [])
+            .filter(row => row && row.name)
+            .map(row => [String(row.name), row]));
+          if (!account || account.accountStateAvailable !== true
+              || fixedQuartet.some(name => !owned.has(name))
+              || fixedQuartet.some(name => {
+                const expected = name === 'My_Merchant' ? 'merchant'
+                  : name === 'My_Rogue' ? 'rogue' : 'ranger';
+                const actual = cleanText(owned.get(name).ctype || '', 40).toLowerCase();
+                return !!actual && actual !== expected;
+              })) {
+            this.strategy.recordTraining(false);
+            return this.lastDecision = {
+              at: new Date().toISOString(), state: 'BLOCKED',
+              reason: 'H44_VISIBLE_QUARTET_ACCOUNT_UNVERIFIED',
+              desiredCharacterNames: fixedQuartet
+            };
+          }
+          plan = this._alignPlanToDesired(plan, fixedQuartet, 'My_Merchant');
+          plan.status = 'SELECTION_READY';
+          plan.taskType = effectiveTaskType;
+          plan.selectionPolicy = 'H44_FIXED_VISIBLE_QUARTET';
+        }
         this.lastPlan = clone(plan);
         if (!plan || plan.status !== 'SELECTION_READY') {
           this.strategy.recordTraining(false);
@@ -1159,7 +1196,41 @@
         const merchantPeerSelection = this._merchantSelectionPeer(merchantName);
         let nextDesired;
         let selectionSource;
-        if (merchantPeerSelection) {
+        if (fixedQuartet) {
+          // Only Merchant is the authoritative party coordinator. Followers
+          // wait for an aligned Merchant heartbeat rather than accepting an
+          // old persisted selection containing My_Priest.
+          const merchantAligned = merchantPeerSelection
+            && merchantPeerSelection.desired.join('|') === fixedQuartet.join('|');
+          if (localName !== merchantName && !merchantAligned) {
+            this._disarmLifecycle('H44_WAITING_FIXED_MERCHANT_AUTHORITY');
+            this.strategy.recordTraining(false);
+            return this.lastDecision = {
+              at: new Date().toISOString(), state: 'WARMING',
+              reason: 'H44_WAITING_MERCHANT_FIXED_QUARTET',
+              desiredCharacterNames: fixedQuartet,
+              merchantName,
+              onlineCharacterNames: readiness.online
+            };
+          }
+          nextDesired = fixedQuartet.slice();
+          plan = this._alignPlanToDesired(
+            plan, nextDesired, merchantName,
+            merchantAligned ? merchantPeerSelection.peer.fullAutonomyLeaderName : plan.leaderName
+          );
+          quartet = this._desiredQuartet(plan);
+          this.desiredCharacterNames = nextDesired.slice();
+          this.desiredSource = localName === merchantName ? 'merchant-authority' : 'merchant-peer';
+          this.selectionCandidateNames = [];
+          this.selectionCandidateSinceMs = null;
+          if (localName === merchantName) {
+            if (nextDesired.join('|') !== previousDesired.join('|')
+                || !Number.isFinite(this.desiredChangedAtMs)) this.desiredChangedAtMs = Date.now();
+          } else {
+            this.desiredChangedAtMs = merchantPeerSelection.authority.changedAtMs;
+          }
+          selectionSource = 'h44-visible-quartet';
+        } else if (merchantPeerSelection) {
           nextDesired = merchantPeerSelection.desired.slice();
           plan = this._alignPlanToDesired(
             plan,
@@ -1215,7 +1286,7 @@
         // when the preferred replacement quartet cannot be rotated. Never
         // evict current browser characters just to satisfy task optimization.
         // This alters selection only; H19 safety gates remain authoritative.
-        if (requiresRotation && localName === String(merchantName || '')
+        if (requiresRotation && !fixedQuartet && localName === String(merchantName || '')
             && this.runtime.lifecycle
             && typeof this.runtime.lifecycle.status === 'function') {
             // H41: an already-live, valid 3+1 quartet takes precedence over
@@ -1264,7 +1335,7 @@
           };
         }
 
-        if (requiresRotation && this.runtime.lifecycle
+        if (requiresRotation && !fixedQuartet && this.runtime.lifecycle
             && typeof this.runtime.lifecycle.characterRotationReadiness === 'function') {
           const rotationReadiness = this.runtime.lifecycle.characterRotationReadiness(nextDesired);
           if (!rotationReadiness || rotationReadiness.ready !== true) {
