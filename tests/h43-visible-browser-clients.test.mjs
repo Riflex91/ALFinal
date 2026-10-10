@@ -161,7 +161,7 @@ test('H45 auto-arm waits for connected visible Merchant and retries on heartbeat
   const f=fixture('My_Merchant',{connected:false});
   assert.equal(f.mode.autoEnableIfReady().accepted,false);
   assert.equal(f.mode.enabled(),false);
-  f.top.character={name:'My_Merchant'};
+  f.root.character={name:'My_Merchant'};
   assert.equal(f.mode.autoEnableIfReady().accepted,true);
   assert.equal(f.mode.enabled(),true);
   assert.equal(f.mode.autoEnableIfReady().reason,'H45_ALREADY_ARMED');
