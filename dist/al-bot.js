@@ -1,4 +1,4 @@
-/* AL Bot 0.26.80-h26 | generated file | do not edit dist directly */
+/* AL Bot 0.26.81-h26 | generated file | do not edit dist directly */
 (function (root) {
   'use strict';
 
@@ -13897,6 +13897,15 @@
         return { state: 'BLOCKED', reason: 'FULL_AUTONOMY_RUNTIME_ACTION_BLOCKED' };
       }
 
+      // H38: coordinated server changes temporarily split server-scoped
+      // player lists. Never start H19 rotation while that is happening.
+      if (this.runtime.serverHop && this.runtime.serverHop.handoffActive()) {
+        return this.lastDecision = {
+          at: new Date().toISOString(), state: 'WARMING',
+          reason: 'H38_COORDINATED_SERVER_HOP_IN_PROGRESS'
+        };
+      }
+
       try {
         const initialReadiness = this._profileReadiness();
         const local = this._local();
@@ -16301,8 +16310,8 @@
 
       this.config = {
         decisionIntervalMs: Math.max(500, Math.min(5000, Number(options.decisionIntervalMs) || 1000)),
-        minHoldMs: Math.max(5000, Math.min(300000, Number(options.minHoldMs) || 45000)),
-        switchCooldownMs: Math.max(5000, Math.min(300000, Number(options.switchCooldownMs) || 30000)),
+        minHoldMs: Math.max(5000, Math.min(300000, Number(options.minHoldMs) || 120000)),
+        switchCooldownMs: Math.max(5000, Math.min(300000, Number(options.switchCooldownMs) || 90000)),
         pingPongWindowMs: Math.max(10000, Math.min(600000, Number(options.pingPongWindowMs) || 120000)),
         switchImprovementRatio: Math.max(0.05, Math.min(1, Number(options.switchImprovementRatio) || 0.18)),
         competitionRadius: Math.max(80, Math.min(1000, Number(options.competitionRadius) || 260)),
@@ -16317,9 +16326,10 @@
         groupHardRegroupDistance: Math.max(150, Math.min(350, Number(options.groupHardRegroupDistance) || 195)),
         groupRetargetDistance: Math.max(20, Math.min(100, Number(options.groupRetargetDistance) || 75)),
         groupRetargetMs: Math.max(700, Math.min(5000, Number(options.groupRetargetMs) || 2500)),
-        groupFollowStep: Math.max(20, Math.min(100, Number(options.groupFollowStep) || 70)),
+        groupFollowStep: Math.max(20, Math.min(100, Number(options.groupFollowStep) || 100)),
         groupLeaderRecoveryMaxStep: Math.max(25, Math.min(90, Number(options.groupLeaderRecoveryMaxStep) || 60)),
         groupLeaderRecoveryMinImprovement: Math.max(3, Math.min(40, Number(options.groupLeaderRecoveryMinImprovement) || 6)),
+        groupTravelCohesionGraceMs: Math.max(2000, Math.min(20000, Number(options.groupTravelCohesionGraceMs) || 9000)),
         groupMovementRetryMs: Math.max(500, Math.min(10000, Number(options.groupMovementRetryMs) || 2000)),
         groupModerateRegroupGraceMs: Math.max(1000, Math.min(10000, Number(options.groupModerateRegroupGraceMs) || 2500))
       };
@@ -17706,6 +17716,7 @@
       // here creates a 70..150 dead zone where the leader waits although no new
       // recovery waypoint is allowed to start.
       if (group.maxPairDistance <= this.config.groupRegroupTriggerDistance) {
+        this.groupTravelHardGapSinceMs = null;
         if (movement && movement.activeOrder
             && String(movement.activeOrder.owner || '') === 'farm-intelligence-h9-leader-regroup') {
           try { this.movement.cancel('H9_GROUP_COHESION_RECOVERED'); } catch (_) {}
@@ -17741,9 +17752,29 @@
           destination: clone(activeOrder.destination || null)
         };
       }
+      // H38: one noisy group-distance sample must not repeatedly cancel a
+      // long-range farm trip. Give followers a bounded chance to catch up.
+      // Extremely large gaps still stop immediately, and active combat is
+      // already handled above by the safety branch.
       if (activeOrder && String(activeOrder.owner || '') === 'farm-intelligence-h9'
           && group.maxPairDistance > this.config.groupHardRegroupDistance) {
+        const now = this.now();
+        if (this.groupTravelHardGapSinceMs == null) this.groupTravelHardGapSinceMs = now;
+        const elapsed = Math.max(0, now - this.groupTravelHardGapSinceMs);
+        if (group.maxPairDistance < this.config.groupHardRegroupDistance * 2
+            && elapsed < this.config.groupTravelCohesionGraceMs) {
+          this.metrics.groupLeaderHolds += 1;
+          return {
+            state: 'TRAVELLING',
+            reason: 'H38_GROUP_TRAVEL_COHESION_GRACE',
+            leaderName: group.leaderName,
+            maxPairDistance: group.maxPairDistance,
+            remainingGraceMs: this.config.groupTravelCohesionGraceMs - elapsed
+          };
+        }
         try { this.movement.cancel('H9_GROUP_HARD_COHESION_RECOVERY'); } catch (_) {}
+      } else {
+        this.groupTravelHardGapSinceMs = null;
       }
 
       this._stopOwnedFarming('H9_WAITING_FOR_TEAM_COHESION');
@@ -17968,6 +17999,279 @@
   }
 
   ns.FarmIntelligenceController = FarmIntelligenceController;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+
+(function (root) {
+  'use strict';
+  const ns = root.__ALBOT_INTERNALS__;
+  if (!ns || !ns.helpers) throw new Error('H38_SERVER_HOP_NAMESPACE_MISSING');
+  const clone = ns.helpers.clone;
+  const clean = ns.helpers.cleanText;
+  const PREFIX = 'albot:h38:server-hop:v1:';
+  const FARMER = new Set(['ranger','rogue','mage','priest','warrior','paladin']);
+  const safeNames = names => [...new Set((Array.isArray(names) ? names : []).map(x => clean(x, 120)).filter(Boolean))].sort();
+
+  class ServerHopController {
+    constructor(options = {}) {
+      this.runtime = options.runtime;
+      this.root = options.root || root;
+      this.storage = options.storage;
+      this.game = options.game;
+      this.moduleActive = false;
+      this.config = {
+        enabled: options.enabled !== false,
+        observerMs: 1500,
+        competitionThreshold: Math.max(2, Number(options.competitionThreshold) || 3),
+        sparseSpawnThreshold: Math.max(1, Number(options.sparseSpawnThreshold) || 2),
+        congestionHoldMs: Math.max(30000, Number(options.congestionHoldMs) || 120000),
+        hopCooldownMs: Math.max(900000, Number(options.hopCooldownMs) || 5400000),
+        peerMaxAgeMs: 7000,
+        proposalTimeoutMs: 25000,
+        commitDelayMs: 9000,
+        // Only the two documented, non-PVP EU worlds. No speculative PVP,
+        // cross-region or unverified realm navigation.
+        targetServers: [{ region: 'EU', identifier: 'I' }, { region: 'EU', identifier: 'II' }]
+      };
+      this.lastDecision = null;
+      this.congestedSinceMs = null;
+      this.metrics = { congestionObservations: 0, proposals: 0, prepared: 0, commits: 0, navigations: 0, blocked: 0 };
+    }
+
+    _server() {
+      try {
+        const snap = this.game.snapshot();
+        return snap && snap.server && snap.server.region && snap.server.identifier
+          ? { region: String(snap.server.region), identifier: String(snap.server.identifier) } : null;
+      } catch (_) { return null; }
+    }
+    _read(key) {
+      if (!this.storage || !this.storage.sharedAvailable || !this.storage.sharedAvailable()) return null;
+      try { return JSON.parse(this.storage.getShared(PREFIX + key) || 'null'); } catch (_) { return null; }
+    }
+    _write(key, value) {
+      return !!(this.storage && this.storage.sharedAvailable && this.storage.sharedAvailable()
+        && this.storage.setShared(PREFIX + key, JSON.stringify(value)) === true);
+    }
+    _character() {
+      try { return this.game.snapshot().character || null; } catch (_) { return null; }
+    }
+    _full() {
+      try { return this.runtime.fullAutonomy.status(); } catch (_) { return null; }
+    }
+    _desired() {
+      const full = this._full();
+      return safeNames(full && full.desiredCharacterNames);
+    }
+    _readiness() {
+      const character = this._character();
+      const full = this._full();
+      const name = clean(character && character.name || '', 120);
+      const server = this._server();
+      const s = this.runtime;
+      const lifecycle = s.lifecycle && s.lifecycle.status();
+      const combat = s.combat && s.combat.status();
+      const farming = s.farming && s.farming.status();
+      const movement = s.movement && s.movement.status();
+      const updater = s.safeUpdater && s.safeUpdater.status();
+      const desired = this._desired();
+      const roster = s.roster && s.roster.refresh();
+      const online = safeNames(roster && roster.onlineCharacterNames);
+      const safe = this.config.enabled && this.moduleActive && s.running === true
+        && s.stopLatch && !s.stopLatch.status().latched
+        && server && name && character && !character.rip
+        && full && full.enabled === true && desired.length === 4
+        && desired.includes(name) && desired.every(n => online.includes(n))
+        && lifecycle && !lifecycle.suspended && !lifecycle.currentAction
+        && Number(lifecycle.metrics && lifecycle.metrics.actionsUnknown || 0) === 0
+        && combat && !combat.pendingAttack && !combat.suspended
+        && farming && !farming.pending && !farming.suspended
+        && movement && !movement.active
+        && updater && !updater.busy
+        && !(this.game.snapshot().target);
+      const fn = this._changeServerFunction();
+      return {
+        atMs: Date.now(), name, ctype: String(character && character.ctype || ''),
+        server, desired, safe: !!safe && !!fn, switchApiAvailable: !!fn
+      };
+    }
+    _changeServerFunction() {
+      for (const r of [this.root, this.root && this.root.parent]) {
+        try { if (r && typeof r.change_server === 'function') return r.change_server.bind(r); } catch (_) {}
+      }
+      return null;
+    }
+    _target(server) {
+      if (!server || server.region !== 'EU') return null;
+      const options = this.config.targetServers.filter(s => s.region === server.region
+        && s.identifier !== server.identifier && !/PVP|HARDCORE/i.test(s.identifier));
+      return options[0] || null;
+    }
+    _congestion(ready) {
+      if (!FARMER.has(ready.ctype) || !ready.safe) return false;
+      const full = this._full();
+      if (!full || !full.lastPlan || full.lastPlan.leaderName !== ready.name) return false;
+      const h9 = this.runtime.farmIntelligence && this.runtime.farmIntelligence.status();
+      const row = h9 && h9.lastPlan && h9.lastPlan.selected;
+      return !!(row && Number(row.competitors) >= this.config.competitionThreshold
+        && Number(row.visibleSafeCount) <= this.config.sparseSpawnThreshold);
+    }
+    _reportCongestion(ready, now) {
+      if (this._congestion(ready)) {
+        this.metrics.congestionObservations++;
+        if (this.congestedSinceMs == null) this.congestedSinceMs = now;
+        this._write('congestion', {
+          reporter: ready.name, server: ready.server,
+          startedAtMs: this.congestedSinceMs, observedAtMs: now,
+          desired: ready.desired
+        });
+      } else {
+        this.congestedSinceMs = null;
+        // Clear stale congestion: a leader that sees good spawns must veto hop.
+        const state = this._read('congestion');
+        if (state && state.reporter === ready.name) this._write('congestion', null);
+      }
+    }
+    handoffActive() {
+      const ticket = this._read('proposal');
+      if (!ticket || ticket.schemaVersion !== 1 || ticket.state !== 'COMMITTED'
+          || Date.now() > ticket.expiresAtMs || !ticket.target) return false;
+      const server = this._server();
+      if (!server || !ticket.source) return false;
+      const involved = (server.region === ticket.source.region && server.identifier === ticket.source.identifier)
+        || (server.region === ticket.target.region && server.identifier === ticket.target.identifier);
+      if (!involved) return false;
+      // Suppress H19's roster recovery while worlds diverge. LocalStorage
+      // survives navigation and this check is independent of peer combat state.
+      return !safeNames(ticket.desired).every(name => {
+        const peer = this._read('peer:' + name);
+        return peer && peer.server
+          && peer.server.region === ticket.target.region
+          && peer.server.identifier === ticket.target.identifier
+          && Date.now() - peer.atMs >= 0 && Date.now() - peer.atMs < 12000;
+      });
+    }
+    _lastHop() { return this._read('last-hop'); }
+    _freshPeer(name, ready, now) {
+      const peer = this._read('peer:' + name);
+      return !!(peer && peer.name === name && peer.safe === true
+        && now - peer.atMs >= 0 && now - peer.atMs <= this.config.peerMaxAgeMs
+        && peer.server && peer.server.region === ready.server.region
+        && peer.server.identifier === ready.server.identifier
+        && JSON.stringify(peer.desired) === JSON.stringify(ready.desired));
+    }
+    _isTeamReady(ready, now) {
+      return ready.desired.length === 4 && ready.desired.every(name => this._freshPeer(name, ready, now));
+    }
+    _decision(state, reason, extra = {}) {
+      this.lastDecision = { at: new Date().toISOString(), state, reason, ...extra };
+      if (state === 'BLOCKED') this.metrics.blocked++;
+      return this.lastDecision;
+    }
+    tick() {
+      if (!this.moduleActive || !this.config.enabled) return this._decision('IDLE', 'H38_DISABLED');
+      const now = Date.now(), ready = this._readiness();
+      if (!ready.name || !ready.server) return this._decision('WAITING', 'H38_NO_CHARACTER_OR_SERVER');
+      if (!this._write('peer:' + ready.name, ready)) return this._decision('WAITING', 'H38_SHARED_STORAGE_UNAVAILABLE');
+
+      const pending = this._read('proposal');
+      // Never repeat an already-successful navigation after reloading.
+      if (pending && pending.schemaVersion === 1 && pending.state === 'COMMITTED'
+          && pending.expiresAtMs > now && pending.desired.includes(ready.name)
+          && pending.target && pending.source
+          && pending.source.region === ready.server.region
+          && pending.source.identifier === ready.server.identifier) {
+        if (!ready.safe) return this._decision('BLOCKED', 'H38_COMMIT_SAFETY_GATE');
+        if (now < pending.switchAtMs) return this._decision('PREPARED', 'H38_COMMIT_WAITING', { switchAtMs: pending.switchAtMs });
+        const marker = this._read('executed:' + ready.name);
+        if (marker && marker.id === pending.id) return this._decision('WAITING', 'H38_ALREADY_DISPATCHED');
+        if (!this._write('executed:' + ready.name, { id: pending.id, atMs: now })) return this._decision('BLOCKED', 'H38_DURABLE_EXECUTION_MARKER_FAILED');
+        const change = this._changeServerFunction();
+        if (!change) return this._decision('BLOCKED', 'H38_CHANGE_SERVER_API_MISSING');
+        this.metrics.navigations++;
+        try {
+          change(pending.target.region, pending.target.identifier);
+          return this._decision('SWITCHING', 'H38_SERVER_CHANGE_DISPATCHED', { target: pending.target });
+        } catch (error) {
+          return this._decision('BLOCKED', 'H38_SERVER_CHANGE_THROW', { error: clean(error && error.message || error, 200) });
+        }
+      }
+      if (!ready.safe) return this._decision('WAITING', 'H38_LOCAL_NOT_READY');
+
+      const c = this._character();
+      if (FARMER.has(String(c.ctype))) this._reportCongestion(ready, now);
+
+      if (pending && pending.schemaVersion === 1 && pending.state === 'PROPOSED'
+          && pending.expiresAtMs > now && pending.desired.includes(ready.name)
+          && pending.source && pending.source.region === ready.server.region
+          && pending.source.identifier === ready.server.identifier) {
+        if (JSON.stringify(pending.desired) !== JSON.stringify(ready.desired))
+          return this._decision('BLOCKED', 'H38_PROPOSAL_ROSTER_CHANGED');
+        this._write('ack:' + ready.name, { id: pending.id, name: ready.name, atMs: now });
+        this.metrics.prepared++;
+        if (String(c.ctype) === 'merchant') {
+          const complete = this._isTeamReady(ready, now)
+            && ready.desired.every(name => {
+              const ack = this._read('ack:' + name);
+              return ack && ack.id === pending.id && now - ack.atMs <= this.config.peerMaxAgeMs;
+            });
+          if (complete) {
+            const committed = { ...pending, state: 'COMMITTED', switchAtMs: now + this.config.commitDelayMs, expiresAtMs: now + 180000 };
+            if (this._write('proposal', committed)
+                && this._write('last-hop', { atMs: now, source: ready.server, target: pending.target })) {
+              this.metrics.commits++;
+              return this._decision('COMMITTED', 'H38_QUORUM_CONFIRMED', { target: pending.target });
+            }
+          }
+        }
+        return this._decision('PREPARED', 'H38_WAITING_FOR_ALL_FOUR');
+      }
+
+      if (String(c.ctype) !== 'merchant') return this._decision('IDLE', 'H38_MERCHANT_COORDINATES');
+      if (pending && pending.expiresAtMs > now) return this._decision('WAITING', 'H38_EXISTING_PROPOSAL');
+      const report = this._read('congestion');
+      if (!report || !report.server || report.server.region !== ready.server.region
+          || report.server.identifier !== ready.server.identifier
+          || now - report.observedAtMs > this.config.peerMaxAgeMs
+          || now - report.startedAtMs < this.config.congestionHoldMs
+          || !ready.desired.includes(report.reporter))
+        return this._decision('IDLE', 'H38_NO_SUSTAINED_CONGESTION');
+      const last = this._lastHop();
+      if (last && now - last.atMs < this.config.hopCooldownMs)
+        return this._decision('WAITING', 'H38_HOP_COOLDOWN');
+      const target = this._target(ready.server);
+      if (!target) return this._decision('BLOCKED', 'H38_NO_VERIFIED_PVE_ALTERNATIVE');
+      if (!this._isTeamReady(ready, now)) return this._decision('WAITING', 'H38_TEAM_NOT_READY');
+      const ticket = {
+        schemaVersion: 1, id: ready.name + ':' + now,
+        state: 'PROPOSED', source: ready.server, target,
+        desired: ready.desired, createdAtMs: now,
+        expiresAtMs: now + this.config.proposalTimeoutMs
+      };
+      if (!this._write('proposal', ticket)) return this._decision('BLOCKED', 'H38_PROPOSAL_WRITE_FAILED');
+      this.metrics.proposals++;
+      return this._decision('PROPOSED', 'H38_CROWDED_SPAWN_HOP_PROPOSED', { target });
+    }
+
+    start(context = {}) {
+      this.moduleActive = true;
+      if (context.scope && typeof context.scope.interval === 'function')
+        context.scope.interval('server-hop-observer', () => this.tick(), this.config.observerMs);
+      return this.status();
+    }
+    stop() { this.moduleActive = false; return this.status(); }
+    configure(options = {}) {
+      if (options.enabled != null) this.config.enabled = options.enabled === true;
+      return this.status();
+    }
+    status() {
+      return { moduleActive: this.moduleActive, enabled: this.config.enabled,
+        lastDecision: clone(this.lastDecision), congestionSinceMs: this.congestedSinceMs,
+        config: clone(this.config), metrics: clone(this.metrics) };
+    }
+  }
+
+  ns.ServerHopController = ServerHopController;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
 
 
@@ -28706,6 +29010,7 @@ class MerchantProductionPlanner {
       this.lastWishlistAtMs = 0;
       this.lastGiveawayProbeAtMs = 0;
       this.materialFarmRequest = null;
+      this.lastMaterialDemandCheckAtMs = 0;
 
       this.config = {
         tickMs: Math.max(500, Math.min(5000, Number(options.tickMs) || 1000)),
@@ -30205,6 +30510,12 @@ class MerchantProductionPlanner {
           || !this.exchangeCraft || typeof this.exchangeCraft.productionGraph !== 'function') return null;
       const now = Date.now();
       const prior = this.materialFarmRequest;
+      // Only one global material demand per server: never replace an active
+      // rod request with a pickaxe request on the next observer tick.
+      if (prior && now < prior.expiresAtMs && prior.tool !== tool) {
+        return { state: 'WAITING', reason: 'MERCHANT_TOOL_OTHER_MATERIAL_FARM_PENDING',
+          material: prior.material, monsterType: prior.monsterType };
+      }
       if (prior && prior.tool === tool) {
         // A bounded request is not renewed indefinitely. When it expires,
         // ordinary guarded acquisition may be tried again.
@@ -30425,9 +30736,52 @@ class MerchantProductionPlanner {
       return { state: 'IDLE', reason: task.reason || 'MERCHANT_AUTONOMY_NO_ACTION' };
     }
 
+    _maintainToolMaterialDemand() {
+      // Planning is read-only; publishing one bounded material demand to
+      // shared storage does not mutate economy or steal the H17 action owner.
+      // Consequently a busy Exchange no longer starves tool acquisition.
+      if (!this.moduleActive || !this.autoManage || this.suspendedReason || !this._isMerchant()) return null;
+      const now = Date.now();
+      if (now - this.lastMaterialDemandCheckAtMs < 10000) return null;
+      this.lastMaterialDemandCheckAtMs = now;
+
+      const previous = this.materialFarmRequest;
+      if (previous && now < previous.expiresAtMs) {
+        const quantity = this._inventoryCount(previous.material);
+        if (quantity == null || quantity < previous.quantity) {
+          return { state: 'WAITING', reason: 'MERCHANT_TOOL_MATERIAL_FARM_PENDING',
+            material: previous.material, monsterType: previous.monsterType };
+        }
+        // The Merchant owns this key: clear only the matching payload to avoid
+        // deleting a newer or foreign request that arrived in the meantime.
+        const key = this._materialFarmKey();
+        if (key && this.storage && typeof this.storage.getShared === 'function'
+            && typeof this.storage.removeShared === 'function') {
+          try {
+            const current = JSON.parse(this.storage.getShared(key) || 'null');
+            if (current && current.createdAtMs === previous.createdAtMs
+                && current.material === previous.material
+                && current.merchant === previous.merchant) this.storage.removeShared(key);
+          } catch (_) {}
+        }
+        this.materialFarmRequest = null;
+      }
+
+      for (const tool of ['rod', 'pickaxe']) {
+        const skill = tool === 'rod' ? 'fishing' : 'mining';
+        if (!this._skillEnabled(skill)) continue;
+        if (this._inventoryRow(tool) || this._equippedMainhand()
+            && this._equippedMainhand().name === tool) continue;
+        const demand = this._requestToolMaterialFarm(tool);
+        if (demand) return demand;
+      }
+      return null;
+    }
+
     _maintenanceTick() {
       this._observePending();
       this._childBusy();
+      this._maintainToolMaterialDemand();
       if (this.merritSession) {
         const parcels = this._inventoryCount('marketparcel');
         if (parcels != null && finite(this.merritSession.baselineParcels) != null
@@ -34161,7 +34515,7 @@ class MerchantProductionPlanner {
 
   class ALBotRuntime {
     constructor(options = {}) {
-      this.version = options.version || '0.26.80-h26';
+      this.version = options.version || '0.26.81-h26';
       this.root = options.root || root;
       this.bootCount = Math.max(1, Number(options.bootCount) || 1);
       this.replacedPrevious = options.replacedPrevious === true;
@@ -34676,6 +35030,9 @@ class MerchantProductionPlanner {
         runtime: this,
         strategy: this.accountStrategy
       });
+      this.serverHop = new ns.ServerHopController({
+        runtime: this, root: this.root, storage: this.storage, game: this.game
+      });
       this.safeUpdater = new ns.SafeAutoUpdater({
         root: this.root,
         logger: this.logger,
@@ -35023,6 +35380,15 @@ class MerchantProductionPlanner {
         start: context => this.fullAutonomy.start(context),
         stop: reason => this.fullAutonomy.stop(reason),
         status: () => this.fullAutonomy.status()
+      });
+
+      this.modules.register({
+        id: 'server-hop',
+        title: 'H38 Coordinated Crowded-Spawn Server Hop',
+        version: '0.38.0',
+        start: context => this.serverHop.start(context),
+        stop: () => this.serverHop.stop(),
+        status: () => this.serverHop.status()
       });
 
       this.modules.register({
@@ -40147,6 +40513,7 @@ class MerchantProductionPlanner {
         combat: this.combat.status(),
         farming: this.farming.status(),
         farmIntelligence: this.farmIntelligence.status(),
+        serverHop: this.serverHop.status(),
         inventory: this.inventory.status(),
         merchant: this.merchant.status(),
         bank: this.bank.status(),
@@ -40195,6 +40562,7 @@ class MerchantProductionPlanner {
         combat: this.combat.status(),
         farming: this.farming.status(),
         farmIntelligence: this.farmIntelligence.status(),
+        serverHop: this.serverHop.status(),
         inventory: this.inventory.status(),
         merchant: this.merchant.status(),
         bank: this.bank.status(),
@@ -42557,7 +42925,7 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.80-h26',
+    version: '0.26.81-h26',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -42779,6 +43147,12 @@ ${lkg ? `<div class="albot-grid" style="margin-top:6px">
       },
       stop: reason => runtime.fullAutonomy.stopAutonomy(reason || 'API_FULL_AUTONOMY_STOP'),
       tick: () => runtime.fullAutonomy.tick()
+    },
+
+    serverHop: {
+      status: () => runtime.serverHop.status(),
+      configure: options => runtime.serverHop.configure(options || {}),
+      tick: () => runtime.serverHop.tick()
     },
 
     updater: {
