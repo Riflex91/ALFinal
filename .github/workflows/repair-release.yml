@@ -7,6 +7,7 @@ on:
       - feature/h38-farm-cohesion-materials-server-hop-20261010
       - feature/h39-eu-us-pve-server-catalog-20261010
       - feature/h41-ssd-only-state-party-gear-20261010
+      - fix/h42-auto-rejoin-split-party-20261010
       - main
 
 permissions:
