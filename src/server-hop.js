@@ -327,7 +327,7 @@
       const normalHop = this._read('proposal');
       if (normalHop && normalHop.state === 'COMMITTED'
           && now < normalHop.expiresAtMs)
-        return this._decision('WAITING', 'H42_EXISTING_H38_MIGRATION');
+        return null; // Hand control to the existing H38 commit handler.
 
       const online = safeNames(ready.online);
       if (online.length !== 4 || !online.includes(ready.name)) return null;
