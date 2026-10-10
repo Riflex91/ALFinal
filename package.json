@@ -1,6 +1,6 @@
 {
   "name": "al-bot",
-  "version": "0.26.86",
+  "version": "0.26.87",
   "private": true,
   "type": "module",
   "scripts": {
