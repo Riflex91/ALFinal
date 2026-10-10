@@ -1286,8 +1286,8 @@
         // when the preferred replacement quartet cannot be rotated. Never
         // evict current browser characters just to satisfy task optimization.
         // This alters selection only; H19 safety gates remain authoritative.
-        if (requiresRotation && !fixedQuartet && localName === String(merchantName || '')
-            && this.runtime.lifecycle
+        if (requiresRotation && localName === String(merchantName || '')
+            && !fixedQuartet && this.runtime.lifecycle
             && typeof this.runtime.lifecycle.status === 'function') {
             // H41: an already-live, valid 3+1 quartet takes precedence over
             // replacing browser windows. The H37 implementation only ran
