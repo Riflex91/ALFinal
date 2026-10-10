@@ -70,6 +70,7 @@ test('H44 Merchant pins exactly both Rangers and Rogue despite optimizer preferr
   assert.deepEqual(normalized(c.desiredCharacterNames),names);
   assert.deepEqual(normalized(c.lastPlan.selected.memberNames),['My_Ranger1','My_Ranger2','My_Rogue']);
   assert.equal(c.lastPlan.selectionPolicy,'H44_FIXED_VISIBLE_QUARTET');
+  assert.equal(c.lastPlan.progression.selectedCharacterName,null);
   assert.equal(c.desiredSource,'merchant-authority');
   assert.deepEqual(created.find(e=>e.kind==='strategy').args.allowedCharacterNames,names);
   assert.deepEqual(created.find(e=>e.kind==='partyCoordinator').desired,names);
