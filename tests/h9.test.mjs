@@ -573,7 +573,7 @@ test('H9 leader cancels farm travel on hard separation so a lagging follower can
     ctype: 'warrior',
     partyOwnedMembers: [
       { name: 'My_Warrior', ctype: 'warrior', damageType: 'physical', map: 'main', x: 0, y: 0 },
-      { name: 'My_Ranger1', ctype: 'ranger', damageType: 'physical', map: 'main', x: 300, y: 0 }
+      { name: 'My_Ranger1', ctype: 'ranger', damageType: 'physical', map: 'main', x: 450, y: 0 }
     ]
   });
   f.setActiveMovementOwner('farm-intelligence-h9');
@@ -792,9 +792,9 @@ test('H9 control center and one-click live suite are wired', () => {
   assert.match(runtime, /visibleSafe\.length > 0/);
   assert.match(runtime, /h9-adaptive-decisions/);
   assert.match(runtime, /timeoutMs: 85000/);
-  assert.match(entry, /0\.26\.80-h26/);
+  assert.match(entry, /0\.26\.81-h26/);
   assert.match(entry, /farmIntelligence:/);
-  assert.match(build, /const runtimeVersion = '0\.26\.80-h26'/);
+  assert.match(build, /const runtimeVersion = '0\.26\.81-h26'/);
 });
 
 test('H9 game adapter normalizes live farm data for scoring', () => {

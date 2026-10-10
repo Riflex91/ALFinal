@@ -76,7 +76,7 @@
 
   const runtime = new ns.ALBotRuntime({
     root,
-    version: '0.26.80-h26',
+    version: '0.26.81-h26',
     bootCount,
     replacedPrevious: !!previous
   });
@@ -298,6 +298,12 @@
       },
       stop: reason => runtime.fullAutonomy.stopAutonomy(reason || 'API_FULL_AUTONOMY_STOP'),
       tick: () => runtime.fullAutonomy.tick()
+    },
+
+    serverHop: {
+      status: () => runtime.serverHop.status(),
+      configure: options => runtime.serverHop.configure(options || {}),
+      tick: () => runtime.serverHop.tick()
     },
 
     updater: {

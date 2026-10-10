@@ -59,8 +59,8 @@
 
       this.config = {
         decisionIntervalMs: Math.max(500, Math.min(5000, Number(options.decisionIntervalMs) || 1000)),
-        minHoldMs: Math.max(5000, Math.min(300000, Number(options.minHoldMs) || 45000)),
-        switchCooldownMs: Math.max(5000, Math.min(300000, Number(options.switchCooldownMs) || 30000)),
+        minHoldMs: Math.max(5000, Math.min(300000, Number(options.minHoldMs) || 120000)),
+        switchCooldownMs: Math.max(5000, Math.min(300000, Number(options.switchCooldownMs) || 90000)),
         pingPongWindowMs: Math.max(10000, Math.min(600000, Number(options.pingPongWindowMs) || 120000)),
         switchImprovementRatio: Math.max(0.05, Math.min(1, Number(options.switchImprovementRatio) || 0.18)),
         competitionRadius: Math.max(80, Math.min(1000, Number(options.competitionRadius) || 260)),
@@ -75,9 +75,10 @@
         groupHardRegroupDistance: Math.max(150, Math.min(350, Number(options.groupHardRegroupDistance) || 195)),
         groupRetargetDistance: Math.max(20, Math.min(100, Number(options.groupRetargetDistance) || 75)),
         groupRetargetMs: Math.max(700, Math.min(5000, Number(options.groupRetargetMs) || 2500)),
-        groupFollowStep: Math.max(20, Math.min(100, Number(options.groupFollowStep) || 70)),
+        groupFollowStep: Math.max(20, Math.min(100, Number(options.groupFollowStep) || 100)),
         groupLeaderRecoveryMaxStep: Math.max(25, Math.min(90, Number(options.groupLeaderRecoveryMaxStep) || 60)),
         groupLeaderRecoveryMinImprovement: Math.max(3, Math.min(40, Number(options.groupLeaderRecoveryMinImprovement) || 6)),
+        groupTravelCohesionGraceMs: Math.max(2000, Math.min(20000, Number(options.groupTravelCohesionGraceMs) || 9000)),
         groupMovementRetryMs: Math.max(500, Math.min(10000, Number(options.groupMovementRetryMs) || 2000)),
         groupModerateRegroupGraceMs: Math.max(1000, Math.min(10000, Number(options.groupModerateRegroupGraceMs) || 2500))
       };
@@ -1464,6 +1465,7 @@
       // here creates a 70..150 dead zone where the leader waits although no new
       // recovery waypoint is allowed to start.
       if (group.maxPairDistance <= this.config.groupRegroupTriggerDistance) {
+        this.groupTravelHardGapSinceMs = null;
         if (movement && movement.activeOrder
             && String(movement.activeOrder.owner || '') === 'farm-intelligence-h9-leader-regroup') {
           try { this.movement.cancel('H9_GROUP_COHESION_RECOVERED'); } catch (_) {}
@@ -1499,9 +1501,29 @@
           destination: clone(activeOrder.destination || null)
         };
       }
+      // H38: one noisy group-distance sample must not repeatedly cancel a
+      // long-range farm trip. Give followers a bounded chance to catch up.
+      // Extremely large gaps still stop immediately, and active combat is
+      // already handled above by the safety branch.
       if (activeOrder && String(activeOrder.owner || '') === 'farm-intelligence-h9'
           && group.maxPairDistance > this.config.groupHardRegroupDistance) {
+        const now = this.now();
+        if (this.groupTravelHardGapSinceMs == null) this.groupTravelHardGapSinceMs = now;
+        const elapsed = Math.max(0, now - this.groupTravelHardGapSinceMs);
+        if (group.maxPairDistance < this.config.groupHardRegroupDistance * 2
+            && elapsed < this.config.groupTravelCohesionGraceMs) {
+          this.metrics.groupLeaderHolds += 1;
+          return {
+            state: 'TRAVELLING',
+            reason: 'H38_GROUP_TRAVEL_COHESION_GRACE',
+            leaderName: group.leaderName,
+            maxPairDistance: group.maxPairDistance,
+            remainingGraceMs: this.config.groupTravelCohesionGraceMs - elapsed
+          };
+        }
         try { this.movement.cancel('H9_GROUP_HARD_COHESION_RECOVERY'); } catch (_) {}
+      } else {
+        this.groupTravelHardGapSinceMs = null;
       }
 
       this._stopOwnedFarming('H9_WAITING_FOR_TEAM_COHESION');
