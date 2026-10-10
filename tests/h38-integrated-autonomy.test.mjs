@@ -23,7 +23,7 @@ const Merchant = controller('merchant-autonomy.js', 'MerchantAutonomyController'
 const Farm = controller('farm-intelligence.js', 'FarmIntelligenceController');
 const names = ['My_Merchant', 'My_Ranger1', 'My_Ranger2', 'My_Rogue'].sort();
 
-function team() {
+function team(options = {}) {
   const db = new Map();
   const storage = {
     sharedAvailable: () => true,
@@ -34,7 +34,7 @@ function team() {
   for (const name of names) {
     const merchant = name === 'My_Merchant';
     const local = { name, ctype: merchant ? 'merchant' : 'ranger', rip: false };
-    const server = { region: 'EU', identifier: 'II' };
+    const server = { region: options.region || 'EU', identifier: options.servers && options.servers[name] || 'II' };
     const calls = [];
     const root = { change_server: (region, identifier) => {
       calls.push({ region, identifier }); server.identifier = identifier;
@@ -53,7 +53,11 @@ function team() {
       farming: { status: () => ({ pending: null, suspended: false }) },
       movement: { status: () => ({ active: false }) },
       safeUpdater: { status: () => ({ busy: false }) },
-      roster: { refresh: () => ({ onlineCharacterNames: names }) },
+      roster: { refresh: () => ({
+        accountStateAvailable: true, onlineStateAvailable: true,
+        accountCharacters: names.map(name => ({ name })),
+        onlineCharacterNames: names
+      }) },
       farmIntelligence: { status: () => ({
         lastPlan: { selected: { competitors: 5, visibleSafeCount: 1 } }
       }) }
@@ -248,4 +252,71 @@ test('H39 stale catalog fails closed and PVP-only live list does not authorize a
   ]});
   h.catalogUpdatedAtMs = Date.now();
   assert.equal(h._target({ region: 'EU', identifier: 'II' }), null);
+});
+
+test('H42: Merchant on EU I automatically rejoins three owned farmers on EU II', () => {
+  const t = team({ servers: { My_Merchant: 'I' } });
+  for (const name of names) t.members[name].hop.tick();
+  const merchant = t.members.My_Merchant.hop;
+  const proposal = merchant.tick();
+  assert.equal(proposal.reason, 'H42_REJOIN_MAJORITY_SELECTED');
+  assert.equal(proposal.target.identifier, 'II');
+  assert.deepEqual([...proposal.movingNames], ['My_Merchant']);
+  assert.equal(merchant.handoffActive(), true);
+  for (const name of names) t.members[name].hop.tick();
+  assert.equal(t.members.My_Merchant.calls.length, 1);
+  assert.equal(t.members.My_Merchant.calls[0].identifier, 'II');
+  for (const name of names) t.members[name].hop.tick();
+  assert.equal(merchant.rejoinActive(), false);
+  assert.equal(t.members.My_Ranger1.calls.length, 0);
+  assert.equal(t.members.My_Ranger2.calls.length, 0);
+  assert.equal(t.members.My_Rogue.calls.length, 0);
+});
+
+test('H42: a single outlying farmer follows the Merchant and two other farmers', () => {
+  const t = team({ servers: { My_Rogue: 'I' } });
+  for (const name of names) t.members[name].hop.tick();
+  const proposal = t.members.My_Merchant.hop.tick();
+  assert.equal(proposal.reason, 'H42_REJOIN_MAJORITY_SELECTED');
+  assert.deepEqual([...proposal.movingNames], ['My_Rogue']);
+  t.members.My_Rogue.hop.tick();
+  assert.deepEqual(t.members.My_Rogue.calls[0], { region:'EU',identifier:'II' });
+  assert.equal(t.members.My_Merchant.calls.length, 0);
+});
+
+test('H42: a two-versus-two split never triggers arbitrary migration', () => {
+  const t = team({ servers: { My_Merchant: 'I', My_Rogue:'I' } });
+  for (const name of names) t.members[name].hop.tick();
+  t.members.My_Merchant.hop.tick();
+  assert.equal(t.db.has('albot:h38:server-hop:v1:rejoin'), false);
+  for (const name of names) assert.equal(t.members[name].calls.length, 0);
+});
+
+test('H42: unknown H19 settlement blocks all split-party recovery', () => {
+  const t = team({ servers: { My_Merchant: 'I' } });
+  t.members.My_Rogue.runtime.lifecycle.status = () => ({
+    suspended:false,currentAction:null,metrics:{actionsUnknown:1}
+  });
+  for (const name of names) t.members[name].hop.tick();
+  t.members.My_Merchant.hop.tick();
+  assert.equal(t.db.has('albot:h38:server-hop:v1:rejoin'), false);
+});
+
+test('H42: never targets PVP, even when it has three online members', () => {
+  const t = team({ servers: { My_Merchant:'II',My_Ranger1:'PVP',My_Ranger2:'PVP',My_Rogue:'PVP' } });
+  for (const name of names) t.members[name].hop.tick();
+  t.members.My_Merchant.hop.tick();
+  assert.equal(t.db.has('albot:h38:server-hop:v1:rejoin'), false);
+});
+
+test('H42: a committed rejoin cannot bypass local H19 suspension', () => {
+  const t = team({ servers: { My_Merchant:'I' } });
+  for (const name of names) t.members[name].hop.tick();
+  t.members.My_Merchant.hop.tick();
+  t.members.My_Merchant.runtime.lifecycle.status = () => ({
+    suspended:true,currentAction:null,metrics:{actionsUnknown:0}
+  });
+  const state = t.members.My_Merchant.hop.tick();
+  assert.equal(state.reason, 'H42_REJOIN_H19_SAFETY_GATE');
+  assert.equal(t.members.My_Merchant.calls.length,0);
 });
