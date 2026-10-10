@@ -379,6 +379,10 @@
         getLocalState: () => {
           let game = null;
           try { game = this.game.snapshot(); } catch (_) {}
+          // H45: when game loading delayed initial activation, each regular
+          // H19 heartbeat offers another safe opportunity to arm the
+          // Merchant's SSD intent. Hidden CODE children never qualify.
+          try { this.visibleClients.autoEnableIfReady(); } catch (_) {}
           return {
             localName: game && game.character ? game.character.name : null,
             running: this.running,
