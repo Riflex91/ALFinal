@@ -128,6 +128,25 @@
         if (state && state.reporter === ready.name) this._write('congestion', null);
       }
     }
+    handoffActive() {
+      const ticket = this._read('proposal');
+      if (!ticket || ticket.schemaVersion !== 1 || ticket.state !== 'COMMITTED'
+          || Date.now() > ticket.expiresAtMs || !ticket.target) return false;
+      const server = this._server();
+      if (!server || !ticket.source) return false;
+      const involved = (server.region === ticket.source.region && server.identifier === ticket.source.identifier)
+        || (server.region === ticket.target.region && server.identifier === ticket.target.identifier);
+      if (!involved) return false;
+      // Suppress H19's roster recovery while worlds diverge. LocalStorage
+      // survives navigation and this check is independent of peer combat state.
+      return !safeNames(ticket.desired).every(name => {
+        const peer = this._read('peer:' + name);
+        return peer && peer.server
+          && peer.server.region === ticket.target.region
+          && peer.server.identifier === ticket.target.identifier
+          && Date.now() - peer.atMs >= 0 && Date.now() - peer.atMs < 12000;
+      });
+    }
     _lastHop() { return this._read('last-hop'); }
     _freshPeer(name, ready, now) {
       const peer = this._read('peer:' + name);
@@ -193,7 +212,7 @@
               return ack && ack.id === pending.id && now - ack.atMs <= this.config.peerMaxAgeMs;
             });
           if (complete) {
-            const committed = { ...pending, state: 'COMMITTED', switchAtMs: now + this.config.commitDelayMs };
+            const committed = { ...pending, state: 'COMMITTED', switchAtMs: now + this.config.commitDelayMs, expiresAtMs: now + 180000 };
             if (this._write('proposal', committed)
                 && this._write('last-hop', { atMs: now, source: ready.server, target: pending.target })) {
               this.metrics.commits++;
