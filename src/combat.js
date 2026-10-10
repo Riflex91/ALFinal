@@ -94,6 +94,10 @@
         kiteTerrainBlocks: 0,
         kiteGroupTetherBlocks: 0,
         kiteGroupSoftTetherBlocks: 0,
+        kiteSpiralEscapes: 0,
+        kiteEmergencyEscapes: 0,
+        kiteAnchorCorrections: 0,
+        kiteAggroThreatOverrides: 0,
         attackTargetRaceRecoveries: 0,
         attackRangeRecoveries: 0,
         damageObservations: 0
@@ -872,6 +876,118 @@
       if (currentMax > this.config.groupHardKiteTether && proposedMax < currentMax - 0.5) return true;
       this.metrics.kiteGroupSoftTetherBlocks += 1;
       return false;
+    }
+
+    _farmKiteAnchor(character) {
+      // Ported from V3 alpha33: avoid orbiting indefinitely away from a
+      // verified farming anchor. Missing/cross-map coordinates add no bounds.
+      let selection = null;
+      try {
+        const h9 = this.farmIntelligence && this.farmIntelligence.status();
+        selection = h9 && h9.currentSelection || null;
+      } catch (_) {}
+      const x = finite(selection && selection.x), y = finite(selection && selection.y);
+      if (x == null || y == null || !character
+          || !selection || !selection.map
+          || String(selection.map) !== String(character.map)) return null;
+      return { x, y, radius: Math.max(120, Math.min(270, (finite(character.range) || 100) * 1.75)) };
+    }
+
+    _anchorAllowsKite(character, waypoint, anchor) {
+      if (!anchor) return true;
+      const cx = finite(character && character.x), cy = finite(character && character.y);
+      if (cx == null || cy == null) return false;
+      const before = Math.hypot(cx - anchor.x, cy - anchor.y);
+      const after = Math.hypot(waypoint.x - anchor.x, waypoint.y - anchor.y);
+      return before <= anchor.radius ? after <= anchor.radius + 0.5 : after < before - 0.25;
+    }
+
+    _kiteThreat(game, currentTarget) {
+      const character = game && game.character;
+      if (!character || !character.name) return null;
+      let monsters = [];
+      try { monsters = this.game.visibleMonsters() || []; } catch (_) {}
+      const name = String(character.name);
+      const threats = monsters.filter(row => row && !row.dead && row.visible !== false
+        && row.map === character.map && String(row.targetId || '') === name
+        && finite(row.x) != null && finite(row.y) != null);
+      if (currentTarget && String(currentTarget.targetId || '') === name
+          && !threats.some(row => String(row.id) === String(currentTarget.id))) threats.push(currentTarget);
+      if (!threats.length) return null;
+      threats.sort((a, b) => {
+        const da = finite(a.distance) == null
+          ? Math.hypot(Number(character.x) - Number(a.x), Number(character.y) - Number(a.y))
+          : Number(a.distance);
+        const db = finite(b.distance) == null
+          ? Math.hypot(Number(character.x) - Number(b.x), Number(character.y) - Number(b.y))
+          : Number(b.distance);
+        return da - db;
+      });
+      const nearest = threats[0];
+      if (currentTarget && String(nearest.id) !== String(currentTarget.id))
+        this.metrics.kiteAggroThreatOverrides += 1;
+      return nearest;
+    }
+
+    _spiralKiteEscape(character, target, desiredDistance, hardSafeDistance, maxRangeDistance, canMove) {
+      // V3 alpha33 spiral: when radial moves meet terrain, project bounded
+      // oblique steps along the monster's safe perimeter.
+      const cx = finite(character && character.x), cy = finite(character && character.y);
+      const tx = finite(target && target.x), ty = finite(target && target.y);
+      if ([cx,cy,tx,ty].some(v => v == null)) return null;
+      const current = Math.hypot(cx - tx, cy - ty);
+      if (current < 0.001) return null;
+      const speed = Math.max(1, finite(character.speed) || 40);
+      const maxStep = Math.max(12, speed * this.config.kiteStepSeconds);
+      const radialGain = Math.max(5, Math.min(Math.max(0, desiredDistance - current), maxStep * 0.48));
+      const nextRadius = Math.min(maxRangeDistance, Math.max(current + radialGain, hardSafeDistance + 4));
+      if (nextRadius <= current + 1) return null;
+      const base = Math.atan2(cy - ty, cx - tx);
+      const preferred = this._orbitDirection(character);
+      const anchor = this._farmKiteAnchor(character);
+      const candidates = [];
+      for (const deg of [22,32,42,52,72,92,-22,-32,-42,-52,-72,-92].map(v => preferred * v)) {
+        const angle = base + deg * Math.PI / 180;
+        const x = tx + Math.cos(angle) * nextRadius;
+        const y = ty + Math.sin(angle) * nextRadius;
+        const step = Math.hypot(x-cx, y-cy);
+        const wp = { x, y };
+        if (step < 4 || step > maxStep * 1.45 || !canMove(x,y)
+            || !this._anchorAllowsKite(character, wp, anchor)) continue;
+        if (!this._segmentSafe(character, wp, target, hardSafeDistance, { allowStartInside: true })) continue;
+        candidates.push({
+          x, y, afterDistance: nextRadius,
+          direction: Math.sign(deg) || preferred,
+          escape: true, spiral: true,
+          score: (Math.sign(deg) === preferred ? 0 : 8)
+            + Math.abs(step-maxStep*0.85)*0.15
+            + (anchor ? Math.hypot(x-anchor.x,y-anchor.y)*0.03 : 0)
+        });
+      }
+      candidates.sort((a,b)=>a.score-b.score);
+      return candidates[0] || null;
+    }
+
+    _emergencyKiteEscape(character, target, canMove) {
+      // V3 alpha31 last-resort terrain escape: do not stay in contact range
+      // just because no safe *in-attack-range* waypoint exists.
+      const cx = finite(character && character.x), cy = finite(character && character.y);
+      const tx = finite(target && target.x), ty = finite(target && target.y);
+      if ([cx,cy,tx,ty].some(v=>v==null)) return null;
+      const current = Math.hypot(cx-tx,cy-ty);
+      if (current < 0.001) return null;
+      const step = Math.max(10, Math.min(90, (finite(character.speed)||40)*this.config.kiteStepSeconds));
+      const base = Math.atan2(cy-ty,cx-tx);
+      const preferred = this._orbitDirection(character);
+      for(const deg of [0,12,-12,25,-25,45,-45,70,-70].map(v=>v*preferred)){
+        const x=cx+Math.cos(base+deg*Math.PI/180)*step;
+        const y=cy+Math.sin(base+deg*Math.PI/180)*step;
+        if(!canMove(x,y))continue;
+        const afterDistance=Math.hypot(x-tx,y-ty);
+        if(afterDistance<=current+3 || !this._segmentSafe(character,{x,y},target,current,{allowStartInside:true}))continue;
+        return {x,y,afterDistance,direction:preferred,escape:true,emergency:true,score:0};
+      }
+      return null;
     }
 
     _kiteWaypoint(character, target) {
