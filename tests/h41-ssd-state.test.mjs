@@ -72,7 +72,9 @@ test('H41 browser mode uses SSD host only, never touches legacy browser localSto
         } else if (this.method==='GET') {
           this.responseText=JSON.stringify({ok:true,value:map.get(key) ?? null});
         } else if (this.method==='POST') {
-          map.set(key, JSON.parse(payload).value);
+          const body = JSON.parse(payload);
+          if (body.operation === 'DELETE') map.delete(key);
+          else map.set(key, body.value);
           this.responseText=JSON.stringify({ok:true});
         } else if (this.method==='DELETE') {
           map.delete(key);this.responseText=JSON.stringify({ok:true});
@@ -87,6 +89,8 @@ test('H41 browser mode uses SSD host only, never touches legacy browser localSto
   assert.equal(storage.sharedAvailable(),true);
   assert.equal(storage.setShared('albot:gear:v1','{\"rogue\":true}'),true);
   assert.equal(storage.get('albot:gear:v1'),'{\"rogue\":true}');
+  assert.equal(storage.removeShared('albot:gear:v1'),true);
+  assert.equal(storage.getShared('albot:gear:v1'),null);
   assert.equal(storage.set('non-bot-key','unsafe'),false);
   assert.equal(localStorageTouches,0);
   hostReady=false;
