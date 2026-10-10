@@ -20,8 +20,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Audit all legacy release pins
-        run: grep -R -nE '0.*26.*69' tests/ || true
       - name: Diagnostic isolated tests
         run: |
           npm run build
