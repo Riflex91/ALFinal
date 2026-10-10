@@ -23,9 +23,9 @@ const profiles = [
   { name: 'My_Ranger2', ctype: 'ranger', online: true },
   { name: 'My_Rogue', ctype: 'rogue', online: true }
 ];
-function make(name, lifecycleOverrides = {}) {
+function make(name, lifecycleOverrides = {}, rotationReady = false) {
   const lifecycle = {
-    characterRotationReadiness: () => ({ ready: false, reason: 'H27_ROTATION_LOCAL_REPLACEMENT_REQUIRES_MERCHANT_COORDINATOR' }),
+    characterRotationReadiness: () => ({ ready: rotationReady, reason: rotationReady ? null : 'H27_ROTATION_LOCAL_REPLACEMENT_REQUIRES_MERCHANT_COORDINATOR' }),
     status: () => ({
       suspended: false, currentAction: null, queueLength: 0,
       metrics: { actionsUnknown: 0 }, ...lifecycleOverrides
@@ -89,4 +89,13 @@ test('Outgoing farmer waits for Merchant instead of blocking group', () => {
   const state = c.tick();
   assert.equal(state.state, 'WARMING');
   assert.equal(state.reason, 'FULL_AUTONOMY_WAITING_MERCHANT_ROTATION');
+});
+
+test('H41 Merchant retains four already online teammates even when H25 rotation reports READY', () => {
+  const c = make('My_Merchant', {}, true);
+  const state = c.tick();
+  assert.equal(state.reason, 'FULL_AUTONOMY_WAITING_PARTY_TOPOLOGY');
+  assert.deepEqual([...c.desiredCharacterNames], online);
+  assert.deepEqual([...c.lastPlan.selected.memberNames].sort(), ['My_Ranger1','My_Ranger2','My_Rogue']);
+  assert.equal(c.desiredSource, 'merchant-authority');
 });
