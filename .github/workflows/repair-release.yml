@@ -5,6 +5,7 @@ on:
     branches:
       - fix/restore-full-autonomy-ssd-telemetry-20261010
       - feature/h38-farm-cohesion-materials-server-hop-20261010
+      - feature/h39-eu-us-pve-server-catalog-20261010
       - main
 
 permissions:
