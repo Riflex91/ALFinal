@@ -300,6 +300,12 @@
       tick: () => runtime.fullAutonomy.tick()
     },
 
+    serverHop: {
+      status: () => runtime.serverHop.status(),
+      configure: options => runtime.serverHop.configure(options || {}),
+      tick: () => runtime.serverHop.tick()
+    },
+
     updater: {
       status: () => runtime.safeUpdater.status(),
       configure: options => runtime.safeUpdater.configure(options || {}),
