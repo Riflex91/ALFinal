@@ -471,6 +471,10 @@
           return this.stop(reason);
         }
       });
+      // H41: GearController is constructed before H19 transport exists.
+      // Bind the real transport now; without this, H14 sees no remote gear
+      // profile, cannot make Rogue proposals, and never queues deliveries.
+      this.gear.crossWindow = this.lifecycleTransport;
       // H18 may travel toward a fresh, owned H19 peer, but transfers require live visibility.
       this.partyLogistics.crossWindow = this.lifecycleTransport;
       this.hostState = new ns.HostPersistentStateClient({
@@ -5879,6 +5883,7 @@
     }
 
     async start() {
+      if (!this.storage.sharedAvailable()) throw new Error('ALBOT_SSD_STATE_UNAVAILABLE:D:/ALBot/state/kv');
       if (this._destroyed) throw new Error('ALBOT_RUNTIME_DESTROYED');
       if (this.stopLatch.status().latched) throw new Error('ALBOT_START_BLOCKED_BY_EMERGENCY_STOP');
       if (this.running) return this.status();
@@ -5968,6 +5973,7 @@
     }
 
     actionAllowed(action = 'action') {
+      if (!this.storage.sharedAvailable()) return false;
       if (!this.running) return false;
       if (!this.scheduler.status().enabled) return false;
       if (this.stopLatch.status().latched) return false;
@@ -5975,6 +5981,7 @@
     }
 
     assertActionAllowed(action = 'action') {
+      if (!this.storage.sharedAvailable()) throw new Error('ALBOT_SSD_STATE_UNAVAILABLE:' + action);
       if (!this.running || !this.scheduler.status().enabled) throw new Error('ALBOT_RUNTIME_NOT_RUNNING:' + action);
       return this.stopLatch.assertAllowed(action);
     }
@@ -5994,6 +6001,7 @@
         performanceTrick: ns.helpers.clone(this.performanceGuard),
         emergencyStop: this.stopLatch.status(),
         scheduler: this.scheduler.status(),
+        ssdStorage: this.storage.status(),
         modules: this.modules.list(),
         game: this.game.status(),
         actions: this.actions.status(),
