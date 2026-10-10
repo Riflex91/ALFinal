@@ -649,6 +649,8 @@
         fullAutonomyLeaderName: cleanText(row.fullAutonomyLeaderName || '', 120) || null,
         characterDisconnectCapable: row.characterDisconnectCapable === true,
         characterNavigateCapable: row.characterNavigateCapable === true,
+        visibleClient: row.visibleClient === true,
+        clientKind: cleanText(row.clientKind || '', 40) || 'UNKNOWN',
         version: cleanText(row.version || '', 80) || null,
         party: row.party && typeof row.party === 'object' ? {
           available: row.party.available !== false,
@@ -757,6 +759,8 @@
         fullAutonomyLeaderName: cleanText(state.fullAutonomyLeaderName || '', 120) || null,
         characterDisconnectCapable: state.characterDisconnectCapable === true,
         characterNavigateCapable: state.characterNavigateCapable === true,
+        visibleClient: state.visibleClient === true,
+        clientKind: cleanText(state.clientKind || '', 40) || 'UNKNOWN',
         version: cleanText(state.version || '', 80) || null,
         party: party && typeof party === 'object' ? {
           available: party.available !== false,
