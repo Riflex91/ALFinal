@@ -419,7 +419,12 @@
           try { if (this.hostState) this.hostState.flushFinalBestEffort(); } catch (_) {}
           return dispatchH24CharacterDisconnect();
         },
-        navigateCharacterLocal: (desiredName, reason, options) => navigateH25BrowserCharacter(desiredName, options),
+        navigateCharacterLocal: (desiredName, reason, options) => {
+          if (this.visibleClients.protectsConfiguredQuartet()) {
+            throw new Error('H45_VISIBLE_BROWSER_IDENTITY_ROTATION_DISABLED');
+          }
+          return navigateH25BrowserCharacter(desiredName, options);
+        },
         leavePartyLocal: () => dispatchH19CrossWindowPartyAction('leave_party', []),
         requestPartyJoinLocal: leaderName => dispatchH19CrossWindowPartyAction('send_party_request', [leaderName]),
         prepareUpdateLocal: (payload, sender) => {
@@ -496,8 +501,13 @@
         crossWindow: this.lifecycleTransport,
         visibleClients: this.visibleClients,
         sessionId: this.lifecycleTransport && this.lifecycleTransport.sessionId || null,
-        navigateCharacterLocal: desiredName => navigateH25BrowserCharacter(desiredName),
-        canNavigateCharacterLocal: () => h25BrowserNavigationCapability(),
+        navigateCharacterLocal: desiredName => {
+          if (this.visibleClients.protectsConfiguredQuartet()) {
+            throw new Error('H45_VISIBLE_BROWSER_IDENTITY_ROTATION_DISABLED');
+          }
+          return navigateH25BrowserCharacter(desiredName);
+        },
+        canNavigateCharacterLocal: () => !this.visibleClients.protectsConfiguredQuartet() && h25BrowserNavigationCapability(),
         canAct: action => this.actionAllowed(action)
       });
       this.accountStrategy = new ns.AccountStrategyController({
@@ -5979,7 +5989,7 @@
 
     actionAllowed(action = 'action') {
       if ((action === 'start_character' || action === 'stop_character')
-          && this.visibleClients && this.visibleClients.enabled()) return false;
+          && this.visibleClients && this.visibleClients.protectsConfiguredQuartet()) return false;
       if (!this.storage.sharedAvailable()) return false;
       if (!this.running) return false;
       if (!this.scheduler.status().enabled) return false;
@@ -5989,8 +5999,8 @@
 
     assertActionAllowed(action = 'action') {
       if ((action === 'start_character' || action === 'stop_character')
-          && this.visibleClients && this.visibleClients.enabled())
-        throw new Error('H43_VISIBLE_MODE_CHILD_LIFECYCLE_BLOCKED:' + action);
+          && this.visibleClients && this.visibleClients.protectsConfiguredQuartet())
+        throw new Error('H45_CHILD_CODE_LIFECYCLE_DISABLED:' + action);
       if (!this.storage.sharedAvailable()) throw new Error('ALBOT_SSD_STATE_UNAVAILABLE:' + action);
       if (!this.running || !this.scheduler.status().enabled) throw new Error('ALBOT_RUNTIME_NOT_RUNNING:' + action);
       return this.stopLatch.assertAllowed(action);
