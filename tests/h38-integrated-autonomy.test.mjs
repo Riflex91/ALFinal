@@ -60,6 +60,12 @@ function team() {
     };
     const hop = new Hop({ runtime, storage, game, root });
     hop.moduleActive = true;
+    hop.catalogUpdatedAtMs = Date.now();
+    hop.config.targetServers = [
+      { region: 'EU', identifier: 'I' }, { region: 'EU', identifier: 'II' },
+      { region: 'EU', identifier: 'III' }, { region: 'US', identifier: 'I' },
+      { region: 'US', identifier: 'II' }, { region: 'US', identifier: 'III' }
+    ];
     members[name] = { hop, calls, server, root, runtime };
   }
   return { db, members };
@@ -94,14 +100,15 @@ test('H38 sustained congestion creates a proposal; four peers ACK before any nav
   const ticketKey = 'albot:h38:server-hop:v1:proposal';
   let ticket = JSON.parse(t.db.get(ticketKey));
   assert.equal(ticket.state, 'COMMITTED');
-  assert.equal(ticket.target.identifier, 'I');
+  assert.equal(ticket.target.region, 'EU');
+  assert.equal(ticket.target.identifier, 'III');
   assert.equal(t.members.My_Ranger1.hop.handoffActive(), true);
   ticket.switchAtMs = Date.now() - 1;
   t.db.set(ticketKey, JSON.stringify(ticket));
   for (const name of names) t.members[name].hop.tick();
   for (const name of names) {
     assert.equal(t.members[name].calls.length, 1);
-    assert.equal(t.members[name].calls[0].identifier, 'I');
+    assert.equal(t.members[name].calls[0].identifier, 'III');
   }
   for (const name of names) t.members[name].hop.tick();
   assert.equal(t.members.My_Ranger1.hop.handoffActive(), false);
@@ -167,4 +174,64 @@ test('H38 group leader does not cancel travel on the first hard-gap sample', () 
   now += 12000;
   instance._tickGroupLeader({ name: 'My_Ranger1' }, group);
   assert.ok(cancelled.includes('H9_GROUP_HARD_COHESION_RECOVERY'));
+});
+
+test('H39 permits all verified EU/US PVE realms but excludes PVP, Hardcore, unknown metadata and other regions', () => {
+  const t = team();
+  const h = t.members.My_Merchant.hop;
+  const list = h._normalizeGameServerCatalog({ servers: [
+    { region: 'EU', name: 'I', pvp: false },
+    { region: 'EU', name: 'II', pvp: false },
+    { region: 'EU', name: 'III', pvp: false },
+    { region: 'EU', name: 'IV', pvp: false },
+    { region: 'US', name: 'I', pvp: false },
+    { region: 'US', name: 'II', pvp: false },
+    { region: 'US', name: 'III', pvp: false },
+    { region: 'US', name: 'IV', pvp: false },
+    { region: 'US', name: 'PVP', pvp: true },
+    { region: 'EU', name: 'V', pvp: true },
+    { region: 'US', name: 'HARDCORE', pvp: false },
+    { region: 'ASIA', name: 'I', pvp: false },
+    { region: 'US', name: 'V' },
+    { region: 'EU', name: 'VI', pvp: 'unknown' },
+    { region: 'US', name: 'III', pvp: false }
+  ]});
+  assert.deepEqual([...list].map(s => s.region + ' ' + s.identifier), [
+    'EU I','EU II','EU III','EU IV','US I','US II','US III','US IV'
+  ]);
+  h.config.targetServers = list;
+  assert.deepEqual({ ...h._target({ region: 'EU', identifier: 'IV' }) }, { region: 'US', identifier: 'I' });
+  assert.deepEqual({ ...h._target({ region: 'US', identifier: 'IV' }) }, { region: 'EU', identifier: 'I' });
+  assert.equal(h._target({ region: 'US', identifier: 'PVP' }), null);
+});
+
+test('H39 uses live get_servers() results and never picks an unverified target', async () => {
+  const t = team();
+  const h = t.members.My_Merchant.hop;
+  h.catalogUpdatedAtMs = null;
+  h.config.targetServers = [];
+  h.root.get_servers = () => Promise.resolve({ servers: [
+    { region: 'EU', identifier: 'II', pvp: false },
+    { region: 'US', identifier: 'I', pvp: false },
+    { region: 'US', identifier: 'PVP', pvp: true }
+  ]});
+  assert.equal(h._target({ region: 'EU', identifier: 'II' }), null);
+  h._refreshGameServerCatalog();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual({ ...h._target({ region: 'EU', identifier: 'II' }) }, { region: 'US', identifier: 'I' });
+  assert.equal(h.catalogError, null);
+});
+
+test('H39 stale catalog fails closed and PVP-only live list does not authorize a hop', async () => {
+  const t = team();
+  const h = t.members.My_Merchant.hop;
+  h.catalogUpdatedAtMs = Date.now() - h.config.catalogMaxAgeMs - 10;
+  assert.equal(h._target({ region: 'EU', identifier: 'II' }), null);
+  h.config.targetServers = h._normalizeGameServerCatalog({ servers: [
+    { region: 'EU', name: 'I', pvp: true },
+    { region: 'US', name: 'PVP', pvp: true }
+  ]});
+  h.catalogUpdatedAtMs = Date.now();
+  assert.equal(h._target({ region: 'EU', identifier: 'II' }), null);
 });
