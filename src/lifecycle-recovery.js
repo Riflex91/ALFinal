@@ -705,7 +705,8 @@
           && (mode === 'BROWSER_SWAP' || mode === 'START' || mode === 'STOP')) {
         // No caller (manual H19 queue, automatic planner, stale retry) can
         // rotate a visible character or create/stop its hidden CODE child.
-        return { ok: false, reason: 'H45_CHILD_CODE_LIFECYCLE_DISABLED' };
+        return { ok: false, reason: this.visibleClients.enabled()
+          ? 'H43_VISIBLE_MODE_CHILD_LIFECYCLE_BLOCKED' : 'H45_CHILD_CODE_LIFECYCLE_DISABLED' };
       }
       const active = this._onlineSet(roster).has(targetName);
       const runnerActive = this._runnerActiveSet(roster).has(targetName);
