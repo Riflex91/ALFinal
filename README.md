@@ -69,3 +69,12 @@ The Windows service must be installed **before the H41 client bundle is promoted
 **Rollout boundary:** A GitHub merge does not start any Windows service. Until the user's host passes SSD-KV verification, PR #119 must not be promoted: the old bot continues on the previous Stable instead of stopping all four characters. Existing browser-localStorage values are *not automatically copied to SSD* by this PR (stale H19 execution state must not be blindly replayed). A separate reviewed, one-time migration is needed if old goals/configurations must be preserved.
 
 H41 also binds the GearController to the initialized H19 transport and prioritizes an already healthy 3-Farmer+Merchant online quartet so the Merchant can invite My_Ranger1 and resume safe gear/material coordination without unnecessary H25 swaps.
+
+
+## H42 – Automatische Party-Wiedervereinigung bei Server-Split
+
+Wenn Merchant und drei Farmer auf unterschiedlichen Servern starten, veröffentlicht jedes eigene Browserfenster alle 1,5 Sekunden seinen aktuellen Server und die H19-Sicherheitsbereitschaft auf der SSD (`D:\\ALBot\\state\\kv`). Der Merchant prüft frische Zustände **aller vier** online befindlichen und nachweislich eigenen Charaktere. Bei einer eindeutigen **3:1-Verteilung** wählt er den bereits besetzten Mehrheit-Server als Ziel und veröffentlicht einen zeitlich begrenzten SSD-Wiedervereinigungsauftrag. **Nur der einzelne abweichende Charakter** wechselt – im beobachteten Fall fährt `My_Merchant` von EU I zu den drei Farmern auf EU II.
+
+Diese Wiedervereinigung benötigt weder eine bereits bestehende Party noch eine H38-Konkurrenzmeldung. Solange ein Wiedervereinigungsauftrag aktiv ist, unterbindet Full Autonomy H19-Neustarts, bis alle vier Charaktere nachweislich auf dem Zielserver angekommen sind. Anschließend beginnt der normale H19-Party-Aufbau. Ausgenommen sind PvP-/Hardcore-Server, unklare 2:2-Verteilungen, fehlende/frische SSD-Peers, unbekannte H19-Ausgänge, laufende Kampf- oder Bewegungsaktionen sowie ein bereits bestätigter normaler H38-Serverwechsel. Ein fehlgeschlagener Wechsel wird **nicht** blind wiederholt; die Wiedervereinigung hat einen 5-Minuten-Cooldown. Da der Serverwechsel eine Browser-Navigation ist, bleiben echte Live-Bestätigungen erforderlich.
+
+Status: `ALBot.serverHop.status().lastDecision` (z. B. `H42_REJOIN_MAJORITY_SELECTED`, `H42_REJOIN_SERVER_CHANGE_DISPATCHED` oder `H42_REJOIN_COMPLETE`). Die SSD-Speicherung bleibt verpflichtend.
