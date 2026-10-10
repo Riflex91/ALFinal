@@ -1079,6 +1079,15 @@
         return { state: 'BLOCKED', reason: 'FULL_AUTONOMY_RUNTIME_ACTION_BLOCKED' };
       }
 
+      // H38: coordinated server changes temporarily split server-scoped
+      // player lists. Never start H19 rotation while that is happening.
+      if (this.runtime.serverHop && this.runtime.serverHop.handoffActive()) {
+        return this.lastDecision = {
+          at: new Date().toISOString(), state: 'WARMING',
+          reason: 'H38_COORDINATED_SERVER_HOP_IN_PROGRESS'
+        };
+      }
+
       try {
         const initialReadiness = this._profileReadiness();
         const local = this._local();
