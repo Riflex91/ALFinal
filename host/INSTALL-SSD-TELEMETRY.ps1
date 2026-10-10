@@ -46,6 +46,17 @@ for ($i = 0; $i -lt 20; $i++) {
 if (-not $healthy) {
   throw 'SSD_TELEMETRY_NOT_HEALTHY: Check Task Scheduler ALBot-SSD-Telemetry, drive D: and port 17391.'
 }
+# Verify a real atomic write/read/delete to D:\ALBot\state\kv.
+$probeUrl = 'http://127.0.0.1:17391/v1/kv?key=albot%3Assd%3Ainstallation-probe%3Av1'
+$probeValue = 'ssd-ready-' + [guid]::NewGuid().ToString('N')
+$probeBody = @{ value = $probeValue } | ConvertTo-Json -Compress
+$null = Invoke-RestMethod -Uri $probeUrl -Method Post -ContentType 'application/json' -Body $probeBody -TimeoutSec 5
+$probeRead = Invoke-RestMethod -Uri $probeUrl -Method Get -TimeoutSec 5
+if ($probeRead.ok -ne $true -or $probeRead.value -ne $probeValue) {
+  throw 'SSD_KV_READ_AFTER_WRITE_FAILED'
+}
+$null = Invoke-RestMethod -Uri $probeUrl -Method Delete -TimeoutSec 5
+Write-Host 'SSD_KV_READ_WRITE_DELETE_PASS' -ForegroundColor Green
 Write-Host 'SSD_STATE_AND_TELEMETRY_ACTIVE' -ForegroundColor Green
 Write-Host 'Telemetry: D:\ALBot\telemetry\raw and D:\ALBot\telemetry\daily'
 Write-Host 'Bot state: D:\ALBot\state\kv'
