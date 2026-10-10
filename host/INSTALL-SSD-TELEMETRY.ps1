@@ -17,6 +17,13 @@ $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 $action = New-ScheduledTaskAction -Execute $node -Argument ('"' + $server + '"') -WorkingDirectory $PSScriptRoot
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $identity
 $principal = New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive -RunLevel Limited
+# Stop only our own existing task before updating its Node module dependency.
+# Never kill arbitrary processes that may also use this port.
+$existing = Get-ScheduledTask -TaskName 'ALBot-SSD-Telemetry' -ErrorAction SilentlyContinue
+if ($existing) {
+  Stop-ScheduledTask -TaskName 'ALBot-SSD-Telemetry' -ErrorAction SilentlyContinue
+  Start-Sleep -Seconds 2
+}
 Register-ScheduledTask -TaskName 'ALBot-SSD-Telemetry' -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
 Start-ScheduledTask -TaskName 'ALBot-SSD-Telemetry'
 $healthy = $false
