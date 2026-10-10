@@ -99,6 +99,16 @@
       this.enabledSeen = true;
       return { accepted: true, reason: 'H43_VISIBLE_MODE_ARMED', characters: [...NAMES] };
     }
+    autoEnableIfReady() {
+      // A Merchant CODE loader can start before its game canvas is connected.
+      // Retry only after the genuine Merchant renderer is observable; never
+      // arm SSD from a child or from a character-selection connection page.
+      if (this.enabled()) return { accepted: true, reason: 'H45_ALREADY_ARMED' };
+      const evidence = this.localEvidence();
+      if (evidence.characterName !== 'My_Merchant' || evidence.visible !== true)
+        return { accepted: false, reason: 'H45_WAITING_FOR_VISIBLE_MERCHANT' };
+      return this.enable();
+    }
     fixedQuartet() {
       // H45: a known quartet client with an owned SSD-backed roster never
       // substitutes My_Priest/My_Warrior while waiting for rendered tabs.
