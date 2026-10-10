@@ -1,0 +1,32 @@
+name: H41 Windows PowerShell installer syntax
+
+on:
+  push:
+    branches:
+      - feature/h41-ssd-only-state-party-gear-20261010
+  pull_request:
+    paths:
+      - 'host/**'
+      - '.github/workflows/ssd-installer-ps-syntax.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  parse-windows-powershell-51:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse SSD installer without executing it
+        shell: powershell
+        run: |
+          $path = Join-Path $env:GITHUB_WORKSPACE 'host\INSTALL-SSD-TELEMETRY.ps1'
+          $tokens = $null
+          $parseErrors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$parseErrors) | Out-Null
+          if ($parseErrors.Count -gt 0) {
+            $parseErrors | ForEach-Object { Write-Error $_.ToString() }
+            throw 'H41_WINDOWS_PS51_INSTALLER_SYNTAX_INVALID'
+          }
+          Write-Host 'H41_WINDOWS_PS51_INSTALLER_SYNTAX_PASS'
